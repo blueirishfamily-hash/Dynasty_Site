@@ -44,13 +44,11 @@ interface DraftPick {
 interface AppSidebarProps {
   leagueName?: string;
   draftPicks?: DraftPick[];
-  faabBudget?: number;
 }
 
 export default function AppSidebar({
   leagueName = "Dynasty League",
   draftPicks = [],
-  faabBudget = 100,
 }: AppSidebarProps) {
   const [location] = useLocation();
 
@@ -107,9 +105,6 @@ export default function AppSidebar({
             <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
               Draft Capital
             </span>
-            <Badge variant="outline" className="text-xs" data-testid="badge-faab">
-              ${faabBudget} FAAB
-            </Badge>
           </div>
           <div className="flex flex-wrap gap-1.5">
             {draftPicks.length > 0 ? (

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import {
   Table,
@@ -219,6 +219,10 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Avatar className="w-8 h-8">
+                        <AvatarImage 
+                          src={`https://sleepercdn.com/content/nfl/players/${player.id}.jpg`}
+                          alt={player.name}
+                        />
                         <AvatarFallback className="text-xs bg-muted">
                           {player.name
                             .split(" ")

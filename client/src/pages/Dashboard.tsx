@@ -6,6 +6,15 @@ import StandingsTable from "@/components/StandingsTable";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
+interface PlayoffPrediction {
+  rosterId: number;
+  makePlayoffsPct: number;
+}
+
+interface PlayoffPredictionData {
+  predictions: PlayoffPrediction[];
+}
+
 export default function Dashboard() {
   const { user, league, currentWeek } = useSleeper();
 
@@ -19,6 +28,17 @@ export default function Dashboard() {
       return res.json();
     },
     enabled: !!league?.leagueId && !!user?.userId,
+  });
+
+  const { data: playoffData } = useQuery<PlayoffPredictionData>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
+      if (!res.ok) throw new Error("Failed to fetch playoff predictions");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+    staleTime: 5 * 60 * 1000,
   });
 
   const { data: matchup, isLoading: matchupLoading } = useQuery({
@@ -54,6 +74,12 @@ export default function Dashboard() {
     streak: team.streak || "—",
     trend: [100, 110, 105, 115, 120],
     isUser: team.isUser,
+    rosterId: team.rosterId,
+  }));
+
+  const playoffProbabilities = playoffData?.predictions?.map(p => ({
+    rosterId: p.rosterId,
+    makePlayoffsPct: p.makePlayoffsPct,
   }));
 
   const userTeam = matchup?.userTeam
@@ -135,7 +161,11 @@ export default function Dashboard() {
               </CardContent>
             </Card>
           ) : formattedStandings.length > 0 ? (
-            <StandingsTable standings={formattedStandings} playoffTeams={league.playoffTeams || 6} />
+            <StandingsTable 
+              standings={formattedStandings} 
+              playoffTeams={league.playoffTeams || 6}
+              playoffProbabilities={playoffProbabilities}
+            />
           ) : null}
         </div>
 
