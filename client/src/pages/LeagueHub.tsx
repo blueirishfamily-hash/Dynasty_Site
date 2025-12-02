@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -70,7 +70,15 @@ export default function LeagueHub() {
   const [ruleTitle, setRuleTitle] = useState("");
   const [ruleDescription, setRuleDescription] = useState("");
   const [playerSearch, setPlayerSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(playerSearch);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [playerSearch]);
 
   const { data: ruleSuggestions, isLoading: rulesLoading } = useQuery<RuleSuggestion[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
@@ -102,9 +110,15 @@ export default function LeagueHub() {
     enabled: !!league?.leagueId && !!season,
   });
 
-  const { data: allPlayers } = useQuery<Player[]>({
-    queryKey: ["/api/sleeper/players"],
-    enabled: nominateDialogOpen,
+  const { data: searchedPlayers, isLoading: playersLoading } = useQuery<Player[]>({
+    queryKey: ["/api/sleeper/players/search", debouncedSearch, awardType],
+    queryFn: async () => {
+      const rookiesParam = awardType === "roy" ? "&rookies=true" : "";
+      const res = await fetch(`/api/sleeper/players/search?q=${encodeURIComponent(debouncedSearch)}${rookiesParam}`);
+      if (!res.ok) throw new Error("Failed to fetch players");
+      return res.json();
+    },
+    enabled: nominateDialogOpen && debouncedSearch.length >= 2,
   });
 
   const createRuleMutation = useMutation({
@@ -130,7 +144,7 @@ export default function LeagueHub() {
   const voteRuleMutation = useMutation({
     mutationFn: async ({ id, voteType }: { id: string; voteType: "up" | "down" }) => {
       return apiRequest("POST", `/api/rule-suggestions/${id}/vote`, {
-        oderId: user?.userId || "guest",
+        voterId: user?.userId || "guest",
         voteType,
       });
     },
@@ -165,22 +179,19 @@ export default function LeagueHub() {
   const voteAwardMutation = useMutation({
     mutationFn: async (id: string) => {
       return apiRequest("POST", `/api/awards/${id}/vote`, {
-        oderId: user?.userId || "guest",
+        voterId: user?.userId || "guest",
       });
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "awards", season, awardType] });
+      if (league?.leagueId && season) {
+        queryClient.invalidateQueries({ queryKey: ["/api/league", league.leagueId, "awards", season, "mvp"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/league", league.leagueId, "awards", season, "roy"] });
+      }
       toast({ title: "Vote recorded!" });
     },
   });
 
-  const filteredPlayers = allPlayers?.filter((p) => {
-    const matchesSearch = p.name.toLowerCase().includes(playerSearch.toLowerCase());
-    if (awardType === "roy") {
-      return matchesSearch && (p.yearsExp === 0 || p.yearsExp === 1);
-    }
-    return matchesSearch;
-  }).slice(0, 20) || [];
+  const filteredPlayers = searchedPlayers || [];
 
   const currentNominations = awardType === "mvp" ? mvpNominations : royNominations;
   const nominationsLoading = awardType === "mvp" ? mvpLoading : royLoading;
@@ -437,10 +448,18 @@ export default function LeagueHub() {
                             data-testid="input-player-search"
                           />
                         </div>
-                        {playerSearch && (
+                        {playerSearch.length > 0 && (
                           <ScrollArea className="h-60 border rounded-md">
                             <div className="p-2 space-y-1">
-                              {filteredPlayers.length > 0 ? (
+                              {playerSearch.length < 2 ? (
+                                <p className="text-center text-muted-foreground py-4">
+                                  Type at least 2 characters to search
+                                </p>
+                              ) : playersLoading ? (
+                                <div className="flex items-center justify-center py-8">
+                                  <div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" />
+                                </div>
+                              ) : filteredPlayers.length > 0 ? (
                                 filteredPlayers.map((player) => (
                                   <div
                                     key={player.id}

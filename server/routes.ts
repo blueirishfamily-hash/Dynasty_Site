@@ -903,6 +903,46 @@ export async function registerRoutes(
     }
   });
 
+  // Search players (for nomination lookup)
+  app.get("/api/sleeper/players/search", async (req, res) => {
+    try {
+      const search = (req.query.q as string || "").toLowerCase().trim();
+      const rookiesOnly = req.query.rookies === "true";
+      
+      if (!search || search.length < 2) {
+        return res.json([]);
+      }
+
+      const players = await getAllPlayers();
+      const playerList = Object.values(players)
+        .filter(p => {
+          if (!p.position || !["QB", "RB", "WR", "TE", "K", "DEF"].includes(p.position)) return false;
+          const fullName = (p.full_name || `${p.first_name} ${p.last_name}`).toLowerCase();
+          const matchesSearch = fullName.includes(search);
+          if (rookiesOnly) {
+            const yearsExp = Number(p.years_exp) || 0;
+            return matchesSearch && (yearsExp === 0 || yearsExp === 1);
+          }
+          return matchesSearch;
+        })
+        .slice(0, 20)
+        .map(p => ({
+          id: p.player_id,
+          name: p.full_name || `${p.first_name} ${p.last_name}`,
+          position: p.position,
+          team: p.team,
+          age: p.age,
+          yearsExp: Number(p.years_exp) || 0,
+          status: p.status,
+          injuryStatus: p.injury_status,
+        }));
+      res.json(playerList);
+    } catch (error) {
+      console.error("Error searching players:", error);
+      res.status(500).json({ error: "Failed to search players" });
+    }
+  });
+
   // Get all players (for search/lookup)
   app.get("/api/sleeper/players", async (_req, res) => {
     try {
@@ -959,11 +999,11 @@ export async function registerRoutes(
 
   app.post("/api/rule-suggestions/:id/vote", async (req, res) => {
     try {
-      const { oderId, voteType } = req.body;
-      if (!oderId || !voteType) {
+      const { voterId, voteType } = req.body;
+      if (!voterId || !voteType) {
         return res.status(400).json({ error: "Missing required fields" });
       }
-      const suggestion = await storage.voteRuleSuggestion(req.params.id, oderId, voteType);
+      const suggestion = await storage.voteRuleSuggestion(req.params.id, voterId, voteType);
       if (!suggestion) {
         return res.status(404).json({ error: "Suggestion not found" });
       }
@@ -1021,11 +1061,11 @@ export async function registerRoutes(
 
   app.post("/api/awards/:id/vote", async (req, res) => {
     try {
-      const { oderId } = req.body;
-      if (!oderId) {
+      const { voterId } = req.body;
+      if (!voterId) {
         return res.status(400).json({ error: "Missing voter ID" });
       }
-      const nomination = await storage.voteAwardNomination(req.params.id, oderId);
+      const nomination = await storage.voteAwardNomination(req.params.id, voterId);
       if (!nomination) {
         return res.status(404).json({ error: "Nomination not found" });
       }

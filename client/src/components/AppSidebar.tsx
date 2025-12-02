@@ -20,6 +20,7 @@ import {
   BarChart3,
   Settings,
   Zap,
+  MessageSquare,
 } from "lucide-react";
 
 const navItems = [
@@ -27,6 +28,7 @@ const navItems = [
   { title: "My Team", url: "/team", icon: Users },
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
+  { title: "League Hub", url: "/hub", icon: MessageSquare },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Settings", url: "/settings", icon: Settings },
 ];

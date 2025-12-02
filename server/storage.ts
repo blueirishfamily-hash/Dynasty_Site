@@ -17,12 +17,12 @@ export interface IStorage {
   
   getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]>;
   createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion>;
-  voteRuleSuggestion(id: string, oderId: string, voteType: "up" | "down"): Promise<RuleSuggestion | undefined>;
+  voteRuleSuggestion(id: string, voterId: string, voteType: "up" | "down"): Promise<RuleSuggestion | undefined>;
   updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined>;
   
   getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]>;
   createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination>;
-  voteAwardNomination(id: string, oderId: string): Promise<AwardNomination | undefined>;
+  voteAwardNomination(id: string, voterId: string): Promise<AwardNomination | undefined>;
 }
 
 export class MemStorage implements IStorage {
@@ -90,17 +90,17 @@ export class MemStorage implements IStorage {
     return suggestion;
   }
 
-  async voteRuleSuggestion(id: string, oderId: string, voteType: "up" | "down"): Promise<RuleSuggestion | undefined> {
+  async voteRuleSuggestion(id: string, voterId: string, voteType: "up" | "down"): Promise<RuleSuggestion | undefined> {
     const suggestion = this.ruleSuggestions.get(id);
     if (!suggestion) return undefined;
 
-    suggestion.upvotes = suggestion.upvotes.filter((v) => v !== oderId);
-    suggestion.downvotes = suggestion.downvotes.filter((v) => v !== oderId);
+    suggestion.upvotes = suggestion.upvotes.filter((v) => v !== voterId);
+    suggestion.downvotes = suggestion.downvotes.filter((v) => v !== voterId);
 
     if (voteType === "up") {
-      suggestion.upvotes.push(oderId);
+      suggestion.upvotes.push(voterId);
     } else {
-      suggestion.downvotes.push(oderId);
+      suggestion.downvotes.push(voterId);
     }
 
     this.ruleSuggestions.set(id, suggestion);
@@ -151,7 +151,7 @@ export class MemStorage implements IStorage {
     return nomination;
   }
 
-  async voteAwardNomination(id: string, oderId: string): Promise<AwardNomination | undefined> {
+  async voteAwardNomination(id: string, voterId: string): Promise<AwardNomination | undefined> {
     const nomination = this.awardNominations.get(id);
     if (!nomination) return undefined;
 
@@ -159,12 +159,12 @@ export class MemStorage implements IStorage {
       if (n.leagueId === nomination.leagueId && 
           n.season === nomination.season && 
           n.awardType === nomination.awardType) {
-        n.votes = n.votes.filter((v) => v !== oderId);
+        n.votes = n.votes.filter((v) => v !== voterId);
         this.awardNominations.set(n.id, n);
       }
     });
 
-    nomination.votes.push(oderId);
+    nomination.votes.push(voterId);
     this.awardNominations.set(id, nomination);
     return nomination;
   }
