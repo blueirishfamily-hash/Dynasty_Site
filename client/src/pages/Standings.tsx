@@ -34,6 +34,18 @@ export default function Standings() {
     enabled: !!league?.leagueId && !!user?.userId,
   });
 
+  // Fetch playoff predictions for clinched status
+  const { data: predictions } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
+      if (!res.ok) throw new Error("Failed to fetch playoff predictions");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+    staleTime: 5 * 60 * 1000,
+  });
+
   if (!league || !user) {
     return (
       <div className="p-6">
@@ -58,7 +70,14 @@ export default function Standings() {
     streak: team.streak || "—",
     trend: [100, 110, 105, 115, 120],
     isUser: team.isUser,
+    rosterId: team.rosterId,
   }));
+
+  // Extract playoff probabilities from predictions
+  const playoffProbabilities = predictions?.predictions?.map((p: any) => ({
+    rosterId: p.rosterId,
+    makePlayoffsPct: p.makePlayoffsPct,
+  })) || [];
 
   const pointsData = formattedStandings
     .map((team: any) => ({
@@ -107,7 +126,11 @@ export default function Standings() {
                   </CardContent>
                 </Card>
               ) : formattedStandings.length > 0 ? (
-                <StandingsTable standings={formattedStandings} playoffTeams={playoffTeams} />
+                <StandingsTable 
+                  standings={formattedStandings} 
+                  playoffTeams={playoffTeams}
+                  playoffProbabilities={playoffProbabilities}
+                />
               ) : null}
             </div>
             <div className="space-y-6">

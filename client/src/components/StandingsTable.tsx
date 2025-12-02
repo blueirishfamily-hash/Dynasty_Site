@@ -22,15 +22,37 @@ interface TeamStanding {
   streak: string;
   trend: number[];
   isUser?: boolean;
+  rosterId?: number;
+}
+
+interface PlayoffProbability {
+  rosterId: number;
+  makePlayoffsPct: number;
 }
 
 interface StandingsTableProps {
   standings: TeamStanding[];
   division?: string;
   playoffTeams?: number;
+  playoffProbabilities?: PlayoffProbability[];
 }
 
-export default function StandingsTable({ standings, division, playoffTeams = 6 }: StandingsTableProps) {
+function getRankBadgeClass(rank: number, playoffTeams: number, playoffPct?: number): string {
+  // If we have probability data, use it to determine "clinched" vs "in position"
+  if (playoffPct !== undefined) {
+    if (playoffPct >= 100) return "bg-primary text-primary-foreground"; // Clinched
+    if (rank <= playoffTeams) return "bg-chart-4 text-white"; // In playoff position but not clinched
+    return ""; // Use default secondary badge
+  }
+  // Fallback: just use position
+  if (rank <= playoffTeams) return "bg-chart-4 text-white";
+  return "";
+}
+
+export default function StandingsTable({ standings, division, playoffTeams = 6, playoffProbabilities }: StandingsTableProps) {
+  // Create a map for quick lookup of playoff probabilities by rosterId
+  const probMap = new Map(playoffProbabilities?.map(p => [p.rosterId, p.makePlayoffsPct]) || []);
+  
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -54,19 +76,24 @@ export default function StandingsTable({ standings, division, playoffTeams = 6 }
             </TableRow>
           </TableHeader>
           <TableBody>
-            {standings.map((team) => (
+            {standings.map((team) => {
+              const playoffPct = team.rosterId !== undefined ? probMap.get(team.rosterId) : undefined;
+              const badgeClass = getRankBadgeClass(team.rank, playoffTeams, playoffPct);
+              
+              return (
               <TableRow
                 key={team.rank}
                 className={team.isUser ? "bg-primary/5" : ""}
                 data-testid={`row-team-${team.rank}`}
               >
                 <TableCell className="text-center">
-                  <Badge
-                    variant={team.rank <= playoffTeams ? "default" : "secondary"}
-                    className="w-6 h-6 p-0 flex items-center justify-center rounded-full"
+                  <div
+                    className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-semibold ${
+                      badgeClass || "bg-secondary text-secondary-foreground"
+                    }`}
                   >
                     {team.rank}
-                  </Badge>
+                  </div>
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center gap-2">
@@ -128,7 +155,8 @@ export default function StandingsTable({ standings, division, playoffTeams = 6 }
                   </div>
                 </TableCell>
               </TableRow>
-            ))}
+              );
+            })}
           </TableBody>
         </Table>
       </CardContent>
