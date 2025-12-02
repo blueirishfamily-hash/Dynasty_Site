@@ -44,7 +44,9 @@ Preferred communication style: Simple, everyday language.
 - League Hub for governance (rule suggestions and award voting)
 - Real-time data syncing with Sleeper API
 - Unified matchup view with positional comparison and dual-sided bar graphs
+- Automatic lineup optimization: inactive (Out/IR/PUP/Sus/NFI/COV) and bye week players auto-replaced with eligible bench players
 - Personalized boom-bust metrics using 8-week rolling window of actual player performance
+- Position depth chart showing points above/below median (e.g., "+15.2 pts")
 - Playoff predictor with points standings impact analysis:
   - PF Rank showing each team's points-for standings position
   - Points gaps to adjacent teams (behind/ahead)

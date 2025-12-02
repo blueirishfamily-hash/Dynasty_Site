@@ -542,14 +542,74 @@ export async function registerRoutes(
         
         const starterIds = matchup.starters || [];
         const playerPoints = matchup.players_points || {};
+        const allRosterIds = roster.players || [];
+        const benchIds = allRosterIds.filter(pid => !starterIds.includes(pid));
         
-        const starters = starterIds.map(pid => buildPlayerInfo(pid, playerPoints[pid] || 0));
+        // Build info for all players first
+        const allPlayersInfo = new Map<string, ReturnType<typeof buildPlayerInfo>>();
+        allRosterIds.forEach(pid => {
+          allPlayersInfo.set(pid, buildPlayerInfo(pid, playerPoints[pid] || 0));
+        });
         
-        const benchIds = (roster.players || []).filter(pid => !starterIds.includes(pid));
-        const bench = benchIds.map(pid => buildPlayerInfo(pid, playerPoints[pid] || 0));
+        // Helper to check if a player can play (not inactive and not on bye)
+        const canPlay = (playerInfo: ReturnType<typeof buildPlayerInfo>) => {
+          return !playerInfo.status && !playerInfo.isOnBye;
+        };
+        
+        // Helper to check if a player is eligible for a position
+        const isEligibleForPosition = (playerInfo: ReturnType<typeof buildPlayerInfo>, slotPosition: string) => {
+          const pos = playerInfo.position;
+          if (slotPosition === "FLEX") {
+            return ["RB", "WR", "TE"].includes(pos);
+          }
+          return pos === slotPosition;
+        };
+        
+        // Build optimized starters by replacing inactive/bye players with eligible bench players
+        const usedBenchIds = new Set<string>();
+        const optimizedStarters: ReturnType<typeof buildPlayerInfo>[] = [];
+        
+        // Define slot order with their eligible positions
+        const slotPositions = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "K", "DEF"];
+        
+        // First pass: assign starters to slots, tracking which need replacement
+        const starterInfos = starterIds.map(pid => allPlayersInfo.get(pid)!);
+        
+        for (let i = 0; i < slotPositions.length; i++) {
+          const slotPos = slotPositions[i];
+          const starter = starterInfos[i];
+          
+          if (starter && canPlay(starter)) {
+            // Starter is active, keep them
+            optimizedStarters.push(starter);
+          } else {
+            // Starter is out/bye - find replacement from bench
+            let replacement: ReturnType<typeof buildPlayerInfo> | null = null;
+            
+            // Find best eligible bench player who can play
+            const eligibleBench = benchIds
+              .filter(pid => !usedBenchIds.has(pid))
+              .map(pid => allPlayersInfo.get(pid)!)
+              .filter(p => canPlay(p) && isEligibleForPosition(p, slotPos))
+              .sort((a, b) => b.projectedPoints - a.projectedPoints);
+            
+            if (eligibleBench.length > 0) {
+              replacement = eligibleBench[0];
+              usedBenchIds.add(replacement.id);
+            }
+            
+            // Use replacement or keep original starter (with 0 projection)
+            optimizedStarters.push(replacement || starter);
+          }
+        }
+        
+        // Build bench from remaining players
+        const bench = benchIds
+          .filter(pid => !usedBenchIds.has(pid))
+          .map(pid => allPlayersInfo.get(pid)!);
 
-        // Calculate projected team total from starters
-        const projectedTotal = starters.reduce((sum, p) => sum + p.projectedPoints, 0);
+        // Calculate projected team total from optimized starters
+        const projectedTotal = optimizedStarters.reduce((sum, p) => sum + p.projectedPoints, 0);
 
         // Build avatar URL from Sleeper CDN
         const avatarId = user?.avatar;
@@ -565,7 +625,7 @@ export async function registerRoutes(
           score: matchup.points || 0,
           projectedTotal: Math.round(projectedTotal * 10) / 10,
           record: `${roster.settings.wins}-${roster.settings.losses}`,
-          starters,
+          starters: optimizedStarters,
           bench,
         };
       };

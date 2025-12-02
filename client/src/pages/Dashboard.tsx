@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { Link } from "wouter";
 import { useSleeper } from "@/lib/sleeper-context";
 import ActivityFeed from "@/components/ActivityFeed";
 import MatchupPreview from "@/components/MatchupPreview";
@@ -161,11 +162,13 @@ export default function Dashboard() {
               </CardContent>
             </Card>
           ) : formattedStandings.length > 0 ? (
-            <StandingsTable 
-              standings={formattedStandings} 
-              playoffTeams={league.playoffTeams || 6}
-              playoffProbabilities={playoffProbabilities}
-            />
+            <Link href="/standings" className="block hover-elevate rounded-lg transition-all" data-testid="link-standings">
+              <StandingsTable 
+                standings={formattedStandings} 
+                playoffTeams={league.playoffTeams || 6}
+                playoffProbabilities={playoffProbabilities}
+              />
+            </Link>
           ) : null}
         </div>
 
