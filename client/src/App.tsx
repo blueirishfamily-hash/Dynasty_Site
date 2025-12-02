@@ -45,15 +45,9 @@ function Router() {
 }
 
 function AppContent() {
-  const { user, league, clearSession, season } = useSleeper();
+  const { user, league, clearSession, season, isLoading } = useSleeper();
   const [showSetup, setShowSetup] = useState(false);
   const [, setLocation] = useLocation();
-
-  useEffect(() => {
-    if (!user || !league) {
-      setShowSetup(true);
-    }
-  }, [user, league]);
 
   const { data: draftPicks } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "draft-picks"],
@@ -62,7 +56,7 @@ function AppContent() {
       if (!res.ok) throw new Error("Failed to fetch draft picks");
       return res.json();
     },
-    enabled: !!league?.leagueId,
+    enabled: !!league?.leagueId && !isLoading,
   });
 
   const { data: standings } = useQuery({
@@ -74,7 +68,7 @@ function AppContent() {
       if (!res.ok) throw new Error("Failed to fetch standings");
       return res.json();
     },
-    enabled: !!league?.leagueId && !!user?.userId,
+    enabled: !!league?.leagueId && !!user?.userId && !isLoading,
   });
 
   const userTeam = standings?.find((s: any) => s.isUser);
@@ -105,6 +99,18 @@ function AppContent() {
     "--sidebar-width": "16rem",
     "--sidebar-width-icon": "3rem",
   };
+
+  // Show loading state while league is being fetched
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-background">
+        <div className="text-center">
+          <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
+          <p className="text-muted-foreground">Connecting to league...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
@@ -160,9 +166,9 @@ function AppContent() {
                       <SettingsIcon className="w-4 h-4 mr-2" />
                       Settings
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setShowSetup(true)} data-testid="menu-item-switch-league">
+                    <DropdownMenuItem onClick={() => setShowSetup(true)} data-testid="menu-item-select-team">
                       <RefreshCw className="w-4 h-4 mr-2" />
-                      Switch League
+                      Select Your Team
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem className="text-destructive" onClick={handleLogout} data-testid="menu-item-logout">

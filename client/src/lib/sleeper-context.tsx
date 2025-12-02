@@ -18,6 +18,9 @@ const SleeperContext = createContext<SleeperContextType | null>(null);
 const STORAGE_KEY_USER = "sleeper_user";
 const STORAGE_KEY_LEAGUE = "sleeper_league";
 
+// Hardcoded league ID for this site
+const DEFAULT_LEAGUE_ID = "1194798912048705536";
+
 export function SleeperProvider({ children }: { children: ReactNode }) {
   const [user, setUserState] = useState<UserInfo | null>(null);
   const [league, setLeagueState] = useState<LeagueInfo | null>(null);
@@ -27,37 +30,49 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem(STORAGE_KEY_USER);
-    const storedLeague = localStorage.getItem(STORAGE_KEY_LEAGUE);
-
-    if (storedUser) {
+    const initializeApp = async () => {
       try {
-        setUserState(JSON.parse(storedUser));
-      } catch {
-        localStorage.removeItem(STORAGE_KEY_USER);
-      }
-    }
+        // Fetch NFL state first
+        const nflStateRes = await fetch("/api/sleeper/nfl-state");
+        const nflState = await nflStateRes.json();
+        setCurrentWeek(nflState.week || 1);
+        setSeason(nflState.season || new Date().getFullYear().toString());
 
-    if (storedLeague) {
-      try {
-        setLeagueState(JSON.parse(storedLeague));
-      } catch {
-        localStorage.removeItem(STORAGE_KEY_LEAGUE);
-      }
-    }
+        // Always fetch the default league
+        const leagueRes = await fetch(`/api/sleeper/league/${DEFAULT_LEAGUE_ID}`);
+        if (leagueRes.ok) {
+          const leagueData = await leagueRes.json();
+          const leagueInfo: LeagueInfo = {
+            leagueId: leagueData.league_id,
+            name: leagueData.name,
+            season: leagueData.season,
+            totalRosters: leagueData.total_rosters,
+            rosterPositions: leagueData.roster_positions || [],
+            playoffTeams: leagueData.settings?.playoff_teams,
+            waiverBudget: leagueData.settings?.waiver_budget,
+          };
+          setLeagueState(leagueInfo);
+          localStorage.setItem(STORAGE_KEY_LEAGUE, JSON.stringify(leagueInfo));
+        }
 
-    fetch("/api/sleeper/nfl-state")
-      .then(res => res.json())
-      .then(data => {
-        setCurrentWeek(data.week || 1);
-        setSeason(data.season || new Date().getFullYear().toString());
-      })
-      .catch(err => {
-        console.error("Failed to fetch NFL state:", err);
-      })
-      .finally(() => {
+        // Load stored user if available
+        const storedUser = localStorage.getItem(STORAGE_KEY_USER);
+        if (storedUser) {
+          try {
+            setUserState(JSON.parse(storedUser));
+          } catch {
+            localStorage.removeItem(STORAGE_KEY_USER);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to initialize app:", err);
+        setError("Failed to connect to league");
+      } finally {
         setIsLoading(false);
-      });
+      }
+    };
+
+    initializeApp();
   }, []);
 
   const setUser = (newUser: UserInfo | null) => {

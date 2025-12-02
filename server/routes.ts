@@ -124,6 +124,28 @@ export async function registerRoutes(
     }
   });
 
+  // Get league users
+  app.get("/api/sleeper/league/:leagueId/users", async (req, res) => {
+    try {
+      const users = await getLeagueUsers(req.params.leagueId);
+      res.json(users);
+    } catch (error) {
+      console.error("Error fetching league users:", error);
+      res.status(500).json({ error: "Failed to fetch league users" });
+    }
+  });
+
+  // Get league rosters
+  app.get("/api/sleeper/league/:leagueId/rosters", async (req, res) => {
+    try {
+      const rosters = await getLeagueRosters(req.params.leagueId);
+      res.json(rosters);
+    } catch (error) {
+      console.error("Error fetching league rosters:", error);
+      res.status(500).json({ error: "Failed to fetch league rosters" });
+    }
+  });
+
   // Get NFL state (current week, season)
   app.get("/api/sleeper/nfl-state", async (_req, res) => {
     try {
