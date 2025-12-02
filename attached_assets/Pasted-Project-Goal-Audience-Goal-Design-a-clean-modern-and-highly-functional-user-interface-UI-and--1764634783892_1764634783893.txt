@@ -1,0 +1,64 @@
+Project Goal & Audience
+Goal: Design a clean, modern, and highly functional user interface (UI) and user experience (UX) for a Dynasty Fantasy Football League Management Platform. The design must be built to visually leverage and enhance the data available through the Sleeper API.
+
+Target User: Dedicated fantasy football managers who are deeply invested in their league, make complex trades, and seek deep statistical analysis and league history beyond the native Sleeper interface.
+
+2. Core Feature & Layout Requirements (Sleeper Data Driven)
+Design the following key screens/views, ensuring a responsive design (desktop first, mobile second). The functionality and data displayed must be directly supported by or easily calculated from the Sleeper API endpoints (e.g., League, Users, Rosters, Matchups, Playoff Brackets, Traded Picks, and Players).
+
+A. League Home/Dashboard (The Hub)
+Focus: Quick access to the most critical, immediate information.
+
+Elements:
+
+"What's New" Feed/Activity Log: Dynamically pull and display recent data from the Sleeper Transaction History (trades, waiver claims, weekly scoring updates) and present it in a visually engaging, filterable feed.
+
+Upcoming Matchup: Visual display of the user's next game opponent and Sleeper Projected Scores.
+
+League Standings: A condensed, scrollable view of the current divisional/conference/overall standings based on Sleeper League data.
+
+Wallet/Draft Capital Summary: Prominent display of the user's future draft picks using the Sleeper Traded Picks endpoint (e.g., 2026 1st, 2027 2nd) and current FAAB budget.
+
+B. Team/Roster Management (The Workbench)
+Focus: Deep, interactive management of the user's roster, using detailed Sleeper player and roster data.
+
+Elements:
+
+Roster Table: Highly customizable table view of players, sorting by Sleeper player stats (e.g., age, position, weekly points, and season-long metrics). Include filtering options for Sleeper roster statuses like Taxi Squad and IR.
+
+Start/Bench: Intuitive drag-and-drop functionality for setting lineups, validating against Sleeper roster slots/limits.
+
+Player Card/Pop-up: Clicking a player should display a detailed card using Sleeper Players data with recent news, a season schedule, and an embedded stats graph of their Sleeper weekly scoring data.
+
+C. Trade Center (The Negotiation Room)
+Focus: Intuitive and transparent trade proposal and negotiation, ensuring all assets are verifiable via the API.
+
+Elements:
+
+Two-Pane Interface: Allows the user to select assets (players, draft picks) from their team and the target team. Crucially, all future draft picks offered must be validated against the Sleeper Traded Picks data for accuracy.
+
+Trade Analyzer Widget: A tool that gives a dynamic value rating (e.g., A-, B+, Fair) to the trade proposal based on an external value index, using the player IDs pulled from Sleeper.
+
+Trade History: A clean, easy-to-read log of all past trades for the league, pulled directly from the Sleeper Transaction History.
+
+D. Draft Board/Pick Management (The Future)
+Focus: Viewing and managing future draft capital and historical draft data.
+
+Elements:
+
+Visual Draft Board: A table or card view of the current draft class (pre-draft) or upcoming draft order (in-season), leveraging the Sleeper Traded Picks data to show the current owner of every pick.
+
+Historical Drafts: A view to browse past draft results, showing the player taken, the draft slot, and the team that made the pick (using Sleeper Drafts and Draft Picks endpoints).
+
+3. Design Aesthetic & Experience
+Theme: The overall feel should be premium, data-driven, and sophisticated.
+
+Color Palette: Suggest a primary color (e.g., deep navy, emerald green, or burnt orange) and an accent color that provides high contrast for call-to-action buttons and key metrics. The overall background should be dark-mode or a dark-themed light-mode (not pure white) to reduce eye strain during long sessions.
+
+Typography: Use a clean, legible, and slightly condensed sans-serif font for data tables (e.g., Inter, Roboto) and a bolder, more stylized font for headings/titles.
+
+Data Visualization: Use charts, graphs, and heatmaps effectively.
+
+Example: On the League Standings page, use a small line graph next to each team showing their win/loss trend over the last five weeks, based on Sleeper Matchups data.
+
+Dynasty Specific UX: Incorporate player Age and Position Rank (based on Sleeper-provided stats) as primary data points, perhaps using color coding for quick assessment.
