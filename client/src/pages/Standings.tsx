@@ -235,15 +235,19 @@ export default function Standings() {
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm">
                       <div className="w-3 h-3 rounded-full bg-primary" />
-                      <span className="text-muted-foreground">Clinched Playoff Spot</span>
+                      <span className="text-muted-foreground">Clinched (100%)</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       <div className="w-3 h-3 rounded-full bg-chart-4" />
                       <span className="text-muted-foreground">In Playoff Position</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
+                      <div className="w-3 h-3 rounded-full bg-chart-3" />
+                      <span className="text-muted-foreground">Still In The Hunt</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
                       <div className="w-3 h-3 rounded-full bg-muted" />
-                      <span className="text-muted-foreground">Outside Looking In</span>
+                      <span className="text-muted-foreground">Eliminated (0%)</span>
                     </div>
                   </div>
                   <div className="mt-4 pt-4 border-t border-border">

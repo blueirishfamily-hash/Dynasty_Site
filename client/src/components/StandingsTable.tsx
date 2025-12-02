@@ -38,11 +38,12 @@ interface StandingsTableProps {
 }
 
 function getRankBadgeClass(rank: number, playoffTeams: number, playoffPct?: number): string {
-  // If we have probability data, use it to determine "clinched" vs "in position"
+  // If we have probability data, use it to determine status
   if (playoffPct !== undefined) {
     if (playoffPct >= 100) return "bg-primary text-primary-foreground"; // Clinched
     if (rank <= playoffTeams) return "bg-chart-4 text-white"; // In playoff position but not clinched
-    return ""; // Use default secondary badge
+    if (playoffPct > 0) return "bg-chart-3 text-white"; // Outside playoffs but still has a chance (orange)
+    return ""; // 0% = grey (default secondary)
   }
   // Fallback: just use position
   if (rank <= playoffTeams) return "bg-chart-4 text-white";

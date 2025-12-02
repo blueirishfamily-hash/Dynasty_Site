@@ -81,7 +81,8 @@ function getProbabilityColor(pct: number): string {
   if (clampedPct >= 70) return "bg-chart-2";
   if (clampedPct >= 50) return "bg-chart-4";
   if (clampedPct >= 25) return "bg-chart-3";
-  return "bg-destructive";
+  if (clampedPct > 0) return "bg-destructive";
+  return "bg-muted-foreground/50"; // 0% = grey
 }
 
 function getTextColor(pct: number): string {
@@ -90,7 +91,8 @@ function getTextColor(pct: number): string {
   if (clampedPct >= 70) return "text-chart-2";
   if (clampedPct >= 50) return "text-chart-4";
   if (clampedPct >= 25) return "text-chart-3";
-  return "text-destructive";
+  if (clampedPct > 0) return "text-destructive";
+  return "text-muted-foreground"; // 0% = grey
 }
 
 function getStandingsBadgeClass(playoffPct: number): string {
@@ -99,7 +101,8 @@ function getStandingsBadgeClass(playoffPct: number): string {
   if (clampedPct >= 70) return "bg-chart-2 text-white";
   if (clampedPct >= 50) return "bg-chart-4 text-white";
   if (clampedPct >= 25) return "bg-chart-3 text-white";
-  return "bg-destructive text-destructive-foreground";
+  if (clampedPct > 0) return "bg-destructive text-destructive-foreground";
+  return "bg-muted text-muted-foreground"; // 0% = grey
 }
 
 export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
@@ -431,7 +434,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-destructive" />
-                <span>Unlikely (&lt;25%)</span>
+                <span>Unlikely (1-24%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-muted-foreground/50" />
+                <span>Eliminated (0%)</span>
               </div>
             </div>
           </div>
