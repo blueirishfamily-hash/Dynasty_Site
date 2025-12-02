@@ -683,6 +683,53 @@ export async function registerRoutes(
     }
   });
 
+  // Get all team rosters with players for Trade Center
+  app.get("/api/sleeper/league/:leagueId/all-rosters", async (req, res) => {
+    try {
+      const [rosters, users, players] = await Promise.all([
+        getLeagueRosters(req.params.leagueId),
+        getLeagueUsers(req.params.leagueId),
+        getAllPlayers(),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const teamRosters = rosters.map(roster => {
+        const user = userMap.get(roster.owner_id);
+        const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        const teamInitials = getTeamInitials(teamName);
+
+        const rosterPlayers = (roster.players || [])
+          .map(pid => {
+            const player = players[pid];
+            if (!player) return null;
+            if (!["QB", "RB", "WR", "TE"].includes(player.position)) return null;
+            return {
+              id: pid,
+              name: player.full_name || `${player.first_name} ${player.last_name}`,
+              position: player.position,
+              team: player.team || "FA",
+            };
+          })
+          .filter((p): p is NonNullable<typeof p> => p !== null);
+
+        return {
+          rosterId: roster.roster_id,
+          ownerId: roster.owner_id,
+          teamName,
+          teamInitials,
+          players: rosterPlayers,
+        };
+      });
+
+      res.json(teamRosters);
+    } catch (error) {
+      console.error("Error fetching all rosters:", error);
+      res.status(500).json({ error: "Failed to fetch all rosters" });
+    }
+  });
+
   // Get position depth analysis
   app.get("/api/sleeper/league/:leagueId/depth/:userId", async (req, res) => {
     try {

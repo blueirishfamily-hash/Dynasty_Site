@@ -27,9 +27,10 @@ interface TeamStanding {
 interface StandingsTableProps {
   standings: TeamStanding[];
   division?: string;
+  playoffTeams?: number;
 }
 
-export default function StandingsTable({ standings, division }: StandingsTableProps) {
+export default function StandingsTable({ standings, division, playoffTeams = 6 }: StandingsTableProps) {
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -61,7 +62,7 @@ export default function StandingsTable({ standings, division }: StandingsTablePr
               >
                 <TableCell className="text-center">
                   <Badge
-                    variant={team.rank <= 4 ? "default" : "secondary"}
+                    variant={team.rank <= playoffTeams ? "default" : "secondary"}
                     className="w-6 h-6 p-0 flex items-center justify-center rounded-full"
                   >
                     {team.rank}

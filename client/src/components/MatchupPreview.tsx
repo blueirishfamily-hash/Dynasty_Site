@@ -1,6 +1,8 @@
+import { Link } from "wouter";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
+import { ChevronRight } from "lucide-react";
 
 interface Team {
   name: string;
@@ -24,14 +26,18 @@ export default function MatchupPreview({
   const userWinning = userTeam.projectedScore > opponent.projectedScore;
 
   return (
-    <Card>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <CardTitle className="font-heading text-lg">Upcoming Matchup</CardTitle>
-          <Badge variant="outline">Week {week}</Badge>
-        </div>
-      </CardHeader>
-      <CardContent>
+    <Link href="/matchup" data-testid="link-matchup-preview">
+      <Card className="cursor-pointer hover-elevate">
+        <CardHeader className="pb-2">
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="font-heading text-lg">Upcoming Matchup</CardTitle>
+            <div className="flex items-center gap-2">
+              <Badge variant="outline">Week {week}</Badge>
+              <ChevronRight className="w-4 h-4 text-muted-foreground" />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
         <div className="flex items-center justify-between">
           <div className="flex flex-col items-center flex-1">
             <Avatar className="w-16 h-16 mb-2">
@@ -104,6 +110,7 @@ export default function MatchupPreview({
           </div>
         </div>
       </CardContent>
-    </Card>
+      </Card>
+    </Link>
   );
 }

@@ -71,18 +71,20 @@ function ProbabilityBar({
 }
 
 function getProbabilityColor(pct: number): string {
-  if (pct >= 90) return "bg-primary";
-  if (pct >= 70) return "bg-chart-2";
-  if (pct >= 50) return "bg-chart-4";
-  if (pct >= 25) return "bg-chart-3";
+  const clampedPct = Math.min(pct, 100);
+  if (clampedPct >= 100) return "bg-primary";
+  if (clampedPct >= 70) return "bg-chart-2";
+  if (clampedPct >= 50) return "bg-chart-4";
+  if (clampedPct >= 25) return "bg-chart-3";
   return "bg-muted-foreground/50";
 }
 
 function getTextColor(pct: number): string {
-  if (pct >= 90) return "text-primary";
-  if (pct >= 70) return "text-chart-2";
-  if (pct >= 50) return "text-chart-4";
-  if (pct >= 25) return "text-chart-3";
+  const clampedPct = Math.min(pct, 100);
+  if (clampedPct >= 100) return "text-primary";
+  if (clampedPct >= 70) return "text-chart-2";
+  if (clampedPct >= 50) return "text-chart-4";
+  if (clampedPct >= 25) return "text-chart-3";
   return "text-muted-foreground";
 }
 
@@ -325,19 +327,19 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
             <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-primary" />
-                <span>Clinched / Likely (&gt;90%)</span>
+                <span>Clinched (100%)</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-chart-2" />
-                <span>Good chance (70-90%)</span>
+                <span>Good chance (70-99%)</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-chart-4" />
-                <span>Coin flip (50-70%)</span>
+                <span>Coin flip (50-69%)</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-chart-3" />
-                <span>Longshot (25-50%)</span>
+                <span>Longshot (25-49%)</span>
               </div>
               <div className="flex items-center gap-2">
                 <div className="w-3 h-3 rounded-full bg-muted-foreground/50" />

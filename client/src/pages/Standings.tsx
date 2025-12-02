@@ -108,7 +108,7 @@ export default function Standings() {
                   </CardContent>
                 </Card>
               ) : formattedStandings.length > 0 ? (
-                <StandingsTable standings={formattedStandings} />
+                <StandingsTable standings={formattedStandings} playoffTeams={playoffTeams} />
               ) : null}
             </div>
             <div className="space-y-6">

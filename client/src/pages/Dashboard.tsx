@@ -135,7 +135,7 @@ export default function Dashboard() {
               </CardContent>
             </Card>
           ) : formattedStandings.length > 0 ? (
-            <StandingsTable standings={formattedStandings} />
+            <StandingsTable standings={formattedStandings} playoffTeams={league.playoffTeams || 6} />
           ) : null}
         </div>
 

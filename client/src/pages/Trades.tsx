@@ -52,6 +52,16 @@ export default function Trades() {
     enabled: !!league?.leagueId,
   });
 
+  const { data: allRosters } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "all-rosters"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/all-rosters`);
+      if (!res.ok) throw new Error("Failed to fetch all rosters");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
   if (!league || !user) {
     return (
       <div className="p-6">
@@ -88,23 +98,34 @@ export default function Trades() {
       })),
   } : null;
 
+  const rosterMap = new Map<string, any>();
+  (allRosters || []).forEach((r: any) => rosterMap.set(r.ownerId, r));
+
   const leagueTeams = standings
     ?.filter((s: any) => !s.isUser)
-    .map((team: any) => ({
-      teamId: team.ownerId,
-      teamName: team.name,
-      teamInitials: team.initials,
-      players: [],
-      draftPicks: (draftPicks || [])
-        .filter((p: any) => p.currentOwnerId === team.rosterId)
-        .slice(0, 6)
-        .map((p: any) => ({
+    .map((team: any) => {
+      const rosterData = rosterMap.get(team.ownerId);
+      return {
+        teamId: team.ownerId,
+        teamName: team.name,
+        teamInitials: team.initials,
+        players: (rosterData?.players || []).map((p: any) => ({
           id: p.id,
-          year: parseInt(p.season),
-          round: p.round,
-          originalOwner: p.originalOwnerId !== p.currentOwnerId ? p.originalOwnerName : undefined,
+          name: p.name,
+          position: p.position as "QB" | "RB" | "WR" | "TE",
+          team: p.team || "FA",
         })),
-    })) || [];
+        draftPicks: (draftPicks || [])
+          .filter((p: any) => p.currentOwnerId === team.rosterId)
+          .slice(0, 6)
+          .map((p: any) => ({
+            id: p.id,
+            year: parseInt(p.season),
+            round: p.round,
+            originalOwner: p.originalOwnerId !== p.currentOwnerId ? p.originalOwnerName : undefined,
+          })),
+      };
+    }) || [];
 
   const formattedTrades = (trades || []).map((trade: any) => ({
     id: trade.id,

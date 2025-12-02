@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -32,6 +32,13 @@ interface MatchupData {
   week: number;
 }
 
+interface PositionalMatchup {
+  position: string;
+  slotLabel: string;
+  userPlayer: MatchupPlayer | null;
+  opponentPlayer: MatchupPlayer | null;
+}
+
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
   RB: "bg-primary text-primary-foreground",
@@ -41,6 +48,55 @@ const positionColors: Record<string, string> = {
   DEF: "bg-gray-500 text-white",
   FLEX: "bg-teal-500 text-white",
 };
+
+const positionOrder = ["QB", "RB", "WR", "TE", "FLEX", "K", "DEF"];
+
+function DualSidedBar({
+  userPoints,
+  opponentPoints,
+  maxPoints,
+}: {
+  userPoints: number;
+  opponentPoints: number;
+  maxPoints: number;
+}) {
+  const userWidth = maxPoints > 0 ? (userPoints / maxPoints) * 100 : 0;
+  const opponentWidth = maxPoints > 0 ? (opponentPoints / maxPoints) * 100 : 0;
+  const userWins = userPoints > opponentPoints;
+  const opponentWins = opponentPoints > userPoints;
+
+  return (
+    <div className="flex items-center gap-1 w-full">
+      <div className="flex-1 flex justify-end">
+        <div className="relative h-6 w-full flex justify-end items-center">
+          <div 
+            className={`absolute right-0 h-full rounded-l-sm transition-all ${
+              userWins ? "bg-primary" : "bg-muted-foreground/30"
+            }`}
+            style={{ width: `${userWidth}%` }}
+          />
+          <span className="relative z-10 pr-2 text-xs font-bold tabular-nums text-foreground">
+            {userPoints.toFixed(1)}
+          </span>
+        </div>
+      </div>
+      <div className="w-px h-6 bg-border shrink-0" />
+      <div className="flex-1">
+        <div className="relative h-6 w-full flex justify-start items-center">
+          <div 
+            className={`absolute left-0 h-full rounded-r-sm transition-all ${
+              opponentWins ? "bg-primary" : "bg-muted-foreground/30"
+            }`}
+            style={{ width: `${opponentWidth}%` }}
+          />
+          <span className="relative z-10 pl-2 text-xs font-bold tabular-nums text-foreground">
+            {opponentPoints.toFixed(1)}
+          </span>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function Matchup() {
   const { user, league, currentWeek } = useSleeper();
@@ -66,6 +122,54 @@ export default function Matchup() {
     if (selectedWeek < 18) setSelectedWeek(selectedWeek + 1);
   };
 
+  const userTeam = matchup?.userTeam;
+  const opponentTeam = matchup?.opponentTeam;
+  const userWinning = userTeam && opponentTeam && userTeam.score > opponentTeam.score;
+  const scoreDiff = userTeam && opponentTeam 
+    ? Math.abs(userTeam.score - opponentTeam.score).toFixed(1)
+    : "0.0";
+
+  const { positionalMatchups, maxPoints } = useMemo(() => {
+    if (!userTeam) {
+      return { positionalMatchups: [], maxPoints: 0 };
+    }
+
+    const userStarters = [...userTeam.starters];
+    const opponentStarters = opponentTeam ? [...opponentTeam.starters] : [];
+
+    const slotCounts: Record<string, number> = {};
+    const matchups: PositionalMatchup[] = [];
+
+    const allPoints = [
+      ...userStarters.map(p => p.points),
+      ...opponentStarters.map(p => p.points),
+    ];
+    const maxPts = Math.max(...allPoints, 1);
+
+    positionOrder.forEach(pos => {
+      const userPlayers = userStarters.filter(p => p.position === pos);
+      const oppPlayers = opponentStarters.filter(p => p.position === pos);
+      const maxSlots = Math.max(userPlayers.length, oppPlayers.length, 0);
+
+      if (maxSlots === 0) return;
+
+      for (let i = 0; i < maxSlots; i++) {
+        slotCounts[pos] = (slotCounts[pos] || 0) + 1;
+        const slotNum = slotCounts[pos];
+        const slotLabel = maxSlots > 1 ? `${pos}${slotNum}` : pos;
+
+        matchups.push({
+          position: pos,
+          slotLabel,
+          userPlayer: userPlayers[i] || null,
+          opponentPlayer: oppPlayers[i] || null,
+        });
+      }
+    });
+
+    return { positionalMatchups: matchups, maxPoints: maxPts };
+  }, [userTeam, opponentTeam]);
+
   if (!league || !user) {
     return (
       <div className="p-6">
@@ -78,90 +182,6 @@ export default function Matchup() {
       </div>
     );
   }
-
-  const userTeam = matchup?.userTeam;
-  const opponentTeam = matchup?.opponentTeam;
-  const userWinning = userTeam && opponentTeam && userTeam.score > opponentTeam.score;
-  const scoreDiff = userTeam && opponentTeam 
-    ? Math.abs(userTeam.score - opponentTeam.score).toFixed(1)
-    : "0.0";
-
-  const renderPlayerRow = (player: MatchupPlayer, isOpponent: boolean = false) => {
-    return (
-      <div 
-        key={player.id} 
-        className={`flex items-center justify-between p-2 rounded-md ${
-          isOpponent ? "bg-muted/50" : "bg-primary/5"
-        }`}
-        data-testid={`player-row-${player.id}`}
-      >
-        <div className="flex items-center gap-2 min-w-0 flex-1">
-          <Badge className={`text-[10px] px-1.5 shrink-0 ${positionColors[player.position] || "bg-muted"}`}>
-            {player.position}
-          </Badge>
-          <div className="min-w-0">
-            <p className="text-sm font-medium truncate">{player.name}</p>
-            <p className="text-xs text-muted-foreground">{player.team || "FA"}</p>
-          </div>
-        </div>
-        <div className="text-right">
-          <p className="text-sm font-bold tabular-nums">{player.points.toFixed(1)}</p>
-          <p className="text-xs text-muted-foreground">pts</p>
-        </div>
-      </div>
-    );
-  };
-
-  const renderTeamRoster = (team: MatchupTeam, isOpponent: boolean = false) => (
-    <Card className={isOpponent ? "" : "border-primary/30"}>
-      <CardHeader className="pb-2">
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-3">
-            <Avatar className={`w-12 h-12 ${isOpponent ? "" : "ring-2 ring-primary ring-offset-2 ring-offset-background"}`}>
-              <AvatarFallback className={`text-lg font-bold ${isOpponent ? "bg-muted" : "bg-primary text-primary-foreground"}`}>
-                {team.initials}
-              </AvatarFallback>
-            </Avatar>
-            <div>
-              <CardTitle className="font-heading text-base" data-testid={isOpponent ? "text-opponent-name" : "text-user-name"}>
-                {team.name}
-              </CardTitle>
-              <p className="text-sm text-muted-foreground">{team.record}</p>
-            </div>
-          </div>
-          <div className="text-right">
-            <p className={`text-2xl font-bold tabular-nums ${
-              !isOpponent && userWinning ? "text-primary" : 
-              isOpponent && !userWinning ? "text-primary" : ""
-            }`} data-testid={isOpponent ? "text-opponent-score" : "text-user-score"}>
-              {team.score.toFixed(1)}
-            </p>
-            <p className="text-xs text-muted-foreground">points</p>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div>
-          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">
-            Starters
-          </h4>
-          <div className="space-y-1">
-            {team.starters.map((player) => renderPlayerRow(player, isOpponent))}
-          </div>
-        </div>
-        {team.bench.length > 0 && (
-          <div>
-            <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-2">
-              Bench
-            </h4>
-            <div className="space-y-1">
-              {team.bench.slice(0, 5).map((player) => renderPlayerRow(player, isOpponent))}
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
 
   return (
     <div className="p-6 space-y-6">
@@ -196,28 +216,18 @@ export default function Matchup() {
       </div>
 
       {isLoading ? (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {[1, 2].map((i) => (
-            <Card key={i}>
-              <CardHeader>
-                <div className="flex items-center gap-3">
-                  <Skeleton className="w-12 h-12 rounded-full" />
-                  <div className="space-y-2">
-                    <Skeleton className="h-5 w-32" />
-                    <Skeleton className="h-4 w-16" />
-                  </div>
-                </div>
-              </CardHeader>
-              <CardContent className="space-y-2">
-                {[1, 2, 3, 4, 5].map((j) => (
-                  <Skeleton key={j} className="h-12 w-full" />
-                ))}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-48" />
+          </CardHeader>
+          <CardContent className="space-y-2">
+            {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((i) => (
+              <Skeleton key={i} className="h-12 w-full" />
+            ))}
+          </CardContent>
+        </Card>
       ) : userTeam && opponentTeam ? (
-        <>
+        <div className="space-y-6">
           <Card className="bg-gradient-to-r from-primary/10 via-transparent to-muted/50">
             <CardContent className="py-6">
               <div className="flex items-center justify-between">
@@ -228,26 +238,26 @@ export default function Matchup() {
                     </AvatarFallback>
                   </Avatar>
                   <div>
-                    <p className="font-heading font-bold text-lg">{userTeam.name}</p>
+                    <p className="font-heading font-bold text-lg" data-testid="text-user-name">{userTeam.name}</p>
                     <p className="text-sm text-muted-foreground">{userTeam.record}</p>
                   </div>
                 </div>
                 
                 <div className="flex flex-col items-center px-8">
-                  <p className={`text-4xl font-bold tabular-nums ${userWinning ? "text-primary" : ""}`}>
+                  <p className={`text-4xl font-bold tabular-nums ${userWinning ? "text-primary" : ""}`} data-testid="text-user-score">
                     {userTeam.score.toFixed(1)}
                   </p>
                   <div className="flex items-center gap-2 my-2">
                     <span className="text-2xl font-bold text-muted-foreground">VS</span>
                   </div>
-                  <p className={`text-4xl font-bold tabular-nums ${!userWinning ? "text-primary" : ""}`}>
+                  <p className={`text-4xl font-bold tabular-nums ${!userWinning ? "text-primary" : ""}`} data-testid="text-opponent-score">
                     {opponentTeam.score.toFixed(1)}
                   </p>
                 </div>
 
                 <div className="flex items-center gap-4">
                   <div className="text-right">
-                    <p className="font-heading font-bold text-lg">{opponentTeam.name}</p>
+                    <p className="font-heading font-bold text-lg" data-testid="text-opponent-name">{opponentTeam.name}</p>
                     <p className="text-sm text-muted-foreground">{opponentTeam.record}</p>
                   </div>
                   <Avatar className="w-16 h-16">
@@ -273,11 +283,93 @@ export default function Matchup() {
             </CardContent>
           </Card>
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {renderTeamRoster(userTeam, false)}
-            {renderTeamRoster(opponentTeam, true)}
-          </div>
-        </>
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="font-heading text-lg">Positional Matchup</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-[1fr_auto_1fr] gap-2 mb-4">
+                <div className="text-sm font-medium text-primary text-right">
+                  {userTeam.name}
+                </div>
+                <div className="w-12" />
+                <div className="text-sm font-medium text-muted-foreground text-left">
+                  {opponentTeam.name}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                {positionalMatchups.map((matchup, index) => (
+                  <div 
+                    key={`${matchup.position}-${index}`}
+                    className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center py-2 border-b border-border last:border-0"
+                    data-testid={`matchup-row-${matchup.slotLabel}`}
+                  >
+                    <div className="flex items-center justify-end gap-2">
+                      <div className="text-right min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate">
+                          {matchup.userPlayer?.name || "—"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {matchup.userPlayer?.team || ""}
+                        </p>
+                      </div>
+                      <span className="text-sm font-bold tabular-nums w-12 text-right">
+                        {(matchup.userPlayer?.points ?? 0).toFixed(1)}
+                      </span>
+                    </div>
+
+                    <Badge 
+                      className={`text-[10px] px-1.5 h-5 w-12 justify-center ${positionColors[matchup.position] || "bg-muted text-muted-foreground"}`}
+                    >
+                      {matchup.slotLabel}
+                    </Badge>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold tabular-nums w-12 text-left">
+                        {(matchup.opponentPlayer?.points ?? 0).toFixed(1)}
+                      </span>
+                      <div className="text-left min-w-0 flex-1">
+                        <p className="text-sm font-medium truncate">
+                          {matchup.opponentPlayer?.name || "—"}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {matchup.opponentPlayer?.team || ""}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-6 pt-4 border-t border-border">
+                <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">
+                  Points Comparison
+                </h4>
+                <div className="space-y-2">
+                  {positionalMatchups.map((matchup, index) => (
+                    <div 
+                      key={`bar-${matchup.position}-${index}`}
+                      className="flex items-center gap-2"
+                      data-testid={`bar-${matchup.slotLabel}`}
+                    >
+                      <Badge 
+                        className={`text-[10px] px-1.5 h-5 w-12 justify-center shrink-0 ${positionColors[matchup.position] || "bg-muted text-muted-foreground"}`}
+                      >
+                        {matchup.slotLabel}
+                      </Badge>
+                      <DualSidedBar
+                        userPoints={matchup.userPlayer?.points || 0}
+                        opponentPoints={matchup.opponentPlayer?.points || 0}
+                        maxPoints={maxPoints}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
       ) : (
         <Card>
           <CardContent className="py-12 text-center">
