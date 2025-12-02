@@ -9,14 +9,14 @@ type Position = "QB" | "RB" | "WR" | "TE";
 interface PlayerDepth {
   id: string;
   name: string;
-  team: string;
+  team: string | null;
   points: number;
   medianPoints: number;
   percentAboveMedian: number;
 }
 
 interface PositionDepthChartProps {
-  depthData: Record<Position, { players: PlayerDepth[]; grade: string }>;
+  depthData: Partial<Record<Position, { players: PlayerDepth[]; grade: string }>>;
 }
 
 const gradeColors: Record<string, string> = {
@@ -58,7 +58,7 @@ export default function PositionDepthChart({ depthData }: PositionDepthChartProp
           </Avatar>
           <div className="min-w-0">
             <p className="font-medium text-sm truncate">{player.name}</p>
-            <p className="text-xs text-muted-foreground">{player.team}</p>
+            <p className="text-xs text-muted-foreground">{player.team || "FA"}</p>
           </div>
         </div>
 
@@ -113,35 +113,43 @@ export default function PositionDepthChart({ depthData }: PositionDepthChartProp
           onValueChange={(v) => setActivePosition(v as Position)}
         >
           <TabsList className="mb-4 w-full justify-start">
-            {(["QB", "RB", "WR", "TE"] as Position[]).map((pos) => (
-              <TabsTrigger
-                key={pos}
-                value={pos}
-                className="flex items-center gap-2"
-                data-testid={`tab-position-${pos}`}
-              >
-                {pos}
-                <Badge
-                  className={`text-xs ${gradeColors[depthData[pos].grade] || "bg-muted"}`}
+            {(["QB", "RB", "WR", "TE"] as Position[]).map((pos) => {
+              const posData = depthData[pos];
+              if (!posData) return null;
+              return (
+                <TabsTrigger
+                  key={pos}
+                  value={pos}
+                  className="flex items-center gap-2"
+                  data-testid={`tab-position-${pos}`}
                 >
-                  {depthData[pos].grade}
-                </Badge>
-              </TabsTrigger>
-            ))}
+                  {pos}
+                  <Badge
+                    className={`text-xs ${gradeColors[posData.grade] || "bg-muted"}`}
+                  >
+                    {posData.grade}
+                  </Badge>
+                </TabsTrigger>
+              );
+            })}
           </TabsList>
 
-          {(["QB", "RB", "WR", "TE"] as Position[]).map((pos) => (
-            <TabsContent key={pos} value={pos} className="mt-0">
-              <div className="space-y-1">
-                <div className="flex items-center justify-between text-xs text-muted-foreground mb-2 px-1">
-                  <span>Below Median</span>
-                  <span>Median</span>
-                  <span>Above Median</span>
+          {(["QB", "RB", "WR", "TE"] as Position[]).map((pos) => {
+            const posData = depthData[pos];
+            if (!posData) return null;
+            return (
+              <TabsContent key={pos} value={pos} className="mt-0">
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs text-muted-foreground mb-2 px-1">
+                    <span>Below Median</span>
+                    <span>Median</span>
+                    <span>Above Median</span>
+                  </div>
+                  {posData.players.map(renderDepthBar)}
                 </div>
-                {depthData[pos].players.map(renderDepthBar)}
-              </div>
-            </TabsContent>
-          ))}
+              </TabsContent>
+            );
+          })}
         </Tabs>
       </CardContent>
     </Card>

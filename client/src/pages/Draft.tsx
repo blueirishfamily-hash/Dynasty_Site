@@ -1,70 +1,76 @@
+import { useQuery } from "@tanstack/react-query";
+import { useSleeper } from "@/lib/sleeper-context";
 import DraftBoard from "@/components/DraftBoard";
-
-// todo: remove mock functionality
-const teams = [
-  { name: "Gridiron Kings", initials: "GK" },
-  { name: "TD Machines", initials: "TD" },
-  { name: "Fantasy Legends", initials: "FL" },
-  { name: "Champion Squad", initials: "CS" },
-  { name: "Dynasty Builders", initials: "DB" },
-  { name: "Waiver Wire Warriors", initials: "WW" },
-  { name: "Playoff Bound", initials: "PB" },
-  { name: "Tank Commander", initials: "TC" },
-  { name: "Trade Master", initials: "TM" },
-  { name: "Rookie Hunters", initials: "RH" },
-  { name: "Sleeper Elite", initials: "SE" },
-  { name: "Dynasty Dominators", initials: "DD" },
-];
-
-const generateMockPicks = () => {
-  const picks = [];
-  const positions = ["QB", "RB", "WR", "TE"];
-  const names = [
-    "Caleb Williams", "Marvin Harrison", "Malik Nabers", "Rome Odunze",
-    "Brock Bowers", "Xavier Worthy", "Brian Thomas", "Keon Coleman",
-    "Bo Nix", "Jonathon Brooks", "Blake Corum", "Troy Franklin",
-    "Ladd McConkey", "Jayden Daniels", "Drake Maye", "Michael Penix",
-    "Trey Benson", "Ray Davis", "Ja'Lynn Polk", "Jalen McMillan",
-    "Roman Wilson", "Xavier Legette", "Adonai Mitchell", "Brian Thomas Jr",
-    "Ricky Pearsall", "Luke McCaffrey", "MarShawn Lloyd", "Bucky Irving",
-    "Cade Otton", "Dalton Kincaid", "Will Levis", "JJ McCarthy",
-    "Jaylen Wright", "Tyjae Spears", "Tyler Allgeier", "Rashod Bateman",
-    "Quentin Johnston", "Jordan Addison", "Zay Flowers", "Michael Wilson",
-    "Dontayvion Wicks", "Tank Dell", "Josh Downs", "Rashee Rice",
-    "Jaxon Smith-Njigba", "Jayden Reed", "Romeo Doubs", "Wan'Dale Robinson",
-  ];
-
-  for (let round = 1; round <= 4; round++) {
-    for (let pick = 1; pick <= 12; pick++) {
-      const originalTeam = teams[(pick - 1) % teams.length];
-      const isTraded = Math.random() > 0.75;
-      const currentTeam = isTraded
-        ? teams[Math.floor(Math.random() * teams.length)]
-        : originalTeam;
-
-      const hasPlayer = round <= 2;
-      const nameIndex = (round - 1) * 12 + pick - 1;
-
-      picks.push({
-        round,
-        pick,
-        originalOwner: originalTeam,
-        currentOwner: currentTeam,
-        isUserPick: currentTeam.initials === "GK",
-        player: hasPlayer && names[nameIndex]
-          ? {
-              name: names[nameIndex],
-              position: positions[Math.floor(Math.random() * positions.length)],
-            }
-          : undefined,
-      });
-    }
-  }
-  return picks;
-};
+import { Skeleton } from "@/components/ui/skeleton";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 export default function Draft() {
-  const mockPicks = generateMockPicks();
+  const { user, league, season } = useSleeper();
+
+  const { data: draftPicks, isLoading: picksLoading } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "draft-picks"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/draft-picks`);
+      if (!res.ok) throw new Error("Failed to fetch draft picks");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
+  const { data: standings } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "standings", user?.userId],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/sleeper/league/${league?.leagueId}/standings?userId=${user?.userId}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch standings");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!user?.userId,
+  });
+
+  if (!league || !user) {
+    return (
+      <div className="p-6">
+        <div className="text-center py-12">
+          <h2 className="font-heading text-2xl font-bold mb-2">Connect Your League</h2>
+          <p className="text-muted-foreground">
+            Connect your Sleeper account to view draft capital.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  const userTeamStanding = standings?.find((s: any) => s.isUser);
+  const userRosterId = userTeamStanding?.rosterId;
+
+  const currentYear = parseInt(season) + 1;
+
+  const rosterNameMap = new Map<number, { name: string; initials: string }>();
+  standings?.forEach((s: any) => {
+    rosterNameMap.set(s.rosterId, { name: s.name, initials: s.initials });
+  });
+
+  const formattedPicks = (draftPicks || [])
+    .filter((p: any) => p.season === currentYear.toString())
+    .map((pick: any) => {
+      const originalOwner = rosterNameMap.get(pick.originalOwnerId) || { name: `Team ${pick.originalOwnerId}`, initials: "??" };
+      const currentOwner = rosterNameMap.get(pick.currentOwnerId) || { name: `Team ${pick.currentOwnerId}`, initials: "??" };
+      
+      return {
+        round: pick.round,
+        pick: pick.rosterId,
+        originalOwner: { name: originalOwner.name, initials: originalOwner.initials },
+        currentOwner: { name: currentOwner.name, initials: currentOwner.initials },
+        isUserPick: pick.currentOwnerId === userRosterId,
+        player: undefined,
+      };
+    })
+    .sort((a: any, b: any) => {
+      if (a.round !== b.round) return a.round - b.round;
+      return a.pick - b.pick;
+    });
 
   return (
     <div className="p-6 space-y-6">
@@ -73,13 +79,32 @@ export default function Draft() {
         <p className="text-muted-foreground">View draft capital and track pick ownership</p>
       </div>
 
-      <DraftBoard
-        year={2025}
-        picks={mockPicks}
-        totalRounds={4}
-        teamsCount={12}
-        viewMode="current"
-      />
+      {picksLoading ? (
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-48" />
+          </CardHeader>
+          <CardContent>
+            {[...Array(4)].map((_, i) => (
+              <Skeleton key={i} className="h-20 w-full mb-2" />
+            ))}
+          </CardContent>
+        </Card>
+      ) : formattedPicks.length > 0 ? (
+        <DraftBoard
+          year={currentYear}
+          picks={formattedPicks}
+          totalRounds={4}
+          teamsCount={league.totalRosters}
+          viewMode="current"
+        />
+      ) : (
+        <Card>
+          <CardContent className="py-8 text-center text-muted-foreground">
+            No draft pick data available
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -14,9 +15,11 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
+import { queryClient } from "@/lib/queryClient";
 import { RefreshCw, Check, Bell, User, Database } from "lucide-react";
 
 export default function Settings() {
+  const { user, league, clearSession } = useSleeper();
   const { toast } = useToast();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [notifications, setNotifications] = useState({
@@ -28,11 +31,20 @@ export default function Settings() {
 
   const handleRefreshData = async () => {
     setIsRefreshing(true);
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    await queryClient.invalidateQueries();
+    await new Promise((resolve) => setTimeout(resolve, 1000));
     setIsRefreshing(false);
     toast({
       title: "Data refreshed",
       description: "All league data has been synced from Sleeper.",
+    });
+  };
+
+  const handleDisconnect = () => {
+    clearSession();
+    toast({
+      title: "Disconnected",
+      description: "Your Sleeper account has been disconnected.",
     });
   };
 
@@ -58,30 +70,34 @@ export default function Settings() {
                 <Label htmlFor="username">Sleeper Username</Label>
                 <Input
                   id="username"
-                  defaultValue="dynasty_champion"
+                  value={user?.username || "Not connected"}
                   readOnly
                   className="bg-muted"
                   data-testid="input-username"
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="leagueId">League ID</Label>
+                <Label htmlFor="leagueId">League</Label>
                 <Input
                   id="leagueId"
-                  defaultValue="1054892347583921"
+                  value={league?.name || "No league selected"}
                   readOnly
                   className="bg-muted"
                   data-testid="input-league-id"
                 />
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
-                <Check className="w-3 h-3 mr-1" />
-                Connected
-              </Badge>
-              <span className="text-sm text-muted-foreground">Last synced: 5 minutes ago</span>
-            </div>
+            {user && league && (
+              <div className="flex items-center gap-2">
+                <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
+                  <Check className="w-3 h-3 mr-1" />
+                  Connected
+                </Badge>
+                <span className="text-sm text-muted-foreground">
+                  {league.totalRosters} teams | {league.season} season
+                </span>
+              </div>
+            )}
           </CardContent>
         </Card>
 
@@ -97,32 +113,32 @@ export default function Settings() {
             <div className="flex items-center justify-between">
               <div>
                 <p className="font-medium">Auto-refresh</p>
-                <p className="text-sm text-muted-foreground">Automatically sync data every 15 minutes</p>
+                <p className="text-sm text-muted-foreground">Automatically sync data when you navigate</p>
               </div>
               <Switch defaultChecked data-testid="switch-auto-refresh" />
             </div>
             <Separator />
             <div className="flex items-center justify-between">
               <div>
-                <p className="font-medium">Refresh frequency</p>
-                <p className="text-sm text-muted-foreground">How often to sync data automatically</p>
+                <p className="font-medium">Cache duration</p>
+                <p className="text-sm text-muted-foreground">How long to cache API responses</p>
               </div>
-              <Select defaultValue="15">
+              <Select defaultValue="5">
                 <SelectTrigger className="w-32" data-testid="select-refresh-frequency">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="1">1 minute</SelectItem>
                   <SelectItem value="5">5 minutes</SelectItem>
                   <SelectItem value="15">15 minutes</SelectItem>
                   <SelectItem value="30">30 minutes</SelectItem>
-                  <SelectItem value="60">1 hour</SelectItem>
                 </SelectContent>
               </Select>
             </div>
             <Separator />
             <Button
               onClick={handleRefreshData}
-              disabled={isRefreshing}
+              disabled={isRefreshing || !league}
               data-testid="button-refresh-data"
             >
               <RefreshCw className={`w-4 h-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`} />
@@ -209,7 +225,13 @@ export default function Settings() {
                 <p className="font-medium">Disconnect Sleeper</p>
                 <p className="text-sm text-muted-foreground">Remove your Sleeper account connection</p>
               </div>
-              <Button variant="destructive" size="sm" data-testid="button-disconnect">
+              <Button 
+                variant="destructive" 
+                size="sm" 
+                onClick={handleDisconnect}
+                disabled={!user}
+                data-testid="button-disconnect"
+              >
                 Disconnect
               </Button>
             </div>

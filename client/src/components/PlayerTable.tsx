@@ -29,8 +29,8 @@ interface Player {
   id: string;
   name: string;
   position: Position;
-  team: string;
-  age: number;
+  team: string | null;
+  age?: number;
   status: RosterStatus;
   seasonPoints: number;
   weeklyAvg: number;
@@ -91,7 +91,7 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
           comparison = a.position.localeCompare(b.position);
           break;
         case "age":
-          comparison = a.age - b.age;
+          comparison = (a.age || 0) - (b.age || 0);
           break;
         case "points":
           comparison = a.seasonPoints - b.seasonPoints;
@@ -112,7 +112,8 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
     );
   };
 
-  const getAgeColor = (age: number) => {
+  const getAgeColor = (age?: number) => {
+    if (!age) return "text-muted-foreground";
     if (age <= 24) return "text-primary";
     if (age <= 28) return "text-foreground";
     return "text-destructive";
@@ -228,7 +229,7 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                       <div>
                         <span className="font-medium">{player.name}</span>
                         <span className="text-xs text-muted-foreground ml-2">
-                          {player.team}
+                          {player.team || "FA"}
                         </span>
                       </div>
                     </div>
@@ -239,7 +240,7 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                     </Badge>
                   </TableCell>
                   <TableCell className={`text-center font-medium ${getAgeColor(player.age)}`}>
-                    {player.age}
+                    {player.age || "—"}
                   </TableCell>
                   <TableCell className="text-center">
                     <Badge variant="outline" className="text-xs">
