@@ -81,7 +81,7 @@ function getProbabilityColor(pct: number): string {
   if (clampedPct >= 70) return "bg-chart-2";
   if (clampedPct >= 50) return "bg-chart-4";
   if (clampedPct >= 25) return "bg-chart-3";
-  return "bg-muted-foreground/50";
+  return "bg-destructive";
 }
 
 function getTextColor(pct: number): string {
@@ -90,7 +90,16 @@ function getTextColor(pct: number): string {
   if (clampedPct >= 70) return "text-chart-2";
   if (clampedPct >= 50) return "text-chart-4";
   if (clampedPct >= 25) return "text-chart-3";
-  return "text-muted-foreground";
+  return "text-destructive";
+}
+
+function getStandingsBadgeClass(playoffPct: number): string {
+  const clampedPct = Math.min(playoffPct, 100);
+  if (clampedPct >= 100) return "bg-primary text-primary-foreground";
+  if (clampedPct >= 70) return "bg-chart-2 text-white";
+  if (clampedPct >= 50) return "bg-chart-4 text-white";
+  if (clampedPct >= 25) return "bg-chart-3 text-white";
+  return "bg-destructive text-destructive-foreground";
 }
 
 export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
@@ -298,12 +307,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       data-testid={`row-prediction-${team.rosterId}`}
                     >
                       <TableCell className="font-medium">
-                        <Badge 
-                          variant={isInPlayoffPosition ? "default" : "secondary"}
-                          className="w-6 h-6 p-0 flex items-center justify-center rounded-full"
+                        <div 
+                          className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-semibold ${getStandingsBadgeClass(team.makePlayoffsPct)}`}
                         >
                           {index + 1}
-                        </Badge>
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-2">
@@ -422,7 +430,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 <span>Longshot (25-49%)</span>
               </div>
               <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-muted-foreground/50" />
+                <div className="w-3 h-3 rounded-full bg-destructive" />
                 <span>Unlikely (&lt;25%)</span>
               </div>
             </div>
