@@ -894,6 +894,53 @@ export async function registerRoutes(
       const regularSeasonWeeks = playoffWeekStart - 1;
       const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek);
 
+      // Fetch all matchups to build head-to-head records
+      const matchupPromises = [];
+      for (let week = 1; week <= Math.min(currentWeek, regularSeasonWeeks); week++) {
+        matchupPromises.push(getLeagueMatchups(req.params.leagueId, week));
+      }
+      const allMatchups = await Promise.all(matchupPromises);
+
+      // Build head-to-head record: h2hRecord[rosterId1][rosterId2] = wins
+      const h2hRecord: Map<number, Map<number, number>> = new Map();
+      
+      allMatchups.forEach(weekMatchups => {
+        // Group matchups by matchup_id
+        const matchupGroups = new Map<number, any[]>();
+        weekMatchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) {
+            matchupGroups.set(m.matchup_id, []);
+          }
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+
+        // Determine winner for each matchup
+        matchupGroups.forEach(pair => {
+          if (pair.length === 2) {
+            const [team1, team2] = pair;
+            const points1 = team1.points || 0;
+            const points2 = team2.points || 0;
+            
+            // Initialize h2h maps if needed
+            if (!h2hRecord.has(team1.roster_id)) h2hRecord.set(team1.roster_id, new Map());
+            if (!h2hRecord.has(team2.roster_id)) h2hRecord.set(team2.roster_id, new Map());
+            
+            if (points1 > points2) {
+              const current = h2hRecord.get(team1.roster_id)!.get(team2.roster_id) || 0;
+              h2hRecord.get(team1.roster_id)!.set(team2.roster_id, current + 1);
+            } else if (points2 > points1) {
+              const current = h2hRecord.get(team2.roster_id)!.get(team1.roster_id) || 0;
+              h2hRecord.get(team2.roster_id)!.set(team1.roster_id, current + 1);
+            }
+          }
+        });
+      });
+
+      // Helper to get h2h wins between two teams
+      const getH2HWins = (rosterId1: number, rosterId2: number): number => {
+        return h2hRecord.get(rosterId1)?.get(rosterId2) || 0;
+      };
+
       // Check if league has divisions configured
       const numDivisions = (league.settings as any).divisions || 0;
 
@@ -975,10 +1022,16 @@ export async function registerRoutes(
           };
         });
 
-        // Sort by wins, then points for
+        // Sort by: 1) Record (wins), 2) Points scored, 3) Head-to-head wins
         simResults.sort((a, b) => {
+          // First tiebreaker: Record (wins)
           if (b.simWins !== a.simWins) return b.simWins - a.simWins;
-          return b.simPointsFor - a.simPointsFor;
+          // Second tiebreaker: Points scored
+          if (Math.abs(b.simPointsFor - a.simPointsFor) > 0.01) return b.simPointsFor - a.simPointsFor;
+          // Third tiebreaker: Head-to-head wins
+          const aH2H = getH2HWins(a.rosterId, b.rosterId);
+          const bH2H = getH2HWins(b.rosterId, a.rosterId);
+          return bH2H - aH2H;
         });
 
         // Track 1-seed

@@ -216,8 +216,8 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 </Badge>
               </TooltipTrigger>
               <TooltipContent>
-                <p>Probabilities based on current standings</p>
-                <p>and team scoring patterns</p>
+                <p>Tiebreakers: 1) Record, 2) Points Scored,</p>
+                <p>3) Head-to-Head Wins</p>
               </TooltipContent>
             </Tooltip>
           </div>
