@@ -1145,7 +1145,8 @@ export async function registerRoutes(
       const playoffWeekStart = (league.settings as any).playoff_week_start || 15;
       const currentWeek = nflState.week;
       const regularSeasonWeeks = playoffWeekStart - 1;
-      const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek);
+      // Include current week in remaining weeks (e.g., week 12 with 14-week season = 3 weeks left including current)
+      const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek + 1);
 
       // Fetch all matchups to build head-to-head records
       const matchupPromises = [];
