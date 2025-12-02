@@ -40,7 +40,8 @@ Preferred communication style: Simple, everyday language.
 - Dashboard with activity feed, matchup preview, and standings
 - Team roster management with player tables and position depth charts
 - Trade center with two-pane asset selection interface
-- Draft board for future draft capital visualization
+- Draft board for future draft capital visualization (3 rounds, with historical data)
+- League Hub for governance (rule suggestions and award voting)
 - Real-time data syncing with Sleeper API
 
 ### Backend Architecture
@@ -72,15 +73,14 @@ Preferred communication style: Simple, everyday language.
 ### Data Storage Solutions
 
 **Current Implementation:**
+- PostgreSQL database with Drizzle ORM for persistent storage
 - In-memory session storage using Map-based implementation
 - localStorage for persisting user and league selections client-side
-- No persistent database currently configured
 
 **Database Schema (Drizzle ORM):**
 - Configuration present for PostgreSQL with Drizzle ORM
 - Schema defined in `shared/schema.ts` using Zod for validation
-- Migration support configured but not actively used
-- Database designed to support future data persistence needs
+- Use `npm run db:push` for schema migrations
 
 **Data Models:**
 - User sessions (Sleeper username, user ID, selected league)
@@ -88,6 +88,8 @@ Preferred communication style: Simple, everyday language.
 - Team standings and matchups
 - Transaction history
 - Draft picks (traded and current ownership)
+- Rule suggestions (league governance proposals with upvote/downvote voting)
+- Award nominations (MVP and Rookie of Year nominations with voting)
 
 ### Authentication and Authorization
 
@@ -170,4 +172,4 @@ Preferred communication style: Simple, everyday language.
 - Optimized for serverless environments
 - Connection pooling support
 
-**Note:** Database infrastructure is configured but not currently active. The application may add PostgreSQL persistence in the future for caching Sleeper data, storing user preferences, or maintaining historical league data.
+**Note:** PostgreSQL database is actively used for League Hub governance features (rule suggestions and award nominations). Sleeper data is proxied in real-time and cached client-side with React Query.
