@@ -680,6 +680,9 @@ export async function registerRoutes(
       const regularSeasonWeeks = playoffWeekStart - 1;
       const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek);
 
+      // Check if league has divisions configured
+      const numDivisions = (league.settings as any).divisions || 0;
+
       // Build team data with current standings
       const teams = rosters.map(roster => {
         const user = userMap.get(roster.owner_id);
@@ -687,6 +690,10 @@ export async function registerRoutes(
         const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
         const gamesPlayed = roster.settings.wins + roster.settings.losses + roster.settings.ties;
         const avgPoints = gamesPlayed > 0 ? pointsFor / gamesPlayed : 100;
+        
+        // Get division from roster settings (Sleeper API stores it at roster.settings.division)
+        // Note: Division is 1-indexed in Sleeper (1, 2, etc.) or undefined if not set
+        const rosterDivision = (roster.settings as any).division;
         
         return {
           rosterId: roster.roster_id,
@@ -699,13 +706,18 @@ export async function registerRoutes(
           pointsFor,
           avgPoints,
           stdDev: avgPoints * 0.2, // Estimate standard deviation as 20% of average
-          division: (roster as any).settings?.division || 0,
+          division: rosterDivision as number | undefined,
         };
       });
 
-      // Check if league has divisions
-      const divisions = new Set(teams.map(t => t.division));
-      const hasDivisions = divisions.size > 1;
+      // Determine if divisions are actually configured and all teams have assignments
+      const teamsWithDivisions = teams.filter(t => t.division !== undefined && t.division > 0);
+      const hasDivisions = numDivisions > 1 && teamsWithDivisions.length === teams.length;
+      
+      // Create divisions Set from league config (1-indexed: 1, 2, etc.)
+      const divisions: Set<number> = hasDivisions 
+        ? new Set(Array.from({ length: numDivisions }, (_, i) => i + 1))
+        : new Set();
 
       // Monte Carlo simulation
       const SIMULATIONS = 10000;
@@ -760,17 +772,18 @@ export async function registerRoutes(
         current1.oneSeed++;
 
         // Track division winners if applicable
-        if (hasDivisions) {
-          const divisionWinners = new Set<number>();
+        if (hasDivisions && divisions.size > 0) {
           divisions.forEach(div => {
+            // Find teams in this division, sorted by simulated standings
             const divTeams = simResults.filter(t => t.division === div);
             if (divTeams.length > 0) {
-              divisionWinners.add(divTeams[0].rosterId);
+              // First team in sorted results is the division winner
+              const winnerId = divTeams[0].rosterId;
+              const r = results.get(winnerId);
+              if (r) {
+                r.divisionWinner++;
+              }
             }
-          });
-          divisionWinners.forEach(rosterId => {
-            const r = results.get(rosterId)!;
-            r.divisionWinner++;
           });
         }
 
