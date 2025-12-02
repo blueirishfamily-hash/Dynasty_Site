@@ -229,6 +229,10 @@ export async function getLeagueDrafts(leagueId: string): Promise<SleeperDraft[]>
   return fetchFromSleeper<SleeperDraft[]>(`/league/${leagueId}/drafts`);
 }
 
+export async function getDraft(draftId: string): Promise<SleeperDraft> {
+  return fetchFromSleeper<SleeperDraft>(`/draft/${draftId}`);
+}
+
 export async function getDraftPicks(draftId: string): Promise<SleeperDraftPick[]> {
   return fetchFromSleeper<SleeperDraftPick[]>(`/draft/${draftId}/picks`);
 }

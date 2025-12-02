@@ -31,6 +31,7 @@ interface DraftPickData {
   playerName: string;
   position: string;
   team: string;
+  fantasyTeam: string;
 }
 
 interface DraftPick {
@@ -39,6 +40,7 @@ interface DraftPick {
   originalOwner: { name: string; initials: string };
   currentOwner: { name: string; initials: string };
   player?: { name: string; position: string; team: string };
+  fantasyTeam?: string;
   isUserPick?: boolean;
 }
 
@@ -148,6 +150,7 @@ export default function Draft() {
         originalOwner: owner,
         currentOwner: owner,
         isUserPick: pick.pickedBy === user?.userId,
+        fantasyTeam: pick.fantasyTeam,
         player: {
           name: pick.playerName,
           position: pick.position,
@@ -235,6 +238,11 @@ export default function Draft() {
                                 </span>
                               )}
                             </div>
+                            {pick.fantasyTeam && (
+                              <p className="text-[10px] text-muted-foreground truncate mt-0.5">
+                                {pick.fantasyTeam}
+                              </p>
+                            )}
                           </div>
                         </div>
                       ) : (

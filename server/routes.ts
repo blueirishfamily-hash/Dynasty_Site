@@ -15,6 +15,7 @@ import {
   getPlayerStats,
   getLeagueDrafts,
   getDraftPicks,
+  getDraft,
   type SleeperRoster,
   type SleeperLeagueUser,
   type SleeperPlayer,
@@ -172,7 +173,26 @@ export async function registerRoutes(
   // Get draft picks
   app.get("/api/sleeper/draft/:draftId/picks", async (req, res) => {
     try {
-      const picks = await getDraftPicks(req.params.draftId);
+      const [draft, picks] = await Promise.all([
+        getDraft(req.params.draftId),
+        getDraftPicks(req.params.draftId),
+      ]);
+
+      const [users, rosters] = await Promise.all([
+        getLeagueUsers(draft.league_id),
+        getLeagueRosters(draft.league_id),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const rosterTeamMap = new Map<number, string>();
+      rosters.forEach(r => {
+        const user = userMap.get(r.owner_id);
+        const teamName = user?.metadata?.team_name || user?.display_name || `Team ${r.roster_id}`;
+        rosterTeamMap.set(r.roster_id, teamName);
+      });
+
       res.json(picks.map(pick => ({
         round: pick.round,
         rosterId: pick.roster_id,
@@ -183,6 +203,7 @@ export async function registerRoutes(
         playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
         position: pick.metadata.position,
         team: pick.metadata.team,
+        fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
       })));
     } catch (error) {
       console.error("Error fetching draft picks:", error);
