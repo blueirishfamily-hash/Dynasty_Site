@@ -23,6 +23,8 @@ interface MatchupPlayer {
   boom: number;
   bust: number;
   gamesPlayed: number;
+  status?: string | null;
+  isOnBye?: boolean;
 }
 
 interface MatchupTeam {
@@ -360,6 +362,12 @@ export default function Matchup() {
                         <div className="text-right min-w-0 flex-1">
                           <p className="text-sm font-medium truncate">
                             {slot.userPlayer?.name || "—"}
+                            {slot.userPlayer?.status && (
+                              <span className="ml-1 text-xs text-destructive font-normal">({slot.userPlayer.status})</span>
+                            )}
+                            {slot.userPlayer?.isOnBye && (
+                              <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
+                            )}
                           </p>
                           <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
                             <span>{slot.userPlayer?.team || ""}</span>
@@ -367,7 +375,7 @@ export default function Matchup() {
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <span className="tabular-nums cursor-help">
-                                    <span className="text-foreground">{slot.userPlayer.projectedPoints}</span>
+                                    <span className={slot.userPlayer.projectedPoints === 0 ? "text-muted-foreground" : "text-foreground"}>{slot.userPlayer.projectedPoints}</span>
                                     <span className="mx-1">·</span>
                                     <span className="text-chart-2">{slot.userPlayer.boom}</span>
                                     <span className="mx-0.5">/</span>
@@ -376,6 +384,9 @@ export default function Matchup() {
                                 </TooltipTrigger>
                                 <TooltipContent side="top" className="text-xs">
                                   <p className="font-medium">Projected: {slot.userPlayer.projectedPoints} pts</p>
+                                  {(slot.userPlayer.status || slot.userPlayer.isOnBye) && (
+                                    <p className="text-destructive">{slot.userPlayer.status || "On Bye"} - Not expected to play</p>
+                                  )}
                                   <p>Boom/Bust Range: {slot.userPlayer.boom} / {slot.userPlayer.bust}</p>
                                   <p className="text-muted-foreground">Based on {slot.userPlayer.gamesPlayed >= 3 ? `${slot.userPlayer.gamesPlayed} games` : slot.userPlayer.gamesPlayed > 0 ? `${slot.userPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
                                 </TooltipContent>
@@ -402,13 +413,19 @@ export default function Matchup() {
                         <div className="text-left min-w-0 flex-1">
                           <p className="text-sm font-medium truncate">
                             {slot.opponentPlayer?.name || "—"}
+                            {slot.opponentPlayer?.status && (
+                              <span className="ml-1 text-xs text-destructive font-normal">({slot.opponentPlayer.status})</span>
+                            )}
+                            {slot.opponentPlayer?.isOnBye && (
+                              <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
+                            )}
                           </p>
                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
                             {slot.opponentPlayer && (
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <span className="tabular-nums cursor-help">
-                                    <span className="text-foreground">{slot.opponentPlayer.projectedPoints}</span>
+                                    <span className={slot.opponentPlayer.projectedPoints === 0 ? "text-muted-foreground" : "text-foreground"}>{slot.opponentPlayer.projectedPoints}</span>
                                     <span className="mx-1">·</span>
                                     <span className="text-chart-2">{slot.opponentPlayer.boom}</span>
                                     <span className="mx-0.5">/</span>
@@ -417,6 +434,9 @@ export default function Matchup() {
                                 </TooltipTrigger>
                                 <TooltipContent side="top" className="text-xs">
                                   <p className="font-medium">Projected: {slot.opponentPlayer.projectedPoints} pts</p>
+                                  {(slot.opponentPlayer.status || slot.opponentPlayer.isOnBye) && (
+                                    <p className="text-destructive">{slot.opponentPlayer.status || "On Bye"} - Not expected to play</p>
+                                  )}
                                   <p>Boom/Bust Range: {slot.opponentPlayer.boom} / {slot.opponentPlayer.bust}</p>
                                   <p className="text-muted-foreground">Based on {slot.opponentPlayer.gamesPlayed >= 3 ? `${slot.opponentPlayer.gamesPlayed} games` : slot.opponentPlayer.gamesPlayed > 0 ? `${slot.opponentPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
                                 </TooltipContent>

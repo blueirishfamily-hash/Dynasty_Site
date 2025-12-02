@@ -438,6 +438,21 @@ export async function registerRoutes(
         });
       }
 
+      // 2024 NFL bye week schedule
+      const byeWeeks: Record<number, string[]> = {
+        5: ["DET", "LAC", "PHI", "TEN"],
+        6: ["KC", "LAR", "MIA", "MIN"],
+        7: ["CHI", "DAL"],
+        9: ["PIT", "SF"],
+        10: ["CLE", "GB", "LV", "SEA"],
+        11: ["ARI", "CAR", "NYG", "TB"],
+        12: ["ATL", "BUF", "CIN", "JAX", "NO", "NYJ"],
+        14: ["BAL", "DEN", "HOU", "IND", "NE", "WAS"],
+      };
+
+      // Status values that mean the player won't play
+      const inactiveStatuses = ["Out", "IR", "PUP", "Sus", "NFI", "COV", "Injured Reserve"];
+
       // Position baseline stats for fallback
       const positionBaselines: Record<string, { mean: number; stdDev: number }> = {
         QB: { mean: 18, stdDev: 6 },
@@ -461,6 +476,14 @@ export async function registerRoutes(
         const player = players[playerId];
         const position = player?.position || "FLEX";
         const positionBase = positionBaselines[position] || { mean: 10, stdDev: 5 };
+        const playerTeam = player?.team || "";
+        const injuryStatus = player?.injury_status || null;
+        
+        // Check if player is inactive (Out, IR, PUP, etc.) or on bye
+        const isInactive = injuryStatus && inactiveStatuses.includes(injuryStatus);
+        const teamsOnBye = byeWeeks[week] || [];
+        const isOnBye = playerTeam && teamsOnBye.includes(playerTeam);
+        const willNotPlay = isInactive || isOnBye;
         
         // Get player's historical points
         const weeklyPoints = playerWeeklyPoints.get(playerId) || [];
@@ -470,7 +493,12 @@ export async function registerRoutes(
         let bust: number;
         let projectedPoints: number;
         
-        if (gamesPlayed >= 3) {
+        if (willNotPlay) {
+          // Player is out, IR, PUP, or on bye - project 0
+          boom = 0;
+          bust = 0;
+          projectedPoints = 0;
+        } else if (gamesPlayed >= 3) {
           // Sufficient data - use player's actual stats
           const { mean, stdDev } = calcStats(weeklyPoints);
           boom = Math.round((mean + 1.25 * stdDev) * 10) / 10;
@@ -496,12 +524,14 @@ export async function registerRoutes(
           id: playerId,
           name: player ? `${player.first_name} ${player.last_name}` : playerId,
           position,
-          team: player?.team || "",
+          team: playerTeam,
           points,
           projectedPoints,
           boom,
           bust,
           gamesPlayed,
+          status: injuryStatus,
+          isOnBye,
         };
       };
 
