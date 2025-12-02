@@ -43,13 +43,13 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         if (leagueRes.ok) {
           const leagueData = await leagueRes.json();
           const leagueInfo: LeagueInfo = {
-            leagueId: leagueData.league_id,
+            leagueId: leagueData.leagueId,
             name: leagueData.name,
             season: leagueData.season,
-            totalRosters: leagueData.total_rosters,
-            rosterPositions: leagueData.roster_positions || [],
-            playoffTeams: leagueData.settings?.playoff_teams,
-            waiverBudget: leagueData.settings?.waiver_budget,
+            totalRosters: leagueData.totalRosters,
+            rosterPositions: leagueData.rosterPositions || [],
+            playoffTeams: leagueData.playoffTeams,
+            waiverBudget: leagueData.waiverBudget,
           };
           setLeagueState(leagueInfo);
           localStorage.setItem(STORAGE_KEY_LEAGUE, JSON.stringify(leagueInfo));
