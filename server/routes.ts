@@ -371,14 +371,47 @@ export async function registerRoutes(
         m => m.matchup_id === userMatchup.matchup_id && m.roster_id !== userRoster.roster_id
       );
 
+      // Boom-bust variance factors by position (based on typical fantasy football volatility)
+      // Higher values = more volatile/boom-bust potential
+      const positionVariance: Record<string, { boomMultiplier: number; bustMultiplier: number }> = {
+        QB: { boomMultiplier: 1.35, bustMultiplier: 0.65 },
+        RB: { boomMultiplier: 1.50, bustMultiplier: 0.50 },
+        WR: { boomMultiplier: 1.55, bustMultiplier: 0.45 },
+        TE: { boomMultiplier: 1.60, bustMultiplier: 0.40 },
+        K: { boomMultiplier: 1.30, bustMultiplier: 0.70 },
+        DEF: { boomMultiplier: 1.45, bustMultiplier: 0.55 },
+      };
+
+      // Position baseline averages for boom/bust calculations when no points yet
+      const positionBaselines: Record<string, number> = {
+        QB: 18,
+        RB: 12,
+        WR: 11,
+        TE: 8,
+        K: 8,
+        DEF: 7,
+      };
+
       const buildPlayerInfo = (playerId: string, points: number = 0) => {
         const player = players[playerId];
+        const position = player?.position || "FLEX";
+        const variance = positionVariance[position] || { boomMultiplier: 1.45, bustMultiplier: 0.55 };
+        
+        // Use actual points if available, otherwise use position baseline
+        const basePoints = points > 0 ? points : (positionBaselines[position] || 10);
+        
+        // Calculate boom (ceiling) and bust (floor) based on position variance
+        const boom = Math.round(basePoints * variance.boomMultiplier * 10) / 10;
+        const bust = Math.round(basePoints * variance.bustMultiplier * 10) / 10;
+
         return {
           id: playerId,
           name: player ? `${player.first_name} ${player.last_name}` : playerId,
-          position: player?.position || "FLEX",
+          position,
           team: player?.team || "",
-          points: points,
+          points,
+          boom,
+          bust,
         };
       };
 
@@ -1068,6 +1101,7 @@ export async function registerRoutes(
       }
 
       // Convert to percentages and format response
+      // Sort by same criteria as dashboard standings: record → points scored → H2H
       const predictions = teams
         .map(team => {
           const r = results.get(team.rosterId)!;
@@ -1088,7 +1122,16 @@ export async function registerRoutes(
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
           };
         })
-        .sort((a, b) => b.makePlayoffsPct - a.makePlayoffsPct);
+        .sort((a, b) => {
+          // 1) Record (wins)
+          if (b.currentWins !== a.currentWins) return b.currentWins - a.currentWins;
+          // 2) Points scored
+          if (Math.abs(b.pointsFor - a.pointsFor) > 0.01) return b.pointsFor - a.pointsFor;
+          // 3) Head-to-head wins
+          const aH2H = getH2HWins(a.rosterId, b.rosterId);
+          const bH2H = getH2HWins(b.rosterId, a.rosterId);
+          return bH2H - aH2H;
+        });
 
       res.json({
         predictions,

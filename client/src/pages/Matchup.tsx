@@ -14,6 +14,8 @@ interface MatchupPlayer {
   position: string;
   team: string;
   points: number;
+  boom: number;
+  bust: number;
 }
 
 interface MatchupTeam {
@@ -305,14 +307,20 @@ export default function Matchup() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-[minmax(100px,140px)_minmax(200px,1fr)_minmax(100px,140px)] gap-3 mb-4 items-center">
-                <div className="text-sm font-medium text-primary text-right truncate">
-                  {userTeam.name}
+                <div className="text-right">
+                  <p className="text-sm font-medium text-primary truncate">{userTeam.name}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
+                  </p>
                 </div>
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground text-center">
                   Points Comparison
                 </div>
-                <div className="text-sm font-medium text-muted-foreground text-left truncate">
-                  {opponentTeam.name}
+                <div className="text-left">
+                  <p className="text-sm font-medium text-muted-foreground truncate">{opponentTeam.name}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
+                  </p>
                 </div>
               </div>
 
@@ -332,9 +340,16 @@ export default function Matchup() {
                           <p className="text-sm font-medium truncate">
                             {slot.userPlayer?.name || "—"}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            {slot.userPlayer?.team || ""}
-                          </p>
+                          <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
+                            <span>{slot.userPlayer?.team || ""}</span>
+                            {slot.userPlayer && (
+                              <span className="tabular-nums">
+                                <span className="text-chart-2">{slot.userPlayer.boom}</span>
+                                <span className="mx-0.5">/</span>
+                                <span className="text-destructive">{slot.userPlayer.bust}</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
 
@@ -356,9 +371,16 @@ export default function Matchup() {
                           <p className="text-sm font-medium truncate">
                             {slot.opponentPlayer?.name || "—"}
                           </p>
-                          <p className="text-xs text-muted-foreground">
-                            {slot.opponentPlayer?.team || ""}
-                          </p>
+                          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                            {slot.opponentPlayer && (
+                              <span className="tabular-nums">
+                                <span className="text-chart-2">{slot.opponentPlayer.boom}</span>
+                                <span className="mx-0.5">/</span>
+                                <span className="text-destructive">{slot.opponentPlayer.bust}</span>
+                              </span>
+                            )}
+                            <span>{slot.opponentPlayer?.team || ""}</span>
+                          </div>
                         </div>
                       </div>
                     </div>
