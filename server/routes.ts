@@ -925,5 +925,115 @@ export async function registerRoutes(
     }
   });
 
+  // Rule Suggestions API
+  app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
+    try {
+      const suggestions = await storage.getRuleSuggestions(req.params.leagueId);
+      res.json(suggestions);
+    } catch (error) {
+      console.error("Error fetching rule suggestions:", error);
+      res.status(500).json({ error: "Failed to fetch rule suggestions" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
+    try {
+      const { authorId, authorName, title, description } = req.body;
+      if (!authorId || !authorName || !title || !description) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+      const suggestion = await storage.createRuleSuggestion({
+        leagueId: req.params.leagueId,
+        authorId,
+        authorName,
+        title,
+        description,
+      });
+      res.json(suggestion);
+    } catch (error) {
+      console.error("Error creating rule suggestion:", error);
+      res.status(500).json({ error: "Failed to create rule suggestion" });
+    }
+  });
+
+  app.post("/api/rule-suggestions/:id/vote", async (req, res) => {
+    try {
+      const { oderId, voteType } = req.body;
+      if (!oderId || !voteType) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+      const suggestion = await storage.voteRuleSuggestion(req.params.id, oderId, voteType);
+      if (!suggestion) {
+        return res.status(404).json({ error: "Suggestion not found" });
+      }
+      res.json(suggestion);
+    } catch (error) {
+      console.error("Error voting on rule suggestion:", error);
+      res.status(500).json({ error: "Failed to vote on rule suggestion" });
+    }
+  });
+
+  // Award Nominations API
+  app.get("/api/league/:leagueId/awards/:season/:awardType", async (req, res) => {
+    try {
+      const { leagueId, season, awardType } = req.params;
+      if (awardType !== "mvp" && awardType !== "roy") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      const nominations = await storage.getAwardNominations(leagueId, season, awardType);
+      res.json(nominations);
+    } catch (error) {
+      console.error("Error fetching award nominations:", error);
+      res.status(500).json({ error: "Failed to fetch award nominations" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/awards/:season/:awardType/nominate", async (req, res) => {
+    try {
+      const { leagueId, season, awardType } = req.params;
+      const { playerId, playerName, playerPosition, playerTeam, nominatedBy, nominatedByName } = req.body;
+      
+      if (awardType !== "mvp" && awardType !== "roy") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      if (!playerId || !playerName || !nominatedBy || !nominatedByName) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      const nomination = await storage.createAwardNomination({
+        leagueId,
+        season,
+        awardType,
+        playerId,
+        playerName,
+        playerPosition: playerPosition || "",
+        playerTeam: playerTeam || null,
+        nominatedBy,
+        nominatedByName,
+      });
+      res.json(nomination);
+    } catch (error) {
+      console.error("Error creating award nomination:", error);
+      res.status(500).json({ error: "Failed to create award nomination" });
+    }
+  });
+
+  app.post("/api/awards/:id/vote", async (req, res) => {
+    try {
+      const { oderId } = req.body;
+      if (!oderId) {
+        return res.status(400).json({ error: "Missing voter ID" });
+      }
+      const nomination = await storage.voteAwardNomination(req.params.id, oderId);
+      if (!nomination) {
+        return res.status(404).json({ error: "Nomination not found" });
+      }
+      res.json(nomination);
+    } catch (error) {
+      console.error("Error voting on award nomination:", error);
+      res.status(500).json({ error: "Failed to vote on award nomination" });
+    }
+  });
+
   return httpServer;
 }
