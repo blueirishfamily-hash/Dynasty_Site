@@ -12,6 +12,8 @@ import {
   getNFLState,
   getAllPlayers,
   getPlayerStats,
+  getLeagueDrafts,
+  getDraftPicks,
   type SleeperRoster,
   type SleeperLeagueUser,
   type SleeperPlayer,
@@ -143,6 +145,47 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching league rosters:", error);
       res.status(500).json({ error: "Failed to fetch league rosters" });
+    }
+  });
+
+  // Get league drafts
+  app.get("/api/sleeper/league/:leagueId/drafts", async (req, res) => {
+    try {
+      const drafts = await getLeagueDrafts(req.params.leagueId);
+      res.json(drafts.map(draft => ({
+        draftId: draft.draft_id,
+        leagueId: draft.league_id,
+        season: draft.season,
+        status: draft.status,
+        type: draft.type,
+        rounds: draft.settings.rounds,
+        startTime: draft.start_time,
+        created: draft.created,
+      })));
+    } catch (error) {
+      console.error("Error fetching league drafts:", error);
+      res.status(500).json({ error: "Failed to fetch league drafts" });
+    }
+  });
+
+  // Get draft picks
+  app.get("/api/sleeper/draft/:draftId/picks", async (req, res) => {
+    try {
+      const picks = await getDraftPicks(req.params.draftId);
+      res.json(picks.map(pick => ({
+        round: pick.round,
+        rosterId: pick.roster_id,
+        playerId: pick.player_id,
+        pickedBy: pick.picked_by,
+        pickNo: pick.pick_no,
+        draftSlot: pick.draft_slot,
+        playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
+        position: pick.metadata.position,
+        team: pick.metadata.team,
+      })));
+    } catch (error) {
+      console.error("Error fetching draft picks:", error);
+      res.status(500).json({ error: "Failed to fetch draft picks" });
     }
   });
 

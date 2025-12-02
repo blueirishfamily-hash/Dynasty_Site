@@ -186,3 +186,49 @@ export async function getPlayerStats(season: string, week?: number): Promise<Rec
 export async function getPlayerProjections(season: string, week: number): Promise<Record<string, Record<string, number>>> {
   return fetchFromSleeper<Record<string, Record<string, number>>>(`/projections/nfl/regular/${season}/${week}`);
 }
+
+export interface SleeperDraft {
+  draft_id: string;
+  league_id: string;
+  season: string;
+  status: string;
+  type: string;
+  settings: {
+    rounds: number;
+    slots_wr: number;
+    slots_rb: number;
+    slots_qb: number;
+    slots_te: number;
+    slots_flex: number;
+    slots_super_flex: number;
+    pick_timer: number;
+    [key: string]: unknown;
+  };
+  start_time: number;
+  created: number;
+}
+
+export interface SleeperDraftPick {
+  round: number;
+  roster_id: number;
+  player_id: string;
+  picked_by: string;
+  pick_no: number;
+  draft_slot: number;
+  draft_id: string;
+  metadata: {
+    first_name: string;
+    last_name: string;
+    position: string;
+    team: string;
+    years_exp: string;
+  };
+}
+
+export async function getLeagueDrafts(leagueId: string): Promise<SleeperDraft[]> {
+  return fetchFromSleeper<SleeperDraft[]>(`/league/${leagueId}/drafts`);
+}
+
+export async function getDraftPicks(draftId: string): Promise<SleeperDraftPick[]> {
+  return fetchFromSleeper<SleeperDraftPick[]>(`/draft/${draftId}/picks`);
+}
