@@ -468,12 +468,14 @@ export async function registerRoutes(
         
         let boom: number;
         let bust: number;
+        let projectedPoints: number;
         
         if (gamesPlayed >= 3) {
           // Sufficient data - use player's actual stats
           const { mean, stdDev } = calcStats(weeklyPoints);
           boom = Math.round((mean + 1.25 * stdDev) * 10) / 10;
           bust = Math.max(0, Math.round((mean - 1.0 * stdDev) * 10) / 10);
+          projectedPoints = Math.round(mean * 10) / 10;
         } else if (gamesPlayed > 0) {
           // Limited data - blend player stats with position baseline
           const { mean: playerMean, stdDev: playerStdDev } = calcStats(weeklyPoints);
@@ -482,10 +484,12 @@ export async function registerRoutes(
           const blendedStdDev = playerStdDev * blendWeight + positionBase.stdDev * (1 - blendWeight);
           boom = Math.round((blendedMean + 1.25 * blendedStdDev) * 10) / 10;
           bust = Math.max(0, Math.round((blendedMean - 1.0 * blendedStdDev) * 10) / 10);
+          projectedPoints = Math.round(blendedMean * 10) / 10;
         } else {
           // No data - use position baseline
           boom = Math.round((positionBase.mean + 1.25 * positionBase.stdDev) * 10) / 10;
           bust = Math.max(0, Math.round((positionBase.mean - 1.0 * positionBase.stdDev) * 10) / 10);
+          projectedPoints = Math.round(positionBase.mean * 10) / 10;
         }
 
         return {
@@ -494,6 +498,7 @@ export async function registerRoutes(
           position,
           team: player?.team || "",
           points,
+          projectedPoints,
           boom,
           bust,
           gamesPlayed,
@@ -512,11 +517,15 @@ export async function registerRoutes(
         const benchIds = (roster.players || []).filter(pid => !starterIds.includes(pid));
         const bench = benchIds.map(pid => buildPlayerInfo(pid, playerPoints[pid] || 0));
 
+        // Calculate projected team total from starters
+        const projectedTotal = starters.reduce((sum, p) => sum + p.projectedPoints, 0);
+
         return {
           rosterId: roster.roster_id,
           name: teamName,
           initials: getTeamInitials(teamName),
           score: matchup.points || 0,
+          projectedTotal: Math.round(projectedTotal * 10) / 10,
           record: `${roster.settings.wins}-${roster.settings.losses}`,
           starters,
           bench,
@@ -996,15 +1005,141 @@ export async function registerRoutes(
   // Playoff predictor - simulate remaining season
   app.get("/api/sleeper/league/:leagueId/playoff-predictions", async (req, res) => {
     try {
-      const [rosters, users, league, nflState] = await Promise.all([
+      const [rosters, users, league, nflState, players] = await Promise.all([
         getLeagueRosters(req.params.leagueId),
         getLeagueUsers(req.params.leagueId),
         getLeague(req.params.leagueId),
         getNFLState(),
+        getAllPlayers(),
       ]);
 
       const userMap = new Map<string, SleeperLeagueUser>();
       users.forEach(u => userMap.set(u.user_id, u));
+      
+      // Fetch player stats for projections
+      const season = league.season || nflState.season;
+      const weeksToFetch = Math.min(nflState.week, 8);
+      
+      const cacheKey = `${season}`;
+      const cached = playerStatsCache.get(cacheKey);
+      let playerWeeklyPoints: Map<string, number[]>;
+      
+      if (cached && Date.now() - cached.timestamp < STATS_CACHE_TTL) {
+        playerWeeklyPoints = cached.data;
+      } else {
+        playerWeeklyPoints = new Map();
+        const startWeek = Math.max(1, nflState.week - weeksToFetch + 1);
+        
+        const weeklyStatsPromises = [];
+        for (let w = startWeek; w <= nflState.week; w++) {
+          weeklyStatsPromises.push(getPlayerStats(season, w).catch(() => ({})));
+        }
+        
+        const weeklyStatsResults = await Promise.all(weeklyStatsPromises);
+        
+        weeklyStatsResults.forEach((weekStats) => {
+          Object.entries(weekStats).forEach(([playerId, stats]) => {
+            const pts = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
+            if (pts > 0) {
+              if (!playerWeeklyPoints.has(playerId)) {
+                playerWeeklyPoints.set(playerId, []);
+              }
+              playerWeeklyPoints.get(playerId)!.push(pts);
+            }
+          });
+        });
+        
+        playerStatsCache.set(cacheKey, {
+          data: playerWeeklyPoints,
+          timestamp: Date.now(),
+        });
+      }
+      
+      // Position baseline stats for projections
+      const positionBaselines: Record<string, { mean: number; stdDev: number }> = {
+        QB: { mean: 18, stdDev: 6 },
+        RB: { mean: 12, stdDev: 6 },
+        WR: { mean: 11, stdDev: 6 },
+        TE: { mean: 8, stdDev: 5 },
+        K: { mean: 8, stdDev: 3 },
+        DEF: { mean: 7, stdDev: 4 },
+      };
+      
+      // Helper to get player projection
+      const getPlayerProjection = (playerId: string): { mean: number; stdDev: number } => {
+        const player = players[playerId];
+        const position = player?.position || "FLEX";
+        const positionBase = positionBaselines[position] || { mean: 10, stdDev: 5 };
+        
+        const weeklyPoints = playerWeeklyPoints.get(playerId) || [];
+        const gamesPlayed = weeklyPoints.length;
+        
+        if (gamesPlayed >= 3) {
+          const mean = weeklyPoints.reduce((a, b) => a + b, 0) / gamesPlayed;
+          const variance = weeklyPoints.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / gamesPlayed;
+          return { mean, stdDev: Math.sqrt(variance) || mean * 0.3 };
+        } else if (gamesPlayed > 0) {
+          const playerMean = weeklyPoints.reduce((a, b) => a + b, 0) / gamesPlayed;
+          const blendWeight = gamesPlayed / 3;
+          const blendedMean = playerMean * blendWeight + positionBase.mean * (1 - blendWeight);
+          return { mean: blendedMean, stdDev: positionBase.stdDev };
+        }
+        return positionBase;
+      };
+      
+      // Expected starter positions for projection calculation
+      const starterSlots = [
+        { pos: "QB", count: 1, eligible: ["QB"] },
+        { pos: "RB", count: 2, eligible: ["RB"] },
+        { pos: "WR", count: 2, eligible: ["WR"] },
+        { pos: "TE", count: 1, eligible: ["TE"] },
+        { pos: "FLEX", count: 2, eligible: ["RB", "WR", "TE"] },
+        { pos: "K", count: 1, eligible: ["K"] },
+        { pos: "DEF", count: 1, eligible: ["DEF"] },
+      ];
+      
+      // Calculate expected team baseline (sum of position baselines for all starter slots)
+      const teamBaseline = starterSlots.reduce((sum, slot) => {
+        const avgPosition = slot.eligible[0]; // Use first eligible position's baseline
+        return sum + (positionBaselines[avgPosition]?.mean || 10) * slot.count;
+      }, 0);
+      const teamBaselineStdDev = Math.sqrt(starterSlots.reduce((sum, slot) => {
+        const avgPosition = slot.eligible[0];
+        const stdDev = positionBaselines[avgPosition]?.stdDev || 5;
+        return sum + (stdDev * stdDev) * slot.count;
+      }, 0));
+      
+      // Helper to determine optimal starters for a roster with fallback projections
+      const getOptimalStarters = (roster: SleeperRoster): { playerId: string; projection: { mean: number; stdDev: number } }[] => {
+        const playerList = roster.players || [];
+        const starters: { playerId: string; projection: { mean: number; stdDev: number } }[] = [];
+        const used = new Set<string>();
+        
+        // Fill required positions
+        starterSlots.forEach(slot => {
+          const eligible = playerList
+            .filter(pid => {
+              const player = players[pid];
+              return player && slot.eligible.includes(player.position) && !used.has(pid);
+            })
+            .map(pid => ({ pid, proj: getPlayerProjection(pid) }))
+            .sort((a, b) => b.proj.mean - a.proj.mean);
+          
+          for (let i = 0; i < slot.count; i++) {
+            if (i < eligible.length) {
+              starters.push({ playerId: eligible[i].pid, projection: eligible[i].proj });
+              used.add(eligible[i].pid);
+            } else {
+              // No eligible player - use position baseline as fallback
+              const fallbackPos = slot.eligible[0];
+              const baseline = positionBaselines[fallbackPos] || { mean: 10, stdDev: 5 };
+              starters.push({ playerId: `fallback-${slot.pos}-${i}`, projection: baseline });
+            }
+          }
+        });
+        
+        return starters;
+      };
 
       const playoffTeams = league.settings.playoff_teams || 6;
       const playoffWeekStart = (league.settings as any).playoff_week_start || 15;
@@ -1062,7 +1197,7 @@ export async function registerRoutes(
       // Check if league has divisions configured
       const numDivisions = (league.settings as any).divisions || 0;
 
-      // Build team data with current standings
+      // Build team data with roster-based projections
       const teams = rosters.map(roster => {
         const user = userMap.get(roster.owner_id);
         const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
@@ -1070,8 +1205,28 @@ export async function registerRoutes(
         const gamesPlayed = roster.settings.wins + roster.settings.losses + roster.settings.ties;
         const avgPoints = gamesPlayed > 0 ? pointsFor / gamesPlayed : 100;
         
-        // Get division from roster settings (Sleeper API stores it at roster.settings.division)
-        // Note: Division is 1-indexed in Sleeper (1, 2, etc.) or undefined if not set
+        // Calculate roster-based projected points from optimal starters
+        const optimalStarters = getOptimalStarters(roster);
+        let projectedPointsPerWeek = 0;
+        let totalVariance = 0;
+        
+        optimalStarters.forEach(starter => {
+          projectedPointsPerWeek += starter.projection.mean;
+          totalVariance += starter.projection.stdDev * starter.projection.stdDev;
+        });
+        
+        // Team standard deviation (combined from individual players)
+        const projectedStdDev = Math.sqrt(totalVariance);
+        
+        // Validate projections - use team baseline as floor
+        const effectiveProjection = !isNaN(projectedPointsPerWeek) && projectedPointsPerWeek > 50 
+          ? projectedPointsPerWeek 
+          : Math.max(teamBaseline, avgPoints);
+        const effectiveStdDev = !isNaN(projectedStdDev) && projectedStdDev > 5
+          ? projectedStdDev 
+          : teamBaselineStdDev;
+        
+        // Get division from roster settings
         const rosterDivision = (roster.settings as any).division;
         
         return {
@@ -1084,7 +1239,8 @@ export async function registerRoutes(
           ties: roster.settings.ties,
           pointsFor,
           avgPoints,
-          stdDev: avgPoints * 0.2, // Estimate standard deviation as 20% of average
+          projectedPointsPerWeek: effectiveProjection,
+          stdDev: effectiveStdDev,
           division: rosterDivision as number | undefined,
         };
       });
@@ -1113,16 +1269,14 @@ export async function registerRoutes(
         pointsGapMap.set(team.rosterId, { behind, ahead });
       });
 
-      // Monte Carlo simulation
+      // Monte Carlo simulation using projected points
       const SIMULATIONS = 10000;
       const results = new Map<number, { 
         oneSeed: number; 
         divisionWinner: number; 
         makePlayoffs: number;
         avgFinalWins: number;
-        // Points standings impact simulations
-        makePlayoffsWithPointsBoost: number; // If team moves up 1 in points standings
-        makePlayoffsWithPointsDrop: number; // If team moves down 1 in points standings
+        avgFinalPoints: number;
       }>();
 
       teams.forEach(t => results.set(t.rosterId, { 
@@ -1130,28 +1284,43 @@ export async function registerRoutes(
         divisionWinner: 0, 
         makePlayoffs: 0,
         avgFinalWins: 0,
-        makePlayoffsWithPointsBoost: 0,
-        makePlayoffsWithPointsDrop: 0,
+        avgFinalPoints: 0,
       }));
 
+      // Pre-calculate league averages for opponent simulation (outside loop for efficiency)
+      const leagueAvg = teams.reduce((sum, t) => sum + t.projectedPointsPerWeek, 0) / teams.length;
+      const leagueStdDev = Math.sqrt(teams.reduce((sum, t) => sum + t.stdDev * t.stdDev, 0) / teams.length);
+      // Fallback to baseline if league calculations fail
+      const effectiveLeagueAvg = isNaN(leagueAvg) ? teamBaseline : leagueAvg;
+      const effectiveLeagueStdDev = isNaN(leagueStdDev) || leagueStdDev < 5 ? teamBaselineStdDev : leagueStdDev;
+
       for (let sim = 0; sim < SIMULATIONS; sim++) {
-        // Simulate remaining games for each team
+        // Simulate remaining games for each team using projected points
         const simResults = teams.map(team => {
           let simWins = team.wins;
+          let simPointsFor = team.pointsFor;
           
-          // Simulate remaining games
+          // Simulate each remaining week using roster-based projected points
           for (let week = 0; week < remainingWeeks; week++) {
-            // Random opponent strength factor
-            const opponentStrength = 0.4 + Math.random() * 0.4; // 0.4 to 0.8
-            const winProb = team.avgPoints / (team.avgPoints + opponentStrength * 100);
+            // Generate a weekly score based on roster projection with normal distribution
+            // Using Box-Muller transform for normal distribution
+            const u1 = Math.random();
+            const u2 = Math.random();
+            const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+            const weeklyScore = team.projectedPointsPerWeek + z * team.stdDev;
+            simPointsFor += Math.max(50, weeklyScore); // Minimum 50 points floor
             
-            if (Math.random() < winProb) {
+            // Simulate opponent score using league average of projected points
+            const u3 = Math.random();
+            const u4 = Math.random();
+            const z2 = Math.sqrt(-2 * Math.log(u3)) * Math.cos(2 * Math.PI * u4);
+            const opponentScore = effectiveLeagueAvg + z2 * effectiveLeagueStdDev;
+            
+            // Determine win/loss based on projected scores
+            if (weeklyScore > opponentScore) {
               simWins++;
             }
           }
-
-          // Add some randomness to points for (for tiebreaker)
-          const simPointsFor = team.pointsFor + (Math.random() - 0.5) * team.avgPoints * remainingWeeks;
 
           return {
             ...team,
@@ -1198,83 +1367,11 @@ export async function registerRoutes(
           r.makePlayoffs++;
         }
 
-        // Track average wins
+        // Track average wins and points
         simResults.forEach(sr => {
           const r = results.get(sr.rosterId)!;
           r.avgFinalWins += sr.simWins;
-        });
-
-        // Simulate points standings impact scenarios
-        // For each team, simulate what happens if they had slightly more/less points
-        teams.forEach(team => {
-          const currentPointsRank = pointsRankMap.get(team.rosterId) || 1;
-          const gaps = pointsGapMap.get(team.rosterId) || { behind: null, ahead: null };
-          
-          // Scenario: Team moves UP one spot in points standings (boost)
-          if (gaps.behind !== null && currentPointsRank > 1) {
-            const pointsBoost = gaps.behind!;
-            const boostedResults = simResults.map(sr => ({
-              ...sr,
-              simPointsFor: sr.rosterId === team.rosterId 
-                ? sr.simPointsFor + pointsBoost + 1 // Just enough to pass the team ahead
-                : sr.simPointsFor,
-            }));
-            
-            boostedResults.sort((a, b) => {
-              if (b.simWins !== a.simWins) return b.simWins - a.simWins;
-              if (Math.abs(b.simPointsFor - a.simPointsFor) > 0.01) return b.simPointsFor - a.simPointsFor;
-              const aH2H = getH2HWins(a.rosterId, b.rosterId);
-              const bH2H = getH2HWins(b.rosterId, a.rosterId);
-              return bH2H - aH2H;
-            });
-            
-            for (let i = 0; i < Math.min(playoffTeams, boostedResults.length); i++) {
-              if (boostedResults[i].rosterId === team.rosterId) {
-                const r = results.get(team.rosterId)!;
-                r.makePlayoffsWithPointsBoost++;
-                break;
-              }
-            }
-          } else {
-            // Already at top, same as current
-            const r = results.get(team.rosterId)!;
-            if (simResults.findIndex(sr => sr.rosterId === team.rosterId) < playoffTeams) {
-              r.makePlayoffsWithPointsBoost++;
-            }
-          }
-          
-          // Scenario: Team moves DOWN one spot in points standings (drop)
-          if (gaps.ahead !== null && currentPointsRank < teams.length) {
-            const pointsDrop = gaps.ahead!;
-            const droppedResults = simResults.map(sr => ({
-              ...sr,
-              simPointsFor: sr.rosterId === team.rosterId 
-                ? sr.simPointsFor - pointsDrop - 1 // Just enough to fall behind the team below
-                : sr.simPointsFor,
-            }));
-            
-            droppedResults.sort((a, b) => {
-              if (b.simWins !== a.simWins) return b.simWins - a.simWins;
-              if (Math.abs(b.simPointsFor - a.simPointsFor) > 0.01) return b.simPointsFor - a.simPointsFor;
-              const aH2H = getH2HWins(a.rosterId, b.rosterId);
-              const bH2H = getH2HWins(b.rosterId, a.rosterId);
-              return bH2H - aH2H;
-            });
-            
-            for (let i = 0; i < Math.min(playoffTeams, droppedResults.length); i++) {
-              if (droppedResults[i].rosterId === team.rosterId) {
-                const r = results.get(team.rosterId)!;
-                r.makePlayoffsWithPointsDrop++;
-                break;
-              }
-            }
-          } else {
-            // Already at bottom, same as current
-            const r = results.get(team.rosterId)!;
-            if (simResults.findIndex(sr => sr.rosterId === team.rosterId) < playoffTeams) {
-              r.makePlayoffsWithPointsDrop++;
-            }
-          }
+          r.avgFinalPoints += sr.simPointsFor;
         });
       }
 
@@ -1286,9 +1383,7 @@ export async function registerRoutes(
           const pointsRank = pointsRankMap.get(team.rosterId) || 1;
           const gaps = pointsGapMap.get(team.rosterId) || { behind: null, ahead: null };
           
-          const currentPlayoffPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
-          const boostPlayoffPct = Math.round((r.makePlayoffsWithPointsBoost / SIMULATIONS) * 1000) / 10;
-          const dropPlayoffPct = Math.round((r.makePlayoffsWithPointsDrop / SIMULATIONS) * 1000) / 10;
+          const projectedPointsFor = Math.round((r.avgFinalPoints / SIMULATIONS) * 10) / 10;
           
           return {
             rosterId: team.rosterId,
@@ -1301,17 +1396,15 @@ export async function registerRoutes(
             pointsRank,
             pointsBehind: gaps.behind !== null ? Math.round(gaps.behind * 10) / 10 : null,
             pointsAhead: gaps.ahead !== null ? Math.round(gaps.ahead * 10) / 10 : null,
+            projectedPointsPerWeek: Math.round(team.projectedPointsPerWeek * 10) / 10,
+            projectedPointsFor,
             division: hasDivisions ? team.division : undefined,
             oneSeedPct: Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10,
             divisionWinnerPct: hasDivisions 
               ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
               : undefined,
-            makePlayoffsPct: currentPlayoffPct,
+            makePlayoffsPct: Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10,
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
-            // Points standings impact
-            playoffPctIfPointsUp: boostPlayoffPct,
-            playoffPctIfPointsDown: dropPlayoffPct,
-            pointsImpact: Math.round((boostPlayoffPct - dropPlayoffPct) * 10) / 10, // Sensitivity to points changes
           };
         })
         .sort((a, b) => {

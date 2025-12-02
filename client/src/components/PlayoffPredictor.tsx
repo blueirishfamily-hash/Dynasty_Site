@@ -18,7 +18,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Trophy, Target, Medal, TrendingUp, Info, ArrowUp, ArrowDown, Hash } from "lucide-react";
+import { Trophy, Target, Medal, TrendingUp, Info, Hash, Zap } from "lucide-react";
 
 interface TeamPrediction {
   rosterId: number;
@@ -31,14 +31,13 @@ interface TeamPrediction {
   pointsRank: number;
   pointsBehind: number | null;
   pointsAhead: number | null;
+  projectedPointsPerWeek: number;
   division?: number;
   oneSeedPct: number;
   divisionWinnerPct?: number;
   makePlayoffsPct: number;
   projectedWins: number;
-  playoffPctIfPointsUp: number;
-  playoffPctIfPointsDown: number;
-  pointsImpact: number;
+  projectedPointsFor: number;
 }
 
 interface PlayoffPredictionData {
@@ -275,14 +274,13 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <div className="flex items-center gap-1 cursor-help">
-                          <ArrowUp className="w-3 h-3 text-chart-2" />
-                          <ArrowDown className="w-3 h-3 text-destructive" />
-                          Impact
+                          <Zap className="w-3 h-3" />
+                          Proj PF
                         </div>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <p>How playoff odds change</p>
-                        <p className="text-xs text-muted-foreground">if moving up/down in PF standings</p>
+                        <p>Projected points for</p>
+                        <p className="text-xs text-muted-foreground">Based on roster projections</p>
                       </TooltipContent>
                     </Tooltip>
                   </TableHead>
@@ -378,38 +376,22 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       <TableCell>
                         <Tooltip>
                           <TooltipTrigger asChild>
-                            <div className="flex items-center gap-2 cursor-help">
-                              <div className="flex flex-col text-xs tabular-nums">
-                                <span className="text-chart-2 flex items-center gap-0.5">
-                                  <ArrowUp className="w-3 h-3" />
-                                  {team.playoffPctIfPointsUp.toFixed(1)}%
-                                </span>
-                                <span className="text-destructive flex items-center gap-0.5">
-                                  <ArrowDown className="w-3 h-3" />
-                                  {team.playoffPctIfPointsDown.toFixed(1)}%
-                                </span>
-                              </div>
-                              {team.pointsImpact > 0 && (
-                                <Badge 
-                                  variant="outline" 
-                                  className={`text-xs ${team.pointsImpact >= 5 ? "border-chart-3 text-chart-3" : ""}`}
-                                >
-                                  {team.pointsImpact >= 5 ? "!" : ""}
-                                  Δ{team.pointsImpact.toFixed(1)}%
-                                </Badge>
-                              )}
+                            <div className="cursor-help">
+                              <span className="text-sm tabular-nums font-medium">
+                                {team.projectedPointsFor.toFixed(1)}
+                              </span>
                             </div>
                           </TooltipTrigger>
                           <TooltipContent>
-                            <p className="font-medium">Points Standings Impact</p>
+                            <p className="font-medium">Projected End-of-Season PF</p>
                             <p className="text-xs">
-                              If you move <span className="text-chart-2">UP</span> 1 spot: {team.playoffPctIfPointsUp.toFixed(1)}% playoff odds
+                              Current: {team.pointsFor.toFixed(1)}
                             </p>
                             <p className="text-xs">
-                              If you move <span className="text-destructive">DOWN</span> 1 spot: {team.playoffPctIfPointsDown.toFixed(1)}% playoff odds
+                              +{(team.projectedPointsFor - team.pointsFor).toFixed(1)} projected
                             </p>
-                            <p className="text-xs mt-1 text-muted-foreground">
-                              Swing of {team.pointsImpact.toFixed(1)}% between scenarios
+                            <p className="text-xs text-muted-foreground mt-1">
+                              ~{team.projectedPointsPerWeek.toFixed(1)} pts/week
                             </p>
                           </TooltipContent>
                         </Tooltip>

@@ -19,6 +19,7 @@ interface MatchupPlayer {
   position: string;
   team: string;
   points: number;
+  projectedPoints: number;
   boom: number;
   bust: number;
   gamesPlayed: number;
@@ -29,6 +30,7 @@ interface MatchupTeam {
   name: string;
   initials: string;
   score: number;
+  projectedTotal: number;
   record: string;
   starters: MatchupPlayer[];
   bench: MatchupPlayer[];
@@ -268,15 +270,25 @@ export default function Matchup() {
                 </div>
                 
                 <div className="flex flex-col items-center px-8">
-                  <p className={`text-4xl font-bold tabular-nums ${userWinning ? "text-primary" : ""}`} data-testid="text-user-score">
-                    {userTeam.score.toFixed(1)}
-                  </p>
+                  <div className="text-center">
+                    <p className={`text-4xl font-bold tabular-nums ${userWinning ? "text-primary" : ""}`} data-testid="text-user-score">
+                      {userTeam.score.toFixed(1)}
+                    </p>
+                    <p className="text-xs text-muted-foreground tabular-nums">
+                      Proj: {userTeam.projectedTotal.toFixed(1)}
+                    </p>
+                  </div>
                   <div className="flex items-center gap-2 my-2">
                     <span className="text-2xl font-bold text-muted-foreground">VS</span>
                   </div>
-                  <p className={`text-4xl font-bold tabular-nums ${!userWinning ? "text-primary" : ""}`} data-testid="text-opponent-score">
-                    {opponentTeam.score.toFixed(1)}
-                  </p>
+                  <div className="text-center">
+                    <p className={`text-4xl font-bold tabular-nums ${!userWinning ? "text-primary" : ""}`} data-testid="text-opponent-score">
+                      {opponentTeam.score.toFixed(1)}
+                    </p>
+                    <p className="text-xs text-muted-foreground tabular-nums">
+                      Proj: {opponentTeam.projectedTotal.toFixed(1)}
+                    </p>
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-4">

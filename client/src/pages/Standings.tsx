@@ -15,7 +15,6 @@ import {
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  Cell,
 } from "recharts";
 import { ListOrdered, Target } from "lucide-react";
 
@@ -157,18 +156,23 @@ export default function Standings() {
                 </CardHeader>
                 <CardContent>
                   {standingsLoading ? (
-                    <Skeleton className="h-64 w-full" />
+                    <Skeleton className="h-80 w-full" />
                   ) : (
-                    <div className="h-64">
+                    <div className="h-80">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={pointsData} layout="vertical">
-                          <XAxis type="number" tick={{ fontSize: 10 }} stroke="hsl(var(--muted-foreground))" />
-                          <YAxis
-                            type="category"
-                            dataKey="name"
-                            tick={{ fontSize: 10 }}
-                            width={30}
+                        <BarChart data={pointsData} layout="horizontal">
+                          <XAxis 
+                            type="category" 
+                            dataKey="name" 
+                            tick={{ fontSize: 10 }} 
                             stroke="hsl(var(--muted-foreground))"
+                            interval={0}
+                          />
+                          <YAxis 
+                            type="number" 
+                            tick={{ fontSize: 10 }} 
+                            stroke="hsl(var(--muted-foreground))"
+                            domain={[0, 'auto']}
                           />
                           <Tooltip
                             contentStyle={{
@@ -176,17 +180,25 @@ export default function Standings() {
                               border: "1px solid hsl(var(--border))",
                               borderRadius: "6px",
                             }}
+                            formatter={(value: number, name: string) => [
+                              value.toFixed(1),
+                              name === "pf" ? "Points For" : "Points Against"
+                            ]}
                           />
-                          <Bar dataKey="pf" name="Points For">
-                            {pointsData.map((entry: any, index: number) => (
-                              <Cell
-                                key={`pf-${index}`}
-                                fill={entry.isUser ? "hsl(var(--primary))" : "hsl(var(--chart-2))"}
-                              />
-                            ))}
-                          </Bar>
+                          <Bar dataKey="pf" name="pf" fill="hsl(var(--chart-1))" radius={[2, 2, 0, 0]} />
+                          <Bar dataKey="pa" name="pa" fill="hsl(var(--destructive))" radius={[2, 2, 0, 0]} />
                         </BarChart>
                       </ResponsiveContainer>
+                      <div className="flex items-center justify-center gap-4 mt-2 text-xs text-muted-foreground">
+                        <div className="flex items-center gap-1">
+                          <div className="w-3 h-3 rounded-sm bg-chart-1" />
+                          <span>Points For</span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <div className="w-3 h-3 rounded-sm bg-destructive" />
+                          <span>Points Against</span>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </CardContent>
