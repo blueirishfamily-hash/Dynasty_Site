@@ -32,13 +32,6 @@ interface MatchupData {
   week: number;
 }
 
-interface PositionalMatchup {
-  position: string;
-  slotLabel: string;
-  userPlayer: MatchupPlayer | null;
-  opponentPlayer: MatchupPlayer | null;
-}
-
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
   RB: "bg-primary text-primary-foreground",
@@ -49,7 +42,12 @@ const positionColors: Record<string, string> = {
   FLEX: "bg-teal-500 text-white",
 };
 
-const positionOrder = ["QB", "RB", "WR", "TE", "FLEX", "K", "DEF"];
+interface RosterSlot {
+  slotLabel: string;
+  position: string;
+  userPlayer: MatchupPlayer | null;
+  opponentPlayer: MatchupPlayer | null;
+}
 
 function DualSidedBar({
   userPoints,
@@ -129,16 +127,13 @@ export default function Matchup() {
     ? Math.abs(userTeam.score - opponentTeam.score).toFixed(1)
     : "0.0";
 
-  const { positionalMatchups, maxPoints } = useMemo(() => {
+  const { rosterSlots, maxPoints } = useMemo(() => {
     if (!userTeam) {
-      return { positionalMatchups: [], maxPoints: 0 };
+      return { rosterSlots: [], maxPoints: 0 };
     }
 
     const userStarters = [...userTeam.starters];
     const opponentStarters = opponentTeam ? [...opponentTeam.starters] : [];
-
-    const slotCounts: Record<string, number> = {};
-    const matchups: PositionalMatchup[] = [];
 
     const allPoints = [
       ...userStarters.map(p => p.points),
@@ -146,28 +141,49 @@ export default function Matchup() {
     ];
     const maxPts = Math.max(...allPoints, 1);
 
-    positionOrder.forEach(pos => {
-      const userPlayers = userStarters.filter(p => p.position === pos);
-      const oppPlayers = opponentStarters.filter(p => p.position === pos);
-      const maxSlots = Math.max(userPlayers.length, oppPlayers.length, 0);
+    const assignPlayersToSlots = (starters: MatchupPlayer[]): Map<string, MatchupPlayer | null> => {
+      const slots = new Map<string, MatchupPlayer | null>();
+      const slotOrder = ["QB", "RB1", "RB2", "WR1", "WR2", "TE", "FLEX1", "FLEX2", "K", "DEF"];
+      slotOrder.forEach(slot => slots.set(slot, null));
 
-      if (maxSlots === 0) return;
+      const available = [...starters];
+      
+      const findAndAssign = (slotName: string, positions: string[]) => {
+        const idx = available.findIndex(p => positions.includes(p.position));
+        if (idx !== -1) {
+          slots.set(slotName, available.splice(idx, 1)[0]);
+        }
+      };
 
-      for (let i = 0; i < maxSlots; i++) {
-        slotCounts[pos] = (slotCounts[pos] || 0) + 1;
-        const slotNum = slotCounts[pos];
-        const slotLabel = maxSlots > 1 ? `${pos}${slotNum}` : pos;
+      findAndAssign("QB", ["QB"]);
+      findAndAssign("RB1", ["RB"]);
+      findAndAssign("RB2", ["RB"]);
+      findAndAssign("WR1", ["WR"]);
+      findAndAssign("WR2", ["WR"]);
+      findAndAssign("TE", ["TE"]);
+      findAndAssign("FLEX1", ["RB", "WR", "TE"]);
+      findAndAssign("FLEX2", ["RB", "WR", "TE"]);
+      findAndAssign("K", ["K"]);
+      findAndAssign("DEF", ["DEF"]);
 
-        matchups.push({
-          position: pos,
-          slotLabel,
-          userPlayer: userPlayers[i] || null,
-          opponentPlayer: oppPlayers[i] || null,
-        });
-      }
+      return slots;
+    };
+
+    const userSlots = assignPlayersToSlots(userStarters);
+    const opponentSlots = assignPlayersToSlots(opponentStarters);
+
+    const slotOrder = ["QB", "RB1", "RB2", "WR1", "WR2", "TE", "FLEX1", "FLEX2", "K", "DEF"];
+    const slots: RosterSlot[] = slotOrder.map(slotLabel => {
+      const basePosition = slotLabel.replace(/[0-9]/g, "");
+      return {
+        slotLabel,
+        position: basePosition,
+        userPlayer: userSlots.get(slotLabel) || null,
+        opponentPlayer: opponentSlots.get(slotLabel) || null,
+      };
     });
 
-    return { positionalMatchups: matchups, maxPoints: maxPts };
+    return { rosterSlots: slots, maxPoints: maxPts };
   }, [userTeam, opponentTeam]);
 
   if (!league || !user) {
@@ -288,84 +304,66 @@ export default function Matchup() {
               <CardTitle className="font-heading text-lg">Positional Matchup</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-[1fr_auto_1fr] gap-2 mb-4">
-                <div className="text-sm font-medium text-primary text-right">
+              <div className="grid grid-cols-[minmax(100px,140px)_minmax(200px,1fr)_minmax(100px,140px)] gap-3 mb-4 items-center">
+                <div className="text-sm font-medium text-primary text-right truncate">
                   {userTeam.name}
                 </div>
-                <div className="w-12" />
-                <div className="text-sm font-medium text-muted-foreground text-left">
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground text-center">
+                  Points Comparison
+                </div>
+                <div className="text-sm font-medium text-muted-foreground text-left truncate">
                   {opponentTeam.name}
                 </div>
               </div>
 
               <div className="space-y-1">
-                {positionalMatchups.map((matchup, index) => (
-                  <div 
-                    key={`${matchup.position}-${index}`}
-                    className="grid grid-cols-[1fr_auto_1fr] gap-2 items-center py-2 border-b border-border last:border-0"
-                    data-testid={`matchup-row-${matchup.slotLabel}`}
-                  >
-                    <div className="flex items-center justify-end gap-2">
-                      <div className="text-right min-w-0 flex-1">
-                        <p className="text-sm font-medium truncate">
-                          {matchup.userPlayer?.name || "—"}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {matchup.userPlayer?.team || ""}
-                        </p>
-                      </div>
-                      <span className="text-sm font-bold tabular-nums w-12 text-right">
-                        {(matchup.userPlayer?.points ?? 0).toFixed(1)}
-                      </span>
-                    </div>
+                {rosterSlots.map((slot, index) => {
+                  const userPts = slot.userPlayer?.points ?? 0;
+                  const oppPts = slot.opponentPlayer?.points ?? 0;
 
-                    <Badge 
-                      className={`text-[10px] px-1.5 h-5 w-12 justify-center ${positionColors[matchup.position] || "bg-muted text-muted-foreground"}`}
-                    >
-                      {matchup.slotLabel}
-                    </Badge>
-
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-bold tabular-nums w-12 text-left">
-                        {(matchup.opponentPlayer?.points ?? 0).toFixed(1)}
-                      </span>
-                      <div className="text-left min-w-0 flex-1">
-                        <p className="text-sm font-medium truncate">
-                          {matchup.opponentPlayer?.name || "—"}
-                        </p>
-                        <p className="text-xs text-muted-foreground">
-                          {matchup.opponentPlayer?.team || ""}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="mt-6 pt-4 border-t border-border">
-                <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground mb-3">
-                  Points Comparison
-                </h4>
-                <div className="space-y-2">
-                  {positionalMatchups.map((matchup, index) => (
+                  return (
                     <div 
-                      key={`bar-${matchup.position}-${index}`}
-                      className="flex items-center gap-2"
-                      data-testid={`bar-${matchup.slotLabel}`}
+                      key={`${slot.slotLabel}-${index}`}
+                      className="grid grid-cols-[minmax(100px,140px)_minmax(200px,1fr)_minmax(100px,140px)] gap-3 items-center py-2 border-b border-border last:border-0"
+                      data-testid={`matchup-row-${slot.slotLabel}`}
                     >
-                      <Badge 
-                        className={`text-[10px] px-1.5 h-5 w-12 justify-center shrink-0 ${positionColors[matchup.position] || "bg-muted text-muted-foreground"}`}
-                      >
-                        {matchup.slotLabel}
-                      </Badge>
-                      <DualSidedBar
-                        userPoints={matchup.userPlayer?.points || 0}
-                        opponentPoints={matchup.opponentPlayer?.points || 0}
-                        maxPoints={maxPoints}
-                      />
+                      <div className="flex items-center justify-end gap-2">
+                        <div className="text-right min-w-0 flex-1">
+                          <p className="text-sm font-medium truncate">
+                            {slot.userPlayer?.name || "—"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {slot.userPlayer?.team || ""}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <Badge 
+                          className={`text-[10px] px-1.5 h-5 w-14 justify-center shrink-0 ${positionColors[slot.position] || "bg-muted text-muted-foreground"}`}
+                        >
+                          {slot.slotLabel}
+                        </Badge>
+                        <DualSidedBar
+                          userPoints={userPts}
+                          opponentPoints={oppPts}
+                          maxPoints={maxPoints}
+                        />
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <div className="text-left min-w-0 flex-1">
+                          <p className="text-sm font-medium truncate">
+                            {slot.opponentPlayer?.name || "—"}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {slot.opponentPlayer?.team || ""}
+                          </p>
+                        </div>
+                      </div>
                     </div>
-                  ))}
-                </div>
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
