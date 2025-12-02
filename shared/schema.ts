@@ -136,3 +136,49 @@ export const tradeHistoryItemSchema = z.object({
   teamB: tradeTeamSchema,
 });
 export type TradeHistoryItem = z.infer<typeof tradeHistoryItemSchema>;
+
+export const ruleSuggestionSchema = z.object({
+  id: z.string(),
+  leagueId: z.string(),
+  authorId: z.string(),
+  authorName: z.string(),
+  title: z.string(),
+  description: z.string(),
+  status: z.enum(["pending", "approved", "rejected"]),
+  upvotes: z.array(z.string()),
+  downvotes: z.array(z.string()),
+  createdAt: z.number(),
+});
+export type RuleSuggestion = z.infer<typeof ruleSuggestionSchema>;
+
+export const insertRuleSuggestionSchema = ruleSuggestionSchema.omit({ 
+  id: true, 
+  upvotes: true, 
+  downvotes: true, 
+  createdAt: true,
+  status: true,
+});
+export type InsertRuleSuggestion = z.infer<typeof insertRuleSuggestionSchema>;
+
+export const awardNominationSchema = z.object({
+  id: z.string(),
+  leagueId: z.string(),
+  season: z.string(),
+  awardType: z.enum(["mvp", "roy"]),
+  playerId: z.string(),
+  playerName: z.string(),
+  playerPosition: z.string(),
+  playerTeam: z.string().nullable(),
+  nominatedBy: z.string(),
+  nominatedByName: z.string(),
+  votes: z.array(z.string()),
+  createdAt: z.number(),
+});
+export type AwardNomination = z.infer<typeof awardNominationSchema>;
+
+export const insertAwardNominationSchema = awardNominationSchema.omit({ 
+  id: true, 
+  votes: true, 
+  createdAt: true 
+});
+export type InsertAwardNomination = z.infer<typeof insertAwardNominationSchema>;
