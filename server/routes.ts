@@ -661,6 +661,169 @@ export async function registerRoutes(
     }
   });
 
+  // Playoff predictor - simulate remaining season
+  app.get("/api/sleeper/league/:leagueId/playoff-predictions", async (req, res) => {
+    try {
+      const [rosters, users, league, nflState] = await Promise.all([
+        getLeagueRosters(req.params.leagueId),
+        getLeagueUsers(req.params.leagueId),
+        getLeague(req.params.leagueId),
+        getNFLState(),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const playoffTeams = league.settings.playoff_teams || 6;
+      const playoffWeekStart = (league.settings as any).playoff_week_start || 15;
+      const currentWeek = nflState.week;
+      const regularSeasonWeeks = playoffWeekStart - 1;
+      const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek);
+
+      // Build team data with current standings
+      const teams = rosters.map(roster => {
+        const user = userMap.get(roster.owner_id);
+        const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
+        const gamesPlayed = roster.settings.wins + roster.settings.losses + roster.settings.ties;
+        const avgPoints = gamesPlayed > 0 ? pointsFor / gamesPlayed : 100;
+        
+        return {
+          rosterId: roster.roster_id,
+          ownerId: roster.owner_id,
+          name: teamName,
+          initials: getTeamInitials(teamName),
+          wins: roster.settings.wins,
+          losses: roster.settings.losses,
+          ties: roster.settings.ties,
+          pointsFor,
+          avgPoints,
+          stdDev: avgPoints * 0.2, // Estimate standard deviation as 20% of average
+          division: (roster as any).settings?.division || 0,
+        };
+      });
+
+      // Check if league has divisions
+      const divisions = new Set(teams.map(t => t.division));
+      const hasDivisions = divisions.size > 1;
+
+      // Monte Carlo simulation
+      const SIMULATIONS = 10000;
+      const results = new Map<number, { 
+        oneSeed: number; 
+        divisionWinner: number; 
+        makePlayoffs: number;
+        avgFinalWins: number;
+      }>();
+
+      teams.forEach(t => results.set(t.rosterId, { 
+        oneSeed: 0, 
+        divisionWinner: 0, 
+        makePlayoffs: 0,
+        avgFinalWins: 0,
+      }));
+
+      for (let sim = 0; sim < SIMULATIONS; sim++) {
+        // Simulate remaining games for each team
+        const simResults = teams.map(team => {
+          let simWins = team.wins;
+          
+          // Simulate remaining games
+          for (let week = 0; week < remainingWeeks; week++) {
+            // Random opponent strength factor
+            const opponentStrength = 0.4 + Math.random() * 0.4; // 0.4 to 0.8
+            const winProb = team.avgPoints / (team.avgPoints + opponentStrength * 100);
+            
+            if (Math.random() < winProb) {
+              simWins++;
+            }
+          }
+
+          // Add some randomness to points for (for tiebreaker)
+          const simPointsFor = team.pointsFor + (Math.random() - 0.5) * team.avgPoints * remainingWeeks;
+
+          return {
+            ...team,
+            simWins,
+            simPointsFor,
+          };
+        });
+
+        // Sort by wins, then points for
+        simResults.sort((a, b) => {
+          if (b.simWins !== a.simWins) return b.simWins - a.simWins;
+          return b.simPointsFor - a.simPointsFor;
+        });
+
+        // Track 1-seed
+        const current1 = results.get(simResults[0].rosterId)!;
+        current1.oneSeed++;
+
+        // Track division winners if applicable
+        if (hasDivisions) {
+          const divisionWinners = new Set<number>();
+          divisions.forEach(div => {
+            const divTeams = simResults.filter(t => t.division === div);
+            if (divTeams.length > 0) {
+              divisionWinners.add(divTeams[0].rosterId);
+            }
+          });
+          divisionWinners.forEach(rosterId => {
+            const r = results.get(rosterId)!;
+            r.divisionWinner++;
+          });
+        }
+
+        // Track playoff makers
+        for (let i = 0; i < Math.min(playoffTeams, simResults.length); i++) {
+          const r = results.get(simResults[i].rosterId)!;
+          r.makePlayoffs++;
+        }
+
+        // Track average wins
+        simResults.forEach(sr => {
+          const r = results.get(sr.rosterId)!;
+          r.avgFinalWins += sr.simWins;
+        });
+      }
+
+      // Convert to percentages and format response
+      const predictions = teams
+        .map(team => {
+          const r = results.get(team.rosterId)!;
+          return {
+            rosterId: team.rosterId,
+            ownerId: team.ownerId,
+            name: team.name,
+            initials: team.initials,
+            currentWins: team.wins,
+            currentLosses: team.losses,
+            pointsFor: team.pointsFor,
+            division: hasDivisions ? team.division : undefined,
+            oneSeedPct: Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10,
+            divisionWinnerPct: hasDivisions 
+              ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
+              : undefined,
+            makePlayoffsPct: Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10,
+            projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
+          };
+        })
+        .sort((a, b) => b.makePlayoffsPct - a.makePlayoffsPct);
+
+      res.json({
+        predictions,
+        playoffTeams,
+        remainingWeeks,
+        currentWeek,
+        hasDivisions,
+        simulationCount: SIMULATIONS,
+      });
+    } catch (error) {
+      console.error("Error calculating playoff predictions:", error);
+      res.status(500).json({ error: "Failed to calculate playoff predictions" });
+    }
+  });
+
   // Get all players (for search/lookup)
   app.get("/api/sleeper/players", async (_req, res) => {
     try {
