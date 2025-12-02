@@ -520,10 +520,17 @@ export async function registerRoutes(
         // Calculate projected team total from starters
         const projectedTotal = starters.reduce((sum, p) => sum + p.projectedPoints, 0);
 
+        // Build avatar URL from Sleeper CDN
+        const avatarId = user?.avatar;
+        const avatarUrl = avatarId 
+          ? `https://sleepercdn.com/avatars/thumbs/${avatarId}`
+          : null;
+
         return {
           rosterId: roster.roster_id,
           name: teamName,
           initials: getTeamInitials(teamName),
+          avatar: avatarUrl,
           score: matchup.points || 0,
           projectedTotal: Math.round(projectedTotal * 10) / 10,
           record: `${roster.settings.wins}-${roster.settings.losses}`,

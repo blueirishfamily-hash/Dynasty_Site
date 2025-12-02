@@ -4,7 +4,7 @@ import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Tooltip,
@@ -29,6 +29,7 @@ interface MatchupTeam {
   rosterId: number;
   name: string;
   initials: string;
+  avatar: string | null;
   score: number;
   projectedTotal: number;
   record: string;
@@ -259,6 +260,7 @@ export default function Matchup() {
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
                   <Avatar className="w-16 h-16 ring-2 ring-primary ring-offset-2 ring-offset-background">
+                    {userTeam.avatar && <AvatarImage src={userTeam.avatar} alt={userTeam.name} />}
                     <AvatarFallback className="bg-primary text-primary-foreground text-xl font-bold">
                       {userTeam.initials}
                     </AvatarFallback>
@@ -297,6 +299,7 @@ export default function Matchup() {
                     <p className="text-sm text-muted-foreground">{opponentTeam.record}</p>
                   </div>
                   <Avatar className="w-16 h-16">
+                    {opponentTeam.avatar && <AvatarImage src={opponentTeam.avatar} alt={opponentTeam.name} />}
                     <AvatarFallback className="bg-muted text-muted-foreground text-xl font-bold">
                       {opponentTeam.initials}
                     </AvatarFallback>
@@ -324,11 +327,11 @@ export default function Matchup() {
               <CardTitle className="font-heading text-lg">Positional Matchup</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-[minmax(100px,140px)_minmax(200px,1fr)_minmax(100px,140px)] gap-3 mb-4 items-center">
+              <div className="grid grid-cols-[minmax(120px,160px)_minmax(200px,1fr)_minmax(120px,160px)] gap-3 mb-4 items-center">
                 <div className="text-right">
                   <p className="text-sm font-medium text-primary truncate">{userTeam.name}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
+                    Proj · <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
                   </p>
                 </div>
                 <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground text-center">
@@ -337,7 +340,7 @@ export default function Matchup() {
                 <div className="text-left">
                   <p className="text-sm font-medium text-muted-foreground truncate">{opponentTeam.name}</p>
                   <p className="text-[10px] text-muted-foreground">
-                    <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
+                    Proj · <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
                   </p>
                 </div>
               </div>
@@ -350,7 +353,7 @@ export default function Matchup() {
                   return (
                     <div 
                       key={`${slot.slotLabel}-${index}`}
-                      className="grid grid-cols-[minmax(100px,140px)_minmax(200px,1fr)_minmax(100px,140px)] gap-3 items-center py-2 border-b border-border last:border-0"
+                      className="grid grid-cols-[minmax(120px,160px)_minmax(200px,1fr)_minmax(120px,160px)] gap-3 items-center py-2 border-b border-border last:border-0"
                       data-testid={`matchup-row-${slot.slotLabel}`}
                     >
                       <div className="flex items-center justify-end gap-2">
@@ -364,14 +367,17 @@ export default function Matchup() {
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <span className="tabular-nums cursor-help">
+                                    <span className="text-foreground">{slot.userPlayer.projectedPoints}</span>
+                                    <span className="mx-1">·</span>
                                     <span className="text-chart-2">{slot.userPlayer.boom}</span>
                                     <span className="mx-0.5">/</span>
                                     <span className="text-destructive">{slot.userPlayer.bust}</span>
                                   </span>
                                 </TooltipTrigger>
                                 <TooltipContent side="top" className="text-xs">
-                                  <p className="font-medium">Boom/Bust Range</p>
-                                  <p>Based on {slot.userPlayer.gamesPlayed >= 3 ? `${slot.userPlayer.gamesPlayed} games` : slot.userPlayer.gamesPlayed > 0 ? `${slot.userPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
+                                  <p className="font-medium">Projected: {slot.userPlayer.projectedPoints} pts</p>
+                                  <p>Boom/Bust Range: {slot.userPlayer.boom} / {slot.userPlayer.bust}</p>
+                                  <p className="text-muted-foreground">Based on {slot.userPlayer.gamesPlayed >= 3 ? `${slot.userPlayer.gamesPlayed} games` : slot.userPlayer.gamesPlayed > 0 ? `${slot.userPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
                                 </TooltipContent>
                               </Tooltip>
                             )}
@@ -402,14 +408,17 @@ export default function Matchup() {
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <span className="tabular-nums cursor-help">
+                                    <span className="text-foreground">{slot.opponentPlayer.projectedPoints}</span>
+                                    <span className="mx-1">·</span>
                                     <span className="text-chart-2">{slot.opponentPlayer.boom}</span>
                                     <span className="mx-0.5">/</span>
                                     <span className="text-destructive">{slot.opponentPlayer.bust}</span>
                                   </span>
                                 </TooltipTrigger>
                                 <TooltipContent side="top" className="text-xs">
-                                  <p className="font-medium">Boom/Bust Range</p>
-                                  <p>Based on {slot.opponentPlayer.gamesPlayed >= 3 ? `${slot.opponentPlayer.gamesPlayed} games` : slot.opponentPlayer.gamesPlayed > 0 ? `${slot.opponentPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
+                                  <p className="font-medium">Projected: {slot.opponentPlayer.projectedPoints} pts</p>
+                                  <p>Boom/Bust Range: {slot.opponentPlayer.boom} / {slot.opponentPlayer.bust}</p>
+                                  <p className="text-muted-foreground">Based on {slot.opponentPlayer.gamesPlayed >= 3 ? `${slot.opponentPlayer.gamesPlayed} games` : slot.opponentPlayer.gamesPlayed > 0 ? `${slot.opponentPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
                                 </TooltipContent>
                               </Tooltip>
                             )}
