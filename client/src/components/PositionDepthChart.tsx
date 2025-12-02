@@ -83,14 +83,14 @@ export default function PositionDepthChart({ depthData }: PositionDepthChartProp
           </div>
         </div>
 
-        <div className="w-16 text-right flex-shrink-0">
+        <div className="w-24 text-right flex-shrink-0">
           <span
             className={`text-sm font-semibold tabular-nums ${
               isAboveMedian ? "text-primary" : "text-destructive"
             }`}
           >
             {isAboveMedian ? "+" : ""}
-            {player.percentAboveMedian.toFixed(0)}%
+            {(player.points - player.medianPoints).toFixed(1)} pts
           </span>
         </div>
       </div>

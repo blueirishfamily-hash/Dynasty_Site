@@ -438,16 +438,17 @@ export async function registerRoutes(
         });
       }
 
-      // 2024 NFL bye week schedule
+      // 2025 NFL bye week schedule
       const byeWeeks: Record<number, string[]> = {
-        5: ["DET", "LAC", "PHI", "TEN"],
-        6: ["KC", "LAR", "MIA", "MIN"],
-        7: ["CHI", "DAL"],
-        9: ["PIT", "SF"],
-        10: ["CLE", "GB", "LV", "SEA"],
-        11: ["ARI", "CAR", "NYG", "TB"],
-        12: ["ATL", "BUF", "CIN", "JAX", "NO", "NYJ"],
-        14: ["BAL", "DEN", "HOU", "IND", "NE", "WAS"],
+        5: ["ATL", "CHI", "GB", "PIT"],
+        6: ["HOU", "MIN"],
+        7: ["BAL", "BUF"],
+        8: ["ARI", "DET", "JAX", "LV", "LAR", "SEA"],
+        9: ["CLE", "NYJ", "PHI", "TB"],
+        10: ["CIN", "DAL", "KC", "TEN"],
+        11: ["IND", "NO"],
+        12: ["DEN", "LAC", "MIA", "WAS"],
+        14: ["CAR", "NE", "NYG", "SF"],
       };
 
       // Status values that mean the player won't play
