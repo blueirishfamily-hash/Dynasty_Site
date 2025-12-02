@@ -43,6 +43,13 @@ Preferred communication style: Simple, everyday language.
 - Draft board for future draft capital visualization (3 rounds, with historical data)
 - League Hub for governance (rule suggestions and award voting)
 - Real-time data syncing with Sleeper API
+- Unified matchup view with positional comparison and dual-sided bar graphs
+- Personalized boom-bust metrics using 8-week rolling window of actual player performance
+- Playoff predictor with points standings impact analysis:
+  - PF Rank showing each team's points-for standings position
+  - Points gaps to adjacent teams (behind/ahead)
+  - Impact analysis showing playoff odds changes if moving up/down in points standings
+  - Monte Carlo simulation with 10,000 iterations
 
 ### Backend Architecture
 

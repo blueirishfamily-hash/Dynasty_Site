@@ -1098,6 +1098,21 @@ export async function registerRoutes(
         ? new Set(Array.from({ length: numDivisions }, (_, i) => i + 1))
         : new Set();
 
+      // Calculate current points standings
+      const pointsSortedTeams = [...teams].sort((a, b) => b.pointsFor - a.pointsFor);
+      const pointsRankMap = new Map<number, number>();
+      pointsSortedTeams.forEach((team, idx) => {
+        pointsRankMap.set(team.rosterId, idx + 1);
+      });
+
+      // Calculate points gaps to adjacent teams
+      const pointsGapMap = new Map<number, { behind: number | null; ahead: number | null }>();
+      pointsSortedTeams.forEach((team, idx) => {
+        const behind = idx > 0 ? pointsSortedTeams[idx - 1].pointsFor - team.pointsFor : null;
+        const ahead = idx < pointsSortedTeams.length - 1 ? team.pointsFor - pointsSortedTeams[idx + 1].pointsFor : null;
+        pointsGapMap.set(team.rosterId, { behind, ahead });
+      });
+
       // Monte Carlo simulation
       const SIMULATIONS = 10000;
       const results = new Map<number, { 
@@ -1105,6 +1120,9 @@ export async function registerRoutes(
         divisionWinner: number; 
         makePlayoffs: number;
         avgFinalWins: number;
+        // Points standings impact simulations
+        makePlayoffsWithPointsBoost: number; // If team moves up 1 in points standings
+        makePlayoffsWithPointsDrop: number; // If team moves down 1 in points standings
       }>();
 
       teams.forEach(t => results.set(t.rosterId, { 
@@ -1112,6 +1130,8 @@ export async function registerRoutes(
         divisionWinner: 0, 
         makePlayoffs: 0,
         avgFinalWins: 0,
+        makePlayoffsWithPointsBoost: 0,
+        makePlayoffsWithPointsDrop: 0,
       }));
 
       for (let sim = 0; sim < SIMULATIONS; sim++) {
@@ -1183,6 +1203,79 @@ export async function registerRoutes(
           const r = results.get(sr.rosterId)!;
           r.avgFinalWins += sr.simWins;
         });
+
+        // Simulate points standings impact scenarios
+        // For each team, simulate what happens if they had slightly more/less points
+        teams.forEach(team => {
+          const currentPointsRank = pointsRankMap.get(team.rosterId) || 1;
+          const gaps = pointsGapMap.get(team.rosterId) || { behind: null, ahead: null };
+          
+          // Scenario: Team moves UP one spot in points standings (boost)
+          if (gaps.behind !== null && currentPointsRank > 1) {
+            const pointsBoost = gaps.behind!;
+            const boostedResults = simResults.map(sr => ({
+              ...sr,
+              simPointsFor: sr.rosterId === team.rosterId 
+                ? sr.simPointsFor + pointsBoost + 1 // Just enough to pass the team ahead
+                : sr.simPointsFor,
+            }));
+            
+            boostedResults.sort((a, b) => {
+              if (b.simWins !== a.simWins) return b.simWins - a.simWins;
+              if (Math.abs(b.simPointsFor - a.simPointsFor) > 0.01) return b.simPointsFor - a.simPointsFor;
+              const aH2H = getH2HWins(a.rosterId, b.rosterId);
+              const bH2H = getH2HWins(b.rosterId, a.rosterId);
+              return bH2H - aH2H;
+            });
+            
+            for (let i = 0; i < Math.min(playoffTeams, boostedResults.length); i++) {
+              if (boostedResults[i].rosterId === team.rosterId) {
+                const r = results.get(team.rosterId)!;
+                r.makePlayoffsWithPointsBoost++;
+                break;
+              }
+            }
+          } else {
+            // Already at top, same as current
+            const r = results.get(team.rosterId)!;
+            if (simResults.findIndex(sr => sr.rosterId === team.rosterId) < playoffTeams) {
+              r.makePlayoffsWithPointsBoost++;
+            }
+          }
+          
+          // Scenario: Team moves DOWN one spot in points standings (drop)
+          if (gaps.ahead !== null && currentPointsRank < teams.length) {
+            const pointsDrop = gaps.ahead!;
+            const droppedResults = simResults.map(sr => ({
+              ...sr,
+              simPointsFor: sr.rosterId === team.rosterId 
+                ? sr.simPointsFor - pointsDrop - 1 // Just enough to fall behind the team below
+                : sr.simPointsFor,
+            }));
+            
+            droppedResults.sort((a, b) => {
+              if (b.simWins !== a.simWins) return b.simWins - a.simWins;
+              if (Math.abs(b.simPointsFor - a.simPointsFor) > 0.01) return b.simPointsFor - a.simPointsFor;
+              const aH2H = getH2HWins(a.rosterId, b.rosterId);
+              const bH2H = getH2HWins(b.rosterId, a.rosterId);
+              return bH2H - aH2H;
+            });
+            
+            for (let i = 0; i < Math.min(playoffTeams, droppedResults.length); i++) {
+              if (droppedResults[i].rosterId === team.rosterId) {
+                const r = results.get(team.rosterId)!;
+                r.makePlayoffsWithPointsDrop++;
+                break;
+              }
+            }
+          } else {
+            // Already at bottom, same as current
+            const r = results.get(team.rosterId)!;
+            if (simResults.findIndex(sr => sr.rosterId === team.rosterId) < playoffTeams) {
+              r.makePlayoffsWithPointsDrop++;
+            }
+          }
+        });
       }
 
       // Convert to percentages and format response
@@ -1190,6 +1283,13 @@ export async function registerRoutes(
       const predictions = teams
         .map(team => {
           const r = results.get(team.rosterId)!;
+          const pointsRank = pointsRankMap.get(team.rosterId) || 1;
+          const gaps = pointsGapMap.get(team.rosterId) || { behind: null, ahead: null };
+          
+          const currentPlayoffPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
+          const boostPlayoffPct = Math.round((r.makePlayoffsWithPointsBoost / SIMULATIONS) * 1000) / 10;
+          const dropPlayoffPct = Math.round((r.makePlayoffsWithPointsDrop / SIMULATIONS) * 1000) / 10;
+          
           return {
             rosterId: team.rosterId,
             ownerId: team.ownerId,
@@ -1198,13 +1298,20 @@ export async function registerRoutes(
             currentWins: team.wins,
             currentLosses: team.losses,
             pointsFor: team.pointsFor,
+            pointsRank,
+            pointsBehind: gaps.behind !== null ? Math.round(gaps.behind * 10) / 10 : null,
+            pointsAhead: gaps.ahead !== null ? Math.round(gaps.ahead * 10) / 10 : null,
             division: hasDivisions ? team.division : undefined,
             oneSeedPct: Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10,
             divisionWinnerPct: hasDivisions 
               ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
               : undefined,
-            makePlayoffsPct: Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10,
+            makePlayoffsPct: currentPlayoffPct,
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
+            // Points standings impact
+            playoffPctIfPointsUp: boostPlayoffPct,
+            playoffPctIfPointsDown: dropPlayoffPct,
+            pointsImpact: Math.round((boostPlayoffPct - dropPlayoffPct) * 10) / 10, // Sensitivity to points changes
           };
         })
         .sort((a, b) => {

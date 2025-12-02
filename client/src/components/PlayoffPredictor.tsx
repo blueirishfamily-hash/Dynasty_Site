@@ -18,7 +18,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Trophy, Target, Medal, TrendingUp, Info } from "lucide-react";
+import { Trophy, Target, Medal, TrendingUp, Info, ArrowUp, ArrowDown, Hash } from "lucide-react";
 
 interface TeamPrediction {
   rosterId: number;
@@ -28,11 +28,17 @@ interface TeamPrediction {
   currentWins: number;
   currentLosses: number;
   pointsFor: number;
+  pointsRank: number;
+  pointsBehind: number | null;
+  pointsAhead: number | null;
   division?: number;
   oneSeedPct: number;
   divisionWinnerPct?: number;
   makePlayoffsPct: number;
   projectedWins: number;
+  playoffPctIfPointsUp: number;
+  playoffPctIfPointsDown: number;
+  pointsImpact: number;
 }
 
 interface PlayoffPredictionData {
@@ -251,6 +257,35 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       Playoffs
                     </div>
                   </TableHead>
+                  <TableHead>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1 cursor-help">
+                          <Hash className="w-3 h-3" />
+                          PF Rank
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Points For standings rank</p>
+                        <p className="text-xs text-muted-foreground">Used as tiebreaker</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableHead>
+                  <TableHead>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1 cursor-help">
+                          <ArrowUp className="w-3 h-3 text-chart-2" />
+                          <ArrowDown className="w-3 h-3 text-destructive" />
+                          Impact
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>How playoff odds change</p>
+                        <p className="text-xs text-muted-foreground">if moving up/down in PF standings</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -315,6 +350,69 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                           value={team.makePlayoffsPct}
                           colorClass={getProbabilityColor(team.makePlayoffsPct)}
                         />
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-1 cursor-help">
+                              <Badge variant="outline" className="tabular-nums">
+                                #{team.pointsRank}
+                              </Badge>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="font-medium">{team.pointsFor.toFixed(1)} PF</p>
+                            {team.pointsBehind !== null && (
+                              <p className="text-xs">
+                                <span className="text-chart-2">{team.pointsBehind.toFixed(1)}</span> pts behind #{team.pointsRank - 1}
+                              </p>
+                            )}
+                            {team.pointsAhead !== null && (
+                              <p className="text-xs">
+                                <span className="text-destructive">{team.pointsAhead.toFixed(1)}</span> pts ahead of #{team.pointsRank + 1}
+                              </p>
+                            )}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-2 cursor-help">
+                              <div className="flex flex-col text-xs tabular-nums">
+                                <span className="text-chart-2 flex items-center gap-0.5">
+                                  <ArrowUp className="w-3 h-3" />
+                                  {team.playoffPctIfPointsUp.toFixed(1)}%
+                                </span>
+                                <span className="text-destructive flex items-center gap-0.5">
+                                  <ArrowDown className="w-3 h-3" />
+                                  {team.playoffPctIfPointsDown.toFixed(1)}%
+                                </span>
+                              </div>
+                              {team.pointsImpact > 0 && (
+                                <Badge 
+                                  variant="outline" 
+                                  className={`text-xs ${team.pointsImpact >= 5 ? "border-chart-3 text-chart-3" : ""}`}
+                                >
+                                  {team.pointsImpact >= 5 ? "!" : ""}
+                                  Δ{team.pointsImpact.toFixed(1)}%
+                                </Badge>
+                              )}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="font-medium">Points Standings Impact</p>
+                            <p className="text-xs">
+                              If you move <span className="text-chart-2">UP</span> 1 spot: {team.playoffPctIfPointsUp.toFixed(1)}% playoff odds
+                            </p>
+                            <p className="text-xs">
+                              If you move <span className="text-destructive">DOWN</span> 1 spot: {team.playoffPctIfPointsDown.toFixed(1)}% playoff odds
+                            </p>
+                            <p className="text-xs mt-1 text-muted-foreground">
+                              Swing of {team.pointsImpact.toFixed(1)}% between scenarios
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
                       </TableCell>
                     </TableRow>
                   );
