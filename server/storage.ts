@@ -1,37 +1,55 @@
-import { type User, type InsertUser } from "@shared/schema";
 import { randomUUID } from "crypto";
 
-// modify the interface with any CRUD methods
-// you might need
+export interface UserSession {
+  id: string;
+  sleeperUsername: string;
+  sleeperId: string;
+  selectedLeagueId: string | null;
+  createdAt: number;
+}
 
 export interface IStorage {
-  getUser(id: string): Promise<User | undefined>;
-  getUserByUsername(username: string): Promise<User | undefined>;
-  createUser(user: InsertUser): Promise<User>;
+  getSession(id: string): Promise<UserSession | undefined>;
+  createSession(sleeperUsername: string, sleeperId: string): Promise<UserSession>;
+  updateSessionLeague(sessionId: string, leagueId: string): Promise<UserSession | undefined>;
+  deleteSession(id: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
-  private users: Map<string, User>;
+  private sessions: Map<string, UserSession>;
 
   constructor() {
-    this.users = new Map();
+    this.sessions = new Map();
   }
 
-  async getUser(id: string): Promise<User | undefined> {
-    return this.users.get(id);
+  async getSession(id: string): Promise<UserSession | undefined> {
+    return this.sessions.get(id);
   }
 
-  async getUserByUsername(username: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(
-      (user) => user.username === username,
-    );
-  }
-
-  async createUser(insertUser: InsertUser): Promise<User> {
+  async createSession(sleeperUsername: string, sleeperId: string): Promise<UserSession> {
     const id = randomUUID();
-    const user: User = { ...insertUser, id };
-    this.users.set(id, user);
-    return user;
+    const session: UserSession = {
+      id,
+      sleeperUsername,
+      sleeperId,
+      selectedLeagueId: null,
+      createdAt: Date.now(),
+    };
+    this.sessions.set(id, session);
+    return session;
+  }
+
+  async updateSessionLeague(sessionId: string, leagueId: string): Promise<UserSession | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (session) {
+      session.selectedLeagueId = leagueId;
+      this.sessions.set(sessionId, session);
+    }
+    return session;
+  }
+
+  async deleteSession(id: string): Promise<void> {
+    this.sessions.delete(id);
   }
 }
 
