@@ -6,7 +6,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronLeft, ChevronRight, Trophy } from "lucide-react";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { ChevronLeft, ChevronRight, Trophy, Info } from "lucide-react";
 
 interface MatchupPlayer {
   id: string;
@@ -16,6 +21,7 @@ interface MatchupPlayer {
   points: number;
   boom: number;
   bust: number;
+  gamesPlayed: number;
 }
 
 interface MatchupTeam {
@@ -343,11 +349,19 @@ export default function Matchup() {
                           <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
                             <span>{slot.userPlayer?.team || ""}</span>
                             {slot.userPlayer && (
-                              <span className="tabular-nums">
-                                <span className="text-chart-2">{slot.userPlayer.boom}</span>
-                                <span className="mx-0.5">/</span>
-                                <span className="text-destructive">{slot.userPlayer.bust}</span>
-                              </span>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="tabular-nums cursor-help">
+                                    <span className="text-chart-2">{slot.userPlayer.boom}</span>
+                                    <span className="mx-0.5">/</span>
+                                    <span className="text-destructive">{slot.userPlayer.bust}</span>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="text-xs">
+                                  <p className="font-medium">Boom/Bust Range</p>
+                                  <p>Based on {slot.userPlayer.gamesPlayed >= 3 ? `${slot.userPlayer.gamesPlayed} games` : slot.userPlayer.gamesPlayed > 0 ? `${slot.userPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
+                                </TooltipContent>
+                              </Tooltip>
                             )}
                           </div>
                         </div>
@@ -373,11 +387,19 @@ export default function Matchup() {
                           </p>
                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
                             {slot.opponentPlayer && (
-                              <span className="tabular-nums">
-                                <span className="text-chart-2">{slot.opponentPlayer.boom}</span>
-                                <span className="mx-0.5">/</span>
-                                <span className="text-destructive">{slot.opponentPlayer.bust}</span>
-                              </span>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <span className="tabular-nums cursor-help">
+                                    <span className="text-chart-2">{slot.opponentPlayer.boom}</span>
+                                    <span className="mx-0.5">/</span>
+                                    <span className="text-destructive">{slot.opponentPlayer.bust}</span>
+                                  </span>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="text-xs">
+                                  <p className="font-medium">Boom/Bust Range</p>
+                                  <p>Based on {slot.opponentPlayer.gamesPlayed >= 3 ? `${slot.opponentPlayer.gamesPlayed} games` : slot.opponentPlayer.gamesPlayed > 0 ? `${slot.opponentPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
+                                </TooltipContent>
+                              </Tooltip>
                             )}
                             <span>{slot.opponentPlayer?.team || ""}</span>
                           </div>

@@ -338,17 +338,26 @@ export async function registerRoutes(
     }
   });
 
+  // Cache for player weekly stats (keyed by season)
+  const playerStatsCache: Map<string, { 
+    data: Map<string, number[]>; // playerId -> array of weekly points
+    timestamp: number;
+  }> = new Map();
+  const STATS_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
   // Get detailed matchup for a user's team with full roster information
   app.get("/api/sleeper/league/:leagueId/matchup-detail", async (req, res) => {
     try {
       const userId = req.query.userId as string;
       const week = parseInt(req.query.week as string) || 1;
       
-      const [matchups, rosters, users, players] = await Promise.all([
+      const [matchups, rosters, users, players, nflState, league] = await Promise.all([
         getLeagueMatchups(req.params.leagueId, week),
         getLeagueRosters(req.params.leagueId),
         getLeagueUsers(req.params.leagueId),
         getAllPlayers(),
+        getNFLState(),
+        getLeague(req.params.leagueId),
       ]);
 
       const userMap = new Map<string, SleeperLeagueUser>();
@@ -371,38 +380,113 @@ export async function registerRoutes(
         m => m.matchup_id === userMatchup.matchup_id && m.roster_id !== userRoster.roster_id
       );
 
-      // Boom-bust variance factors by position (based on typical fantasy football volatility)
-      // Higher values = more volatile/boom-bust potential
-      const positionVariance: Record<string, { boomMultiplier: number; bustMultiplier: number }> = {
-        QB: { boomMultiplier: 1.35, bustMultiplier: 0.65 },
-        RB: { boomMultiplier: 1.50, bustMultiplier: 0.50 },
-        WR: { boomMultiplier: 1.55, bustMultiplier: 0.45 },
-        TE: { boomMultiplier: 1.60, bustMultiplier: 0.40 },
-        K: { boomMultiplier: 1.30, bustMultiplier: 0.70 },
-        DEF: { boomMultiplier: 1.45, bustMultiplier: 0.55 },
+      // Collect all player IDs from both teams for stats lookup
+      const allPlayerIds = new Set<string>();
+      const addPlayers = (matchup: typeof userMatchup, roster: SleeperRoster) => {
+        (matchup.starters || []).forEach(pid => allPlayerIds.add(pid));
+        (roster.players || []).forEach(pid => allPlayerIds.add(pid));
+      };
+      addPlayers(userMatchup, userRoster);
+      if (opponentMatchup && rosterMap.get(opponentMatchup.roster_id)) {
+        addPlayers(opponentMatchup, rosterMap.get(opponentMatchup.roster_id)!);
+      }
+
+      // Fetch historical player stats for personalized boom-bust calculation
+      const season = league.season || nflState.season;
+      const currentWeek = nflState.week;
+      const weeksToFetch = Math.min(currentWeek, 8); // Last 8 weeks max
+      
+      // Check cache
+      const cacheKey = `${season}`;
+      const cached = playerStatsCache.get(cacheKey);
+      let playerWeeklyPoints: Map<string, number[]>;
+      
+      if (cached && Date.now() - cached.timestamp < STATS_CACHE_TTL) {
+        playerWeeklyPoints = cached.data;
+      } else {
+        // Fetch weekly stats for the season
+        playerWeeklyPoints = new Map();
+        const startWeek = Math.max(1, currentWeek - weeksToFetch + 1);
+        
+        const weeklyStatsPromises = [];
+        for (let w = startWeek; w <= currentWeek; w++) {
+          weeklyStatsPromises.push(
+            getPlayerStats(season, w).catch(() => ({}))
+          );
+        }
+        
+        const weeklyStatsResults = await Promise.all(weeklyStatsPromises);
+        
+        // Aggregate points per player across weeks
+        weeklyStatsResults.forEach((weekStats) => {
+          Object.entries(weekStats).forEach(([playerId, stats]) => {
+            // Use pts_ppr if available, otherwise calculate from common stats
+            const pts = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
+            if (pts > 0) {
+              if (!playerWeeklyPoints.has(playerId)) {
+                playerWeeklyPoints.set(playerId, []);
+              }
+              playerWeeklyPoints.get(playerId)!.push(pts);
+            }
+          });
+        });
+        
+        // Update cache
+        playerStatsCache.set(cacheKey, {
+          data: playerWeeklyPoints,
+          timestamp: Date.now(),
+        });
+      }
+
+      // Position baseline stats for fallback
+      const positionBaselines: Record<string, { mean: number; stdDev: number }> = {
+        QB: { mean: 18, stdDev: 6 },
+        RB: { mean: 12, stdDev: 6 },
+        WR: { mean: 11, stdDev: 6 },
+        TE: { mean: 8, stdDev: 5 },
+        K: { mean: 8, stdDev: 3 },
+        DEF: { mean: 7, stdDev: 4 },
       };
 
-      // Position baseline averages for boom/bust calculations when no points yet
-      const positionBaselines: Record<string, number> = {
-        QB: 18,
-        RB: 12,
-        WR: 11,
-        TE: 8,
-        K: 8,
-        DEF: 7,
+      // Helper to calculate mean and standard deviation
+      const calcStats = (values: number[]): { mean: number; stdDev: number } => {
+        if (values.length === 0) return { mean: 0, stdDev: 0 };
+        const mean = values.reduce((a, b) => a + b, 0) / values.length;
+        if (values.length === 1) return { mean, stdDev: mean * 0.3 }; // Estimate stdDev as 30% of mean for single game
+        const variance = values.reduce((sum, v) => sum + Math.pow(v - mean, 2), 0) / values.length;
+        return { mean, stdDev: Math.sqrt(variance) };
       };
 
       const buildPlayerInfo = (playerId: string, points: number = 0) => {
         const player = players[playerId];
         const position = player?.position || "FLEX";
-        const variance = positionVariance[position] || { boomMultiplier: 1.45, bustMultiplier: 0.55 };
+        const positionBase = positionBaselines[position] || { mean: 10, stdDev: 5 };
         
-        // Use actual points if available, otherwise use position baseline
-        const basePoints = points > 0 ? points : (positionBaselines[position] || 10);
+        // Get player's historical points
+        const weeklyPoints = playerWeeklyPoints.get(playerId) || [];
+        const gamesPlayed = weeklyPoints.length;
         
-        // Calculate boom (ceiling) and bust (floor) based on position variance
-        const boom = Math.round(basePoints * variance.boomMultiplier * 10) / 10;
-        const bust = Math.round(basePoints * variance.bustMultiplier * 10) / 10;
+        let boom: number;
+        let bust: number;
+        
+        if (gamesPlayed >= 3) {
+          // Sufficient data - use player's actual stats
+          const { mean, stdDev } = calcStats(weeklyPoints);
+          boom = Math.round((mean + 1.25 * stdDev) * 10) / 10;
+          bust = Math.max(0, Math.round((mean - 1.0 * stdDev) * 10) / 10);
+        } else if (gamesPlayed > 0) {
+          // Limited data - blend player stats with position baseline
+          const { mean: playerMean, stdDev: playerStdDev } = calcStats(weeklyPoints);
+          const blendWeight = gamesPlayed / 3; // 0.33 for 1 game, 0.67 for 2 games
+          const blendedMean = playerMean * blendWeight + positionBase.mean * (1 - blendWeight);
+          const blendedStdDev = playerStdDev * blendWeight + positionBase.stdDev * (1 - blendWeight);
+          boom = Math.round((blendedMean + 1.25 * blendedStdDev) * 10) / 10;
+          bust = Math.max(0, Math.round((blendedMean - 1.0 * blendedStdDev) * 10) / 10);
+        } else {
+          // No data - use position baseline
+          boom = Math.round((positionBase.mean + 1.25 * positionBase.stdDev) * 10) / 10;
+          bust = Math.max(0, Math.round((positionBase.mean - 1.0 * positionBase.stdDev) * 10) / 10);
+        }
 
         return {
           id: playerId,
@@ -412,6 +496,7 @@ export async function registerRoutes(
           points,
           boom,
           bust,
+          gamesPlayed,
         };
       };
 
