@@ -13,6 +13,7 @@ import Dashboard from "@/pages/Dashboard";
 import Team from "@/pages/Team";
 import Trades from "@/pages/Trades";
 import Draft from "@/pages/Draft";
+import Matchup from "@/pages/Matchup";
 import LeagueHub from "@/pages/LeagueHub";
 import Standings from "@/pages/Standings";
 import Settings from "@/pages/Settings";
@@ -36,6 +37,7 @@ function Router() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/team" component={Team} />
+      <Route path="/matchup" component={Matchup} />
       <Route path="/trades" component={Trades} />
       <Route path="/draft" component={Draft} />
       <Route path="/hub" component={LeagueHub} />

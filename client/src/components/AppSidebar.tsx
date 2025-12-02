@@ -21,11 +21,13 @@ import {
   Settings,
   Zap,
   MessageSquare,
+  Swords,
 } from "lucide-react";
 
 const navItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "My Team", url: "/team", icon: Users },
+  { title: "Matchup", url: "/matchup", icon: Swords },
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "League Hub", url: "/hub", icon: MessageSquare },

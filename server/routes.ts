@@ -338,6 +338,86 @@ export async function registerRoutes(
     }
   });
 
+  // Get detailed matchup for a user's team with full roster information
+  app.get("/api/sleeper/league/:leagueId/matchup-detail", async (req, res) => {
+    try {
+      const userId = req.query.userId as string;
+      const week = parseInt(req.query.week as string) || 1;
+      
+      const [matchups, rosters, users, players] = await Promise.all([
+        getLeagueMatchups(req.params.leagueId, week),
+        getLeagueRosters(req.params.leagueId),
+        getLeagueUsers(req.params.leagueId),
+        getAllPlayers(),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const rosterMap = new Map<number, SleeperRoster>();
+      rosters.forEach(r => rosterMap.set(r.roster_id, r));
+
+      const userRoster = rosters.find(r => r.owner_id === userId);
+      if (!userRoster) {
+        return res.status(404).json({ error: "User roster not found" });
+      }
+
+      const userMatchup = matchups.find(m => m.roster_id === userRoster.roster_id);
+      if (!userMatchup) {
+        return res.status(404).json({ error: "Matchup not found" });
+      }
+
+      const opponentMatchup = matchups.find(
+        m => m.matchup_id === userMatchup.matchup_id && m.roster_id !== userRoster.roster_id
+      );
+
+      const buildPlayerInfo = (playerId: string, points: number = 0) => {
+        const player = players[playerId];
+        return {
+          id: playerId,
+          name: player ? `${player.first_name} ${player.last_name}` : playerId,
+          position: player?.position || "FLEX",
+          team: player?.team || "",
+          points: points,
+        };
+      };
+
+      const buildDetailedMatchupTeam = (matchup: typeof userMatchup, roster: SleeperRoster) => {
+        const user = userMap.get(roster.owner_id);
+        const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        
+        const starterIds = matchup.starters || [];
+        const playerPoints = matchup.players_points || {};
+        
+        const starters = starterIds.map(pid => buildPlayerInfo(pid, playerPoints[pid] || 0));
+        
+        const benchIds = (roster.players || []).filter(pid => !starterIds.includes(pid));
+        const bench = benchIds.map(pid => buildPlayerInfo(pid, playerPoints[pid] || 0));
+
+        return {
+          rosterId: roster.roster_id,
+          name: teamName,
+          initials: getTeamInitials(teamName),
+          score: matchup.points || 0,
+          record: `${roster.settings.wins}-${roster.settings.losses}`,
+          starters,
+          bench,
+        };
+      };
+
+      const userTeam = buildDetailedMatchupTeam(userMatchup, userRoster);
+      const opponentRoster = opponentMatchup ? rosterMap.get(opponentMatchup.roster_id) : null;
+      const opponentTeam = opponentMatchup && opponentRoster 
+        ? buildDetailedMatchupTeam(opponentMatchup, opponentRoster)
+        : null;
+
+      res.json({ userTeam, opponentTeam, week });
+    } catch (error) {
+      console.error("Error fetching detailed matchup:", error);
+      res.status(500).json({ error: "Failed to fetch detailed matchup" });
+    }
+  });
+
   // Get recent transactions
   app.get("/api/sleeper/league/:leagueId/transactions", async (req, res) => {
     try {
