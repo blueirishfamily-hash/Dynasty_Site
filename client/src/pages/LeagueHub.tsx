@@ -854,23 +854,10 @@ export default function LeagueHub() {
                               <span className="text-sm text-muted-foreground">{nomination.playerTeam}</span>
                             )}
                           </div>
-                          <p className="text-sm text-muted-foreground">
-                            Nominated by {nomination.nominatedByName}
-                          </p>
                         </div>
-                        <div className="flex items-center gap-4">
-                          <div className="text-right">
-                            <p className="text-2xl font-bold text-primary">{nomination.score}</p>
-                            <p className="text-xs text-muted-foreground">points</p>
-                          </div>
-                          <div className="text-right text-xs text-muted-foreground space-y-0.5">
-                            <p className="flex items-center justify-end gap-1">
-                              <Award className="w-3 h-3 text-yellow-500" />
-                              {nomination.firstPlaceVotes} 1st
-                            </p>
-                            <p>{nomination.secondPlaceVotes} 2nd</p>
-                            <p>{nomination.thirdPlaceVotes} 3rd</p>
-                          </div>
+                        <div className="text-right">
+                          <p className="text-2xl font-bold text-primary">{nomination.score}</p>
+                          <p className="text-xs text-muted-foreground">points</p>
                         </div>
                       </div>
                     </Card>
@@ -981,8 +968,6 @@ function RuleCard({
             {suggestion.description}
           </p>
           <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
-            <span>by {suggestion.authorName}</span>
-            <span>•</span>
             <span>{formatTimeAgo(suggestion.createdAt)}</span>
             <span>•</span>
             <span className="flex items-center gap-1">
