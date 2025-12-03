@@ -21,6 +21,7 @@ import {
   type SleeperPlayer,
   type SleeperTransaction,
   type SleeperTradedPick,
+  type SleeperMatchup,
 } from "./sleeper";
 import type {
   TeamStanding,
@@ -1651,6 +1652,174 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error calculating playoff predictions:", error);
       res.status(500).json({ error: "Failed to calculate playoff predictions" });
+    }
+  });
+
+  // Team Luck - calculate luck based on points vs league median
+  app.get("/api/sleeper/league/:leagueId/team-luck", async (req, res) => {
+    try {
+      const [rosters, users, nflState] = await Promise.all([
+        getLeagueRosters(req.params.leagueId),
+        getLeagueUsers(req.params.leagueId),
+        getNFLState(),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      // Get current week (completed weeks only)
+      const currentWeek = nflState.week;
+      const completedWeeks = Math.max(0, currentWeek - 1);
+      
+      if (completedWeeks === 0) {
+        return res.json({ teams: [], currentWeek, message: "No completed weeks yet" });
+      }
+
+      // Fetch all matchups for completed weeks
+      const matchupPromises = [];
+      for (let week = 1; week <= completedWeeks; week++) {
+        matchupPromises.push(
+          getLeagueMatchups(req.params.leagueId, week)
+            .then(matchups => ({ week, matchups }))
+            .catch(() => ({ week, matchups: [] }))
+        );
+      }
+      const weeklyMatchups = await Promise.all(matchupPromises);
+
+      // Build team info map
+      const teamInfoMap = new Map<number, { name: string; ownerId: string; initials: string; avatar: string | null }>();
+      rosters.forEach(roster => {
+        const user = userMap.get(roster.owner_id);
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        teamInfoMap.set(roster.roster_id, {
+          name,
+          ownerId: roster.owner_id,
+          initials: getTeamInitials(name),
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+        });
+      });
+
+      // Calculate luck for each team
+      interface TeamLuckData {
+        rosterId: number;
+        name: string;
+        ownerId: string;
+        initials: string;
+        avatar: string | null;
+        totalLuck: number;
+        weeklyLuck: { week: number; luck: number; points: number; median: number; won: boolean }[];
+        luckyWins: number;
+        unluckyLosses: number;
+        wins: number;
+        losses: number;
+      }
+
+      const teamLuckMap = new Map<number, TeamLuckData>();
+      rosters.forEach(roster => {
+        const info = teamInfoMap.get(roster.roster_id)!;
+        teamLuckMap.set(roster.roster_id, {
+          rosterId: roster.roster_id,
+          name: info.name,
+          ownerId: info.ownerId,
+          initials: info.initials,
+          avatar: info.avatar,
+          totalLuck: 0,
+          weeklyLuck: [],
+          luckyWins: 0,
+          unluckyLosses: 0,
+          wins: roster.settings?.wins || 0,
+          losses: roster.settings?.losses || 0,
+        });
+      });
+
+      // Process each week
+      weeklyMatchups.forEach(({ week, matchups }) => {
+        if (matchups.length === 0) return;
+
+        // Get all points for this week
+        const weekPoints = matchups.map(m => m.points || 0).filter(p => p > 0);
+        if (weekPoints.length < 2) return;
+
+        // Calculate median
+        const sorted = [...weekPoints].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        const median = sorted.length % 2 === 0 
+          ? (sorted[mid - 1] + sorted[mid]) / 2 
+          : sorted[mid];
+
+        // Group matchups by matchup_id to determine winners
+        const matchupGroups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) {
+            matchupGroups.set(m.matchup_id, []);
+          }
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+
+        // Determine winners and calculate luck
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          
+          const [team1, team2] = group;
+          const team1Won = (team1.points || 0) > (team2.points || 0);
+          const team2Won = (team2.points || 0) > (team1.points || 0);
+
+          // Process team1
+          const team1Data = teamLuckMap.get(team1.roster_id);
+          if (team1Data) {
+            const points = team1.points || 0;
+            const aboveMedian = points >= median;
+            let luck = 0;
+
+            if (team1Won && !aboveMedian) {
+              luck = 1; // Lucky win: won while below median
+              team1Data.luckyWins++;
+            } else if (!team1Won && !team2Won) {
+              luck = 0; // Tie
+            } else if (!team1Won && aboveMedian) {
+              luck = -1; // Unlucky loss: lost while above median
+              team1Data.unluckyLosses++;
+            }
+
+            team1Data.totalLuck += luck;
+            team1Data.weeklyLuck.push({ week, luck, points, median, won: team1Won });
+          }
+
+          // Process team2
+          const team2Data = teamLuckMap.get(team2.roster_id);
+          if (team2Data) {
+            const points = team2.points || 0;
+            const aboveMedian = points >= median;
+            let luck = 0;
+
+            if (team2Won && !aboveMedian) {
+              luck = 1; // Lucky win: won while below median
+              team2Data.luckyWins++;
+            } else if (!team2Won && !team1Won) {
+              luck = 0; // Tie
+            } else if (!team2Won && aboveMedian) {
+              luck = -1; // Unlucky loss: lost while above median
+              team2Data.unluckyLosses++;
+            }
+
+            team2Data.totalLuck += luck;
+            team2Data.weeklyLuck.push({ week, luck, points, median, won: team2Won });
+          }
+        });
+      });
+
+      // Convert to array and sort by luck (luckiest first)
+      const teams = Array.from(teamLuckMap.values())
+        .sort((a, b) => b.totalLuck - a.totalLuck);
+
+      res.json({
+        teams,
+        currentWeek,
+        completedWeeks,
+      });
+    } catch (error) {
+      console.error("Error calculating team luck:", error);
+      res.status(500).json({ error: "Failed to calculate team luck" });
     }
   });
 

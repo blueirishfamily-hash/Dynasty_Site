@@ -22,6 +22,7 @@ import {
   Zap,
   MessageSquare,
   Swords,
+  Sparkles,
 } from "lucide-react";
 
 const navItems = [
@@ -32,6 +33,7 @@ const navItems = [
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "League Hub", url: "/hub", icon: MessageSquare },
   { title: "Standings", url: "/standings", icon: BarChart3 },
+  { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
