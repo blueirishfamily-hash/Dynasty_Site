@@ -473,6 +473,14 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 
                 const conditions: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
                 
+                const teamsWithSameRecord = predictions.filter(
+                  p => p.rosterId !== team.rosterId && 
+                       p.currentWins === team.currentWins && 
+                       p.currentLosses === team.currentLosses
+                );
+                
+                const pointsScenarios: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
+                
                 if (isInPlayoffPosition) {
                   if (gamesAhead >= remainingWeeks) {
                     conditions.push({ type: "positive", text: `Can clinch with ${remainingWeeks - gamesAhead} more win${remainingWeeks - gamesAhead !== 1 ? 's' : ''}` });
@@ -489,6 +497,23 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                   }
                   
                   conditions.push({ type: "neutral", text: "Win remaining games to secure spot" });
+                  
+                  teamsWithSameRecord.forEach(rival => {
+                    const pointsDiff = team.pointsFor - rival.pointsFor;
+                    const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
+                    
+                    if (rivalStandingIdx >= playoffTeams && pointsDiff > 0) {
+                      pointsScenarios.push({ 
+                        type: "positive", 
+                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record)` 
+                      });
+                    } else if (rivalStandingIdx >= playoffTeams && pointsDiff < 0) {
+                      pointsScenarios.push({ 
+                        type: "negative", 
+                        text: `${Math.abs(pointsDiff).toFixed(1)} pts behind ${rival.name} - outscore by ${Math.abs(pointsDiff).toFixed(1)}+ to secure tiebreaker` 
+                      });
+                    }
+                  });
                 } else {
                   const winsNeeded = Math.abs(gamesBack) + 1;
                   if (winsNeeded <= remainingWeeks) {
@@ -514,6 +539,37 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                     conditions.push({ type: "positive", text: `#${team.pointsRank} in points - favorable tiebreaker` });
                   } else if (team.pointsBehind !== null && team.pointsBehind < 50) {
                     conditions.push({ type: "neutral", text: `Only ${team.pointsBehind.toFixed(1)} pts behind #${team.pointsRank - 1}` });
+                  }
+                  
+                  teamsWithSameRecord.forEach(rival => {
+                    const pointsDiff = team.pointsFor - rival.pointsFor;
+                    const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
+                    
+                    if (rivalStandingIdx < playoffTeams && pointsDiff < 0) {
+                      pointsScenarios.push({ 
+                        type: "neutral", 
+                        text: `Outscore ${rival.name} by ${Math.abs(pointsDiff).toFixed(1)}+ pts to take their playoff spot (same ${team.currentWins}-${team.currentLosses} record)` 
+                      });
+                    } else if (rivalStandingIdx < playoffTeams && pointsDiff > 0) {
+                      pointsScenarios.push({ 
+                        type: "positive", 
+                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} - hold lead to win tiebreaker` 
+                      });
+                    }
+                  });
+                  
+                  const playoffTeamsWithSameRecord = predictions
+                    .slice(0, playoffTeams)
+                    .filter(p => p.currentWins === team.currentWins && p.currentLosses === team.currentLosses && p.rosterId !== team.rosterId);
+                  
+                  if (playoffTeamsWithSameRecord.length > 0 && pointsScenarios.length === 0) {
+                    const avgPointsGap = playoffTeamsWithSameRecord.reduce((sum, p) => sum + (p.pointsFor - team.pointsFor), 0) / playoffTeamsWithSameRecord.length;
+                    if (avgPointsGap > 0) {
+                      pointsScenarios.push({
+                        type: "neutral",
+                        text: `Score ~${avgPointsGap.toFixed(0)}+ more pts than playoff teams with same record`
+                      });
+                    }
                   }
                 }
                 
@@ -551,26 +607,53 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       </div>
                     </div>
                     
-                    <div className="space-y-2">
-                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-                        Path to Playoffs
-                      </p>
-                      <ul className="space-y-1.5">
-                        {conditions.map((condition, i) => (
-                          <li key={i} className="flex items-start gap-2 text-sm">
-                            {condition.type === "positive" ? (
-                              <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
-                            ) : condition.type === "negative" ? (
-                              <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
-                            ) : (
-                              <ArrowUp className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
-                            )}
-                            <span className={condition.type === "negative" ? "text-muted-foreground" : ""}>
-                              {condition.text}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Path to Playoffs
+                        </p>
+                        <ul className="space-y-1.5">
+                          {conditions.map((condition, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm">
+                              {condition.type === "positive" ? (
+                                <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                              ) : condition.type === "negative" ? (
+                                <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                              ) : (
+                                <ArrowUp className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                              )}
+                              <span className={condition.type === "negative" ? "text-muted-foreground" : ""}>
+                                {condition.text}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      
+                      {pointsScenarios.length > 0 && (
+                        <div className="space-y-2 pt-2 border-t border-border/50">
+                          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                            <Hash className="w-3 h-3" />
+                            Points Tiebreaker Scenarios
+                          </p>
+                          <ul className="space-y-1.5">
+                            {pointsScenarios.map((scenario, i) => (
+                              <li key={i} className="flex items-start gap-2 text-sm">
+                                {scenario.type === "positive" ? (
+                                  <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                                ) : scenario.type === "negative" ? (
+                                  <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                                ) : (
+                                  <ArrowDown className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                                )}
+                                <span className={scenario.type === "negative" ? "text-muted-foreground" : ""}>
+                                  {scenario.text}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                     </div>
                   </div>
                 );
