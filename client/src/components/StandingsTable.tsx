@@ -71,6 +71,7 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
               <TableHead className="w-12 text-center">#</TableHead>
               <TableHead>Team</TableHead>
               <TableHead className="text-center">W-L</TableHead>
+              <TableHead className="text-center">GB</TableHead>
               <TableHead className="text-right">PF</TableHead>
               <TableHead className="text-right">PA</TableHead>
               <TableHead className="text-center">Streak</TableHead>
@@ -125,6 +126,13 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
                 </TableCell>
                 <TableCell className="text-center tabular-nums font-medium">
                   {team.wins}-{team.losses}
+                </TableCell>
+                <TableCell className="text-center tabular-nums text-muted-foreground">
+                  {(() => {
+                    const leaderWins = standings[0]?.wins || 0;
+                    const gb = leaderWins - team.wins;
+                    return gb === 0 ? "—" : gb.toString();
+                  })()}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {team.pointsFor.toFixed(1)}

@@ -247,6 +247,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                   <TableHead className="w-12">#</TableHead>
                   <TableHead>Team</TableHead>
                   <TableHead className="text-center">Record</TableHead>
+                  <TableHead className="text-center">GB</TableHead>
                   <TableHead className="text-center">Proj.</TableHead>
                   <TableHead>
                     <div className="flex items-center gap-1">
@@ -336,6 +337,13 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       </TableCell>
                       <TableCell className="text-center tabular-nums">
                         {team.currentWins}-{team.currentLosses}
+                      </TableCell>
+                      <TableCell className="text-center tabular-nums text-muted-foreground">
+                        {(() => {
+                          const leaderWins = predictions[0]?.currentWins || 0;
+                          const gb = leaderWins - team.currentWins;
+                          return gb === 0 ? "—" : gb.toString();
+                        })()}
                       </TableCell>
                       <TableCell className="text-center tabular-nums font-medium">
                         {team.projectedWins.toFixed(1)}
@@ -473,10 +481,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 
                 const conditions: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
                 
-                const teamsWithSameRecord = predictions.filter(
+                const bubbleTeamsWithSameRecord = predictions.filter(
                   p => p.rosterId !== team.rosterId && 
                        p.currentWins === team.currentWins && 
-                       p.currentLosses === team.currentLosses
+                       p.currentLosses === team.currentLosses &&
+                       p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100
                 );
                 
                 const pointsScenarios: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
@@ -498,19 +507,19 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                   
                   conditions.push({ type: "neutral", text: "Win remaining games to secure spot" });
                   
-                  teamsWithSameRecord.forEach(rival => {
+                  bubbleTeamsWithSameRecord.forEach(rival => {
                     const pointsDiff = team.pointsFor - rival.pointsFor;
                     const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
                     
-                    if (rivalStandingIdx >= playoffTeams && pointsDiff > 0) {
+                    if (pointsDiff > 0) {
                       pointsScenarios.push({ 
                         type: "positive", 
-                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record)` 
+                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record) - wins tiebreaker` 
                       });
-                    } else if (rivalStandingIdx >= playoffTeams && pointsDiff < 0) {
+                    } else if (pointsDiff < 0) {
                       pointsScenarios.push({ 
                         type: "negative", 
-                        text: `${Math.abs(pointsDiff).toFixed(1)} pts behind ${rival.name} - outscore by ${Math.abs(pointsDiff).toFixed(1)}+ to secure tiebreaker` 
+                        text: `${Math.abs(pointsDiff).toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
                       });
                     }
                   });
@@ -541,33 +550,46 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                     conditions.push({ type: "neutral", text: `Only ${team.pointsBehind.toFixed(1)} pts behind #${team.pointsRank - 1}` });
                   }
                   
-                  teamsWithSameRecord.forEach(rival => {
+                  bubbleTeamsWithSameRecord.forEach(rival => {
                     const pointsDiff = team.pointsFor - rival.pointsFor;
                     const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
                     
                     if (rivalStandingIdx < playoffTeams && pointsDiff < 0) {
                       pointsScenarios.push({ 
                         type: "neutral", 
-                        text: `Outscore ${rival.name} by ${Math.abs(pointsDiff).toFixed(1)}+ pts to take their playoff spot (same ${team.currentWins}-${team.currentLosses} record)` 
+                        text: `Outscore ${rival.name} by ${Math.abs(pointsDiff).toFixed(1)}+ pts to take their spot (same ${team.currentWins}-${team.currentLosses} record)` 
                       });
                     } else if (rivalStandingIdx < playoffTeams && pointsDiff > 0) {
                       pointsScenarios.push({ 
                         type: "positive", 
-                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} - hold lead to win tiebreaker` 
+                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record) - wins tiebreaker` 
+                      });
+                    } else if (rivalStandingIdx >= playoffTeams && pointsDiff > 0) {
+                      pointsScenarios.push({ 
+                        type: "positive", 
+                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record) - wins tiebreaker` 
+                      });
+                    } else if (rivalStandingIdx >= playoffTeams && pointsDiff < 0) {
+                      pointsScenarios.push({ 
+                        type: "negative", 
+                        text: `${Math.abs(pointsDiff).toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
                       });
                     }
                   });
                   
-                  const playoffTeamsWithSameRecord = predictions
+                  const bubblePlayoffTeamsWithSameRecord = predictions
                     .slice(0, playoffTeams)
-                    .filter(p => p.currentWins === team.currentWins && p.currentLosses === team.currentLosses && p.rosterId !== team.rosterId);
+                    .filter(p => p.currentWins === team.currentWins && 
+                                 p.currentLosses === team.currentLosses && 
+                                 p.rosterId !== team.rosterId &&
+                                 p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
                   
-                  if (playoffTeamsWithSameRecord.length > 0 && pointsScenarios.length === 0) {
-                    const avgPointsGap = playoffTeamsWithSameRecord.reduce((sum, p) => sum + (p.pointsFor - team.pointsFor), 0) / playoffTeamsWithSameRecord.length;
+                  if (bubblePlayoffTeamsWithSameRecord.length > 0 && pointsScenarios.length === 0) {
+                    const avgPointsGap = bubblePlayoffTeamsWithSameRecord.reduce((sum, p) => sum + (p.pointsFor - team.pointsFor), 0) / bubblePlayoffTeamsWithSameRecord.length;
                     if (avgPointsGap > 0) {
                       pointsScenarios.push({
                         type: "neutral",
-                        text: `Score ~${avgPointsGap.toFixed(0)}+ more pts than playoff teams with same record`
+                        text: `Score ~${avgPointsGap.toFixed(0)}+ more pts than bubble teams with same record`
                       });
                     }
                   }
