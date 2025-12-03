@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
@@ -724,6 +724,9 @@ export default function LeagueHub() {
                                     data-testid={`team-option-${team.rosterId}`}
                                   >
                                     <Avatar className="w-8 h-8">
+                                      {team.avatar && (
+                                        <AvatarImage src={team.avatar} alt={team.name} />
+                                      )}
                                       <AvatarFallback className="text-xs">
                                         {team.initials}
                                       </AvatarFallback>
@@ -775,6 +778,10 @@ export default function LeagueHub() {
                                           data-testid={`player-option-${player.id}`}
                                         >
                                           <Avatar className="w-8 h-8">
+                                            <AvatarImage 
+                                              src={`https://sleepercdn.com/content/nfl/players/${player.id}.jpg`}
+                                              alt={player.name}
+                                            />
                                             <AvatarFallback className="text-xs">
                                               {player.name.split(" ").map((n) => n[0]).join("")}
                                             </AvatarFallback>
@@ -977,6 +984,17 @@ export default function LeagueHub() {
                           )}
                         </div>
                         <Avatar className="w-12 h-12">
+                          {nomination.playerPosition === "GM" ? (
+                            (() => {
+                              const team = standings?.find((t: any) => String(t.rosterId) === nomination.playerId);
+                              return team?.avatar ? <AvatarImage src={team.avatar} alt={nomination.playerName} /> : null;
+                            })()
+                          ) : (
+                            <AvatarImage 
+                              src={`https://sleepercdn.com/content/nfl/players/${nomination.playerId}.jpg`}
+                              alt={nomination.playerName}
+                            />
+                          )}
                           <AvatarFallback className="text-sm">
                             {nomination.playerName.split(" ").map((n) => n[0]).join("")}
                           </AvatarFallback>
