@@ -86,7 +86,9 @@ interface DraftOddsTeam {
   pickOdds: number[];
   isUser?: boolean;
   missPlayoffsPct?: number;
+  makePlayoffsPct?: number;
   projectedWins?: number;
+  status: "eliminated" | "clinched" | "bubble";
 }
 
 const positionColors: Record<string, string> = {
@@ -241,31 +243,34 @@ export default function Draft() {
     .filter(d => d.status === "complete")
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
 
-  // Calculate draft odds based on standings and playoff predictions
+  // Calculate draft odds using Monte Carlo simulation
   // Non-playoff teams get picks 1-5 based on max points (lowest = pick 1)
   // Playoff teams get picks 6-12 based on postseason finish (worst finisher = pick 6, champion = pick 12)
+  // Bubble teams have odds spread across all picks based on their playoff probability
   const calculateDraftOdds = (): DraftOddsTeam[] => {
     if (!standings) return [];
+
+    const SIMULATIONS = 10000;
+    const NON_PLAYOFF_PICKS = 5; // Picks 1-5 for non-playoff teams
 
     const predictionMap = new Map(
       (playoffPredictions?.predictions || []).map(p => [p.rosterId, p])
     );
 
     // Build list of teams with prediction data
-    const teamsWithPredictions = standings.map(team => {
+    const teamsWithData: DraftOddsTeam[] = standings.map(team => {
       const prediction = predictionMap.get(team.rosterId);
-      return {
-        ...team,
-        prediction,
-        makePlayoffsPct: prediction?.makePlayoffsPct ?? (team.rank <= playoffTeams ? 100 : 0),
-        projectedWins: prediction?.projectedWins ?? team.wins,
-      };
-    });
-
-    // Determine playoff teams vs non-playoff teams based on predictions or current rank
-    const teamsWithData: DraftOddsTeam[] = teamsWithPredictions.map(team => {
-      // Use prediction data if available, otherwise use current standings
-      const isPlayoffTeam = team.makePlayoffsPct >= 50;
+      const makePlayoffsPct = prediction?.makePlayoffsPct ?? (team.rank <= playoffTeams ? 100 : 0);
+      
+      // Determine team status
+      let status: "eliminated" | "clinched" | "bubble";
+      if (makePlayoffsPct === 0) {
+        status = "eliminated";
+      } else if (makePlayoffsPct >= 100) {
+        status = "clinched";
+      } else {
+        status = "bubble";
+      }
       
       return {
         rosterId: team.rosterId,
@@ -275,67 +280,112 @@ export default function Draft() {
         wins: team.wins,
         losses: team.losses,
         pointsFor: team.pointsFor,
-        isPlayoffTeam,
-        projectedFinish: undefined, // Will be assigned after sorting
-        maxPoints: team.pointsFor, // Using total points as max points proxy
+        isPlayoffTeam: makePlayoffsPct >= 50,
+        projectedFinish: undefined,
+        maxPoints: team.pointsFor,
         pickOdds: new Array(totalTeams).fill(0),
         isUser: team.isUser,
-        missPlayoffsPct: 100 - team.makePlayoffsPct,
-        projectedWins: team.projectedWins,
+        missPlayoffsPct: 100 - makePlayoffsPct,
+        makePlayoffsPct,
+        projectedWins: prediction?.projectedWins ?? team.wins,
+        status,
       };
     });
 
-    // Separate playoff and non-playoff teams
-    const playoffTeamsList = teamsWithData.filter(t => t.isPlayoffTeam);
-    const nonPlayoffTeams = teamsWithData.filter(t => !t.isPlayoffTeam);
-
-    // Non-playoff teams get picks 1-5, sorted by max points (lowest = pick 1)
-    // This is deterministic - no lottery
-    nonPlayoffTeams.sort((a, b) => {
-      // Primary: lowest max points = higher pick (pick 1)
-      if (a.maxPoints !== b.maxPoints) return a.maxPoints - b.maxPoints;
-      // Secondary: fewer wins = higher pick
-      return a.wins - b.wins;
+    // Track pick counts per team across simulations
+    const pickCounts: Map<number, number[]> = new Map();
+    teamsWithData.forEach(team => {
+      pickCounts.set(team.rosterId, new Array(totalTeams).fill(0));
     });
 
-    // Playoff teams get picks 6-12, sorted by postseason finish
-    // Worst playoff finisher picks first (pick 6), champion picks last (pick 12)
-    // Using projected wins as proxy for expected postseason finish
-    playoffTeamsList.sort((a, b) => {
-      // Primary: fewer projected wins = worse finish = earlier pick
-      const winsA = a.projectedWins ?? a.wins;
-      const winsB = b.projectedWins ?? b.wins;
-      if (winsA !== winsB) return winsA - winsB; // Ascending - fewer wins picks earlier
-      // Secondary: lower points = worse finish = earlier pick
-      return a.pointsFor - b.pointsFor;
-    });
+    // Run Monte Carlo simulations
+    for (let sim = 0; sim < SIMULATIONS; sim++) {
+      // For each simulation, determine which teams make playoffs
+      const madePlayoffs: DraftOddsTeam[] = [];
+      const missedPlayoffs: DraftOddsTeam[] = [];
 
-    // Assign projected finish (seed) based on sorted order for playoff teams
-    // Best team (last in sort) gets seed 1, worst playoff team gets highest seed
-    playoffTeamsList.forEach((team, index) => {
-      team.projectedFinish = playoffTeamsList.length - index;
-    });
+      teamsWithData.forEach(team => {
+        const rand = Math.random() * 100;
+        if (rand < (team.makePlayoffsPct ?? 0)) {
+          madePlayoffs.push(team);
+        } else {
+          missedPlayoffs.push(team);
+        }
+      });
 
-    // Assign deterministic picks for non-playoff teams (picks 1-5)
-    // Lowest max points gets pick 1, highest max points among non-playoff gets pick 5
-    const nonPlayoffPicks = Math.min(nonPlayoffTeams.length, 5);
-    nonPlayoffTeams.forEach((team, index) => {
-      if (index < nonPlayoffPicks) {
-        team.pickOdds[index] = 100; // Pick 1 = index 0, Pick 5 = index 4
+      // Ensure we have exactly playoffTeams making playoffs
+      // If too many made it, remove the ones with lowest probability
+      while (madePlayoffs.length > playoffTeams) {
+        madePlayoffs.sort((a, b) => (a.makePlayoffsPct ?? 0) - (b.makePlayoffsPct ?? 0));
+        const removed = madePlayoffs.shift()!;
+        missedPlayoffs.push(removed);
       }
-    });
-
-    // Assign deterministic picks for playoff teams (picks 6-12)
-    // Worst playoff finisher gets pick 6, champion gets pick 12
-    playoffTeamsList.forEach((team, index) => {
-      const pickPosition = nonPlayoffPicks + index; // Starts at pick 6 (index 5)
-      if (pickPosition < totalTeams) {
-        team.pickOdds[pickPosition] = 100;
+      // If too few made it, add the ones with highest probability
+      while (madePlayoffs.length < playoffTeams && missedPlayoffs.length > 0) {
+        missedPlayoffs.sort((a, b) => (b.makePlayoffsPct ?? 0) - (a.makePlayoffsPct ?? 0));
+        const added = missedPlayoffs.shift()!;
+        madePlayoffs.push(added);
       }
+
+      // Sort missed playoff teams by max points (with random variance for ties)
+      // Lowest max points = Pick 1
+      const sortedMissed = [...missedPlayoffs].sort((a, b) => {
+        // Add small random variance to create uncertainty in close races
+        const varianceA = (Math.random() - 0.5) * 50; // +/- 25 points variance
+        const varianceB = (Math.random() - 0.5) * 50;
+        const pointsA = a.maxPoints + varianceA;
+        const pointsB = b.maxPoints + varianceB;
+        if (Math.abs(pointsA - pointsB) > 0.1) return pointsA - pointsB;
+        return a.wins - b.wins;
+      });
+
+      // Sort made playoff teams by projected finish (with random variance)
+      // Worst finish = Pick 6, Best finish (champion) = Pick 12
+      const sortedMade = [...madePlayoffs].sort((a, b) => {
+        // More variance for playoff finish since playoffs are more unpredictable
+        const varianceA = (Math.random() - 0.5) * 2; // +/- 1 win variance
+        const varianceB = (Math.random() - 0.5) * 2;
+        const winsA = (a.projectedWins ?? a.wins) + varianceA;
+        const winsB = (b.projectedWins ?? b.wins) + varianceB;
+        if (Math.abs(winsA - winsB) > 0.1) return winsA - winsB; // Fewer wins = earlier pick
+        return a.pointsFor - b.pointsFor;
+      });
+
+      // Assign picks for this simulation
+      // Non-playoff teams get picks 1-5
+      sortedMissed.forEach((team, index) => {
+        if (index < NON_PLAYOFF_PICKS) {
+          const counts = pickCounts.get(team.rosterId)!;
+          counts[index]++;
+        }
+      });
+
+      // Playoff teams get picks 6-12 (or 6 to totalTeams)
+      sortedMade.forEach((team, index) => {
+        const pickPosition = NON_PLAYOFF_PICKS + index;
+        if (pickPosition < totalTeams) {
+          const counts = pickCounts.get(team.rosterId)!;
+          counts[pickPosition]++;
+        }
+      });
+    }
+
+    // Convert counts to percentages
+    teamsWithData.forEach(team => {
+      const counts = pickCounts.get(team.rosterId)!;
+      team.pickOdds = counts.map(count => Math.round((count / SIMULATIONS) * 1000) / 10);
     });
 
-    // Combine non-playoff teams (picks 1-5) and playoff teams (picks 6-12)
-    return [...nonPlayoffTeams.slice(0, nonPlayoffPicks), ...playoffTeamsList];
+    // Sort teams by their most likely pick position
+    teamsWithData.sort((a, b) => {
+      const maxOddsA = Math.max(...a.pickOdds);
+      const maxOddsB = Math.max(...b.pickOdds);
+      const bestPickA = a.pickOdds.indexOf(maxOddsA);
+      const bestPickB = b.pickOdds.indexOf(maxOddsB);
+      return bestPickA - bestPickB;
+    });
+
+    return teamsWithData;
   };
 
   const draftOddsTeams = calculateDraftOdds();
@@ -601,18 +651,23 @@ export default function Draft() {
           ) : (
             <div className="space-y-4">
               <CardDescription>
-                Non-playoff teams get picks 1-5, assigned by max points scored (lowest max points = Pick 1). 
-                Playoff teams get picks 6-12 based on postseason finish (worst finisher = Pick 6, champion = Pick 12).
+                Probabilities based on 10,000 Monte Carlo simulations. Non-playoff teams compete for picks 1-5 (lowest max points = Pick 1). 
+                Playoff teams get picks 6-12 based on postseason finish (worst = Pick 6, champion = Pick 12). 
+                Bubble teams have odds spread across all picks based on their playoff probability.
               </CardDescription>
               
-              <div className="flex items-center gap-4 mb-4 text-xs text-muted-foreground">
+              <div className="flex flex-wrap items-center gap-4 mb-4 text-xs text-muted-foreground">
                 <div className="flex items-center gap-1.5">
                   <TrendingDown className="w-4 h-4 text-destructive" />
-                  <span>Non-Playoff (Picks 1-5 by Max Points)</span>
+                  <span>Eliminated (Picks 1-5)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-4 h-4 rounded-full bg-chart-3" />
+                  <span>Bubble (Any Pick)</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Trophy className="w-4 h-4 text-primary" />
-                  <span>Playoff Team</span>
+                  <span>Clinched (Picks 6-12)</span>
                 </div>
               </div>
 
@@ -665,15 +720,19 @@ export default function Draft() {
                           {team.record}
                         </TableCell>
                         <TableCell className="text-center">
-                          {team.isPlayoffTeam ? (
+                          {team.status === "clinched" ? (
                             <Badge className="bg-primary text-primary-foreground">
                               <Trophy className="w-3 h-3 mr-1" />
-                              Playoff #{team.projectedFinish || "?"}
+                              Clinched
+                            </Badge>
+                          ) : team.status === "eliminated" ? (
+                            <Badge variant="destructive">
+                              <TrendingDown className="w-3 h-3 mr-1" />
+                              Eliminated
                             </Badge>
                           ) : (
-                            <Badge variant="secondary">
-                              <TrendingDown className="w-3 h-3 mr-1" />
-                              Non-Playoff
+                            <Badge className="bg-chart-3 text-white">
+                              {Math.round(team.makePlayoffsPct ?? 0)}%
                             </Badge>
                           )}
                         </TableCell>
@@ -682,16 +741,24 @@ export default function Draft() {
                         </TableCell>
                         {Array.from({ length: Math.min(totalTeams, 12) }, (_, pickIndex) => {
                           const odds = team.pickOdds[pickIndex] || 0;
+                          const maxOdds = Math.max(...team.pickOdds);
+                          const isHighest = odds === maxOdds && odds > 0;
+                          
+                          let bgClass = "";
+                          if (odds >= 50) {
+                            bgClass = "bg-primary/30 font-bold text-primary";
+                          } else if (odds >= 25) {
+                            bgClass = "bg-primary/15 font-medium";
+                          } else if (odds >= 10) {
+                            bgClass = "bg-muted/80";
+                          } else if (odds > 0) {
+                            bgClass = "bg-muted/40 text-muted-foreground";
+                          }
+                          
                           return (
                             <TableCell 
                               key={pickIndex} 
-                              className={`text-center tabular-nums ${
-                                odds === 100 
-                                  ? "bg-primary/20 font-bold text-primary" 
-                                  : odds > 0 
-                                    ? "bg-muted/50" 
-                                    : ""
-                              }`}
+                              className={`text-center tabular-nums text-sm ${bgClass} ${isHighest ? "ring-2 ring-primary ring-inset" : ""}`}
                             >
                               {odds > 0 ? `${odds}%` : "—"}
                             </TableCell>

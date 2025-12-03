@@ -53,10 +53,12 @@ Preferred communication style: Simple, everyday language.
   - Impact analysis showing playoff odds changes if moving up/down in points standings
   - Monte Carlo simulation with 10,000 iterations
 - Standings with win/loss streak calculation (e.g., "W3", "L2", "—")
-- Draft order calculator (Draft Odds tab):
-  - Non-playoff teams get picks 1-5, assigned by max points scored (lowest = Pick 1)
-  - Playoff teams get picks 6-12, assigned by postseason finish (worst finisher = Pick 6, champion = Pick 12)
-  - Fully deterministic system - each team shows 100% at their assigned pick
+- Draft odds calculator (Draft Odds tab):
+  - Monte Carlo simulation with 10,000 iterations for probabilistic pick assignment
+  - Eliminated teams (0% playoff odds): compete for picks 1-5 based on max points
+  - Clinched teams (100% playoff odds): compete for picks 6-12 based on playoff finish
+  - Bubble teams (partial playoff odds): have probability spread across all 12 picks
+  - Visual highlighting shows probability distribution with stronger colors for higher odds
 - Auto-selection of most recent completed draft in Historical tab (prefers 2024 if available)
 - League Hub governance with configurable lock dates:
   - Nominations and proposals lock on December 9, 2025 at 12pm EST
