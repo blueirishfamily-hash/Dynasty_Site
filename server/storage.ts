@@ -1,4 +1,12 @@
 import { randomUUID } from "crypto";
+import { eq, and, desc } from "drizzle-orm";
+import { db } from "./db";
+import {
+  ruleSuggestionsTable,
+  ruleVotesTable,
+  awardNominationsTable,
+  awardBallotsTable,
+} from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
   AwardNomination, InsertAwardNomination,
@@ -20,40 +28,28 @@ export interface IStorage {
   updateSessionLeague(sessionId: string, leagueId: string): Promise<UserSession | undefined>;
   deleteSession(id: string): Promise<void>;
   
-  // Rule suggestions
   getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]>;
   createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion>;
   updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined>;
   
-  // Rule votes (1 vote per team per rule)
   getRuleVotes(ruleId: string): Promise<RuleVote[]>;
   castRuleVote(data: InsertRuleVote): Promise<RuleVote>;
   getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined>;
   
-  // Award nominations (max 3 per team per award type)
   getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]>;
   createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination>;
   getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<number>;
   
-  // Award ballots (ranked voting: 1st=3pts, 2nd=2pts, 3rd=1pt)
   getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardBallot[]>;
   upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot>;
   getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<AwardBallot | undefined>;
 }
 
-export class MemStorage implements IStorage {
+export class DatabaseStorage implements IStorage {
   private sessions: Map<string, UserSession>;
-  private ruleSuggestions: Map<string, RuleSuggestion>;
-  private awardNominations: Map<string, AwardNomination>;
-  private ruleVotes: Map<string, RuleVote>;
-  private awardBallots: Map<string, AwardBallot>;
 
   constructor() {
     this.sessions = new Map();
-    this.ruleSuggestions = new Map();
-    this.awardNominations = new Map();
-    this.ruleVotes = new Map();
-    this.awardBallots = new Map();
   }
 
   async getSession(id: string): Promise<UserSession | undefined> {
@@ -87,185 +83,346 @@ export class MemStorage implements IStorage {
   }
 
   async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
-    const suggestions: RuleSuggestion[] = [];
-    this.ruleSuggestions.forEach((s) => {
-      if (s.leagueId === leagueId) {
-        suggestions.push(s);
-      }
-    });
-    return suggestions.sort((a, b) => b.createdAt - a.createdAt);
+    const rows = await db
+      .select()
+      .from(ruleSuggestionsTable)
+      .where(eq(ruleSuggestionsTable.leagueId, leagueId))
+      .orderBy(desc(ruleSuggestionsTable.createdAt));
+
+    return rows.map(row => ({
+      id: row.id,
+      leagueId: row.leagueId,
+      authorId: row.authorId,
+      authorName: row.authorName,
+      title: row.title,
+      description: row.description,
+      status: row.status as "pending" | "approved" | "rejected",
+      upvotes: [],
+      downvotes: [],
+      createdAt: row.createdAt,
+    }));
   }
 
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
     const id = randomUUID();
-    const suggestion: RuleSuggestion = {
+    const createdAt = Date.now();
+
+    await db.insert(ruleSuggestionsTable).values({
+      id,
+      leagueId: data.leagueId,
+      authorId: data.authorId,
+      authorName: data.authorName,
+      title: data.title,
+      description: data.description,
+      status: "pending",
+      createdAt,
+    });
+
+    return {
       id,
       ...data,
       status: "pending",
       upvotes: [],
       downvotes: [],
-      createdAt: Date.now(),
+      createdAt,
     };
-    this.ruleSuggestions.set(id, suggestion);
-    return suggestion;
   }
 
   async updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined> {
-    const suggestion = this.ruleSuggestions.get(id);
-    if (!suggestion) return undefined;
-    
-    suggestion.status = status;
-    this.ruleSuggestions.set(id, suggestion);
-    return suggestion;
+    const [updated] = await db
+      .update(ruleSuggestionsTable)
+      .set({ status })
+      .where(eq(ruleSuggestionsTable.id, id))
+      .returning();
+
+    if (!updated) return undefined;
+
+    return {
+      id: updated.id,
+      leagueId: updated.leagueId,
+      authorId: updated.authorId,
+      authorName: updated.authorName,
+      title: updated.title,
+      description: updated.description,
+      status: updated.status as "pending" | "approved" | "rejected",
+      upvotes: [],
+      downvotes: [],
+      createdAt: updated.createdAt,
+    };
   }
 
-  // Rule votes
   async getRuleVotes(ruleId: string): Promise<RuleVote[]> {
-    const votes: RuleVote[] = [];
-    this.ruleVotes.forEach((v) => {
-      if (v.ruleId === ruleId) {
-        votes.push(v);
-      }
-    });
-    return votes;
+    const rows = await db
+      .select()
+      .from(ruleVotesTable)
+      .where(eq(ruleVotesTable.ruleId, ruleId));
+
+    return rows.map(row => ({
+      id: row.id,
+      ruleId: row.ruleId,
+      rosterId: row.rosterId,
+      voterName: row.voterName,
+      vote: row.vote as "approve" | "reject",
+      createdAt: row.createdAt,
+    }));
   }
 
   async castRuleVote(data: InsertRuleVote): Promise<RuleVote> {
-    // Check if vote already exists for this roster on this rule
-    let existingVote: RuleVote | undefined;
-    this.ruleVotes.forEach((v) => {
-      if (v.ruleId === data.ruleId && v.rosterId === data.rosterId) {
-        existingVote = v;
-      }
-    });
+    const existing = await this.getRuleVoteByRoster(data.ruleId, data.rosterId);
 
-    if (existingVote) {
-      // Update existing vote
-      existingVote.vote = data.vote;
-      existingVote.voterName = data.voterName;
-      this.ruleVotes.set(existingVote.id, existingVote);
-      return existingVote;
+    if (existing) {
+      const [updated] = await db
+        .update(ruleVotesTable)
+        .set({ vote: data.vote, voterName: data.voterName })
+        .where(eq(ruleVotesTable.id, existing.id))
+        .returning();
+
+      return {
+        id: updated.id,
+        ruleId: updated.ruleId,
+        rosterId: updated.rosterId,
+        voterName: updated.voterName,
+        vote: updated.vote as "approve" | "reject",
+        createdAt: updated.createdAt,
+      };
     }
 
-    // Create new vote
     const id = randomUUID();
-    const vote: RuleVote = {
+    const createdAt = Date.now();
+
+    await db.insert(ruleVotesTable).values({
+      id,
+      ruleId: data.ruleId,
+      rosterId: data.rosterId,
+      voterName: data.voterName,
+      vote: data.vote,
+      createdAt,
+    });
+
+    return {
       id,
       ...data,
-      createdAt: Date.now(),
+      createdAt,
     };
-    this.ruleVotes.set(id, vote);
-    return vote;
   }
 
   async getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined> {
-    let found: RuleVote | undefined;
-    this.ruleVotes.forEach((v) => {
-      if (v.ruleId === ruleId && v.rosterId === rosterId) {
-        found = v;
-      }
-    });
-    return found;
+    const [row] = await db
+      .select()
+      .from(ruleVotesTable)
+      .where(and(
+        eq(ruleVotesTable.ruleId, ruleId),
+        eq(ruleVotesTable.rosterId, rosterId)
+      ));
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      ruleId: row.ruleId,
+      rosterId: row.rosterId,
+      voterName: row.voterName,
+      vote: row.vote as "approve" | "reject",
+      createdAt: row.createdAt,
+    };
   }
 
-  // Award nominations
   async getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]> {
-    const nominations: AwardNomination[] = [];
-    this.awardNominations.forEach((n) => {
-      if (n.leagueId === leagueId && n.season === season && n.awardType === awardType) {
-        nominations.push(n);
-      }
-    });
-    return nominations.sort((a, b) => b.createdAt - a.createdAt);
+    const rows = await db
+      .select()
+      .from(awardNominationsTable)
+      .where(and(
+        eq(awardNominationsTable.leagueId, leagueId),
+        eq(awardNominationsTable.season, season),
+        eq(awardNominationsTable.awardType, awardType)
+      ))
+      .orderBy(desc(awardNominationsTable.createdAt));
+
+    return rows.map(row => ({
+      id: row.id,
+      leagueId: row.leagueId,
+      season: row.season,
+      awardType: row.awardType as "mvp" | "roy",
+      playerId: row.playerId,
+      playerName: row.playerName,
+      playerPosition: row.playerPosition,
+      playerTeam: row.playerTeam,
+      nominatedBy: row.nominatedBy,
+      nominatedByName: row.nominatedByName,
+      nominatedByRosterId: row.nominatedByRosterId,
+      createdAt: row.createdAt,
+    }));
   }
 
   async createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination> {
-    // Check if player already nominated
-    let existing: AwardNomination | undefined;
-    this.awardNominations.forEach((n) => {
-      if (n.leagueId === data.leagueId && n.season === data.season && 
-          n.awardType === data.awardType && n.playerId === data.playerId) {
-        existing = n;
-      }
-    });
-    
+    const [existing] = await db
+      .select()
+      .from(awardNominationsTable)
+      .where(and(
+        eq(awardNominationsTable.leagueId, data.leagueId),
+        eq(awardNominationsTable.season, data.season),
+        eq(awardNominationsTable.awardType, data.awardType),
+        eq(awardNominationsTable.playerId, data.playerId)
+      ));
+
     if (existing) {
-      return existing;
+      return {
+        id: existing.id,
+        leagueId: existing.leagueId,
+        season: existing.season,
+        awardType: existing.awardType as "mvp" | "roy",
+        playerId: existing.playerId,
+        playerName: existing.playerName,
+        playerPosition: existing.playerPosition,
+        playerTeam: existing.playerTeam,
+        nominatedBy: existing.nominatedBy,
+        nominatedByName: existing.nominatedByName,
+        nominatedByRosterId: existing.nominatedByRosterId,
+        createdAt: existing.createdAt,
+      };
     }
 
     const id = randomUUID();
-    const nomination: AwardNomination = {
+    const createdAt = Date.now();
+
+    await db.insert(awardNominationsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      awardType: data.awardType,
+      playerId: data.playerId,
+      playerName: data.playerName,
+      playerPosition: data.playerPosition,
+      playerTeam: data.playerTeam,
+      nominatedBy: data.nominatedBy,
+      nominatedByName: data.nominatedByName,
+      nominatedByRosterId: data.nominatedByRosterId,
+      createdAt,
+    });
+
+    return {
       id,
       ...data,
-      createdAt: Date.now(),
+      createdAt,
     };
-    this.awardNominations.set(id, nomination);
-    return nomination;
   }
 
   async getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<number> {
-    let count = 0;
-    this.awardNominations.forEach((n) => {
-      if (n.leagueId === leagueId && n.season === season && 
-          n.awardType === awardType && n.nominatedByRosterId === rosterId) {
-        count++;
-      }
-    });
-    return count;
+    const rows = await db
+      .select()
+      .from(awardNominationsTable)
+      .where(and(
+        eq(awardNominationsTable.leagueId, leagueId),
+        eq(awardNominationsTable.season, season),
+        eq(awardNominationsTable.awardType, awardType),
+        eq(awardNominationsTable.nominatedByRosterId, rosterId)
+      ));
+
+    return rows.length;
   }
 
-  // Award ballots
   async getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardBallot[]> {
-    const ballots: AwardBallot[] = [];
-    this.awardBallots.forEach((b) => {
-      if (b.leagueId === leagueId && b.season === season && b.awardType === awardType) {
-        ballots.push(b);
-      }
-    });
-    return ballots;
+    const rows = await db
+      .select()
+      .from(awardBallotsTable)
+      .where(and(
+        eq(awardBallotsTable.leagueId, leagueId),
+        eq(awardBallotsTable.season, season),
+        eq(awardBallotsTable.awardType, awardType)
+      ));
+
+    return rows.map(row => ({
+      id: row.id,
+      leagueId: row.leagueId,
+      season: row.season,
+      awardType: row.awardType as "mvp" | "roy",
+      rosterId: row.rosterId,
+      voterName: row.voterName,
+      firstPlaceId: row.firstPlaceId,
+      secondPlaceId: row.secondPlaceId,
+      thirdPlaceId: row.thirdPlaceId,
+      createdAt: row.createdAt,
+    }));
   }
 
   async upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot> {
-    // Check if ballot already exists for this roster
-    let existingBallot: AwardBallot | undefined;
-    this.awardBallots.forEach((b) => {
-      if (b.leagueId === data.leagueId && b.season === data.season && 
-          b.awardType === data.awardType && b.rosterId === data.rosterId) {
-        existingBallot = b;
-      }
-    });
+    const existing = await this.getAwardBallotByRoster(data.leagueId, data.season, data.awardType, data.rosterId);
 
-    if (existingBallot) {
-      // Update existing ballot
-      existingBallot.firstPlaceId = data.firstPlaceId;
-      existingBallot.secondPlaceId = data.secondPlaceId;
-      existingBallot.thirdPlaceId = data.thirdPlaceId;
-      existingBallot.voterName = data.voterName;
-      this.awardBallots.set(existingBallot.id, existingBallot);
-      return existingBallot;
+    if (existing) {
+      const [updated] = await db
+        .update(awardBallotsTable)
+        .set({
+          firstPlaceId: data.firstPlaceId,
+          secondPlaceId: data.secondPlaceId,
+          thirdPlaceId: data.thirdPlaceId,
+          voterName: data.voterName,
+        })
+        .where(eq(awardBallotsTable.id, existing.id))
+        .returning();
+
+      return {
+        id: updated.id,
+        leagueId: updated.leagueId,
+        season: updated.season,
+        awardType: updated.awardType as "mvp" | "roy",
+        rosterId: updated.rosterId,
+        voterName: updated.voterName,
+        firstPlaceId: updated.firstPlaceId,
+        secondPlaceId: updated.secondPlaceId,
+        thirdPlaceId: updated.thirdPlaceId,
+        createdAt: updated.createdAt,
+      };
     }
 
-    // Create new ballot
     const id = randomUUID();
-    const ballot: AwardBallot = {
+    const createdAt = Date.now();
+
+    await db.insert(awardBallotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      awardType: data.awardType,
+      rosterId: data.rosterId,
+      voterName: data.voterName,
+      firstPlaceId: data.firstPlaceId,
+      secondPlaceId: data.secondPlaceId,
+      thirdPlaceId: data.thirdPlaceId,
+      createdAt,
+    });
+
+    return {
       id,
       ...data,
-      createdAt: Date.now(),
+      createdAt,
     };
-    this.awardBallots.set(id, ballot);
-    return ballot;
   }
 
   async getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<AwardBallot | undefined> {
-    let found: AwardBallot | undefined;
-    this.awardBallots.forEach((b) => {
-      if (b.leagueId === leagueId && b.season === season && 
-          b.awardType === awardType && b.rosterId === rosterId) {
-        found = b;
-      }
-    });
-    return found;
+    const [row] = await db
+      .select()
+      .from(awardBallotsTable)
+      .where(and(
+        eq(awardBallotsTable.leagueId, leagueId),
+        eq(awardBallotsTable.season, season),
+        eq(awardBallotsTable.awardType, awardType),
+        eq(awardBallotsTable.rosterId, rosterId)
+      ));
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      leagueId: row.leagueId,
+      season: row.season,
+      awardType: row.awardType as "mvp" | "roy",
+      rosterId: row.rosterId,
+      voterName: row.voterName,
+      firstPlaceId: row.firstPlaceId,
+      secondPlaceId: row.secondPlaceId,
+      thirdPlaceId: row.thirdPlaceId,
+      createdAt: row.createdAt,
+    };
   }
 }
 
-export const storage = new MemStorage();
+export const storage = new DatabaseStorage();

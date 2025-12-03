@@ -103,14 +103,20 @@ Preferred communication style: Simple, everyday language.
 - Schema defined in `shared/schema.ts` using Zod for validation
 - Use `npm run db:push` for schema migrations
 
+**Database Tables (Persistent Storage):**
+- `rule_suggestions` - League governance proposals (persists across republishing)
+- `rule_votes` - Team votes on rule proposals (persists across republishing)
+- `award_nominations` - MVP and ROY player nominations (persists across republishing)
+- `award_ballots` - Ranked voting ballots for awards (persists across republishing)
+
 **Data Models:**
-- User sessions (Sleeper username, user ID, selected league)
-- Player data (positions, stats, roster status)
-- Team standings and matchups
-- Transaction history
-- Draft picks (traded and current ownership)
-- Rule suggestions (league governance proposals with upvote/downvote voting)
-- Award nominations (MVP and Rookie of Year nominations with voting)
+- User sessions (Sleeper username, user ID, selected league) - in-memory, ephemeral
+- Player data (positions, stats, roster status) - from Sleeper API
+- Team standings and matchups - from Sleeper API
+- Transaction history - from Sleeper API
+- Draft picks (traded and current ownership) - from Sleeper API
+- Rule suggestions and votes - PostgreSQL database (persistent)
+- Award nominations and ballots - PostgreSQL database (persistent)
 
 ### Authentication and Authorization
 

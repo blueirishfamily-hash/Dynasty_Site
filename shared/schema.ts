@@ -1,4 +1,64 @@
 import { z } from "zod";
+import { pgTable, text, integer, bigint, varchar } from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
+
+// Database Tables for persistent storage
+
+export const ruleSuggestionsTable = pgTable("rule_suggestions", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  authorId: varchar("author_id", { length: 64 }).notNull(),
+  authorName: varchar("author_name", { length: 128 }).notNull(),
+  title: varchar("title", { length: 256 }).notNull(),
+  description: text("description").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const ruleVotesTable = pgTable("rule_votes", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  ruleId: varchar("rule_id", { length: 36 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  voterName: varchar("voter_name", { length: 128 }).notNull(),
+  vote: varchar("vote", { length: 16 }).notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const awardNominationsTable = pgTable("award_nominations", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  awardType: varchar("award_type", { length: 16 }).notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  playerPosition: varchar("player_position", { length: 16 }).notNull(),
+  playerTeam: varchar("player_team", { length: 8 }),
+  nominatedBy: varchar("nominated_by", { length: 64 }).notNull(),
+  nominatedByName: varchar("nominated_by_name", { length: 128 }).notNull(),
+  nominatedByRosterId: integer("nominated_by_roster_id").notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const awardBallotsTable = pgTable("award_ballots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  awardType: varchar("award_type", { length: 16 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  voterName: varchar("voter_name", { length: 128 }).notNull(),
+  firstPlaceId: varchar("first_place_id", { length: 36 }).notNull(),
+  secondPlaceId: varchar("second_place_id", { length: 36 }).notNull(),
+  thirdPlaceId: varchar("third_place_id", { length: 36 }).notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// Drizzle insert schemas
+export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
+export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
+export const insertAwardNominationDbSchema = createInsertSchema(awardNominationsTable).omit({ id: true, createdAt: true });
+export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).omit({ id: true, createdAt: true });
+
+// Zod Schemas for API validation
 
 export const positionSchema = z.enum(["QB", "RB", "WR", "TE", "K", "DEF", "DL", "LB", "DB", "FLEX", "SUPER_FLEX"]);
 export type Position = z.infer<typeof positionSchema>;
