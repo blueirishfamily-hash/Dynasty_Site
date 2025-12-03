@@ -490,6 +490,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 
                 const pointsScenarios: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
                 
+                // Calculate tiebreaker status among bubble teams only
+                const hasHighestPointsAmongBubble = bubbleTeamsWithSameRecord.length === 0 || 
+                  bubbleTeamsWithSameRecord.every(rival => team.pointsFor > rival.pointsFor);
+                const teamsAheadInPoints = bubbleTeamsWithSameRecord.filter(rival => rival.pointsFor > team.pointsFor);
+                
                 if (isInPlayoffPosition) {
                   if (gamesAhead >= remainingWeeks) {
                     conditions.push({ type: "positive", text: `Can clinch with ${remainingWeeks - gamesAhead} more win${remainingWeeks - gamesAhead !== 1 ? 's' : ''}` });
@@ -499,30 +504,23 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                     conditions.push({ type: "neutral", text: `Tied with ${firstOutTeam?.name || 'next team'} - tiebreakers matter` });
                   }
                   
-                  if (team.pointsRank <= playoffTeams) {
-                    conditions.push({ type: "positive", text: `#${team.pointsRank} in points - wins tiebreaker` });
-                  } else {
-                    conditions.push({ type: "negative", text: `#${team.pointsRank} in points - loses tiebreaker` });
-                  }
-                  
                   conditions.push({ type: "neutral", text: "Win remaining games to secure spot" });
                   
-                  bubbleTeamsWithSameRecord.forEach(rival => {
-                    const pointsDiff = team.pointsFor - rival.pointsFor;
-                    const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
-                    
-                    if (pointsDiff > 0) {
-                      pointsScenarios.push({ 
-                        type: "positive", 
-                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record) - wins tiebreaker` 
-                      });
-                    } else if (pointsDiff < 0) {
+                  // Show tiebreaker status among bubble teams
+                  if (bubbleTeamsWithSameRecord.length > 0) {
+                    if (hasHighestPointsAmongBubble) {
+                      conditions.push({ type: "positive", text: `Highest points among bubble teams at ${team.currentWins}-${team.currentLosses} - wins tiebreaker` });
+                    } else {
+                      const closestRival = teamsAheadInPoints.reduce((closest, rival) => 
+                        (rival.pointsFor - team.pointsFor) < (closest.pointsFor - team.pointsFor) ? rival : closest
+                      );
+                      const pointsNeeded = closestRival.pointsFor - team.pointsFor;
                       pointsScenarios.push({ 
                         type: "negative", 
-                        text: `${Math.abs(pointsDiff).toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
+                        text: `${pointsNeeded.toFixed(1)} pts behind ${closestRival.name} (same record) - outscore to win tiebreaker` 
                       });
                     }
-                  });
+                  }
                 } else {
                   const winsNeeded = Math.abs(gamesBack) + 1;
                   if (winsNeeded <= remainingWeeks) {
@@ -531,65 +529,41 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                     conditions.push({ type: "negative", text: `${Math.abs(gamesBack)} game${Math.abs(gamesBack) !== 1 ? 's' : ''} back - needs help` });
                   }
                   
-                  const teamsToPass = predictions
+                  // Only show bubble teams that need to lose (exclude clinched teams)
+                  const bubbleTeamsToPass = predictions
                     .slice(0, playoffTeams)
-                    .filter(p => p.rosterId !== team.rosterId && p.makePlayoffsPct < 100);
+                    .filter(p => p.rosterId !== team.rosterId && p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
                   
-                  if (teamsToPass.length > 0) {
-                    const teamNames = teamsToPass.slice(0, 2).map(t => t.name);
-                    const moreCount = teamsToPass.length - 2;
+                  if (bubbleTeamsToPass.length > 0) {
+                    const teamNames = bubbleTeamsToPass.slice(0, 2).map(t => t.name);
+                    const moreCount = bubbleTeamsToPass.length - 2;
                     conditions.push({ 
                       type: "neutral", 
                       text: `Need ${teamNames.join(' or ')}${moreCount > 0 ? ` (+${moreCount} more)` : ''} to lose` 
                     });
                   }
                   
-                  if (team.pointsRank <= playoffTeams) {
-                    conditions.push({ type: "positive", text: `#${team.pointsRank} in points - favorable tiebreaker` });
-                  } else if (team.pointsBehind !== null && team.pointsBehind < 50) {
-                    conditions.push({ type: "neutral", text: `Only ${team.pointsBehind.toFixed(1)} pts behind #${team.pointsRank - 1}` });
-                  }
-                  
-                  bubbleTeamsWithSameRecord.forEach(rival => {
-                    const pointsDiff = team.pointsFor - rival.pointsFor;
-                    const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
-                    
-                    if (rivalStandingIdx < playoffTeams && pointsDiff < 0) {
-                      pointsScenarios.push({ 
-                        type: "neutral", 
-                        text: `Outscore ${rival.name} by ${Math.abs(pointsDiff).toFixed(1)}+ pts to take their spot (same ${team.currentWins}-${team.currentLosses} record)` 
-                      });
-                    } else if (rivalStandingIdx < playoffTeams && pointsDiff > 0) {
-                      pointsScenarios.push({ 
-                        type: "positive", 
-                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record) - wins tiebreaker` 
-                      });
-                    } else if (rivalStandingIdx >= playoffTeams && pointsDiff > 0) {
-                      pointsScenarios.push({ 
-                        type: "positive", 
-                        text: `${pointsDiff.toFixed(1)} pts ahead of ${rival.name} (same record) - wins tiebreaker` 
-                      });
-                    } else if (rivalStandingIdx >= playoffTeams && pointsDiff < 0) {
-                      pointsScenarios.push({ 
-                        type: "negative", 
-                        text: `${Math.abs(pointsDiff).toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
-                      });
-                    }
-                  });
-                  
-                  const bubblePlayoffTeamsWithSameRecord = predictions
-                    .slice(0, playoffTeams)
-                    .filter(p => p.currentWins === team.currentWins && 
-                                 p.currentLosses === team.currentLosses && 
-                                 p.rosterId !== team.rosterId &&
-                                 p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
-                  
-                  if (bubblePlayoffTeamsWithSameRecord.length > 0 && pointsScenarios.length === 0) {
-                    const avgPointsGap = bubblePlayoffTeamsWithSameRecord.reduce((sum, p) => sum + (p.pointsFor - team.pointsFor), 0) / bubblePlayoffTeamsWithSameRecord.length;
-                    if (avgPointsGap > 0) {
-                      pointsScenarios.push({
-                        type: "neutral",
-                        text: `Score ~${avgPointsGap.toFixed(0)}+ more pts than bubble teams with same record`
+                  // Show tiebreaker status among bubble teams with same record
+                  if (bubbleTeamsWithSameRecord.length > 0) {
+                    if (hasHighestPointsAmongBubble) {
+                      conditions.push({ type: "positive", text: `Highest points among bubble teams at ${team.currentWins}-${team.currentLosses} - wins tiebreaker` });
+                    } else {
+                      // Show how much they need to outscore the bubble teams ahead of them
+                      teamsAheadInPoints.forEach(rival => {
+                        const pointsNeeded = rival.pointsFor - team.pointsFor;
+                        const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
+                        
+                        if (rivalStandingIdx < playoffTeams) {
+                          pointsScenarios.push({ 
+                            type: "neutral", 
+                            text: `Outscore ${rival.name} by ${pointsNeeded.toFixed(1)}+ pts to take their spot (same ${team.currentWins}-${team.currentLosses} record)` 
+                          });
+                        } else {
+                          pointsScenarios.push({ 
+                            type: "negative", 
+                            text: `${pointsNeeded.toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
+                          });
+                        }
                       });
                     }
                   }
