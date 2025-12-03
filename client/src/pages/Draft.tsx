@@ -4,7 +4,7 @@ import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -45,9 +45,9 @@ interface DraftPickData {
 interface DraftPick {
   round: number;
   pick: number;
-  originalOwner: { name: string; initials: string };
-  currentOwner: { name: string; initials: string };
-  player?: { name: string; position: string; team: string };
+  originalOwner: { name: string; initials: string; avatar?: string | null };
+  currentOwner: { name: string; initials: string; avatar?: string | null };
+  player?: { id: string; name: string; position: string; team: string };
   fantasyTeam?: string;
   isUserPick?: boolean;
 }
@@ -189,23 +189,23 @@ export default function Draft() {
   const playoffTeams = league?.playoffTeams || 6;
   const totalTeams = league?.totalRosters || 12;
 
-  const rosterNameMap = new Map<number, { name: string; initials: string }>();
+  const rosterNameMap = new Map<number, { name: string; initials: string; avatar?: string | null }>();
   standings?.forEach((s: any) => {
-    rosterNameMap.set(s.rosterId, { name: s.name, initials: s.initials });
+    rosterNameMap.set(s.rosterId, { name: s.name, initials: s.initials, avatar: s.avatar });
   });
 
   const formattedFuturePicks: DraftPick[] = (draftPicks || [])
     .filter((p: any) => p.season === currentYear.toString())
     .filter((p: any) => p.round <= totalRounds)
     .map((pick: any) => {
-      const originalOwner = rosterNameMap.get(pick.originalOwnerId) || { name: `Team ${pick.originalOwnerId}`, initials: "??" };
-      const currentOwner = rosterNameMap.get(pick.currentOwnerId) || { name: `Team ${pick.currentOwnerId}`, initials: "??" };
+      const originalOwner = rosterNameMap.get(pick.originalOwnerId) || { name: `Team ${pick.originalOwnerId}`, initials: "??", avatar: null };
+      const currentOwner = rosterNameMap.get(pick.currentOwnerId) || { name: `Team ${pick.currentOwnerId}`, initials: "??", avatar: null };
       
       return {
         round: pick.round,
         pick: pick.rosterId,
-        originalOwner: { name: originalOwner.name, initials: originalOwner.initials },
-        currentOwner: { name: currentOwner.name, initials: currentOwner.initials },
+        originalOwner: { name: originalOwner.name, initials: originalOwner.initials, avatar: originalOwner.avatar },
+        currentOwner: { name: currentOwner.name, initials: currentOwner.initials, avatar: currentOwner.avatar },
         isUserPick: pick.currentOwnerId === userRosterId,
         player: undefined,
       };
@@ -218,16 +218,17 @@ export default function Draft() {
   const formattedHistoricalPicks: DraftPick[] = (historicalPicks || [])
     .filter((p) => p.round <= totalRounds)
     .map((pick) => {
-      const owner = rosterNameMap.get(pick.rosterId) || { name: `Team ${pick.rosterId}`, initials: "??" };
+      const owner = rosterNameMap.get(pick.rosterId) || { name: `Team ${pick.rosterId}`, initials: "??", avatar: null };
       
       return {
         round: pick.round,
         pick: pick.draftSlot,
-        originalOwner: owner,
-        currentOwner: owner,
+        originalOwner: { name: owner.name, initials: owner.initials, avatar: owner.avatar },
+        currentOwner: { name: owner.name, initials: owner.initials, avatar: owner.avatar },
         isUserPick: pick.pickedBy === user?.userId,
         fantasyTeam: pick.fantasyTeam,
         player: {
+          id: pick.playerId,
           name: pick.playerName,
           position: pick.position,
           team: pick.team || "",
@@ -484,6 +485,10 @@ export default function Draft() {
                       {pick.player ? (
                         <div className="flex items-center gap-2">
                           <Avatar className="w-8 h-8">
+                            <AvatarImage 
+                              src={`https://sleepercdn.com/content/nfl/players/${pick.player.id}.jpg`}
+                              alt={pick.player.name}
+                            />
                             <AvatarFallback className="text-xs">
                               {pick.player.name.split(" ").map((n) => n[0]).join("")}
                             </AvatarFallback>
@@ -514,6 +519,9 @@ export default function Draft() {
                       ) : (
                         <div className="flex items-center gap-2">
                           <Avatar className="w-8 h-8">
+                            {pick.currentOwner.avatar && (
+                              <AvatarImage src={pick.currentOwner.avatar} alt={pick.currentOwner.name} />
+                            )}
                             <AvatarFallback
                               className={`text-xs ${
                                 pick.isUserPick
