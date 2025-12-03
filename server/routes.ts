@@ -322,6 +322,10 @@ export async function registerRoutes(
           const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
           const pointsAgainst = (roster.settings.fpts_against || 0) + (roster.settings.fpts_against_decimal || 0) / 100;
           const history = matchupHistory.get(roster.roster_id) || [];
+          const avatarId = user?.avatar;
+          const avatar = avatarId 
+            ? `https://sleepercdn.com/avatars/thumbs/${avatarId}`
+            : null;
           
           return {
             rosterId: roster.roster_id,
@@ -329,6 +333,7 @@ export async function registerRoutes(
             name: teamName,
             initials: getTeamInitials(teamName),
             ownerId: roster.owner_id,
+            avatar,
             wins: roster.settings.wins,
             losses: roster.settings.losses,
             ties: roster.settings.ties,

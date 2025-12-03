@@ -1,6 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   Table,
   TableBody,
@@ -15,6 +15,7 @@ interface TeamStanding {
   rank: number;
   name: string;
   initials: string;
+  avatar?: string | null;
   wins: number;
   losses: number;
   pointsFor: number;
@@ -99,6 +100,9 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
                 <TableCell>
                   <div className="flex items-center gap-2">
                     <Avatar className="w-8 h-8">
+                      {team.avatar && (
+                        <AvatarImage src={team.avatar} alt={team.name} />
+                      )}
                       <AvatarFallback
                         className={`text-xs ${
                           team.isUser
