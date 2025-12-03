@@ -145,7 +145,7 @@ export default function Standings() {
                       <Skeleton key={i} className="h-10 w-full" />
                     ))
                   ) : (
-                    formattedStandings.slice(0, 5).map((team: any, i: number) => (
+                    [...formattedStandings].sort((a, b) => b.pointsFor - a.pointsFor).slice(0, 5).map((team: any, i: number) => (
                       <div key={team.rank} className="flex items-center gap-3">
                         <Badge
                           variant={i === 0 ? "default" : "secondary"}
