@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -34,6 +34,7 @@ interface TeamAssets {
   teamId: string;
   teamName: string;
   teamInitials: string;
+  teamAvatar?: string | null;
   players: Player[];
   draftPicks: DraftPick[];
 }
@@ -144,6 +145,10 @@ export default function TradeCenter({
           >
             <Checkbox checked={selectedPlayers.has(player.id)} />
             <Avatar className="w-7 h-7">
+              <AvatarImage 
+                src={`https://sleepercdn.com/content/nfl/players/${player.id}.jpg`}
+                alt={player.name}
+              />
               <AvatarFallback className="text-xs">
                 {player.name
                   .split(" ")
@@ -216,6 +221,9 @@ export default function TradeCenter({
             <div className="p-3 border-b border-border bg-muted/30">
               <div className="flex items-center gap-2">
                 <Avatar className="w-8 h-8">
+                  {userTeam.teamAvatar && (
+                    <AvatarImage src={userTeam.teamAvatar} alt={userTeam.teamName} />
+                  )}
                   <AvatarFallback className="bg-primary text-primary-foreground text-xs">
                     {userTeam.teamInitials}
                   </AvatarFallback>
@@ -241,6 +249,9 @@ export default function TradeCenter({
             <div className="p-3 border-b border-border bg-muted/30">
               <div className="flex items-center gap-2">
                 <Avatar className="w-8 h-8">
+                  {selectedTeam?.teamAvatar && (
+                    <AvatarImage src={selectedTeam.teamAvatar} alt={selectedTeam.teamName} />
+                  )}
                   <AvatarFallback className="bg-muted text-muted-foreground text-xs">
                     {selectedTeam?.teamInitials || "?"}
                   </AvatarFallback>

@@ -82,6 +82,7 @@ export default function Trades() {
     teamId: user.userId,
     teamName: userTeamStanding.name,
     teamInitials: userTeamStanding.initials,
+    teamAvatar: userTeamStanding.avatar,
     players: (roster || []).map((p: any) => ({
       id: p.id,
       name: p.name,
@@ -109,6 +110,7 @@ export default function Trades() {
         teamId: team.ownerId,
         teamName: team.name,
         teamInitials: team.initials,
+        teamAvatar: team.avatar,
         players: (rosterData?.players || []).map((p: any) => ({
           id: p.id,
           name: p.name,
