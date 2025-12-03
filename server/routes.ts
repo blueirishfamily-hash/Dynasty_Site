@@ -1665,20 +1665,51 @@ export async function registerRoutes(
     }
   });
 
+  // Cast vote on a rule (1 vote per team per rule)
   app.post("/api/rule-suggestions/:id/vote", async (req, res) => {
     try {
-      const { voterId, voteType } = req.body;
-      if (!voterId || !voteType) {
+      const { rosterId, voterName, vote } = req.body;
+      if (!rosterId || !voterName || !vote) {
         return res.status(400).json({ error: "Missing required fields" });
       }
-      const suggestion = await storage.voteRuleSuggestion(req.params.id, voterId, voteType);
-      if (!suggestion) {
-        return res.status(404).json({ error: "Suggestion not found" });
+      if (vote !== "approve" && vote !== "reject") {
+        return res.status(400).json({ error: "Invalid vote type" });
       }
-      res.json(suggestion);
+      
+      const ruleVote = await storage.castRuleVote({
+        ruleId: req.params.id,
+        rosterId,
+        voterName,
+        vote,
+      });
+      res.json(ruleVote);
     } catch (error) {
       console.error("Error voting on rule suggestion:", error);
       res.status(500).json({ error: "Failed to vote on rule suggestion" });
+    }
+  });
+
+  // Get votes for a specific rule
+  app.get("/api/rule-suggestions/:id/votes", async (req, res) => {
+    try {
+      const votes = await storage.getRuleVotes(req.params.id);
+      const approveCount = votes.filter(v => v.vote === "approve").length;
+      const rejectCount = votes.filter(v => v.vote === "reject").length;
+      res.json({ votes, approveCount, rejectCount });
+    } catch (error) {
+      console.error("Error fetching rule votes:", error);
+      res.status(500).json({ error: "Failed to fetch rule votes" });
+    }
+  });
+
+  // Get user's vote on a rule
+  app.get("/api/rule-suggestions/:id/votes/:rosterId", async (req, res) => {
+    try {
+      const vote = await storage.getRuleVoteByRoster(req.params.id, parseInt(req.params.rosterId));
+      res.json(vote || null);
+    } catch (error) {
+      console.error("Error fetching user vote:", error);
+      res.status(500).json({ error: "Failed to fetch user vote" });
     }
   });
 
@@ -1697,16 +1728,23 @@ export async function registerRoutes(
     }
   });
 
+  // Create nomination (max 3 per team per award type)
   app.post("/api/league/:leagueId/awards/:season/:awardType/nominate", async (req, res) => {
     try {
       const { leagueId, season, awardType } = req.params;
-      const { playerId, playerName, playerPosition, playerTeam, nominatedBy, nominatedByName } = req.body;
+      const { playerId, playerName, playerPosition, playerTeam, nominatedBy, nominatedByName, nominatedByRosterId } = req.body;
       
       if (awardType !== "mvp" && awardType !== "roy") {
         return res.status(400).json({ error: "Invalid award type" });
       }
-      if (!playerId || !playerName || !nominatedBy || !nominatedByName) {
+      if (!playerId || !playerName || !nominatedBy || !nominatedByName || !nominatedByRosterId) {
         return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Check nomination limit (3 per team per award type)
+      const currentCount = await storage.getNominationCountByRoster(leagueId, season, awardType, nominatedByRosterId);
+      if (currentCount >= 3) {
+        return res.status(400).json({ error: "Maximum 3 nominations per team per award" });
       }
 
       const nomination = await storage.createAwardNomination({
@@ -1719,6 +1757,7 @@ export async function registerRoutes(
         playerTeam: playerTeam || null,
         nominatedBy,
         nominatedByName,
+        nominatedByRosterId,
       });
       res.json(nomination);
     } catch (error) {
@@ -1727,20 +1766,118 @@ export async function registerRoutes(
     }
   });
 
-  app.post("/api/awards/:id/vote", async (req, res) => {
+  // Get nomination count for a roster
+  app.get("/api/league/:leagueId/awards/:season/:awardType/nominations/count/:rosterId", async (req, res) => {
     try {
-      const { voterId } = req.body;
-      if (!voterId) {
-        return res.status(400).json({ error: "Missing voter ID" });
+      const { leagueId, season, awardType, rosterId } = req.params;
+      if (awardType !== "mvp" && awardType !== "roy") {
+        return res.status(400).json({ error: "Invalid award type" });
       }
-      const nomination = await storage.voteAwardNomination(req.params.id, voterId);
-      if (!nomination) {
-        return res.status(404).json({ error: "Nomination not found" });
-      }
-      res.json(nomination);
+      const count = await storage.getNominationCountByRoster(leagueId, season, awardType, parseInt(rosterId));
+      res.json({ count, remaining: 3 - count });
     } catch (error) {
-      console.error("Error voting on award nomination:", error);
-      res.status(500).json({ error: "Failed to vote on award nomination" });
+      console.error("Error fetching nomination count:", error);
+      res.status(500).json({ error: "Failed to fetch nomination count" });
+    }
+  });
+
+  // Submit ranked ballot (1st=3pts, 2nd=2pts, 3rd=1pt)
+  app.post("/api/league/:leagueId/awards/:season/:awardType/ballot", async (req, res) => {
+    try {
+      const { leagueId, season, awardType } = req.params;
+      const { rosterId, voterName, firstPlaceId, secondPlaceId, thirdPlaceId } = req.body;
+      
+      if (awardType !== "mvp" && awardType !== "roy") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      if (!rosterId || !voterName || !firstPlaceId || !secondPlaceId || !thirdPlaceId) {
+        return res.status(400).json({ error: "Missing required fields - must vote for 1st, 2nd, and 3rd place" });
+      }
+
+      // Validate all three picks are different
+      if (firstPlaceId === secondPlaceId || firstPlaceId === thirdPlaceId || secondPlaceId === thirdPlaceId) {
+        return res.status(400).json({ error: "Cannot vote for the same player multiple times" });
+      }
+
+      // Validate all picks are valid nominations
+      const nominations = await storage.getAwardNominations(leagueId, season, awardType);
+      const nominationIds = new Set(nominations.map(n => n.id));
+      if (!nominationIds.has(firstPlaceId) || !nominationIds.has(secondPlaceId) || !nominationIds.has(thirdPlaceId)) {
+        return res.status(400).json({ error: "Invalid nomination ID" });
+      }
+
+      const ballot = await storage.upsertAwardBallot({
+        leagueId,
+        season,
+        awardType,
+        rosterId,
+        voterName,
+        firstPlaceId,
+        secondPlaceId,
+        thirdPlaceId,
+      });
+      res.json(ballot);
+    } catch (error) {
+      console.error("Error submitting ballot:", error);
+      res.status(500).json({ error: "Failed to submit ballot" });
+    }
+  });
+
+  // Get user's current ballot
+  app.get("/api/league/:leagueId/awards/:season/:awardType/ballot/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, season, awardType, rosterId } = req.params;
+      if (awardType !== "mvp" && awardType !== "roy") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      const ballot = await storage.getAwardBallotByRoster(leagueId, season, awardType, parseInt(rosterId));
+      res.json(ballot || null);
+    } catch (error) {
+      console.error("Error fetching ballot:", error);
+      res.status(500).json({ error: "Failed to fetch ballot" });
+    }
+  });
+
+  // Get award results with scores
+  app.get("/api/league/:leagueId/awards/:season/:awardType/results", async (req, res) => {
+    try {
+      const { leagueId, season, awardType } = req.params;
+      if (awardType !== "mvp" && awardType !== "roy") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+
+      const nominations = await storage.getAwardNominations(leagueId, season, awardType);
+      const ballots = await storage.getAwardBallots(leagueId, season, awardType);
+
+      // Calculate scores for each nomination
+      const scores = new Map<string, number>();
+      nominations.forEach(n => scores.set(n.id, 0));
+
+      ballots.forEach(ballot => {
+        const current1 = scores.get(ballot.firstPlaceId) || 0;
+        const current2 = scores.get(ballot.secondPlaceId) || 0;
+        const current3 = scores.get(ballot.thirdPlaceId) || 0;
+        scores.set(ballot.firstPlaceId, current1 + 3);
+        scores.set(ballot.secondPlaceId, current2 + 2);
+        scores.set(ballot.thirdPlaceId, current3 + 1);
+      });
+
+      const results = nominations.map(n => ({
+        ...n,
+        score: scores.get(n.id) || 0,
+        firstPlaceVotes: ballots.filter(b => b.firstPlaceId === n.id).length,
+        secondPlaceVotes: ballots.filter(b => b.secondPlaceId === n.id).length,
+        thirdPlaceVotes: ballots.filter(b => b.thirdPlaceId === n.id).length,
+      })).sort((a, b) => b.score - a.score);
+
+      res.json({ 
+        results, 
+        totalBallots: ballots.length,
+        totalTeams: nominations.length > 0 ? 12 : 0 // Adjust based on league size
+      });
+    } catch (error) {
+      console.error("Error fetching award results:", error);
+      res.status(500).json({ error: "Failed to fetch award results" });
     }
   });
 
