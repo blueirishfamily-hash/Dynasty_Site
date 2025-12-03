@@ -1028,11 +1028,15 @@ function RuleCard({
             <span>by {suggestion.authorName}</span>
             <span>•</span>
             <span>{formatTimeAgo(suggestion.createdAt)}</span>
-            <span>•</span>
-            <span className="flex items-center gap-1">
-              <Users className="w-3 h-3" />
-              {totalVotes} team{totalVotes !== 1 ? "s" : ""} voted
-            </span>
+            {isResultsVisible && (
+              <>
+                <span>•</span>
+                <span className="flex items-center gap-1">
+                  <Users className="w-3 h-3" />
+                  {totalVotes} team{totalVotes !== 1 ? "s" : ""} voted
+                </span>
+              </>
+            )}
           </div>
         </div>
       </div>
