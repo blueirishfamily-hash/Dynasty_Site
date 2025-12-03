@@ -227,17 +227,92 @@ export async function registerRoutes(
     }
   });
 
-  // Get league standings
+  // Get league standings with streak calculation
   app.get("/api/sleeper/league/:leagueId/standings", async (req, res) => {
     try {
       const userId = req.query.userId as string;
-      const [rosters, users] = await Promise.all([
+      const [rosters, users, nflState] = await Promise.all([
         getLeagueRosters(req.params.leagueId),
         getLeagueUsers(req.params.leagueId),
+        getNFLState(),
       ]);
 
       const userMap = new Map<string, SleeperLeagueUser>();
       users.forEach(u => userMap.set(u.user_id, u));
+
+      // Fetch matchup history for streak calculation
+      const currentWeek = nflState.week;
+      const matchupHistory: Map<number, Array<{ week: number; won: boolean | null }>> = new Map();
+      
+      // Initialize matchup history for all rosters
+      rosters.forEach(r => matchupHistory.set(r.roster_id, []));
+      
+      // Fetch all weeks' matchups for streak calculation
+      const weeksToFetch = Math.max(1, currentWeek - 1); // Only completed weeks
+      const matchupPromises = [];
+      for (let week = 1; week <= weeksToFetch; week++) {
+        matchupPromises.push(getLeagueMatchups(req.params.leagueId, week).then(matchups => ({ week, matchups })));
+      }
+      
+      const allMatchups = await Promise.all(matchupPromises);
+      
+      // Process matchups to determine win/loss for each team each week
+      for (const { week, matchups } of allMatchups) {
+        // Group matchups by matchup_id
+        const matchupGroups = new Map<number, typeof matchups>();
+        matchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) {
+            matchupGroups.set(m.matchup_id, []);
+          }
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+        
+        // Determine winner/loser for each matchup
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          const [team1, team2] = group;
+          const score1 = team1.points || 0;
+          const score2 = team2.points || 0;
+          
+          if (score1 === 0 && score2 === 0) return; // Unplayed game
+          
+          const history1 = matchupHistory.get(team1.roster_id);
+          const history2 = matchupHistory.get(team2.roster_id);
+          
+          if (score1 > score2) {
+            history1?.push({ week, won: true });
+            history2?.push({ week, won: false });
+          } else if (score2 > score1) {
+            history1?.push({ week, won: false });
+            history2?.push({ week, won: true });
+          } else {
+            history1?.push({ week, won: null }); // Tie
+            history2?.push({ week, won: null });
+          }
+        });
+      }
+      
+      // Calculate current streak for each team
+      const calculateStreak = (history: Array<{ week: number; won: boolean | null }>): string => {
+        if (history.length === 0) return "—";
+        
+        // Sort by week descending to get most recent first
+        const sorted = [...history].sort((a, b) => b.week - a.week);
+        
+        let streak = 0;
+        let streakType: boolean | null = sorted[0]?.won ?? null;
+        
+        for (const game of sorted) {
+          if (game.won === streakType) {
+            streak++;
+          } else {
+            break;
+          }
+        }
+        
+        if (streak === 0 || streakType === null) return "—";
+        return streakType ? `W${streak}` : `L${streak}`;
+      };
 
       const standings: TeamStanding[] = rosters
         .map((roster) => {
@@ -245,6 +320,7 @@ export async function registerRoutes(
           const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
           const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
           const pointsAgainst = (roster.settings.fpts_against || 0) + (roster.settings.fpts_against_decimal || 0) / 100;
+          const history = matchupHistory.get(roster.roster_id) || [];
           
           return {
             rosterId: roster.roster_id,
@@ -258,6 +334,7 @@ export async function registerRoutes(
             pointsFor,
             pointsAgainst,
             isUser: roster.owner_id === userId,
+            streak: calculateStreak(history),
           };
         })
         .sort((a, b) => {

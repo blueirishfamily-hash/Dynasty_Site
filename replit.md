@@ -52,6 +52,13 @@ Preferred communication style: Simple, everyday language.
   - Points gaps to adjacent teams (behind/ahead)
   - Impact analysis showing playoff odds changes if moving up/down in points standings
   - Monte Carlo simulation with 10,000 iterations
+- Standings with win/loss streak calculation (e.g., "W3", "L2", "—")
+- Draft lottery odds calculator (Draft Odds tab):
+  - Monte Carlo simulation (10,000 iterations) for lottery pick probabilities
+  - Weighted lottery system: worst teams get highest odds for top picks
+  - Playoff teams get deterministic picks based on projected seed
+  - Probabilities sum to 100% for each lottery team across all picks
+- Auto-selection of most recent completed draft in Historical tab (prefers 2024 if available)
 
 ### Backend Architecture
 

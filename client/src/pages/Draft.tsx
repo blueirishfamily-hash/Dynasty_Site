@@ -1,14 +1,22 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Calendar, ChevronLeft, ChevronRight } from "lucide-react";
+import { 
+  Table, 
+  TableBody, 
+  TableCell, 
+  TableHead, 
+  TableHeader, 
+  TableRow 
+} from "@/components/ui/table";
+import { Calendar, Dice1, Trophy, TrendingDown } from "lucide-react";
 
 interface DraftInfo {
   draftId: string;
@@ -44,6 +52,43 @@ interface DraftPick {
   isUserPick?: boolean;
 }
 
+interface TeamStanding {
+  rosterId: number;
+  rank: number;
+  name: string;
+  initials: string;
+  wins: number;
+  losses: number;
+  pointsFor: number;
+  isUser?: boolean;
+}
+
+interface PlayoffPrediction {
+  rosterId: number;
+  name: string;
+  initials: string;
+  makePlayoffsPct: number;
+  oneSeedPct: number;
+  projectedWins: number;
+}
+
+interface DraftOddsTeam {
+  rosterId: number;
+  name: string;
+  initials: string;
+  record: string;
+  wins: number;
+  losses: number;
+  pointsFor: number;
+  isPlayoffTeam: boolean;
+  projectedFinish?: number;
+  maxPoints: number;
+  pickOdds: number[];
+  isUser?: boolean;
+  missPlayoffsPct?: number;
+  projectedWins?: number;
+}
+
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
   RB: "bg-primary text-primary-foreground",
@@ -63,7 +108,7 @@ function getTeamInitials(name: string): string {
 
 export default function Draft() {
   const { user, league, season } = useSleeper();
-  const [activeTab, setActiveTab] = useState<"future" | "historical">("future");
+  const [activeTab, setActiveTab] = useState<"future" | "historical" | "odds">("future");
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
 
   const { data: draftPicks, isLoading: picksLoading } = useQuery({
@@ -76,7 +121,7 @@ export default function Draft() {
     enabled: !!league?.leagueId,
   });
 
-  const { data: standings } = useQuery({
+  const { data: standings } = useQuery<TeamStanding[]>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "standings", user?.userId],
     queryFn: async () => {
       const res = await fetch(
@@ -108,10 +153,39 @@ export default function Draft() {
     enabled: !!selectedDraftId,
   });
 
+  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[] }>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
+      if (!res.ok) throw new Error("Failed to fetch playoff predictions");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
+  // Auto-select 2024 draft when drafts load
+  useEffect(() => {
+    if (drafts && drafts.length > 0 && !selectedDraftId) {
+      const draft2024 = drafts.find(d => d.season === "2024" && d.status === "complete");
+      if (draft2024) {
+        setSelectedDraftId(draft2024.draftId);
+      } else {
+        const latestCompleted = drafts
+          .filter(d => d.status === "complete")
+          .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
+        if (latestCompleted) {
+          setSelectedDraftId(latestCompleted.draftId);
+        }
+      }
+    }
+  }, [drafts, selectedDraftId]);
+
   const userTeamStanding = standings?.find((s: any) => s.isUser);
   const userRosterId = userTeamStanding?.rosterId;
   const currentYear = parseInt(season) + 1;
   const totalRounds = 3;
+  const playoffTeams = league?.playoffTeams || 6;
+  const totalTeams = league?.totalRosters || 12;
 
   const rosterNameMap = new Map<number, { name: string; initials: string }>();
   standings?.forEach((s: any) => {
@@ -166,6 +240,179 @@ export default function Draft() {
   const completedDrafts = (drafts || [])
     .filter(d => d.status === "complete")
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
+
+  // Calculate draft odds based on standings and playoff predictions
+  // Uses weighted lottery odds similar to NBA draft lottery system
+  const calculateDraftOdds = (): DraftOddsTeam[] => {
+    if (!standings) return [];
+
+    const predictionMap = new Map(
+      (playoffPredictions?.predictions || []).map(p => [p.rosterId, p])
+    );
+
+    // Build list of teams with prediction data
+    const teamsWithPredictions = standings.map(team => {
+      const prediction = predictionMap.get(team.rosterId);
+      return {
+        ...team,
+        prediction,
+        makePlayoffsPct: prediction?.makePlayoffsPct ?? (team.rank <= playoffTeams ? 100 : 0),
+        projectedWins: prediction?.projectedWins ?? team.wins,
+      };
+    });
+
+    // Determine playoff teams vs lottery teams based on predictions or current rank
+    const teamsWithData: DraftOddsTeam[] = teamsWithPredictions.map(team => {
+      // Use prediction data if available, otherwise use current standings
+      const isPlayoffTeam = team.makePlayoffsPct >= 50;
+      
+      return {
+        rosterId: team.rosterId,
+        name: team.name,
+        initials: team.initials,
+        record: `${team.wins}-${team.losses}`,
+        wins: team.wins,
+        losses: team.losses,
+        pointsFor: team.pointsFor,
+        isPlayoffTeam,
+        projectedFinish: undefined, // Will be assigned after sorting
+        maxPoints: team.pointsFor,
+        pickOdds: new Array(totalTeams).fill(0),
+        isUser: team.isUser,
+        missPlayoffsPct: 100 - team.makePlayoffsPct,
+        projectedWins: team.projectedWins,
+      };
+    });
+
+    // Separate playoff and lottery teams
+    const playoffTeamsList = teamsWithData.filter(t => t.isPlayoffTeam);
+    const lotteryTeams = teamsWithData.filter(t => !t.isPlayoffTeam);
+
+    // Sort lottery teams: worst record first, then by lowest points (for tiebreaker)
+    lotteryTeams.sort((a, b) => {
+      // Primary: fewer wins = higher pick
+      if (a.wins !== b.wins) return a.wins - b.wins;
+      // Secondary: lower points = higher pick (for teams that missed playoffs)
+      return a.pointsFor - b.pointsFor;
+    });
+
+    // Sort playoff teams by projected wins and points - best teams pick last
+    // Teams with more projected wins are seeded higher (better), pick later
+    playoffTeamsList.sort((a, b) => {
+      // Primary: more projected wins = higher seed = later pick
+      const winsA = a.projectedWins ?? a.wins;
+      const winsB = b.projectedWins ?? b.wins;
+      if (winsA !== winsB) return winsA - winsB; // Ascending - fewer wins picks earlier
+      // Secondary: higher points = higher seed = later pick
+      return a.pointsFor - b.pointsFor; // Ascending - fewer points picks earlier
+    });
+
+    // Assign projected finish (seed) based on sorted order
+    playoffTeamsList.forEach((team, index) => {
+      // Best team (last in sort) gets seed 1, worst playoff team gets highest seed
+      team.projectedFinish = playoffTeamsList.length - index;
+    });
+
+    // Generate lottery-style weighted odds for non-playoff teams
+    // Uses Monte Carlo simulation to calculate realistic pick probabilities
+    const lotteryPicks = lotteryTeams.length;
+    
+    if (lotteryPicks > 0) {
+      // Run Monte Carlo simulation to calculate lottery odds
+      const SIMULATIONS = 10000;
+      const pickCounts: Map<number, number[]> = new Map();
+      
+      // Initialize pick count arrays for each team
+      lotteryTeams.forEach((_, idx) => {
+        pickCounts.set(idx, new Array(lotteryPicks).fill(0));
+      });
+      
+      // Get lottery weights (worst team gets highest weight)
+      const lotteryWeights = generateLotteryWeights(lotteryPicks);
+      
+      for (let sim = 0; sim < SIMULATIONS; sim++) {
+        // Track which teams have been assigned picks
+        const availableTeams = lotteryTeams.map((_, i) => i);
+        
+        for (let pick = 0; pick < lotteryPicks; pick++) {
+          // Calculate total weight of remaining teams
+          const totalWeight = availableTeams.reduce((sum, teamIdx) => sum + lotteryWeights[teamIdx], 0);
+          
+          // Random selection based on weights
+          let random = Math.random() * totalWeight;
+          let selectedTeamIdx = availableTeams[0];
+          
+          for (const teamIdx of availableTeams) {
+            random -= lotteryWeights[teamIdx];
+            if (random <= 0) {
+              selectedTeamIdx = teamIdx;
+              break;
+            }
+          }
+          
+          // Record this pick
+          pickCounts.get(selectedTeamIdx)![pick]++;
+          
+          // Remove selected team from available pool
+          const teamArrayIdx = availableTeams.indexOf(selectedTeamIdx);
+          availableTeams.splice(teamArrayIdx, 1);
+        }
+      }
+      
+      // Convert counts to percentages
+      lotteryTeams.forEach((team, teamIdx) => {
+        const counts = pickCounts.get(teamIdx)!;
+        counts.forEach((count, pickIdx) => {
+          team.pickOdds[pickIdx] = Math.round((count / SIMULATIONS) * 1000) / 10;
+        });
+      });
+    }
+
+    // Playoff teams get deterministic picks based on projected finish
+    // Best team (seed 1) gets last pick, worst playoff team gets first playoff pick
+    playoffTeamsList.forEach((team, index) => {
+      const pickPosition = lotteryPicks + index;
+      if (pickPosition < totalTeams) {
+        team.pickOdds[pickPosition] = 100;
+      }
+    });
+
+    // Combine lottery teams (ordered by expected pick) and playoff teams
+    return [...lotteryTeams, ...playoffTeamsList];
+  };
+
+  // Generate weighted lottery odds (worst team gets most weight)
+  const generateLotteryWeights = (numTeams: number): number[] => {
+    // Weighted lottery odds - worst team gets highest probability
+    // These weights are designed to give worst teams advantage while still allowing upsets
+    const baseWeights: Record<number, number[]> = {
+      1: [100],
+      2: [55, 45],
+      3: [50, 30, 20],
+      4: [40, 27.5, 20, 12.5],
+      5: [35, 25, 20, 12.5, 7.5],
+      6: [30, 22.5, 17.5, 14, 10, 6],
+    };
+    
+    if (baseWeights[numTeams]) {
+      return baseWeights[numTeams];
+    }
+    
+    // For larger lottery pools, create declining weights
+    const weights: number[] = [];
+    let remaining = 100;
+    for (let i = 0; i < numTeams; i++) {
+      const weight = Math.max(3, remaining * (0.35 - i * 0.03));
+      weights.push(Math.round(weight * 10) / 10);
+      remaining -= weight;
+    }
+    
+    // Normalize to ensure weights sum to 100
+    const total = weights.reduce((a, b) => a + b, 0);
+    return weights.map(w => Math.round((w / total) * 1000) / 10);
+  };
+
+  const draftOddsTeams = calculateDraftOdds();
 
   const renderDraftGrid = (picks: DraftPick[], showPlayers: boolean) => {
     const teamsCount = league?.totalRosters || 12;
@@ -292,7 +539,7 @@ export default function Draft() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="font-heading text-3xl font-bold">Draft Board</h1>
-        <p className="text-muted-foreground">View draft capital and historical picks</p>
+        <p className="text-muted-foreground">View draft capital, historical picks, and draft lottery odds</p>
       </div>
 
       <Card>
@@ -301,16 +548,25 @@ export default function Draft() {
             <div className="flex items-center gap-3">
               <CardTitle className="font-heading text-lg">Draft Picks</CardTitle>
               <Badge variant="outline">
-                {activeTab === "future" ? currentYear : selectedDraftId ? completedDrafts.find(d => d.draftId === selectedDraftId)?.season : ""}
+                {activeTab === "future" 
+                  ? currentYear 
+                  : activeTab === "historical" 
+                    ? (selectedDraftId ? completedDrafts.find(d => d.draftId === selectedDraftId)?.season : "")
+                    : `${currentYear} Odds`
+                }
               </Badge>
             </div>
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "future" | "historical")}>
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "future" | "historical" | "odds")}>
               <TabsList>
                 <TabsTrigger value="future" data-testid="tab-future-draft">
                   Future Picks
                 </TabsTrigger>
                 <TabsTrigger value="historical" data-testid="tab-historical-draft">
                   Historical
+                </TabsTrigger>
+                <TabsTrigger value="odds" data-testid="tab-draft-odds">
+                  <Dice1 className="w-4 h-4 mr-1" />
+                  Draft Odds
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -345,7 +601,7 @@ export default function Draft() {
                 </p>
               )}
             </>
-          ) : (
+          ) : activeTab === "historical" ? (
             <div className="space-y-4">
               {draftsLoading ? (
                 <div className="flex gap-2">
@@ -415,6 +671,112 @@ export default function Draft() {
                   No historical drafts found
                 </p>
               )}
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <CardDescription>
+                Draft order is determined by: 1) Record (worst to best), 2) For non-playoff teams: lowest max points scored gets earlier pick, 
+                3) For playoff teams: projected finish determines pick order (champion picks last).
+              </CardDescription>
+              
+              <div className="flex items-center gap-4 mb-4 text-xs text-muted-foreground">
+                <div className="flex items-center gap-1.5">
+                  <TrendingDown className="w-4 h-4 text-destructive" />
+                  <span>Lottery Team (Missed Playoffs)</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Trophy className="w-4 h-4 text-primary" />
+                  <span>Playoff Team</span>
+                </div>
+              </div>
+
+              <ScrollArea className="w-full">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="sticky left-0 bg-background z-10">Team</TableHead>
+                      <TableHead className="text-center">Record</TableHead>
+                      <TableHead className="text-center">Status</TableHead>
+                      <TableHead className="text-right">Points For</TableHead>
+                      {Array.from({ length: Math.min(totalTeams, 12) }, (_, i) => (
+                        <TableHead key={i} className="text-center w-16">
+                          Pick {i + 1}
+                        </TableHead>
+                      ))}
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {draftOddsTeams.map((team, index) => (
+                      <TableRow 
+                        key={team.rosterId}
+                        className={team.isUser ? "bg-primary/5" : ""}
+                        data-testid={`draft-odds-row-${team.rosterId}`}
+                      >
+                        <TableCell className="sticky left-0 bg-background z-10">
+                          <div className="flex items-center gap-2">
+                            <Avatar className="w-8 h-8">
+                              <AvatarFallback
+                                className={`text-xs ${
+                                  team.isUser
+                                    ? "bg-primary text-primary-foreground"
+                                    : "bg-muted"
+                                }`}
+                              >
+                                {team.initials}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className={`font-medium ${team.isUser ? "text-primary" : ""}`}>
+                              {team.name}
+                            </span>
+                            {team.isUser && (
+                              <Badge variant="outline" className="text-xs">
+                                You
+                              </Badge>
+                            )}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-center tabular-nums font-medium">
+                          {team.record}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {team.isPlayoffTeam ? (
+                            <Badge className="bg-primary text-primary-foreground">
+                              <Trophy className="w-3 h-3 mr-1" />
+                              Playoff #{team.projectedFinish || "?"}
+                            </Badge>
+                          ) : (
+                            <Badge variant="secondary">
+                              <TrendingDown className="w-3 h-3 mr-1" />
+                              Lottery
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums">
+                          {team.pointsFor.toFixed(1)}
+                        </TableCell>
+                        {Array.from({ length: Math.min(totalTeams, 12) }, (_, pickIndex) => {
+                          const odds = team.pickOdds[pickIndex] || 0;
+                          return (
+                            <TableCell 
+                              key={pickIndex} 
+                              className={`text-center tabular-nums ${
+                                odds === 100 
+                                  ? "bg-primary/20 font-bold text-primary" 
+                                  : odds > 0 
+                                    ? "bg-muted/50" 
+                                    : ""
+                              }`}
+                            >
+                              {odds > 0 ? `${odds}%` : "—"}
+                            </TableCell>
+                          );
+                        })}
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <ScrollBar orientation="horizontal" />
+              </ScrollArea>
             </div>
           )}
         </CardContent>
