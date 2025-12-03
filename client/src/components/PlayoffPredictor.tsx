@@ -18,7 +18,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Trophy, Target, Medal, TrendingUp, Info, Hash, Zap } from "lucide-react";
+import { Trophy, Target, Medal, TrendingUp, Info, Hash, Zap, AlertCircle, CheckCircle2, XCircle, ArrowUp, ArrowDown } from "lucide-react";
 
 interface TeamPrediction {
   rosterId: number;
@@ -444,6 +444,141 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
           </div>
         </CardContent>
       </Card>
+
+      {/* Bubble Watch - Qualification Conditions */}
+      {(() => {
+        const bubbleTeams = predictions.filter(p => p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
+        const playoffCutoffTeam = predictions[playoffTeams - 1];
+        const firstOutTeam = predictions[playoffTeams];
+        
+        if (bubbleTeams.length === 0 || remainingWeeks === 0) return null;
+        
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="font-heading text-lg flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-chart-4" />
+                Bubble Watch
+              </CardTitle>
+              <CardDescription>
+                How teams on the bubble can qualify for playoffs
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {bubbleTeams.map((team, idx) => {
+                const standingIndex = predictions.findIndex(p => p.rosterId === team.rosterId);
+                const isInPlayoffPosition = standingIndex < playoffTeams;
+                const gamesBack = playoffCutoffTeam ? team.currentWins - playoffCutoffTeam.currentWins : 0;
+                const gamesAhead = firstOutTeam ? team.currentWins - firstOutTeam.currentWins : 0;
+                
+                const conditions: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
+                
+                if (isInPlayoffPosition) {
+                  if (gamesAhead >= remainingWeeks) {
+                    conditions.push({ type: "positive", text: `Can clinch with ${remainingWeeks - gamesAhead} more win${remainingWeeks - gamesAhead !== 1 ? 's' : ''}` });
+                  } else if (gamesAhead > 0) {
+                    conditions.push({ type: "positive", text: `${gamesAhead} game${gamesAhead !== 1 ? 's' : ''} ahead of ${firstOutTeam?.name || 'next team'}` });
+                  } else if (gamesAhead === 0) {
+                    conditions.push({ type: "neutral", text: `Tied with ${firstOutTeam?.name || 'next team'} - tiebreakers matter` });
+                  }
+                  
+                  if (team.pointsRank <= playoffTeams) {
+                    conditions.push({ type: "positive", text: `#${team.pointsRank} in points - wins tiebreaker` });
+                  } else {
+                    conditions.push({ type: "negative", text: `#${team.pointsRank} in points - loses tiebreaker` });
+                  }
+                  
+                  conditions.push({ type: "neutral", text: "Win remaining games to secure spot" });
+                } else {
+                  const winsNeeded = Math.abs(gamesBack) + 1;
+                  if (winsNeeded <= remainingWeeks) {
+                    conditions.push({ type: "neutral", text: `Need to win ${winsNeeded}+ of remaining ${remainingWeeks} games` });
+                  } else {
+                    conditions.push({ type: "negative", text: `${Math.abs(gamesBack)} game${Math.abs(gamesBack) !== 1 ? 's' : ''} back - needs help` });
+                  }
+                  
+                  const teamsToPass = predictions
+                    .slice(0, playoffTeams)
+                    .filter(p => p.rosterId !== team.rosterId && p.makePlayoffsPct < 100);
+                  
+                  if (teamsToPass.length > 0) {
+                    const teamNames = teamsToPass.slice(0, 2).map(t => t.name);
+                    const moreCount = teamsToPass.length - 2;
+                    conditions.push({ 
+                      type: "neutral", 
+                      text: `Need ${teamNames.join(' or ')}${moreCount > 0 ? ` (+${moreCount} more)` : ''} to lose` 
+                    });
+                  }
+                  
+                  if (team.pointsRank <= playoffTeams) {
+                    conditions.push({ type: "positive", text: `#${team.pointsRank} in points - favorable tiebreaker` });
+                  } else if (team.pointsBehind !== null && team.pointsBehind < 50) {
+                    conditions.push({ type: "neutral", text: `Only ${team.pointsBehind.toFixed(1)} pts behind #${team.pointsRank - 1}` });
+                  }
+                }
+                
+                return (
+                  <div 
+                    key={team.rosterId}
+                    className={`p-4 rounded-lg border ${team.ownerId === userId ? 'bg-primary/5 border-primary/30' : 'bg-muted/30'}`}
+                    data-testid={`bubble-team-${team.rosterId}`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="w-8 h-8">
+                          <AvatarFallback 
+                            className={`text-xs ${team.ownerId === userId ? "bg-primary text-primary-foreground" : "bg-muted"}`}
+                          >
+                            {team.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className={`font-medium ${team.ownerId === userId ? 'text-primary' : ''}`}>
+                            {team.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {team.currentWins}-{team.currentLosses} • #{standingIndex + 1} in standings
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <Badge className={getStandingsBadgeClass(team.makePlayoffsPct)}>
+                          {team.makePlayoffsPct.toFixed(1)}%
+                        </Badge>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {isInPlayoffPosition ? "In playoff position" : "Outside looking in"}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Path to Playoffs
+                      </p>
+                      <ul className="space-y-1.5">
+                        {conditions.map((condition, i) => (
+                          <li key={i} className="flex items-start gap-2 text-sm">
+                            {condition.type === "positive" ? (
+                              <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                            ) : condition.type === "negative" ? (
+                              <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                            ) : (
+                              <ArrowUp className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                            )}
+                            <span className={condition.type === "negative" ? "text-muted-foreground" : ""}>
+                              {condition.text}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        );
+      })()}
     </div>
   );
 }
