@@ -68,6 +68,7 @@ export default function Dashboard() {
     rank: team.rank || index + 1,
     name: team.name,
     initials: team.initials,
+    avatar: team.avatar,
     wins: team.wins,
     losses: team.losses,
     pointsFor: team.pointsFor,
