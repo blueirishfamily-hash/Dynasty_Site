@@ -83,14 +83,14 @@ export default function PositionDepthChart({ depthData }: PositionDepthChartProp
           </div>
         </div>
 
-        <div className="w-24 text-right flex-shrink-0">
+        <div className="w-28 text-right flex-shrink-0">
           <span
             className={`text-sm font-semibold tabular-nums ${
               isAboveMedian ? "text-primary" : "text-destructive"
             }`}
           >
             {isAboveMedian ? "+" : ""}
-            {(player.points - player.medianPoints).toFixed(1)} pts
+            {(player.points - player.medianPoints).toFixed(1)} PPG
           </span>
         </div>
       </div>
@@ -103,7 +103,7 @@ export default function PositionDepthChart({ depthData }: PositionDepthChartProp
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <CardTitle className="font-heading text-lg">Position Depth</CardTitle>
           <div className="flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">vs. League Median</span>
+            <span className="text-xs text-muted-foreground">PPG vs. League Median</span>
           </div>
         </div>
       </CardHeader>

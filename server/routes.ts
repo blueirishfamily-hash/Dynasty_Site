@@ -960,10 +960,9 @@ export async function registerRoutes(
     try {
       const season = new Date().getFullYear().toString();
       
-      const [rosters, players, seasonStats, state] = await Promise.all([
+      const [rosters, players, state] = await Promise.all([
         getLeagueRosters(req.params.leagueId),
         getAllPlayers(),
-        getPlayerStats(season),
         getNFLState(),
       ]);
 
@@ -972,9 +971,50 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Roster not found" });
       }
 
+      // Fetch weekly stats to calculate games played and PPG
+      const currentWeek = state?.week || 1;
+      const weeksToFetch = Math.min(currentWeek, 8); // Use up to 8 weeks of data
+      
+      const playerWeeklyPoints = new Map<string, number[]>();
+      
+      // Fetch stats for each week
+      const weeklyStatsPromises: Promise<Record<string, any>>[] = [];
+      for (let w = Math.max(1, currentWeek - weeksToFetch + 1); w <= currentWeek; w++) {
+        weeklyStatsPromises.push(
+          fetch(`https://api.sleeper.app/v1/stats/nfl/regular/${season}/${w}?season_type=regular`)
+            .then(r => r.ok ? r.json() : {})
+            .catch(() => ({}))
+        );
+      }
+      
+      const weeklyStatsResults = await Promise.all(weeklyStatsPromises);
+      
+      // Aggregate points per player across weeks
+      weeklyStatsResults.forEach((weekStats) => {
+        Object.entries(weekStats).forEach(([playerId, stats]) => {
+          const pts = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
+          if (pts > 0) {
+            if (!playerWeeklyPoints.has(playerId)) {
+              playerWeeklyPoints.set(playerId, []);
+            }
+            playerWeeklyPoints.get(playerId)!.push(pts);
+          }
+        });
+      });
+
+      // Calculate PPG for each player
+      const playerPPG = new Map<string, number>();
+      playerWeeklyPoints.forEach((weeklyPts, playerId) => {
+        const gamesPlayed = weeklyPts.length;
+        if (gamesPlayed > 0) {
+          const totalPoints = weeklyPts.reduce((sum, pts) => sum + pts, 0);
+          playerPPG.set(playerId, totalPoints / gamesPlayed);
+        }
+      });
+
       const positionStats: Record<string, number[]> = {};
 
-      // Collect all player stats by position across the league
+      // Collect all player PPG by position across the league
       rosters.forEach(roster => {
         (roster.players || []).forEach(pid => {
           const player = players[pid];
@@ -982,17 +1022,18 @@ export async function registerRoutes(
           const pos = player.position;
           if (!["QB", "RB", "WR", "TE"].includes(pos)) return;
           
-          const stats = seasonStats[pid];
-          const points = stats?.pts_ppr || stats?.pts_std || 0;
-          if (!positionStats[pos]) positionStats[pos] = [];
-          positionStats[pos].push(points);
+          const ppg = playerPPG.get(pid) || 0;
+          if (ppg > 0) {
+            if (!positionStats[pos]) positionStats[pos] = [];
+            positionStats[pos].push(ppg);
+          }
         });
       });
 
-      // Calculate median for each position
+      // Calculate median PPG for each position
       const positionMedians: Record<string, number> = {};
-      Object.entries(positionStats).forEach(([pos, pointsArr]) => {
-        const sorted = [...pointsArr].sort((a, b) => a - b);
+      Object.entries(positionStats).forEach(([pos, ppgArr]) => {
+        const sorted = [...ppgArr].sort((a, b) => a - b);
         const mid = Math.floor(sorted.length / 2);
         positionMedians[pos] = sorted.length % 2 !== 0
           ? sorted[mid]
@@ -1007,17 +1048,16 @@ export async function registerRoutes(
             const player = players[pid];
             if (!player || player.position !== pos) return null;
             
-            const stats = seasonStats[pid];
-            const points = stats?.pts_ppr || stats?.pts_std || 0;
+            const ppg = playerPPG.get(pid) || 0;
             const median = positionMedians[pos] || 1;
-            const percentAboveMedian = ((points - median) / median) * 100;
+            const percentAboveMedian = ((ppg - median) / median) * 100;
             
             return {
               id: pid,
               name: player.full_name || `${player.first_name} ${player.last_name}`,
               team: player.team,
-              points,
-              medianPoints: median,
+              points: Math.round(ppg * 10) / 10, // PPG rounded to 1 decimal
+              medianPoints: Math.round(median * 10) / 10,
               percentAboveMedian: Math.round(percentAboveMedian),
             };
           })
