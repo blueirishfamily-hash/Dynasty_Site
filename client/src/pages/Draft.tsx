@@ -57,6 +57,7 @@ interface TeamStanding {
   rank: number;
   name: string;
   initials: string;
+  avatar?: string | null;
   wins: number;
   losses: number;
   pointsFor: number;
