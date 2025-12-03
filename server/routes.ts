@@ -1823,6 +1823,183 @@ export async function registerRoutes(
     }
   });
 
+  // Rivalry - Historical head-to-head records
+  app.get("/api/sleeper/league/:leagueId/rivalry/:userId", async (req, res) => {
+    try {
+      const { leagueId, userId } = req.params;
+      
+      // Get current league info first
+      const [currentLeague, nflState] = await Promise.all([
+        getLeague(leagueId),
+        getNFLState(),
+      ]);
+      
+      // Build a list of league IDs to check (current + previous seasons if dynasty)
+      const leagueIds: { leagueId: string; season: string }[] = [];
+      let checkLeagueId: string | null = leagueId;
+      
+      // Traverse previous league IDs (dynasty leagues link to prior seasons)
+      while (checkLeagueId) {
+        try {
+          const leagueInfo = await getLeague(checkLeagueId);
+          leagueIds.push({ leagueId: checkLeagueId, season: leagueInfo.season });
+          checkLeagueId = (leagueInfo as any).previous_league_id || null;
+        } catch {
+          break;
+        }
+      }
+      
+      // Reverse to get chronological order (oldest first)
+      leagueIds.reverse();
+      
+      // Track head-to-head records keyed by owner_id
+      interface RivalryRecord {
+        ownerId: string;
+        name: string;
+        initials: string;
+        avatar: string | null;
+        wins: number;
+        losses: number;
+        ties: number;
+        pointsFor: number;
+        pointsAgainst: number;
+        matchups: {
+          season: string;
+          week: number;
+          userPoints: number;
+          oppPoints: number;
+          won: boolean;
+        }[];
+      }
+      
+      const rivalryMap = new Map<string, RivalryRecord>();
+      
+      // Process each season
+      for (const { leagueId: lid, season } of leagueIds) {
+        try {
+          const [rosters, users] = await Promise.all([
+            getLeagueRosters(lid),
+            getLeagueUsers(lid),
+          ]);
+          
+          // Build user map for this season
+          const userMap = new Map<string, SleeperLeagueUser>();
+          users.forEach(u => userMap.set(u.user_id, u));
+          
+          // Find user's roster_id for this season
+          const userRoster = rosters.find(r => r.owner_id === userId);
+          if (!userRoster) continue;
+          
+          // Build roster_id to owner_id mapping
+          const rosterToOwner = new Map<number, string>();
+          rosters.forEach(r => rosterToOwner.set(r.roster_id, r.owner_id));
+          
+          // Determine how many weeks to check
+          const currentSeason = nflState.season;
+          const maxWeek = season === currentSeason ? Math.max(0, nflState.week - 1) : 17;
+          
+          // Fetch all matchups for this season
+          const matchupPromises = [];
+          for (let week = 1; week <= maxWeek; week++) {
+            matchupPromises.push(
+              getLeagueMatchups(lid, week)
+                .then(matchups => ({ week, matchups }))
+                .catch(() => ({ week, matchups: [] as SleeperMatchup[] }))
+            );
+          }
+          const weeklyMatchups = await Promise.all(matchupPromises);
+          
+          // Process each week's matchups
+          weeklyMatchups.forEach(({ week, matchups }) => {
+            if (matchups.length === 0) return;
+            
+            // Find user's matchup
+            const userMatchup = matchups.find(m => m.roster_id === userRoster.roster_id);
+            if (!userMatchup || userMatchup.matchup_id === null) return;
+            
+            // Find opponent
+            const oppMatchup = matchups.find(
+              m => m.matchup_id === userMatchup.matchup_id && m.roster_id !== userRoster.roster_id
+            );
+            if (!oppMatchup) return;
+            
+            const oppOwnerId = rosterToOwner.get(oppMatchup.roster_id);
+            if (!oppOwnerId) return;
+            
+            const userPoints = userMatchup.points || 0;
+            const oppPoints = oppMatchup.points || 0;
+            
+            // Skip unplayed matchups
+            if (userPoints === 0 && oppPoints === 0) return;
+            
+            // Get or create rivalry record
+            if (!rivalryMap.has(oppOwnerId)) {
+              const oppUser = userMap.get(oppOwnerId);
+              const name = oppUser?.metadata?.team_name || oppUser?.display_name || `Team`;
+              rivalryMap.set(oppOwnerId, {
+                ownerId: oppOwnerId,
+                name,
+                initials: getTeamInitials(name),
+                avatar: oppUser?.avatar ? `https://sleepercdn.com/avatars/thumbs/${oppUser.avatar}` : null,
+                wins: 0,
+                losses: 0,
+                ties: 0,
+                pointsFor: 0,
+                pointsAgainst: 0,
+                matchups: [],
+              });
+            }
+            
+            const record = rivalryMap.get(oppOwnerId)!;
+            
+            // Update record
+            record.pointsFor += userPoints;
+            record.pointsAgainst += oppPoints;
+            
+            const won = userPoints > oppPoints;
+            const lost = oppPoints > userPoints;
+            
+            if (won) record.wins++;
+            else if (lost) record.losses++;
+            else record.ties++;
+            
+            record.matchups.push({
+              season,
+              week,
+              userPoints,
+              oppPoints,
+              won,
+            });
+          });
+        } catch (error) {
+          console.error(`Error processing season ${season}:`, error);
+        }
+      }
+      
+      // Convert to array and sort by most matchups (most history first)
+      const rivalries = Array.from(rivalryMap.values())
+        .filter(r => r.matchups.length > 0)
+        .sort((a, b) => {
+          // Sort by total games played, then by win rate
+          const aTotal = a.wins + a.losses + a.ties;
+          const bTotal = b.wins + b.losses + b.ties;
+          if (bTotal !== aTotal) return bTotal - aTotal;
+          const aWinRate = aTotal > 0 ? a.wins / aTotal : 0;
+          const bWinRate = bTotal > 0 ? b.wins / bTotal : 0;
+          return bWinRate - aWinRate;
+        });
+      
+      res.json({
+        rivalries,
+        seasons: leagueIds.map(l => l.season),
+        totalSeasons: leagueIds.length,
+      });
+    } catch (error) {
+      console.error("Error calculating rivalry data:", error);
+      res.status(500).json({ error: "Failed to calculate rivalry data" });
+    }
+  });
+
   // Search players (for nomination lookup)
   app.get("/api/sleeper/players/search", async (req, res) => {
     try {

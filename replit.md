@@ -39,6 +39,13 @@ Preferred communication style: Simple, everyday language.
 **Key Features:**
 - Dashboard with activity feed, matchup preview, and standings
 - Team roster management with player tables and position depth charts
+- My Team page with tabs:
+  - Roster tab: Player table and position depth chart
+  - Rivalry tab: Historical head-to-head records against all league opponents
+    - Traverses previous_league_id to collect data across all dynasty seasons
+    - Shows W-L-T record, win rate, point differential, and dominance status
+    - Expandable rows with match history showing season/week breakdown
+    - Summary cards: All-time record, seasons tracked, best/toughest matchups
 - Trade center with two-pane asset selection interface
 - Draft board for future draft capital visualization (3 rounds, with historical data)
 - League Hub for governance (rule suggestions and award voting)
@@ -47,6 +54,12 @@ Preferred communication style: Simple, everyday language.
 - Automatic lineup optimization: inactive (Out/IR/PUP/Sus/NFI/COV) and bye week players auto-replaced with eligible bench players
 - Personalized boom-bust metrics using 8-week rolling window of actual player performance
 - Position depth chart showing points above/below median (e.g., "+15.2 pts")
+- Advanced Metrics page with Team Luck analysis:
+  - Calculates luck based on weekly score vs league median
+  - +1 for lucky wins (won below median), -1 for unlucky losses (lost above median)
+  - Summary cards showing luckiest team, unluckiest team, and user's luck
+  - Expandable weekly breakdown with color-coded indicators
+  - Team Luck Rankings table with weekly luck visualization
 - Playoff predictor with points standings impact analysis:
   - PF Rank showing each team's points-for standings position
   - Points gaps to adjacent teams (behind/ahead)
