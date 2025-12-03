@@ -46,6 +46,7 @@ import {
   Clock,
   Eye,
   EyeOff,
+  Crown,
 } from "lucide-react";
 import type { RuleSuggestion, AwardNomination, RuleVote, AwardBallot } from "@shared/schema";
 
@@ -148,7 +149,7 @@ export default function LeagueHub() {
   const { user, league, season } = useSleeper();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<"rules" | "awards">("rules");
-  const [awardType, setAwardType] = useState<"mvp" | "roy">("mvp");
+  const [awardType, setAwardType] = useState<"mvp" | "roy" | "gm">("mvp");
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [nominateDialogOpen, setNominateDialogOpen] = useState(false);
   const [ballotDialogOpen, setBallotDialogOpen] = useState(false);
@@ -217,6 +218,16 @@ export default function LeagueHub() {
     queryFn: async () => {
       const res = await fetch(`/api/league/${league?.leagueId}/awards/${season}/roy/results`);
       if (!res.ok) throw new Error("Failed to fetch ROY results");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!season,
+  });
+
+  const { data: gmResults, isLoading: gmLoading } = useQuery<AwardResults>({
+    queryKey: ["/api/league", league?.leagueId, "awards", season, "gm", "results"],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/awards/${season}/gm/results`);
+      if (!res.ok) throw new Error("Failed to fetch Best GM results");
       return res.json();
     },
     enabled: !!league?.leagueId && !!season,
@@ -341,9 +352,17 @@ export default function LeagueHub() {
   });
 
   const filteredPlayers = searchedPlayers || [];
-  const currentResults = awardType === "mvp" ? mvpResults : royResults;
-  const resultsLoading = awardType === "mvp" ? mvpLoading : royLoading;
+  const currentResults = awardType === "mvp" ? mvpResults : awardType === "roy" ? royResults : gmResults;
+  const resultsLoading = awardType === "mvp" ? mvpLoading : awardType === "roy" ? royLoading : gmLoading;
   const nominations = currentResults?.results || [];
+  
+  const getAwardLabel = (type: "mvp" | "roy" | "gm") => {
+    switch (type) {
+      case "mvp": return "MVP";
+      case "roy": return "Rookie of the Year";
+      case "gm": return "Best GM";
+    }
+  };
 
   const formatTimeAgo = (timestamp: number) => {
     const seconds = Math.floor((Date.now() - timestamp) / 1000);
@@ -566,7 +585,7 @@ export default function LeagueHub() {
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Select value={awardType} onValueChange={(v) => setAwardType(v as "mvp" | "roy")}>
+                  <Select value={awardType} onValueChange={(v) => setAwardType(v as "mvp" | "roy" | "gm")}>
                     <SelectTrigger className="w-[180px]" data-testid="select-award-type">
                       <SelectValue />
                     </SelectTrigger>
@@ -581,6 +600,12 @@ export default function LeagueHub() {
                         <div className="flex items-center gap-2">
                           <Sparkles className="w-4 h-4" />
                           Rookie of the Year
+                        </div>
+                      </SelectItem>
+                      <SelectItem value="gm">
+                        <div className="flex items-center gap-2">
+                          <Crown className="w-4 h-4" />
+                          Best GM
                         </div>
                       </SelectItem>
                     </SelectContent>
@@ -601,70 +626,112 @@ export default function LeagueHub() {
                       <DialogContent className="sm:max-w-lg">
                         <DialogHeader>
                           <DialogTitle>
-                            Nominate for {awardType === "mvp" ? "MVP" : "Rookie of the Year"}
+                            Nominate for {getAwardLabel(awardType)}
                           </DialogTitle>
                           <DialogDescription>
-                            Search for a player to nominate (you can nominate up to 3 players per award)
+                            {awardType === "gm" 
+                              ? "Select a team manager to nominate (you can nominate up to 3 per award)"
+                              : "Search for a player to nominate (you can nominate up to 3 players per award)"
+                            }
                           </DialogDescription>
                         </DialogHeader>
                         <div className="space-y-4 py-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="player-search">Search Player</Label>
-                            <Input
-                              id="player-search"
-                              placeholder="Type player name..."
-                              value={playerSearch}
-                              onChange={(e) => setPlayerSearch(e.target.value)}
-                              data-testid="input-player-search"
-                            />
-                          </div>
-                          {playerSearch.length > 0 && (
+                          {awardType === "gm" ? (
                             <ScrollArea className="h-60 border rounded-md">
                               <div className="p-2 space-y-1">
-                                {playerSearch.length < 2 ? (
-                                  <p className="text-center text-muted-foreground py-4">
-                                    Type at least 2 characters to search
-                                  </p>
-                                ) : playersLoading ? (
-                                  <div className="flex items-center justify-center py-8">
-                                    <div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" />
-                                  </div>
-                                ) : filteredPlayers.length > 0 ? (
-                                  filteredPlayers.map((player) => (
-                                    <div
-                                      key={player.id}
-                                      className={`p-2 rounded-md cursor-pointer hover-elevate flex items-center gap-3 ${
-                                        selectedPlayer?.id === player.id ? "bg-primary/10 ring-1 ring-primary" : "bg-card"
-                                      }`}
-                                      onClick={() => setSelectedPlayer(player)}
-                                      data-testid={`player-option-${player.id}`}
-                                    >
-                                      <Avatar className="w-8 h-8">
-                                        <AvatarFallback className="text-xs">
-                                          {player.name.split(" ").map((n) => n[0]).join("")}
-                                        </AvatarFallback>
-                                      </Avatar>
-                                      <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-medium truncate">{player.name}</p>
-                                        <div className="flex items-center gap-1">
-                                          <Badge className={`text-[10px] px-1.5 ${positionColors[player.position] || "bg-muted"}`}>
-                                            {player.position}
-                                          </Badge>
-                                          {player.team && (
-                                            <span className="text-xs text-muted-foreground">{player.team}</span>
-                                          )}
-                                        </div>
-                                      </div>
-                                      {selectedPlayer?.id === player.id && (
-                                        <Check className="w-4 h-4 text-primary" />
-                                      )}
+                                {standings?.filter((team: any) => team.rosterId !== userRosterId).map((team: any) => (
+                                  <div
+                                    key={team.rosterId}
+                                    className={`p-2 rounded-md cursor-pointer hover-elevate flex items-center gap-3 ${
+                                      selectedPlayer?.id === String(team.rosterId) ? "bg-primary/10 ring-1 ring-primary" : "bg-card"
+                                    }`}
+                                    onClick={() => setSelectedPlayer({
+                                      id: String(team.rosterId),
+                                      name: team.name,
+                                      position: "GM" as any,
+                                      team: null,
+                                    })}
+                                    data-testid={`team-option-${team.rosterId}`}
+                                  >
+                                    <Avatar className="w-8 h-8">
+                                      <AvatarFallback className="text-xs">
+                                        {team.initials}
+                                      </AvatarFallback>
+                                    </Avatar>
+                                    <div className="flex-1 min-w-0">
+                                      <p className="text-sm font-medium truncate">{team.name}</p>
+                                      <p className="text-xs text-muted-foreground">
+                                        {team.wins}-{team.losses} • {team.pointsFor.toFixed(1)} PF
+                                      </p>
                                     </div>
-                                  ))
-                                ) : (
-                                  <p className="text-center text-muted-foreground py-4">No players found</p>
-                                )}
+                                    {selectedPlayer?.id === String(team.rosterId) && (
+                                      <Check className="w-4 h-4 text-primary" />
+                                    )}
+                                  </div>
+                                ))}
                               </div>
                             </ScrollArea>
+                          ) : (
+                            <>
+                              <div className="space-y-2">
+                                <Label htmlFor="player-search">Search Player</Label>
+                                <Input
+                                  id="player-search"
+                                  placeholder="Type player name..."
+                                  value={playerSearch}
+                                  onChange={(e) => setPlayerSearch(e.target.value)}
+                                  data-testid="input-player-search"
+                                />
+                              </div>
+                              {playerSearch.length > 0 && (
+                                <ScrollArea className="h-60 border rounded-md">
+                                  <div className="p-2 space-y-1">
+                                    {playerSearch.length < 2 ? (
+                                      <p className="text-center text-muted-foreground py-4">
+                                        Type at least 2 characters to search
+                                      </p>
+                                    ) : playersLoading ? (
+                                      <div className="flex items-center justify-center py-8">
+                                        <div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" />
+                                      </div>
+                                    ) : filteredPlayers.length > 0 ? (
+                                      filteredPlayers.map((player) => (
+                                        <div
+                                          key={player.id}
+                                          className={`p-2 rounded-md cursor-pointer hover-elevate flex items-center gap-3 ${
+                                            selectedPlayer?.id === player.id ? "bg-primary/10 ring-1 ring-primary" : "bg-card"
+                                          }`}
+                                          onClick={() => setSelectedPlayer(player)}
+                                          data-testid={`player-option-${player.id}`}
+                                        >
+                                          <Avatar className="w-8 h-8">
+                                            <AvatarFallback className="text-xs">
+                                              {player.name.split(" ").map((n) => n[0]).join("")}
+                                            </AvatarFallback>
+                                          </Avatar>
+                                          <div className="flex-1 min-w-0">
+                                            <p className="text-sm font-medium truncate">{player.name}</p>
+                                            <div className="flex items-center gap-1">
+                                              <Badge className={`text-[10px] px-1.5 ${positionColors[player.position] || "bg-muted"}`}>
+                                                {player.position}
+                                              </Badge>
+                                              {player.team && (
+                                                <span className="text-xs text-muted-foreground">{player.team}</span>
+                                              )}
+                                            </div>
+                                          </div>
+                                          {selectedPlayer?.id === player.id && (
+                                            <Check className="w-4 h-4 text-primary" />
+                                          )}
+                                        </div>
+                                      ))
+                                    ) : (
+                                      <p className="text-center text-muted-foreground py-4">No players found</p>
+                                    )}
+                                  </div>
+                                </ScrollArea>
+                              )}
+                            </>
                           )}
                         </div>
                         <DialogFooter>
@@ -701,7 +768,7 @@ export default function LeagueHub() {
                   <DialogHeader>
                     <DialogTitle className="flex items-center gap-2">
                       <Vote className="w-5 h-5" />
-                      Cast Your {awardType === "mvp" ? "MVP" : "Rookie of the Year"} Ballot
+                      Cast Your {getAwardLabel(awardType)} Ballot
                     </DialogTitle>
                     <DialogDescription>
                       Rank your top 3 picks (1st = 3pts, 2nd = 2pts, 3rd = 1pt)
@@ -870,11 +937,11 @@ export default function LeagueHub() {
                   {!isLocked ? (
                     <>
                       <p className="text-sm text-muted-foreground mb-4">
-                        Be the first to nominate a player for {awardType === "mvp" ? "MVP" : "Rookie of the Year"}!
+                        Be the first to nominate {awardType === "gm" ? "a team manager" : "a player"} for {getAwardLabel(awardType)}!
                       </p>
                       <Button onClick={() => setNominateDialogOpen(true)}>
                         <Plus className="w-4 h-4 mr-2" />
-                        Nominate Player
+                        {awardType === "gm" ? "Nominate Manager" : "Nominate Player"}
                       </Button>
                     </>
                   ) : (

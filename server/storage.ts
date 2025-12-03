@@ -36,13 +36,13 @@ export interface IStorage {
   castRuleVote(data: InsertRuleVote): Promise<RuleVote>;
   getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined>;
   
-  getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]>;
+  getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]>;
   createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination>;
-  getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<number>;
+  getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm", rosterId: number): Promise<number>;
   
-  getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardBallot[]>;
+  getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardBallot[]>;
   upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot>;
-  getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<AwardBallot | undefined>;
+  getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm", rosterId: number): Promise<AwardBallot | undefined>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -227,7 +227,7 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]> {
+  async getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]> {
     const rows = await db
       .select()
       .from(awardNominationsTable)
@@ -242,7 +242,7 @@ export class DatabaseStorage implements IStorage {
       id: row.id,
       leagueId: row.leagueId,
       season: row.season,
-      awardType: row.awardType as "mvp" | "roy",
+      awardType: row.awardType as "mvp" | "roy" | "gm",
       playerId: row.playerId,
       playerName: row.playerName,
       playerPosition: row.playerPosition,
@@ -270,7 +270,7 @@ export class DatabaseStorage implements IStorage {
         id: existing.id,
         leagueId: existing.leagueId,
         season: existing.season,
-        awardType: existing.awardType as "mvp" | "roy",
+        awardType: existing.awardType as "mvp" | "roy" | "gm",
         playerId: existing.playerId,
         playerName: existing.playerName,
         playerPosition: existing.playerPosition,
@@ -307,7 +307,7 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<number> {
+  async getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm", rosterId: number): Promise<number> {
     const rows = await db
       .select()
       .from(awardNominationsTable)
@@ -321,7 +321,7 @@ export class DatabaseStorage implements IStorage {
     return rows.length;
   }
 
-  async getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardBallot[]> {
+  async getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardBallot[]> {
     const rows = await db
       .select()
       .from(awardBallotsTable)
@@ -335,7 +335,7 @@ export class DatabaseStorage implements IStorage {
       id: row.id,
       leagueId: row.leagueId,
       season: row.season,
-      awardType: row.awardType as "mvp" | "roy",
+      awardType: row.awardType as "mvp" | "roy" | "gm",
       rosterId: row.rosterId,
       voterName: row.voterName,
       firstPlaceId: row.firstPlaceId,
@@ -364,7 +364,7 @@ export class DatabaseStorage implements IStorage {
         id: updated.id,
         leagueId: updated.leagueId,
         season: updated.season,
-        awardType: updated.awardType as "mvp" | "roy",
+        awardType: updated.awardType as "mvp" | "roy" | "gm",
         rosterId: updated.rosterId,
         voterName: updated.voterName,
         firstPlaceId: updated.firstPlaceId,
@@ -397,7 +397,7 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
-  async getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<AwardBallot | undefined> {
+  async getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm", rosterId: number): Promise<AwardBallot | undefined> {
     const [row] = await db
       .select()
       .from(awardBallotsTable)
@@ -414,7 +414,7 @@ export class DatabaseStorage implements IStorage {
       id: row.id,
       leagueId: row.leagueId,
       season: row.season,
-      awardType: row.awardType as "mvp" | "roy",
+      awardType: row.awardType as "mvp" | "roy" | "gm",
       rosterId: row.rosterId,
       voterName: row.voterName,
       firstPlaceId: row.firstPlaceId,

@@ -64,6 +64,9 @@ Preferred communication style: Simple, everyday language.
   - Nominations and proposals lock on December 9, 2025 at 12pm EST
   - Vote results always visible (no hidden voting period)
   - Voting remains open after nominations lock
+  - Three award categories: MVP, Rookie of the Year, and Best GM
+  - Best GM nominations select from team managers instead of players
+  - All awards use same ranked voting system (1st = 3pts, 2nd = 2pts, 3rd = 1pt)
 
 ### Backend Architecture
 
