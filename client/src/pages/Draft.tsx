@@ -376,6 +376,49 @@ export default function Draft() {
       team.pickOdds = counts.map(count => (count / SIMULATIONS) * 100);
     });
 
+    // Apply minimum floor of 0.001% for all picks within each team's competitive range
+    // This represents the "upset" factor - any team can theoretically get any pick in their range
+    const MIN_ODDS = 0.001;
+    teamsWithData.forEach(team => {
+      // Determine the pick range for this team based on status
+      let pickRange: [number, number];
+      if (team.status === "eliminated") {
+        // Eliminated teams compete for picks 1-5 (indices 0-4)
+        pickRange = [0, NON_PLAYOFF_PICKS - 1];
+      } else if (team.status === "clinched") {
+        // Clinched teams compete for picks 6-12 (indices 5-11)
+        pickRange = [NON_PLAYOFF_PICKS, totalTeams - 1];
+      } else {
+        // Bubble teams can get any pick
+        pickRange = [0, totalTeams - 1];
+      }
+
+      // Apply minimum floor within the range
+      let adjustmentNeeded = 0;
+      for (let i = pickRange[0]; i <= pickRange[1]; i++) {
+        if (team.pickOdds[i] < MIN_ODDS) {
+          adjustmentNeeded += MIN_ODDS - team.pickOdds[i];
+          team.pickOdds[i] = MIN_ODDS;
+        }
+      }
+
+      // Redistribute the adjustment from picks that have room to spare
+      if (adjustmentNeeded > 0) {
+        const picksWithRoom = [];
+        for (let i = pickRange[0]; i <= pickRange[1]; i++) {
+          if (team.pickOdds[i] > MIN_ODDS) {
+            picksWithRoom.push(i);
+          }
+        }
+        if (picksWithRoom.length > 0) {
+          const reduction = adjustmentNeeded / picksWithRoom.length;
+          picksWithRoom.forEach(i => {
+            team.pickOdds[i] = Math.max(MIN_ODDS, team.pickOdds[i] - reduction);
+          });
+        }
+      }
+    });
+
     // Sort teams by their most likely pick position
     teamsWithData.sort((a, b) => {
       const maxOddsA = Math.max(...a.pickOdds);
