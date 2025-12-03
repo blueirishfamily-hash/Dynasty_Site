@@ -42,6 +42,10 @@ import {
   Users,
   Award,
   Medal,
+  Lock,
+  Clock,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import type { RuleSuggestion, AwardNomination, RuleVote, AwardBallot } from "@shared/schema";
 
@@ -81,6 +85,68 @@ interface RuleVoteData {
   rejectCount: number;
 }
 
+interface NFLState {
+  week: number;
+  season: string;
+  seasonType: string;
+  displayWeek: number;
+}
+
+// Week 14 ends on 12/9/2024 (Monday Night Football)
+const LOCK_DATE = new Date("2024-12-10T00:00:00-05:00");
+// Results revealed on 1/1/2026
+const REVEAL_DATE = new Date("2026-01-01T00:00:00-05:00");
+const LOCK_WEEK = 14;
+
+function CountdownTimer({ targetDate, label, icon: Icon }: { targetDate: Date; label: string; icon: typeof Clock }) {
+  const [timeLeft, setTimeLeft] = useState<{ days: number; hours: number; minutes: number; seconds: number } | null>(null);
+
+  useEffect(() => {
+    const calculateTimeLeft = () => {
+      const now = new Date();
+      const difference = targetDate.getTime() - now.getTime();
+      
+      if (difference <= 0) {
+        return null;
+      }
+      
+      return {
+        days: Math.floor(difference / (1000 * 60 * 60 * 24)),
+        hours: Math.floor((difference / (1000 * 60 * 60)) % 24),
+        minutes: Math.floor((difference / 1000 / 60) % 60),
+        seconds: Math.floor((difference / 1000) % 60),
+      };
+    };
+
+    setTimeLeft(calculateTimeLeft());
+    const timer = setInterval(() => {
+      setTimeLeft(calculateTimeLeft());
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [targetDate]);
+
+  if (!timeLeft) return null;
+
+  return (
+    <div className="flex items-center gap-3 p-3 bg-muted/50 rounded-lg border" data-testid="countdown-timer">
+      <Icon className="w-5 h-5 text-muted-foreground" />
+      <div className="flex-1">
+        <p className="text-sm font-medium">{label}</p>
+        <div className="flex items-center gap-2 text-lg font-mono font-bold text-primary">
+          <span>{timeLeft.days}d</span>
+          <span className="text-muted-foreground">:</span>
+          <span>{String(timeLeft.hours).padStart(2, "0")}h</span>
+          <span className="text-muted-foreground">:</span>
+          <span>{String(timeLeft.minutes).padStart(2, "0")}m</span>
+          <span className="text-muted-foreground">:</span>
+          <span>{String(timeLeft.seconds).padStart(2, "0")}s</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LeagueHub() {
   const { user, league, season } = useSleeper();
   const { toast } = useToast();
@@ -104,6 +170,16 @@ export default function LeagueHub() {
     }, 300);
     return () => clearTimeout(timer);
   }, [playerSearch]);
+
+  // Fetch NFL state to determine current week
+  const { data: nflState } = useQuery<NFLState>({
+    queryKey: ["/api/sleeper/nfl-state"],
+  });
+
+  // Calculate lock status based on current week and date
+  const now = new Date();
+  const isLocked = now >= LOCK_DATE || (nflState?.week && nflState.week > LOCK_WEEK);
+  const isResultsVisible = now >= REVEAL_DATE;
 
   // Fetch user's roster ID from standings
   const { data: standings } = useQuery<any[]>({
@@ -213,7 +289,6 @@ export default function LeagueHub() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
-      // Invalidate all rule vote queries
       ruleSuggestions?.forEach((s) => {
         queryClient.invalidateQueries({ queryKey: ["/api/rule-suggestions", s.id, "votes"] });
       });
@@ -286,7 +361,6 @@ export default function LeagueHub() {
   };
 
   const openBallotDialog = () => {
-    // Pre-fill with existing ballot if available
     if (userBallot) {
       setFirstPlace(userBallot.firstPlaceId);
       setSecondPlace(userBallot.secondPlaceId);
@@ -318,6 +392,47 @@ export default function LeagueHub() {
         <p className="text-muted-foreground">Rule suggestions and league awards</p>
       </div>
 
+      {/* Status Banner */}
+      {isLocked && !isResultsVisible && (
+        <Card className="bg-amber-500/10 border-amber-500/30">
+          <CardContent className="p-4">
+            <div className="flex items-center gap-3">
+              <Lock className="w-5 h-5 text-amber-500" />
+              <div className="flex-1">
+                <p className="font-medium text-amber-700 dark:text-amber-300">
+                  Nominations and proposals are now locked
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  Voting continues until results are revealed on January 1, 2026
+                </p>
+              </div>
+            </div>
+            <div className="mt-4">
+              <CountdownTimer 
+                targetDate={REVEAL_DATE} 
+                label="Results will be revealed in" 
+                icon={Eye} 
+              />
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isLocked && (
+        <Card className="bg-primary/5 border-primary/20">
+          <CardContent className="p-4">
+            <CountdownTimer 
+              targetDate={LOCK_DATE} 
+              label="Nominations and proposals lock after Week 14 in" 
+              icon={Lock} 
+            />
+            <p className="text-xs text-muted-foreground mt-2">
+              Current week: {nflState?.week || "Loading..."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "rules" | "awards")}>
         <TabsList className="grid w-full max-w-md grid-cols-2">
           <TabsTrigger value="rules" data-testid="tab-rules">
@@ -340,57 +455,68 @@ export default function LeagueHub() {
                     Rule Change Suggestions
                   </CardTitle>
                   <CardDescription>
-                    Propose and vote on rule changes (1 vote per team per rule)
+                    {isLocked 
+                      ? "Proposals are locked. Vote results hidden until January 1, 2026."
+                      : "Propose and vote on rule changes (1 vote per team per rule)"
+                    }
                   </CardDescription>
                 </div>
-                <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
-                  <DialogTrigger asChild>
-                    <Button data-testid="button-new-rule">
-                      <Plus className="w-4 h-4 mr-2" />
-                      New Suggestion
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent>
-                    <DialogHeader>
-                      <DialogTitle>Suggest a Rule Change</DialogTitle>
-                      <DialogDescription>
-                        Describe the rule you'd like to add or change
-                      </DialogDescription>
-                    </DialogHeader>
-                    <div className="space-y-4 py-4">
-                      <div className="space-y-2">
-                        <Label htmlFor="rule-title">Title</Label>
-                        <Input
-                          id="rule-title"
-                          placeholder="e.g., Add a flex spot"
-                          value={ruleTitle}
-                          onChange={(e) => setRuleTitle(e.target.value)}
-                          data-testid="input-rule-title"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="rule-description">Description</Label>
-                        <Textarea
-                          id="rule-description"
-                          placeholder="Explain your suggestion in detail..."
-                          value={ruleDescription}
-                          onChange={(e) => setRuleDescription(e.target.value)}
-                          rows={4}
-                          data-testid="input-rule-description"
-                        />
-                      </div>
-                    </div>
-                    <DialogFooter>
-                      <Button
-                        onClick={() => createRuleMutation.mutate({ title: ruleTitle, description: ruleDescription })}
-                        disabled={!ruleTitle || !ruleDescription || createRuleMutation.isPending}
-                        data-testid="button-submit-rule"
-                      >
-                        {createRuleMutation.isPending ? "Submitting..." : "Submit Suggestion"}
+                {!isLocked && (
+                  <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button data-testid="button-new-rule">
+                        <Plus className="w-4 h-4 mr-2" />
+                        New Suggestion
                       </Button>
-                    </DialogFooter>
-                  </DialogContent>
-                </Dialog>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Suggest a Rule Change</DialogTitle>
+                        <DialogDescription>
+                          Describe the rule you'd like to add or change
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-4 py-4">
+                        <div className="space-y-2">
+                          <Label htmlFor="rule-title">Title</Label>
+                          <Input
+                            id="rule-title"
+                            placeholder="e.g., Add a flex spot"
+                            value={ruleTitle}
+                            onChange={(e) => setRuleTitle(e.target.value)}
+                            data-testid="input-rule-title"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label htmlFor="rule-description">Description</Label>
+                          <Textarea
+                            id="rule-description"
+                            placeholder="Explain your suggestion in detail..."
+                            value={ruleDescription}
+                            onChange={(e) => setRuleDescription(e.target.value)}
+                            rows={4}
+                            data-testid="input-rule-description"
+                          />
+                        </div>
+                      </div>
+                      <DialogFooter>
+                        <Button
+                          onClick={() => createRuleMutation.mutate({ title: ruleTitle, description: ruleDescription })}
+                          disabled={!ruleTitle || !ruleDescription || createRuleMutation.isPending}
+                          data-testid="button-submit-rule"
+                        >
+                          {createRuleMutation.isPending ? "Submitting..." : "Submit Suggestion"}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                )}
+                {isLocked && (
+                  <Badge variant="outline" className="flex items-center gap-1">
+                    <Lock className="w-3 h-3" />
+                    Locked
+                  </Badge>
+                )}
               </div>
             </CardHeader>
             <CardContent>
@@ -409,6 +535,7 @@ export default function LeagueHub() {
                       userRosterId={userRosterId}
                       onVote={(vote) => voteRuleMutation.mutate({ id: suggestion.id, vote })}
                       formatTimeAgo={formatTimeAgo}
+                      isResultsVisible={isResultsVisible}
                     />
                   ))}
                 </div>
@@ -416,13 +543,21 @@ export default function LeagueHub() {
                 <div className="text-center py-12">
                   <MessageSquarePlus className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
                   <h3 className="font-medium mb-2">No suggestions yet</h3>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Be the first to suggest a rule change!
-                  </p>
-                  <Button onClick={() => setRuleDialogOpen(true)}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    New Suggestion
-                  </Button>
+                  {!isLocked ? (
+                    <>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        Be the first to suggest a rule change!
+                      </p>
+                      <Button onClick={() => setRuleDialogOpen(true)}>
+                        <Plus className="w-4 h-4 mr-2" />
+                        New Suggestion
+                      </Button>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Proposals are locked for this season.
+                    </p>
+                  )}
                 </div>
               )}
             </CardContent>
@@ -439,7 +574,10 @@ export default function LeagueHub() {
                     {season} League Awards
                   </CardTitle>
                   <CardDescription>
-                    Nominate players (max 3 per award) and cast your ranked ballot
+                    {isLocked 
+                      ? "Nominations locked. Vote results hidden until January 1, 2026."
+                      : "Nominate players (max 3 per award) and cast your ranked ballot"
+                    }
                   </CardDescription>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -463,102 +601,111 @@ export default function LeagueHub() {
                     </SelectContent>
                   </Select>
                   
-                  <Dialog open={nominateDialogOpen} onOpenChange={setNominateDialogOpen}>
-                    <DialogTrigger asChild>
-                      <Button 
-                        variant="outline"
-                        disabled={nominationCount?.remaining === 0}
-                        data-testid="button-nominate"
-                      >
-                        <Plus className="w-4 h-4 mr-2" />
-                        Nominate ({nominationCount?.remaining ?? 3} left)
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent className="sm:max-w-lg">
-                      <DialogHeader>
-                        <DialogTitle>
-                          Nominate for {awardType === "mvp" ? "MVP" : "Rookie of the Year"}
-                        </DialogTitle>
-                        <DialogDescription>
-                          Search for a player to nominate (you can nominate up to 3 players per award)
-                        </DialogDescription>
-                      </DialogHeader>
-                      <div className="space-y-4 py-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="player-search">Search Player</Label>
-                          <Input
-                            id="player-search"
-                            placeholder="Type player name..."
-                            value={playerSearch}
-                            onChange={(e) => setPlayerSearch(e.target.value)}
-                            data-testid="input-player-search"
-                          />
-                        </div>
-                        {playerSearch.length > 0 && (
-                          <ScrollArea className="h-60 border rounded-md">
-                            <div className="p-2 space-y-1">
-                              {playerSearch.length < 2 ? (
-                                <p className="text-center text-muted-foreground py-4">
-                                  Type at least 2 characters to search
-                                </p>
-                              ) : playersLoading ? (
-                                <div className="flex items-center justify-center py-8">
-                                  <div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" />
-                                </div>
-                              ) : filteredPlayers.length > 0 ? (
-                                filteredPlayers.map((player) => (
-                                  <div
-                                    key={player.id}
-                                    className={`p-2 rounded-md cursor-pointer hover-elevate flex items-center gap-3 ${
-                                      selectedPlayer?.id === player.id ? "bg-primary/10 ring-1 ring-primary" : "bg-card"
-                                    }`}
-                                    onClick={() => setSelectedPlayer(player)}
-                                    data-testid={`player-option-${player.id}`}
-                                  >
-                                    <Avatar className="w-8 h-8">
-                                      <AvatarFallback className="text-xs">
-                                        {player.name.split(" ").map((n) => n[0]).join("")}
-                                      </AvatarFallback>
-                                    </Avatar>
-                                    <div className="flex-1 min-w-0">
-                                      <p className="text-sm font-medium truncate">{player.name}</p>
-                                      <div className="flex items-center gap-1">
-                                        <Badge className={`text-[10px] px-1.5 ${positionColors[player.position] || "bg-muted"}`}>
-                                          {player.position}
-                                        </Badge>
-                                        {player.team && (
-                                          <span className="text-xs text-muted-foreground">{player.team}</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                    {selectedPlayer?.id === player.id && (
-                                      <Check className="w-4 h-4 text-primary" />
-                                    )}
-                                  </div>
-                                ))
-                              ) : (
-                                <p className="text-center text-muted-foreground py-4">No players found</p>
-                              )}
-                            </div>
-                          </ScrollArea>
-                        )}
-                      </div>
-                      <DialogFooter>
-                        <Button
-                          onClick={() => selectedPlayer && nominateMutation.mutate(selectedPlayer)}
-                          disabled={!selectedPlayer || nominateMutation.isPending}
-                          data-testid="button-submit-nomination"
+                  {!isLocked && (
+                    <Dialog open={nominateDialogOpen} onOpenChange={setNominateDialogOpen}>
+                      <DialogTrigger asChild>
+                        <Button 
+                          variant="outline"
+                          disabled={nominationCount?.remaining === 0}
+                          data-testid="button-nominate"
                         >
-                          {nominateMutation.isPending ? "Submitting..." : "Submit Nomination"}
+                          <Plus className="w-4 h-4 mr-2" />
+                          Nominate ({nominationCount?.remaining ?? 3} left)
                         </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
+                      </DialogTrigger>
+                      <DialogContent className="sm:max-w-lg">
+                        <DialogHeader>
+                          <DialogTitle>
+                            Nominate for {awardType === "mvp" ? "MVP" : "Rookie of the Year"}
+                          </DialogTitle>
+                          <DialogDescription>
+                            Search for a player to nominate (you can nominate up to 3 players per award)
+                          </DialogDescription>
+                        </DialogHeader>
+                        <div className="space-y-4 py-4">
+                          <div className="space-y-2">
+                            <Label htmlFor="player-search">Search Player</Label>
+                            <Input
+                              id="player-search"
+                              placeholder="Type player name..."
+                              value={playerSearch}
+                              onChange={(e) => setPlayerSearch(e.target.value)}
+                              data-testid="input-player-search"
+                            />
+                          </div>
+                          {playerSearch.length > 0 && (
+                            <ScrollArea className="h-60 border rounded-md">
+                              <div className="p-2 space-y-1">
+                                {playerSearch.length < 2 ? (
+                                  <p className="text-center text-muted-foreground py-4">
+                                    Type at least 2 characters to search
+                                  </p>
+                                ) : playersLoading ? (
+                                  <div className="flex items-center justify-center py-8">
+                                    <div className="animate-spin w-6 h-6 border-2 border-primary border-t-transparent rounded-full" />
+                                  </div>
+                                ) : filteredPlayers.length > 0 ? (
+                                  filteredPlayers.map((player) => (
+                                    <div
+                                      key={player.id}
+                                      className={`p-2 rounded-md cursor-pointer hover-elevate flex items-center gap-3 ${
+                                        selectedPlayer?.id === player.id ? "bg-primary/10 ring-1 ring-primary" : "bg-card"
+                                      }`}
+                                      onClick={() => setSelectedPlayer(player)}
+                                      data-testid={`player-option-${player.id}`}
+                                    >
+                                      <Avatar className="w-8 h-8">
+                                        <AvatarFallback className="text-xs">
+                                          {player.name.split(" ").map((n) => n[0]).join("")}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium truncate">{player.name}</p>
+                                        <div className="flex items-center gap-1">
+                                          <Badge className={`text-[10px] px-1.5 ${positionColors[player.position] || "bg-muted"}`}>
+                                            {player.position}
+                                          </Badge>
+                                          {player.team && (
+                                            <span className="text-xs text-muted-foreground">{player.team}</span>
+                                          )}
+                                        </div>
+                                      </div>
+                                      {selectedPlayer?.id === player.id && (
+                                        <Check className="w-4 h-4 text-primary" />
+                                      )}
+                                    </div>
+                                  ))
+                                ) : (
+                                  <p className="text-center text-muted-foreground py-4">No players found</p>
+                                )}
+                              </div>
+                            </ScrollArea>
+                          )}
+                        </div>
+                        <DialogFooter>
+                          <Button
+                            onClick={() => selectedPlayer && nominateMutation.mutate(selectedPlayer)}
+                            disabled={!selectedPlayer || nominateMutation.isPending}
+                            data-testid="button-submit-nomination"
+                          >
+                            {nominateMutation.isPending ? "Submitting..." : "Submit Nomination"}
+                          </Button>
+                        </DialogFooter>
+                      </DialogContent>
+                    </Dialog>
+                  )}
 
                   <Button onClick={openBallotDialog} data-testid="button-cast-ballot">
                     <Vote className="w-4 h-4 mr-2" />
                     {userBallot ? "Update Ballot" : "Cast Ballot"}
                   </Button>
+
+                  {isLocked && (
+                    <Badge variant="outline" className="flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      Nominations Locked
+                    </Badge>
+                  )}
                 </div>
               </div>
             </CardHeader>
@@ -675,8 +822,19 @@ export default function LeagueHub() {
                 </div>
               )}
 
-              {/* Results Stats */}
-              {currentResults && currentResults.totalBallots > 0 && (
+              {/* Hidden Results Notice */}
+              {!isResultsVisible && nominations.length > 0 && (
+                <div className="mb-4 p-3 bg-muted/50 rounded-lg border flex items-center gap-3">
+                  <EyeOff className="w-5 h-5 text-muted-foreground" />
+                  <div>
+                    <p className="text-sm font-medium">Vote tallies are hidden</p>
+                    <p className="text-xs text-muted-foreground">Results will be revealed on January 1, 2026</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Results Stats - Only show when visible */}
+              {isResultsVisible && currentResults && currentResults.totalBallots > 0 && (
                 <div className="mb-4 flex items-center gap-4 text-sm text-muted-foreground">
                   <span className="flex items-center gap-1">
                     <Users className="w-4 h-4" />
@@ -696,12 +854,12 @@ export default function LeagueHub() {
                   {nominations.map((nomination, index) => (
                     <Card
                       key={nomination.id}
-                      className={`p-4 ${index === 0 && nomination.score > 0 ? "ring-2 ring-primary/50 bg-primary/5" : ""}`}
+                      className={`p-4 ${isResultsVisible && index === 0 && nomination.score > 0 ? "ring-2 ring-primary/50 bg-primary/5" : ""}`}
                       data-testid={`nomination-card-${nomination.id}`}
                     >
                       <div className="flex items-center gap-4">
                         <div className="flex items-center justify-center w-10 h-10 rounded-full bg-muted text-lg font-bold">
-                          {index === 0 && nomination.score > 0 ? (
+                          {isResultsVisible && index === 0 && nomination.score > 0 ? (
                             <Trophy className="w-5 h-5 text-primary" />
                           ) : (
                             <span className="text-muted-foreground">{index + 1}</span>
@@ -726,20 +884,27 @@ export default function LeagueHub() {
                             Nominated by {nomination.nominatedByName}
                           </p>
                         </div>
-                        <div className="flex items-center gap-4">
-                          <div className="text-right">
-                            <p className="text-2xl font-bold text-primary">{nomination.score}</p>
-                            <p className="text-xs text-muted-foreground">points</p>
+                        {isResultsVisible ? (
+                          <div className="flex items-center gap-4">
+                            <div className="text-right">
+                              <p className="text-2xl font-bold text-primary">{nomination.score}</p>
+                              <p className="text-xs text-muted-foreground">points</p>
+                            </div>
+                            <div className="text-right text-xs text-muted-foreground space-y-0.5">
+                              <p className="flex items-center justify-end gap-1">
+                                <Award className="w-3 h-3 text-yellow-500" />
+                                {nomination.firstPlaceVotes} 1st
+                              </p>
+                              <p>{nomination.secondPlaceVotes} 2nd</p>
+                              <p>{nomination.thirdPlaceVotes} 3rd</p>
+                            </div>
                           </div>
-                          <div className="text-right text-xs text-muted-foreground space-y-0.5">
-                            <p className="flex items-center justify-end gap-1">
-                              <Award className="w-3 h-3 text-yellow-500" />
-                              {nomination.firstPlaceVotes} 1st
-                            </p>
-                            <p>{nomination.secondPlaceVotes} 2nd</p>
-                            <p>{nomination.thirdPlaceVotes} 3rd</p>
+                        ) : (
+                          <div className="flex items-center gap-2 text-muted-foreground">
+                            <EyeOff className="w-4 h-4" />
+                            <span className="text-sm">Hidden</span>
                           </div>
-                        </div>
+                        )}
                       </div>
                     </Card>
                   ))}
@@ -748,13 +913,21 @@ export default function LeagueHub() {
                 <div className="text-center py-12">
                   <Trophy className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
                   <h3 className="font-medium mb-2">No nominations yet</h3>
-                  <p className="text-sm text-muted-foreground mb-4">
-                    Be the first to nominate a player for {awardType === "mvp" ? "MVP" : "Rookie of the Year"}!
-                  </p>
-                  <Button onClick={() => setNominateDialogOpen(true)}>
-                    <Plus className="w-4 h-4 mr-2" />
-                    Nominate Player
-                  </Button>
+                  {!isLocked ? (
+                    <>
+                      <p className="text-sm text-muted-foreground mb-4">
+                        Be the first to nominate a player for {awardType === "mvp" ? "MVP" : "Rookie of the Year"}!
+                      </p>
+                      <Button onClick={() => setNominateDialogOpen(true)}>
+                        <Plus className="w-4 h-4 mr-2" />
+                        Nominate Player
+                      </Button>
+                    </>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Nominations are locked for this season.
+                    </p>
+                  )}
                 </div>
               )}
             </CardContent>
@@ -770,12 +943,14 @@ function RuleCard({
   suggestion, 
   userRosterId, 
   onVote, 
-  formatTimeAgo 
+  formatTimeAgo,
+  isResultsVisible,
 }: { 
   suggestion: RuleSuggestion; 
   userRosterId: number | undefined;
   onVote: (vote: "approve" | "reject") => void;
   formatTimeAgo: (timestamp: number) => string;
+  isResultsVisible: boolean;
 }) {
   const { data: voteData } = useQuery<RuleVoteData>({
     queryKey: ["/api/rule-suggestions", suggestion.id, "votes"],
@@ -790,6 +965,7 @@ function RuleCard({
   const approveCount = voteData?.approveCount || 0;
   const rejectCount = voteData?.rejectCount || 0;
   const netVotes = approveCount - rejectCount;
+  const totalVotes = voteData?.votes.length || 0;
 
   return (
     <Card className="p-4" data-testid={`rule-card-${suggestion.id}`}>
@@ -806,12 +982,21 @@ function RuleCard({
             <ThumbsUp className="w-5 h-5" />
           </Button>
           <div className="text-center">
-            <span className={`text-lg font-bold ${netVotes > 0 ? "text-primary" : netVotes < 0 ? "text-destructive" : ""}`}>
-              {netVotes > 0 ? "+" : ""}{netVotes}
-            </span>
-            <div className="text-[10px] text-muted-foreground">
-              {approveCount}A / {rejectCount}R
-            </div>
+            {isResultsVisible ? (
+              <>
+                <span className={`text-lg font-bold ${netVotes > 0 ? "text-primary" : netVotes < 0 ? "text-destructive" : ""}`}>
+                  {netVotes > 0 ? "+" : ""}{netVotes}
+                </span>
+                <div className="text-[10px] text-muted-foreground">
+                  {approveCount}A / {rejectCount}R
+                </div>
+              </>
+            ) : (
+              <div className="flex flex-col items-center text-muted-foreground">
+                <EyeOff className="w-4 h-4" />
+                <span className="text-[10px]">Hidden</span>
+              </div>
+            )}
           </div>
           <Button
             variant="ghost"
@@ -830,6 +1015,11 @@ function RuleCard({
             <Badge variant="outline" className="text-xs">
               {suggestion.status}
             </Badge>
+            {userVote && (
+              <Badge variant="secondary" className="text-xs">
+                You voted: {userVote.vote}
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-muted-foreground mb-2">
             {suggestion.description}
@@ -841,7 +1031,7 @@ function RuleCard({
             <span>•</span>
             <span className="flex items-center gap-1">
               <Users className="w-3 h-3" />
-              {(voteData?.votes.length || 0)} team{(voteData?.votes.length || 0) !== 1 ? "s" : ""} voted
+              {totalVotes} team{totalVotes !== 1 ? "s" : ""} voted
             </span>
           </div>
         </div>
