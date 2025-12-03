@@ -582,6 +582,7 @@ export default function LeagueHub() {
                       userRosterId={userRosterId}
                       onVote={(vote) => voteRuleMutation.mutate({ id: suggestion.id, vote })}
                       formatTimeAgo={formatTimeAgo}
+                      isLocked={isLocked}
                     />
                   ))}
                 </div>
@@ -1045,11 +1046,13 @@ function RuleCard({
   userRosterId, 
   onVote, 
   formatTimeAgo,
+  isLocked,
 }: { 
   suggestion: RuleSuggestion; 
   userRosterId: number | undefined;
   onVote: (vote: "approve" | "reject") => void;
   formatTimeAgo: (timestamp: number) => string;
+  isLocked: boolean;
 }) {
   const { data: voteData } = useQuery<RuleVoteData>({
     queryKey: ["/api/rule-suggestions", suggestion.id, "votes"],
@@ -1070,34 +1073,43 @@ function RuleCard({
     <Card className="p-4" data-testid={`rule-card-${suggestion.id}`}>
       <div className="flex gap-4">
         <div className="flex flex-col items-center gap-1 min-w-[80px]">
-          <Button
-            variant="ghost"
-            size="icon"
-            className={userVote?.vote === "approve" ? "text-primary bg-primary/10" : ""}
-            onClick={() => onVote("approve")}
-            disabled={!userRosterId}
-            data-testid={`approve-${suggestion.id}`}
-          >
-            <ThumbsUp className="w-5 h-5" />
-          </Button>
-          <div className="text-center">
-            <span className={`text-lg font-bold ${netVotes > 0 ? "text-primary" : netVotes < 0 ? "text-destructive" : ""}`}>
-              {netVotes > 0 ? "+" : ""}{netVotes}
-            </span>
-            <div className="text-[10px] text-muted-foreground">
-              {approveCount}A / {rejectCount}R
+          {isLocked ? (
+            <>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={userVote?.vote === "approve" ? "text-primary bg-primary/10" : ""}
+                onClick={() => onVote("approve")}
+                disabled={!userRosterId}
+                data-testid={`approve-${suggestion.id}`}
+              >
+                <ThumbsUp className="w-5 h-5" />
+              </Button>
+              <div className="text-center">
+                <span className={`text-lg font-bold ${netVotes > 0 ? "text-primary" : netVotes < 0 ? "text-destructive" : ""}`}>
+                  {netVotes > 0 ? "+" : ""}{netVotes}
+                </span>
+                <div className="text-[10px] text-muted-foreground">
+                  {approveCount}A / {rejectCount}R
+                </div>
+              </div>
+              <Button
+                variant="ghost"
+                size="icon"
+                className={userVote?.vote === "reject" ? "text-destructive bg-destructive/10" : ""}
+                onClick={() => onVote("reject")}
+                disabled={!userRosterId}
+                data-testid={`reject-${suggestion.id}`}
+              >
+                <ThumbsDown className="w-5 h-5" />
+              </Button>
+            </>
+          ) : (
+            <div className="flex flex-col items-center justify-center text-muted-foreground" title="Voting opens after proposals lock">
+              <Lock className="w-5 h-5 mb-1" />
+              <span className="text-[10px]">Vote later</span>
             </div>
-          </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className={userVote?.vote === "reject" ? "text-destructive bg-destructive/10" : ""}
-            onClick={() => onVote("reject")}
-            disabled={!userRosterId}
-            data-testid={`reject-${suggestion.id}`}
-          >
-            <ThumbsDown className="w-5 h-5" />
-          </Button>
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
