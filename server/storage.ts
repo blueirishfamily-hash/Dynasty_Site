@@ -1,5 +1,10 @@
 import { randomUUID } from "crypto";
-import type { RuleSuggestion, InsertRuleSuggestion, AwardNomination, InsertAwardNomination } from "@shared/schema";
+import type { 
+  RuleSuggestion, InsertRuleSuggestion, 
+  AwardNomination, InsertAwardNomination,
+  AwardBallot, InsertAwardBallot,
+  RuleVote, InsertRuleVote
+} from "@shared/schema";
 
 export interface UserSession {
   id: string;
@@ -15,25 +20,40 @@ export interface IStorage {
   updateSessionLeague(sessionId: string, leagueId: string): Promise<UserSession | undefined>;
   deleteSession(id: string): Promise<void>;
   
+  // Rule suggestions
   getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]>;
   createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion>;
-  voteRuleSuggestion(id: string, voterId: string, voteType: "up" | "down"): Promise<RuleSuggestion | undefined>;
   updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined>;
   
+  // Rule votes (1 vote per team per rule)
+  getRuleVotes(ruleId: string): Promise<RuleVote[]>;
+  castRuleVote(data: InsertRuleVote): Promise<RuleVote>;
+  getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined>;
+  
+  // Award nominations (max 3 per team per award type)
   getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]>;
   createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination>;
-  voteAwardNomination(id: string, voterId: string): Promise<AwardNomination | undefined>;
+  getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<number>;
+  
+  // Award ballots (ranked voting: 1st=3pts, 2nd=2pts, 3rd=1pt)
+  getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardBallot[]>;
+  upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot>;
+  getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<AwardBallot | undefined>;
 }
 
 export class MemStorage implements IStorage {
   private sessions: Map<string, UserSession>;
   private ruleSuggestions: Map<string, RuleSuggestion>;
   private awardNominations: Map<string, AwardNomination>;
+  private ruleVotes: Map<string, RuleVote>;
+  private awardBallots: Map<string, AwardBallot>;
 
   constructor() {
     this.sessions = new Map();
     this.ruleSuggestions = new Map();
     this.awardNominations = new Map();
+    this.ruleVotes = new Map();
+    this.awardBallots = new Map();
   }
 
   async getSession(id: string): Promise<UserSession | undefined> {
@@ -90,23 +110,6 @@ export class MemStorage implements IStorage {
     return suggestion;
   }
 
-  async voteRuleSuggestion(id: string, voterId: string, voteType: "up" | "down"): Promise<RuleSuggestion | undefined> {
-    const suggestion = this.ruleSuggestions.get(id);
-    if (!suggestion) return undefined;
-
-    suggestion.upvotes = suggestion.upvotes.filter((v) => v !== voterId);
-    suggestion.downvotes = suggestion.downvotes.filter((v) => v !== voterId);
-
-    if (voteType === "up") {
-      suggestion.upvotes.push(voterId);
-    } else {
-      suggestion.downvotes.push(voterId);
-    }
-
-    this.ruleSuggestions.set(id, suggestion);
-    return suggestion;
-  }
-
   async updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined> {
     const suggestion = this.ruleSuggestions.get(id);
     if (!suggestion) return undefined;
@@ -116,6 +119,56 @@ export class MemStorage implements IStorage {
     return suggestion;
   }
 
+  // Rule votes
+  async getRuleVotes(ruleId: string): Promise<RuleVote[]> {
+    const votes: RuleVote[] = [];
+    this.ruleVotes.forEach((v) => {
+      if (v.ruleId === ruleId) {
+        votes.push(v);
+      }
+    });
+    return votes;
+  }
+
+  async castRuleVote(data: InsertRuleVote): Promise<RuleVote> {
+    // Check if vote already exists for this roster on this rule
+    let existingVote: RuleVote | undefined;
+    this.ruleVotes.forEach((v) => {
+      if (v.ruleId === data.ruleId && v.rosterId === data.rosterId) {
+        existingVote = v;
+      }
+    });
+
+    if (existingVote) {
+      // Update existing vote
+      existingVote.vote = data.vote;
+      existingVote.voterName = data.voterName;
+      this.ruleVotes.set(existingVote.id, existingVote);
+      return existingVote;
+    }
+
+    // Create new vote
+    const id = randomUUID();
+    const vote: RuleVote = {
+      id,
+      ...data,
+      createdAt: Date.now(),
+    };
+    this.ruleVotes.set(id, vote);
+    return vote;
+  }
+
+  async getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined> {
+    let found: RuleVote | undefined;
+    this.ruleVotes.forEach((v) => {
+      if (v.ruleId === ruleId && v.rosterId === rosterId) {
+        found = v;
+      }
+    });
+    return found;
+  }
+
+  // Award nominations
   async getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardNomination[]> {
     const nominations: AwardNomination[] = [];
     this.awardNominations.forEach((n) => {
@@ -123,11 +176,11 @@ export class MemStorage implements IStorage {
         nominations.push(n);
       }
     });
-    return nominations.sort((a, b) => b.votes.length - a.votes.length);
+    return nominations.sort((a, b) => b.createdAt - a.createdAt);
   }
 
   async createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination> {
-    const existingKey = `${data.leagueId}-${data.season}-${data.awardType}-${data.playerId}`;
+    // Check if player already nominated
     let existing: AwardNomination | undefined;
     this.awardNominations.forEach((n) => {
       if (n.leagueId === data.leagueId && n.season === data.season && 
@@ -144,29 +197,74 @@ export class MemStorage implements IStorage {
     const nomination: AwardNomination = {
       id,
       ...data,
-      votes: [data.nominatedBy],
       createdAt: Date.now(),
     };
     this.awardNominations.set(id, nomination);
     return nomination;
   }
 
-  async voteAwardNomination(id: string, voterId: string): Promise<AwardNomination | undefined> {
-    const nomination = this.awardNominations.get(id);
-    if (!nomination) return undefined;
-
+  async getNominationCountByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<number> {
+    let count = 0;
     this.awardNominations.forEach((n) => {
-      if (n.leagueId === nomination.leagueId && 
-          n.season === nomination.season && 
-          n.awardType === nomination.awardType) {
-        n.votes = n.votes.filter((v) => v !== voterId);
-        this.awardNominations.set(n.id, n);
+      if (n.leagueId === leagueId && n.season === season && 
+          n.awardType === awardType && n.nominatedByRosterId === rosterId) {
+        count++;
+      }
+    });
+    return count;
+  }
+
+  // Award ballots
+  async getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy"): Promise<AwardBallot[]> {
+    const ballots: AwardBallot[] = [];
+    this.awardBallots.forEach((b) => {
+      if (b.leagueId === leagueId && b.season === season && b.awardType === awardType) {
+        ballots.push(b);
+      }
+    });
+    return ballots;
+  }
+
+  async upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot> {
+    // Check if ballot already exists for this roster
+    let existingBallot: AwardBallot | undefined;
+    this.awardBallots.forEach((b) => {
+      if (b.leagueId === data.leagueId && b.season === data.season && 
+          b.awardType === data.awardType && b.rosterId === data.rosterId) {
+        existingBallot = b;
       }
     });
 
-    nomination.votes.push(voterId);
-    this.awardNominations.set(id, nomination);
-    return nomination;
+    if (existingBallot) {
+      // Update existing ballot
+      existingBallot.firstPlaceId = data.firstPlaceId;
+      existingBallot.secondPlaceId = data.secondPlaceId;
+      existingBallot.thirdPlaceId = data.thirdPlaceId;
+      existingBallot.voterName = data.voterName;
+      this.awardBallots.set(existingBallot.id, existingBallot);
+      return existingBallot;
+    }
+
+    // Create new ballot
+    const id = randomUUID();
+    const ballot: AwardBallot = {
+      id,
+      ...data,
+      createdAt: Date.now(),
+    };
+    this.awardBallots.set(id, ballot);
+    return ballot;
+  }
+
+  async getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy", rosterId: number): Promise<AwardBallot | undefined> {
+    let found: AwardBallot | undefined;
+    this.awardBallots.forEach((b) => {
+      if (b.leagueId === leagueId && b.season === season && 
+          b.awardType === awardType && b.rosterId === rosterId) {
+        found = b;
+      }
+    });
+    return found;
   }
 }
 
