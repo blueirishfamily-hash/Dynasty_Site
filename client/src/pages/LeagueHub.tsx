@@ -191,6 +191,9 @@ export default function LeagueHub() {
 
   const userRosterId = standings?.find((s: any) => s.isUser)?.rosterId;
   const userTeamName = standings?.find((s: any) => s.isUser)?.name || user?.displayName || "Your Team";
+  
+  // Check if current user is the commissioner
+  const isCommissioner = user?.userId && league?.commissionerId && user.userId === league.commissionerId;
 
   const { data: ruleSuggestions, isLoading: rulesLoading } = useQuery<RuleSuggestion[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
@@ -922,10 +925,19 @@ export default function LeagueHub() {
                             )}
                           </div>
                         </div>
-                        <div className="text-right">
-                          <p className="text-2xl font-bold text-primary">{nomination.score}</p>
-                          <p className="text-xs text-muted-foreground">points</p>
-                        </div>
+                        {isCommissioner ? (
+                          <div className="text-right" title="Commissioner view - hidden from other members">
+                            <div className="flex items-center justify-end gap-1 mb-1">
+                              <Eye className="w-3 h-3 text-muted-foreground" />
+                            </div>
+                            <p className="text-2xl font-bold text-primary">{nomination.score}</p>
+                            <p className="text-xs text-muted-foreground">points</p>
+                          </div>
+                        ) : (
+                          <div className="text-right text-muted-foreground" title="Point totals are hidden until voting ends">
+                            <EyeOff className="w-5 h-5" />
+                          </div>
+                        )}
                       </div>
                     </Card>
                   ))}

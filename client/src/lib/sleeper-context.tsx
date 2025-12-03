@@ -50,6 +50,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
             rosterPositions: leagueData.rosterPositions || [],
             playoffTeams: leagueData.playoffTeams,
             waiverBudget: leagueData.waiverBudget,
+            commissionerId: leagueData.commissionerId,
           };
           setLeagueState(leagueInfo);
           localStorage.setItem(STORAGE_KEY_LEAGUE, JSON.stringify(leagueInfo));

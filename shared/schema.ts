@@ -163,6 +163,7 @@ export const leagueInfoSchema = z.object({
   rosterPositions: z.array(z.string()),
   playoffTeams: z.number().optional(),
   waiverBudget: z.number().optional(),
+  commissionerId: z.string().optional(),
 });
 export type LeagueInfo = z.infer<typeof leagueInfoSchema>;
 

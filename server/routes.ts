@@ -121,6 +121,7 @@ export async function registerRoutes(
         rosterPositions: league.roster_positions,
         playoffTeams: league.settings.playoff_teams,
         waiverBudget: league.settings.waiver_budget,
+        commissionerId: league.owner_id,
       });
     } catch (error) {
       console.error("Error fetching league:", error);
