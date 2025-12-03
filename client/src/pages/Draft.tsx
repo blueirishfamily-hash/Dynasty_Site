@@ -370,10 +370,10 @@ export default function Draft() {
       });
     }
 
-    // Convert counts to percentages
+    // Convert counts to percentages (preserve to thousandth place)
     teamsWithData.forEach(team => {
       const counts = pickCounts.get(team.rosterId)!;
-      team.pickOdds = counts.map(count => Math.round((count / SIMULATIONS) * 1000) / 10);
+      team.pickOdds = counts.map(count => (count / SIMULATIONS) * 100);
     });
 
     // Sort teams by their most likely pick position
@@ -760,7 +760,7 @@ export default function Draft() {
                               key={pickIndex} 
                               className={`text-center tabular-nums text-sm ${bgClass} ${isHighest ? "ring-2 ring-primary ring-inset" : ""}`}
                             >
-                              {odds > 0 ? `${odds}%` : "—"}
+                              {odds > 0 ? `${odds.toFixed(3)}%` : "—"}
                             </TableCell>
                           );
                         })}
