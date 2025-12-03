@@ -1959,5 +1959,35 @@ export async function registerRoutes(
     }
   });
 
+  // Get league setting
+  app.get("/api/league/:leagueId/settings/:settingKey", async (req, res) => {
+    try {
+      const { leagueId, settingKey } = req.params;
+      const value = await storage.getLeagueSetting(leagueId, settingKey);
+      res.json({ value: value || null });
+    } catch (error) {
+      console.error("Error fetching league setting:", error);
+      res.status(500).json({ error: "Failed to fetch league setting" });
+    }
+  });
+
+  // Set league setting (commissioner only - verified on client)
+  app.post("/api/league/:leagueId/settings/:settingKey", async (req, res) => {
+    try {
+      const { leagueId, settingKey } = req.params;
+      const { value } = req.body;
+      
+      if (typeof value !== "string") {
+        return res.status(400).json({ error: "Value must be a string" });
+      }
+      
+      const setting = await storage.setLeagueSetting(leagueId, settingKey, value);
+      res.json(setting);
+    } catch (error) {
+      console.error("Error setting league setting:", error);
+      res.status(500).json({ error: "Failed to set league setting" });
+    }
+  });
+
   return httpServer;
 }

@@ -6,12 +6,14 @@ import {
   ruleVotesTable,
   awardNominationsTable,
   awardBallotsTable,
+  leagueSettingsTable,
 } from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
   AwardNomination, InsertAwardNomination,
   AwardBallot, InsertAwardBallot,
-  RuleVote, InsertRuleVote
+  RuleVote, InsertRuleVote,
+  LeagueSetting
 } from "@shared/schema";
 
 export interface UserSession {
@@ -43,6 +45,9 @@ export interface IStorage {
   getAwardBallots(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardBallot[]>;
   upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot>;
   getAwardBallotByRoster(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm", rosterId: number): Promise<AwardBallot | undefined>;
+  
+  getLeagueSetting(leagueId: string, settingKey: string): Promise<string | undefined>;
+  setLeagueSetting(leagueId: string, settingKey: string, settingValue: string): Promise<LeagueSetting>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -421,6 +426,60 @@ export class DatabaseStorage implements IStorage {
       secondPlaceId: row.secondPlaceId,
       thirdPlaceId: row.thirdPlaceId,
       createdAt: row.createdAt,
+    };
+  }
+
+  async getLeagueSetting(leagueId: string, settingKey: string): Promise<string | undefined> {
+    const [row] = await db
+      .select()
+      .from(leagueSettingsTable)
+      .where(and(
+        eq(leagueSettingsTable.leagueId, leagueId),
+        eq(leagueSettingsTable.settingKey, settingKey)
+      ));
+
+    return row?.settingValue;
+  }
+
+  async setLeagueSetting(leagueId: string, settingKey: string, settingValue: string): Promise<LeagueSetting> {
+    const [existing] = await db
+      .select()
+      .from(leagueSettingsTable)
+      .where(and(
+        eq(leagueSettingsTable.leagueId, leagueId),
+        eq(leagueSettingsTable.settingKey, settingKey)
+      ));
+
+    const updatedAt = Date.now();
+
+    if (existing) {
+      await db
+        .update(leagueSettingsTable)
+        .set({ settingValue, updatedAt })
+        .where(eq(leagueSettingsTable.id, existing.id));
+
+      return {
+        ...existing,
+        settingValue,
+        updatedAt,
+      };
+    }
+
+    const id = randomUUID();
+    await db.insert(leagueSettingsTable).values({
+      id,
+      leagueId,
+      settingKey,
+      settingValue,
+      updatedAt,
+    });
+
+    return {
+      id,
+      leagueId,
+      settingKey,
+      settingValue,
+      updatedAt,
     };
   }
 }

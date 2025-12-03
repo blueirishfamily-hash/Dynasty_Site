@@ -67,8 +67,9 @@ Preferred communication style: Simple, everyday language.
   - Three award categories: MVP, Rookie of the Year, and Best GM
   - Best GM nominations select from team managers instead of players
   - All awards use same ranked voting system (1st = 3pts, 2nd = 2pts, 3rd = 1pt)
-  - Point totals hidden from regular members (shown as eye-off icon)
+  - Point totals hidden from regular members by default (shown as eye-off icon)
   - Commissioner can view hidden point totals (shown with eye icon indicator)
+  - Commissioner toggle to reveal/hide point totals for all members
 
 ### Backend Architecture
 

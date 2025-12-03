@@ -52,11 +52,24 @@ export const awardBallotsTable = pgTable("award_ballots", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
+export const leagueSettingsTable = pgTable("league_settings", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  settingKey: varchar("setting_key", { length: 64 }).notNull(),
+  settingValue: varchar("setting_value", { length: 256 }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
 export const insertAwardNominationDbSchema = createInsertSchema(awardNominationsTable).omit({ id: true, createdAt: true });
 export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).omit({ id: true, createdAt: true });
+export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTable).omit({ id: true, updatedAt: true });
+
+// League Settings types
+export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;
+export type InsertLeagueSetting = z.infer<typeof insertLeagueSettingDbSchema>;
 
 // Zod Schemas for API validation
 

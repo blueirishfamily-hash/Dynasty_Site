@@ -27,6 +27,7 @@ import {
 } from "@/components/ui/select";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import {
@@ -266,6 +267,21 @@ export default function LeagueHub() {
     enabled: !!league?.leagueId && !!season && !!userRosterId,
   });
 
+  // Fetch visibility setting for award points
+  const { data: pointsVisibility } = useQuery<{ value: string | null }>({
+    queryKey: ["/api/league", league?.leagueId, "settings", "award_points_visible"],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/settings/award_points_visible`);
+      if (!res.ok) throw new Error("Failed to fetch visibility setting");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
+  // Determine if points should be visible
+  const pointsVisibleToAll = pointsVisibility?.value === "true";
+  const canViewPoints = isCommissioner || pointsVisibleToAll;
+
   const { data: searchedPlayers, isLoading: playersLoading } = useQuery<Player[]>({
     queryKey: ["/api/sleeper/players/search", debouncedSearch, awardType],
     queryFn: async () => {
@@ -359,6 +375,21 @@ export default function LeagueHub() {
     },
     onError: (error: any) => {
       toast({ title: error.message || "Failed to submit ballot", variant: "destructive" });
+    },
+  });
+
+  const toggleVisibilityMutation = useMutation({
+    mutationFn: async (visible: boolean) => {
+      return apiRequest("POST", `/api/league/${league?.leagueId}/settings/award_points_visible`, {
+        value: visible ? "true" : "false",
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "settings", "award_points_visible"] });
+      toast({ title: pointsVisibleToAll ? "Point totals are now hidden" : "Point totals are now visible to all" });
+    },
+    onError: () => {
+      toast({ title: "Failed to update visibility setting", variant: "destructive" });
     },
   });
 
@@ -594,6 +625,33 @@ export default function LeagueHub() {
                       : "Nominate players (max 3 per award) and cast your ranked ballot"
                     }
                   </CardDescription>
+                  {isCommissioner && (
+                    <div className="flex items-center gap-2 mt-3 p-2 bg-muted/50 rounded-md">
+                      <Switch
+                        id="visibility-toggle"
+                        checked={pointsVisibleToAll}
+                        onCheckedChange={(checked) => toggleVisibilityMutation.mutate(checked)}
+                        disabled={toggleVisibilityMutation.isPending}
+                        data-testid="toggle-points-visibility"
+                      />
+                      <Label 
+                        htmlFor="visibility-toggle" 
+                        className="text-sm cursor-pointer flex items-center gap-2"
+                      >
+                        {pointsVisibleToAll ? (
+                          <>
+                            <Eye className="w-4 h-4" />
+                            Point totals visible to all
+                          </>
+                        ) : (
+                          <>
+                            <EyeOff className="w-4 h-4" />
+                            Point totals hidden (commissioner only)
+                          </>
+                        )}
+                      </Label>
+                    </div>
+                  )}
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Select value={awardType} onValueChange={(v) => setAwardType(v as "mvp" | "roy" | "gm")}>
@@ -933,16 +991,18 @@ export default function LeagueHub() {
                             )}
                           </div>
                         </div>
-                        {isCommissioner ? (
-                          <div className="text-right" title="Commissioner view - hidden from other members">
-                            <div className="flex items-center justify-end gap-1 mb-1">
-                              <Eye className="w-3 h-3 text-muted-foreground" />
-                            </div>
+                        {canViewPoints ? (
+                          <div className="text-right" title={isCommissioner && !pointsVisibleToAll ? "Commissioner view - hidden from other members" : "Point totals"}>
+                            {isCommissioner && !pointsVisibleToAll && (
+                              <div className="flex items-center justify-end gap-1 mb-1">
+                                <Eye className="w-3 h-3 text-muted-foreground" />
+                              </div>
+                            )}
                             <p className="text-2xl font-bold text-primary">{nomination.score}</p>
                             <p className="text-xs text-muted-foreground">points</p>
                           </div>
                         ) : (
-                          <div className="text-right text-muted-foreground" title="Point totals are hidden until voting ends">
+                          <div className="text-right text-muted-foreground" title="Point totals are hidden">
                             <EyeOff className="w-5 h-5" />
                           </div>
                         )}
