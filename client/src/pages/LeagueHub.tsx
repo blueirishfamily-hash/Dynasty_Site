@@ -92,11 +92,8 @@ interface NFLState {
   displayWeek: number;
 }
 
-// Week 14 ends on 12/9/2024 (Monday Night Football)
-const LOCK_DATE = new Date("2024-12-10T00:00:00-05:00");
-// Results revealed on 1/1/2026
-const REVEAL_DATE = new Date("2026-01-01T00:00:00-05:00");
-const LOCK_WEEK = 14;
+// Nominations and proposals lock on 12/9/2025 at 12pm EST
+const LOCK_DATE = new Date("2025-12-09T12:00:00-05:00");
 
 function CountdownTimer({ targetDate, label, icon: Icon }: { targetDate: Date; label: string; icon: typeof Clock }) {
   const [timeLeft, setTimeLeft] = useState<{ days: number; hours: number; minutes: number; seconds: number } | null>(null);
@@ -176,10 +173,9 @@ export default function LeagueHub() {
     queryKey: ["/api/sleeper/nfl-state"],
   });
 
-  // Calculate lock status based on current week and date
+  // Calculate lock status based on date only
   const now = new Date();
-  const isLocked = now >= LOCK_DATE || (nflState?.week && nflState.week > LOCK_WEEK);
-  const isResultsVisible = now >= REVEAL_DATE;
+  const isLocked = now >= LOCK_DATE;
 
   // Fetch user's roster ID from standings
   const { data: standings } = useQuery<any[]>({
@@ -393,7 +389,7 @@ export default function LeagueHub() {
       </div>
 
       {/* Status Banner */}
-      {isLocked && !isResultsVisible && (
+      {isLocked && (
         <Card className="bg-amber-500/10 border-amber-500/30">
           <CardContent className="p-4">
             <div className="flex items-center gap-3">
@@ -403,16 +399,9 @@ export default function LeagueHub() {
                   Nominations and proposals are now locked
                 </p>
                 <p className="text-sm text-muted-foreground">
-                  Voting continues until results are revealed on January 1, 2026
+                  Voting is still open
                 </p>
               </div>
-            </div>
-            <div className="mt-4">
-              <CountdownTimer 
-                targetDate={REVEAL_DATE} 
-                label="Results will be revealed in" 
-                icon={Eye} 
-              />
             </div>
           </CardContent>
         </Card>
@@ -423,12 +412,9 @@ export default function LeagueHub() {
           <CardContent className="p-4">
             <CountdownTimer 
               targetDate={LOCK_DATE} 
-              label="Nominations and proposals lock after Week 14 in" 
+              label="Nominations and proposals lock in" 
               icon={Lock} 
             />
-            <p className="text-xs text-muted-foreground mt-2">
-              Current week: {nflState?.week || "Loading..."}
-            </p>
           </CardContent>
         </Card>
       )}
@@ -456,7 +442,7 @@ export default function LeagueHub() {
                   </CardTitle>
                   <CardDescription>
                     {isLocked 
-                      ? "Proposals are locked. Vote results hidden until January 1, 2026."
+                      ? "Proposals are locked. Voting is still open."
                       : "Propose and vote on rule changes (1 vote per team per rule)"
                     }
                   </CardDescription>
@@ -535,7 +521,6 @@ export default function LeagueHub() {
                       userRosterId={userRosterId}
                       onVote={(vote) => voteRuleMutation.mutate({ id: suggestion.id, vote })}
                       formatTimeAgo={formatTimeAgo}
-                      isResultsVisible={isResultsVisible}
                     />
                   ))}
                 </div>
@@ -575,7 +560,7 @@ export default function LeagueHub() {
                   </CardTitle>
                   <CardDescription>
                     {isLocked 
-                      ? "Nominations locked. Vote results hidden until January 1, 2026."
+                      ? "Nominations locked. Voting is still open."
                       : "Nominate players (max 3 per award) and cast your ranked ballot"
                     }
                   </CardDescription>
@@ -822,19 +807,8 @@ export default function LeagueHub() {
                 </div>
               )}
 
-              {/* Hidden Results Notice */}
-              {!isResultsVisible && nominations.length > 0 && (
-                <div className="mb-4 p-3 bg-muted/50 rounded-lg border flex items-center gap-3">
-                  <EyeOff className="w-5 h-5 text-muted-foreground" />
-                  <div>
-                    <p className="text-sm font-medium">Vote tallies are hidden</p>
-                    <p className="text-xs text-muted-foreground">Results will be revealed on January 1, 2026</p>
-                  </div>
-                </div>
-              )}
-
-              {/* Results Stats - Only show when visible */}
-              {isResultsVisible && currentResults && currentResults.totalBallots > 0 && (
+              {/* Results Stats */}
+              {currentResults && currentResults.totalBallots > 0 && (
                 <div className="mb-4 flex items-center gap-4 text-sm text-muted-foreground">
                   <span className="flex items-center gap-1">
                     <Users className="w-4 h-4" />
@@ -854,12 +828,12 @@ export default function LeagueHub() {
                   {nominations.map((nomination, index) => (
                     <Card
                       key={nomination.id}
-                      className={`p-4 ${isResultsVisible && index === 0 && nomination.score > 0 ? "ring-2 ring-primary/50 bg-primary/5" : ""}`}
+                      className={`p-4 ${index === 0 && nomination.score > 0 ? "ring-2 ring-primary/50 bg-primary/5" : ""}`}
                       data-testid={`nomination-card-${nomination.id}`}
                     >
                       <div className="flex items-center gap-4">
                         <div className="flex items-center justify-center w-10 h-10 rounded-full bg-muted text-lg font-bold">
-                          {isResultsVisible && index === 0 && nomination.score > 0 ? (
+                          {index === 0 && nomination.score > 0 ? (
                             <Trophy className="w-5 h-5 text-primary" />
                           ) : (
                             <span className="text-muted-foreground">{index + 1}</span>
@@ -884,27 +858,20 @@ export default function LeagueHub() {
                             Nominated by {nomination.nominatedByName}
                           </p>
                         </div>
-                        {isResultsVisible ? (
-                          <div className="flex items-center gap-4">
-                            <div className="text-right">
-                              <p className="text-2xl font-bold text-primary">{nomination.score}</p>
-                              <p className="text-xs text-muted-foreground">points</p>
-                            </div>
-                            <div className="text-right text-xs text-muted-foreground space-y-0.5">
-                              <p className="flex items-center justify-end gap-1">
-                                <Award className="w-3 h-3 text-yellow-500" />
-                                {nomination.firstPlaceVotes} 1st
-                              </p>
-                              <p>{nomination.secondPlaceVotes} 2nd</p>
-                              <p>{nomination.thirdPlaceVotes} 3rd</p>
-                            </div>
+                        <div className="flex items-center gap-4">
+                          <div className="text-right">
+                            <p className="text-2xl font-bold text-primary">{nomination.score}</p>
+                            <p className="text-xs text-muted-foreground">points</p>
                           </div>
-                        ) : (
-                          <div className="flex items-center gap-2 text-muted-foreground">
-                            <EyeOff className="w-4 h-4" />
-                            <span className="text-sm">Hidden</span>
+                          <div className="text-right text-xs text-muted-foreground space-y-0.5">
+                            <p className="flex items-center justify-end gap-1">
+                              <Award className="w-3 h-3 text-yellow-500" />
+                              {nomination.firstPlaceVotes} 1st
+                            </p>
+                            <p>{nomination.secondPlaceVotes} 2nd</p>
+                            <p>{nomination.thirdPlaceVotes} 3rd</p>
                           </div>
-                        )}
+                        </div>
                       </div>
                     </Card>
                   ))}
@@ -944,13 +911,11 @@ function RuleCard({
   userRosterId, 
   onVote, 
   formatTimeAgo,
-  isResultsVisible,
 }: { 
   suggestion: RuleSuggestion; 
   userRosterId: number | undefined;
   onVote: (vote: "approve" | "reject") => void;
   formatTimeAgo: (timestamp: number) => string;
-  isResultsVisible: boolean;
 }) {
   const { data: voteData } = useQuery<RuleVoteData>({
     queryKey: ["/api/rule-suggestions", suggestion.id, "votes"],
@@ -982,21 +947,12 @@ function RuleCard({
             <ThumbsUp className="w-5 h-5" />
           </Button>
           <div className="text-center">
-            {isResultsVisible ? (
-              <>
-                <span className={`text-lg font-bold ${netVotes > 0 ? "text-primary" : netVotes < 0 ? "text-destructive" : ""}`}>
-                  {netVotes > 0 ? "+" : ""}{netVotes}
-                </span>
-                <div className="text-[10px] text-muted-foreground">
-                  {approveCount}A / {rejectCount}R
-                </div>
-              </>
-            ) : (
-              <div className="flex flex-col items-center text-muted-foreground">
-                <EyeOff className="w-4 h-4" />
-                <span className="text-[10px]">Hidden</span>
-              </div>
-            )}
+            <span className={`text-lg font-bold ${netVotes > 0 ? "text-primary" : netVotes < 0 ? "text-destructive" : ""}`}>
+              {netVotes > 0 ? "+" : ""}{netVotes}
+            </span>
+            <div className="text-[10px] text-muted-foreground">
+              {approveCount}A / {rejectCount}R
+            </div>
           </div>
           <Button
             variant="ghost"
@@ -1028,15 +984,11 @@ function RuleCard({
             <span>by {suggestion.authorName}</span>
             <span>•</span>
             <span>{formatTimeAgo(suggestion.createdAt)}</span>
-            {isResultsVisible && (
-              <>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  <Users className="w-3 h-3" />
-                  {totalVotes} team{totalVotes !== 1 ? "s" : ""} voted
-                </span>
-              </>
-            )}
+            <span>•</span>
+            <span className="flex items-center gap-1">
+              <Users className="w-3 h-3" />
+              {totalVotes} team{totalVotes !== 1 ? "s" : ""} voted
+            </span>
           </div>
         </div>
       </div>

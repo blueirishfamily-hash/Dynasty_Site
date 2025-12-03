@@ -53,12 +53,15 @@ Preferred communication style: Simple, everyday language.
   - Impact analysis showing playoff odds changes if moving up/down in points standings
   - Monte Carlo simulation with 10,000 iterations
 - Standings with win/loss streak calculation (e.g., "W3", "L2", "—")
-- Draft lottery odds calculator (Draft Odds tab):
-  - Monte Carlo simulation (10,000 iterations) for lottery pick probabilities
-  - Weighted lottery system: worst teams get highest odds for top picks
-  - Playoff teams get deterministic picks based on projected seed
-  - Probabilities sum to 100% for each lottery team across all picks
+- Draft order calculator (Draft Odds tab):
+  - Non-playoff teams get picks 1-5, assigned by max points scored (lowest = Pick 1)
+  - Playoff teams get picks 6-12, assigned by postseason finish (worst finisher = Pick 6, champion = Pick 12)
+  - Fully deterministic system - each team shows 100% at their assigned pick
 - Auto-selection of most recent completed draft in Historical tab (prefers 2024 if available)
+- League Hub governance with configurable lock dates:
+  - Nominations and proposals lock on December 9, 2025 at 12pm EST
+  - Vote results always visible (no hidden voting period)
+  - Voting remains open after nominations lock
 
 ### Backend Architecture
 
