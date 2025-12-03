@@ -171,14 +171,51 @@ export const awardNominationSchema = z.object({
   playerTeam: z.string().nullable(),
   nominatedBy: z.string(),
   nominatedByName: z.string(),
-  votes: z.array(z.string()),
+  nominatedByRosterId: z.number(),
   createdAt: z.number(),
 });
 export type AwardNomination = z.infer<typeof awardNominationSchema>;
 
 export const insertAwardNominationSchema = awardNominationSchema.omit({ 
   id: true, 
-  votes: true, 
   createdAt: true 
 });
 export type InsertAwardNomination = z.infer<typeof insertAwardNominationSchema>;
+
+// Award ballot for ranked voting (1st = 3pts, 2nd = 2pts, 3rd = 1pt)
+export const awardBallotSchema = z.object({
+  id: z.string(),
+  leagueId: z.string(),
+  season: z.string(),
+  awardType: z.enum(["mvp", "roy"]),
+  rosterId: z.number(),
+  voterName: z.string(),
+  firstPlaceId: z.string(),
+  secondPlaceId: z.string(),
+  thirdPlaceId: z.string(),
+  createdAt: z.number(),
+});
+export type AwardBallot = z.infer<typeof awardBallotSchema>;
+
+export const insertAwardBallotSchema = awardBallotSchema.omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertAwardBallot = z.infer<typeof insertAwardBallotSchema>;
+
+// Rule vote by team (1 vote per team per rule)
+export const ruleVoteSchema = z.object({
+  id: z.string(),
+  ruleId: z.string(),
+  rosterId: z.number(),
+  voterName: z.string(),
+  vote: z.enum(["approve", "reject"]),
+  createdAt: z.number(),
+});
+export type RuleVote = z.infer<typeof ruleVoteSchema>;
+
+export const insertRuleVoteSchema = ruleVoteSchema.omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertRuleVote = z.infer<typeof insertRuleVoteSchema>;
