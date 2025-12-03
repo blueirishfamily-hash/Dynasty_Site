@@ -242,7 +242,8 @@ export default function Draft() {
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
 
   // Calculate draft odds based on standings and playoff predictions
-  // Uses weighted lottery odds similar to NBA draft lottery system
+  // Non-playoff teams get picks 1-5 based on max points (lowest = pick 1)
+  // Playoff teams get picks 6-12 based on postseason finish (worst finisher = pick 6, champion = pick 12)
   const calculateDraftOdds = (): DraftOddsTeam[] => {
     if (!standings) return [];
 
@@ -261,7 +262,7 @@ export default function Draft() {
       };
     });
 
-    // Determine playoff teams vs lottery teams based on predictions or current rank
+    // Determine playoff teams vs non-playoff teams based on predictions or current rank
     const teamsWithData: DraftOddsTeam[] = teamsWithPredictions.map(team => {
       // Use prediction data if available, otherwise use current standings
       const isPlayoffTeam = team.makePlayoffsPct >= 50;
@@ -276,7 +277,7 @@ export default function Draft() {
         pointsFor: team.pointsFor,
         isPlayoffTeam,
         projectedFinish: undefined, // Will be assigned after sorting
-        maxPoints: team.pointsFor,
+        maxPoints: team.pointsFor, // Using total points as max points proxy
         pickOdds: new Array(totalTeams).fill(0),
         isUser: team.isUser,
         missPlayoffsPct: 100 - team.makePlayoffsPct,
@@ -284,132 +285,57 @@ export default function Draft() {
       };
     });
 
-    // Separate playoff and lottery teams
+    // Separate playoff and non-playoff teams
     const playoffTeamsList = teamsWithData.filter(t => t.isPlayoffTeam);
-    const lotteryTeams = teamsWithData.filter(t => !t.isPlayoffTeam);
+    const nonPlayoffTeams = teamsWithData.filter(t => !t.isPlayoffTeam);
 
-    // Sort lottery teams: worst record first, then by lowest points (for tiebreaker)
-    lotteryTeams.sort((a, b) => {
-      // Primary: fewer wins = higher pick
-      if (a.wins !== b.wins) return a.wins - b.wins;
-      // Secondary: lower points = higher pick (for teams that missed playoffs)
-      return a.pointsFor - b.pointsFor;
+    // Non-playoff teams get picks 1-5, sorted by max points (lowest = pick 1)
+    // This is deterministic - no lottery
+    nonPlayoffTeams.sort((a, b) => {
+      // Primary: lowest max points = higher pick (pick 1)
+      if (a.maxPoints !== b.maxPoints) return a.maxPoints - b.maxPoints;
+      // Secondary: fewer wins = higher pick
+      return a.wins - b.wins;
     });
 
-    // Sort playoff teams by projected wins and points - best teams pick last
-    // Teams with more projected wins are seeded higher (better), pick later
+    // Playoff teams get picks 6-12, sorted by postseason finish
+    // Worst playoff finisher picks first (pick 6), champion picks last (pick 12)
+    // Using projected wins as proxy for expected postseason finish
     playoffTeamsList.sort((a, b) => {
-      // Primary: more projected wins = higher seed = later pick
+      // Primary: fewer projected wins = worse finish = earlier pick
       const winsA = a.projectedWins ?? a.wins;
       const winsB = b.projectedWins ?? b.wins;
       if (winsA !== winsB) return winsA - winsB; // Ascending - fewer wins picks earlier
-      // Secondary: higher points = higher seed = later pick
-      return a.pointsFor - b.pointsFor; // Ascending - fewer points picks earlier
+      // Secondary: lower points = worse finish = earlier pick
+      return a.pointsFor - b.pointsFor;
     });
 
-    // Assign projected finish (seed) based on sorted order
+    // Assign projected finish (seed) based on sorted order for playoff teams
+    // Best team (last in sort) gets seed 1, worst playoff team gets highest seed
     playoffTeamsList.forEach((team, index) => {
-      // Best team (last in sort) gets seed 1, worst playoff team gets highest seed
       team.projectedFinish = playoffTeamsList.length - index;
     });
 
-    // Generate lottery-style weighted odds for non-playoff teams
-    // Uses Monte Carlo simulation to calculate realistic pick probabilities
-    const lotteryPicks = lotteryTeams.length;
-    
-    if (lotteryPicks > 0) {
-      // Run Monte Carlo simulation to calculate lottery odds
-      const SIMULATIONS = 10000;
-      const pickCounts: Map<number, number[]> = new Map();
-      
-      // Initialize pick count arrays for each team
-      lotteryTeams.forEach((_, idx) => {
-        pickCounts.set(idx, new Array(lotteryPicks).fill(0));
-      });
-      
-      // Get lottery weights (worst team gets highest weight)
-      const lotteryWeights = generateLotteryWeights(lotteryPicks);
-      
-      for (let sim = 0; sim < SIMULATIONS; sim++) {
-        // Track which teams have been assigned picks
-        const availableTeams = lotteryTeams.map((_, i) => i);
-        
-        for (let pick = 0; pick < lotteryPicks; pick++) {
-          // Calculate total weight of remaining teams
-          const totalWeight = availableTeams.reduce((sum, teamIdx) => sum + lotteryWeights[teamIdx], 0);
-          
-          // Random selection based on weights
-          let random = Math.random() * totalWeight;
-          let selectedTeamIdx = availableTeams[0];
-          
-          for (const teamIdx of availableTeams) {
-            random -= lotteryWeights[teamIdx];
-            if (random <= 0) {
-              selectedTeamIdx = teamIdx;
-              break;
-            }
-          }
-          
-          // Record this pick
-          pickCounts.get(selectedTeamIdx)![pick]++;
-          
-          // Remove selected team from available pool
-          const teamArrayIdx = availableTeams.indexOf(selectedTeamIdx);
-          availableTeams.splice(teamArrayIdx, 1);
-        }
+    // Assign deterministic picks for non-playoff teams (picks 1-5)
+    // Lowest max points gets pick 1, highest max points among non-playoff gets pick 5
+    const nonPlayoffPicks = Math.min(nonPlayoffTeams.length, 5);
+    nonPlayoffTeams.forEach((team, index) => {
+      if (index < nonPlayoffPicks) {
+        team.pickOdds[index] = 100; // Pick 1 = index 0, Pick 5 = index 4
       }
-      
-      // Convert counts to percentages
-      lotteryTeams.forEach((team, teamIdx) => {
-        const counts = pickCounts.get(teamIdx)!;
-        counts.forEach((count, pickIdx) => {
-          team.pickOdds[pickIdx] = Math.round((count / SIMULATIONS) * 1000) / 10;
-        });
-      });
-    }
+    });
 
-    // Playoff teams get deterministic picks based on projected finish
-    // Best team (seed 1) gets last pick, worst playoff team gets first playoff pick
+    // Assign deterministic picks for playoff teams (picks 6-12)
+    // Worst playoff finisher gets pick 6, champion gets pick 12
     playoffTeamsList.forEach((team, index) => {
-      const pickPosition = lotteryPicks + index;
+      const pickPosition = nonPlayoffPicks + index; // Starts at pick 6 (index 5)
       if (pickPosition < totalTeams) {
         team.pickOdds[pickPosition] = 100;
       }
     });
 
-    // Combine lottery teams (ordered by expected pick) and playoff teams
-    return [...lotteryTeams, ...playoffTeamsList];
-  };
-
-  // Generate weighted lottery odds (worst team gets most weight)
-  const generateLotteryWeights = (numTeams: number): number[] => {
-    // Weighted lottery odds - worst team gets highest probability
-    // These weights are designed to give worst teams advantage while still allowing upsets
-    const baseWeights: Record<number, number[]> = {
-      1: [100],
-      2: [55, 45],
-      3: [50, 30, 20],
-      4: [40, 27.5, 20, 12.5],
-      5: [35, 25, 20, 12.5, 7.5],
-      6: [30, 22.5, 17.5, 14, 10, 6],
-    };
-    
-    if (baseWeights[numTeams]) {
-      return baseWeights[numTeams];
-    }
-    
-    // For larger lottery pools, create declining weights
-    const weights: number[] = [];
-    let remaining = 100;
-    for (let i = 0; i < numTeams; i++) {
-      const weight = Math.max(3, remaining * (0.35 - i * 0.03));
-      weights.push(Math.round(weight * 10) / 10);
-      remaining -= weight;
-    }
-    
-    // Normalize to ensure weights sum to 100
-    const total = weights.reduce((a, b) => a + b, 0);
-    return weights.map(w => Math.round((w / total) * 1000) / 10);
+    // Combine non-playoff teams (picks 1-5) and playoff teams (picks 6-12)
+    return [...nonPlayoffTeams.slice(0, nonPlayoffPicks), ...playoffTeamsList];
   };
 
   const draftOddsTeams = calculateDraftOdds();
@@ -539,7 +465,7 @@ export default function Draft() {
     <div className="p-6 space-y-6">
       <div>
         <h1 className="font-heading text-3xl font-bold">Draft Board</h1>
-        <p className="text-muted-foreground">View draft capital, historical picks, and draft lottery odds</p>
+        <p className="text-muted-foreground">View draft capital, historical picks, and projected draft order</p>
       </div>
 
       <Card>
@@ -675,14 +601,14 @@ export default function Draft() {
           ) : (
             <div className="space-y-4">
               <CardDescription>
-                Draft order is determined by: 1) Record (worst to best), 2) For non-playoff teams: lowest max points scored gets earlier pick, 
-                3) For playoff teams: projected finish determines pick order (champion picks last).
+                Non-playoff teams get picks 1-5, assigned by max points scored (lowest max points = Pick 1). 
+                Playoff teams get picks 6-12 based on postseason finish (worst finisher = Pick 6, champion = Pick 12).
               </CardDescription>
               
               <div className="flex items-center gap-4 mb-4 text-xs text-muted-foreground">
                 <div className="flex items-center gap-1.5">
                   <TrendingDown className="w-4 h-4 text-destructive" />
-                  <span>Lottery Team (Missed Playoffs)</span>
+                  <span>Non-Playoff (Picks 1-5 by Max Points)</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <Trophy className="w-4 h-4 text-primary" />
@@ -747,7 +673,7 @@ export default function Draft() {
                           ) : (
                             <Badge variant="secondary">
                               <TrendingDown className="w-3 h-3 mr-1" />
-                              Lottery
+                              Non-Playoff
                             </Badge>
                           )}
                         </TableCell>
