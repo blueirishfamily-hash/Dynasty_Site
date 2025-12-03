@@ -96,6 +96,11 @@ interface NFLState {
 // Nominations and proposals lock on 12/9/2025 at 12pm EST
 const LOCK_DATE = new Date("2025-12-09T12:00:00-05:00");
 
+// Additional users with commissioner privileges (can view hidden point totals)
+const COMMISSIONER_USER_IDS = [
+  "900186363130503168", // elwthree
+];
+
 function CountdownTimer({ targetDate, label, icon: Icon }: { targetDate: Date; label: string; icon: typeof Clock }) {
   const [timeLeft, setTimeLeft] = useState<{ days: number; hours: number; minutes: number; seconds: number } | null>(null);
 
@@ -192,8 +197,11 @@ export default function LeagueHub() {
   const userRosterId = standings?.find((s: any) => s.isUser)?.rosterId;
   const userTeamName = standings?.find((s: any) => s.isUser)?.name || user?.displayName || "Your Team";
   
-  // Check if current user is the commissioner
-  const isCommissioner = user?.userId && league?.commissionerId && user.userId === league.commissionerId;
+  // Check if current user is the commissioner or has commissioner privileges
+  const isCommissioner = user?.userId && (
+    (league?.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  );
 
   const { data: ruleSuggestions, isLoading: rulesLoading } = useQuery<RuleSuggestion[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
