@@ -2465,7 +2465,7 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/awards/:season/:awardType", async (req, res) => {
     try {
       const { leagueId, season, awardType } = req.params;
-      if (awardType !== "mvp" && awardType !== "roy") {
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
         return res.status(400).json({ error: "Invalid award type" });
       }
       const nominations = await storage.getAwardNominations(leagueId, season, awardType);
@@ -2482,7 +2482,7 @@ export async function registerRoutes(
       const { leagueId, season, awardType } = req.params;
       const { playerId, playerName, playerPosition, playerTeam, nominatedBy, nominatedByName, nominatedByRosterId } = req.body;
       
-      if (awardType !== "mvp" && awardType !== "roy") {
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
         return res.status(400).json({ error: "Invalid award type" });
       }
       if (!playerId || !playerName || !nominatedBy || !nominatedByName || !nominatedByRosterId) {
@@ -2518,7 +2518,7 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/awards/:season/:awardType/nominations/count/:rosterId", async (req, res) => {
     try {
       const { leagueId, season, awardType, rosterId } = req.params;
-      if (awardType !== "mvp" && awardType !== "roy") {
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
         return res.status(400).json({ error: "Invalid award type" });
       }
       const count = await storage.getNominationCountByRoster(leagueId, season, awardType, parseInt(rosterId));
@@ -2535,7 +2535,7 @@ export async function registerRoutes(
       const { leagueId, season, awardType } = req.params;
       const { rosterId, voterName, firstPlaceId, secondPlaceId, thirdPlaceId } = req.body;
       
-      if (awardType !== "mvp" && awardType !== "roy") {
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
         return res.status(400).json({ error: "Invalid award type" });
       }
       if (!rosterId || !voterName || !firstPlaceId || !secondPlaceId || !thirdPlaceId) {
@@ -2575,7 +2575,7 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/awards/:season/:awardType/ballot/:rosterId", async (req, res) => {
     try {
       const { leagueId, season, awardType, rosterId } = req.params;
-      if (awardType !== "mvp" && awardType !== "roy") {
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
         return res.status(400).json({ error: "Invalid award type" });
       }
       const ballot = await storage.getAwardBallotByRoster(leagueId, season, awardType, parseInt(rosterId));
@@ -2590,7 +2590,7 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/awards/:season/:awardType/results", async (req, res) => {
     try {
       const { leagueId, season, awardType } = req.params;
-      if (awardType !== "mvp" && awardType !== "roy") {
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
         return res.status(400).json({ error: "Invalid award type" });
       }
 
