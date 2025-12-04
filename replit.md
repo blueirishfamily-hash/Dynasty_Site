@@ -80,6 +80,15 @@ Preferred communication style: Simple, everyday language.
   - Bubble teams (partial playoff odds): have probability spread across all 12 picks
   - Visual highlighting shows probability distribution with stronger colors for higher odds
 - Auto-selection of most recent completed draft in Historical tab (prefers 2024 if available)
+- Trophy Room page showcasing dynasty history:
+  - Season Champions trophy case with all past champions
+  - Highest Scorers trophy case with total points for each season
+  - MVP Award winners from league voting
+  - Rookie of the Year winners from league voting
+  - Best GM Award winners from league voting
+  - Reigning champions banner highlighting current title holders
+  - Trophy summary with total counts for each award type
+  - Traverses previous_league_id to collect complete dynasty history
 - League Hub governance with configurable lock dates:
   - Nominations and proposals lock on December 9, 2025 at 12pm EST
   - Vote results always visible (no hidden voting period)

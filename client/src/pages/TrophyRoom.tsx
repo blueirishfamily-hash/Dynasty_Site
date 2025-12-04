@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useSleeper } from "@/lib/sleeper-context";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -83,15 +84,17 @@ function TrophyCase({
     );
   }
 
+  const testIdBase = title.toLowerCase().replace(/\s+/g, '-');
+  
   return (
-    <Card className="flex flex-col">
+    <Card className="flex flex-col" data-testid={`card-trophy-${testIdBase}`}>
       <CardHeader className="pb-3">
         <div className="flex items-center gap-3">
           <div className={`p-3 rounded-xl bg-gradient-to-br ${iconColor}`}>
             <Icon className="w-6 h-6 text-white" />
           </div>
           <div>
-            <CardTitle className="text-lg font-heading">{title}</CardTitle>
+            <CardTitle className="text-lg font-heading" data-testid={`text-trophy-title-${testIdBase}`}>{title}</CardTitle>
             <CardDescription className="text-sm">{description}</CardDescription>
           </div>
         </div>
@@ -169,9 +172,13 @@ function TrophyBanner({ winners, title, icon: Icon, iconColor }: {
   if (winners.length === 0) return null;
   
   const latestWinner = winners[0];
+  const testIdBase = title.toLowerCase().replace(/\s+/g, '-');
   
   return (
-    <div className="flex items-center gap-4 p-4 rounded-xl bg-gradient-to-r from-primary/10 via-primary/5 to-transparent border border-primary/20">
+    <div 
+      className="flex items-center gap-4 p-4 rounded-xl bg-gradient-to-r from-primary/10 via-primary/5 to-transparent border border-primary/20"
+      data-testid={`banner-reigning-${testIdBase}`}
+    >
       <div className={`p-3 rounded-xl bg-gradient-to-br ${iconColor}`}>
         <Icon className="w-8 h-8 text-white" />
       </div>
@@ -208,6 +215,14 @@ export default function TrophyRoom() {
     },
     enabled: !!league?.leagueId,
   });
+
+  useEffect(() => {
+    document.title = `Trophy Room | ${league?.name || "Dynasty Command"}`;
+    const metaDescription = document.querySelector('meta[name="description"]');
+    if (metaDescription) {
+      metaDescription.setAttribute('content', 'View all dynasty league champions, highest scorers, MVP awards, Rookie of the Year, and Best GM winners across all seasons.');
+    }
+  }, [league?.name]);
 
   return (
     <div className="p-6 space-y-6">
@@ -296,9 +311,9 @@ export default function TrophyRoom() {
 
       {/* Trophy Counter Summary */}
       {!isLoading && trophyData && (
-        <Card>
+        <Card data-testid="card-trophy-summary">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base flex items-center gap-2">
+            <CardTitle className="text-base flex items-center gap-2" data-testid="text-trophy-summary-title">
               <Medal className="w-4 h-4" />
               Dynasty Trophy Summary
             </CardTitle>
