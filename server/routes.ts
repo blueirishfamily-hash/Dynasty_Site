@@ -2159,10 +2159,6 @@ export async function registerRoutes(
           // In Sleeper, the champion typically has the most playoff wins or is marked specially
           // We'll look for the roster that finished 1st place in the final standings
           const sortedRosters = [...rosters].sort((a, b) => {
-            // Sort by playoff rank if available, otherwise by wins and points
-            if (a.metadata?.record && b.metadata?.record) {
-              return 0; // Can't reliably determine from record string
-            }
             // Use settings.fpts for total points
             const aWins = a.settings?.wins || 0;
             const bWins = b.settings?.wins || 0;
@@ -2173,11 +2169,9 @@ export async function registerRoutes(
           });
           
           // The champion is typically determined by bracket results
-          // For now, find the team with highest playoff record or most wins
+          // For now, find the team with highest wins and points
           const champion = sortedRosters.find(r => {
-            // Look for playoff champion indicators
-            const metadata = r.metadata || {};
-            return metadata.streak === 'W' || r.settings?.wins > 0;
+            return r.settings?.wins > 0;
           }) || sortedRosters[0];
           
           if (champion) {
@@ -2237,27 +2231,24 @@ export async function registerRoutes(
       
       // Fetch award data for all seasons in this league chain
       for (const { leagueId: lid, season } of leagueIds) {
-        try {
-          const nominations = await storage.getAwardNominations(lid, season);
-          const ballots = await storage.getAwardBallots(lid, season);
-          
-          // Calculate winners for each award type
-          for (const awardType of ['mvp', 'roy', 'gm'] as const) {
-            const typeNominations = nominations.filter(n => n.awardType === awardType);
-            const typeBallots = ballots.filter(b => b.awardType === awardType);
+        // Calculate winners for each award type
+        for (const awardType of ['mvp', 'roy', 'gm'] as const) {
+          try {
+            const nominations = await storage.getAwardNominations(lid, season, awardType);
+            const ballots = await storage.getAwardBallots(lid, season, awardType);
             
-            if (typeNominations.length === 0 || typeBallots.length === 0) continue;
+            if (nominations.length === 0 || ballots.length === 0) continue;
             
             // Calculate points for each nomination
             const points: Record<string, number> = {};
-            typeBallots.forEach(ballot => {
+            ballots.forEach(ballot => {
               points[ballot.firstPlaceId] = (points[ballot.firstPlaceId] || 0) + 3;
               points[ballot.secondPlaceId] = (points[ballot.secondPlaceId] || 0) + 2;
               points[ballot.thirdPlaceId] = (points[ballot.thirdPlaceId] || 0) + 1;
             });
             
             // Find winner
-            const sortedNominations = typeNominations.sort((a, b) => 
+            const sortedNominations = [...nominations].sort((a, b) => 
               (points[b.id] || 0) - (points[a.id] || 0)
             );
             
@@ -2281,9 +2272,9 @@ export async function registerRoutes(
               else if (awardType === 'roy') royWinners.push(trophy);
               else gmWinners.push(trophy);
             }
+          } catch (err) {
+            // No award data for this season/type
           }
-        } catch (err) {
-          // No award data for this season
         }
       }
       
