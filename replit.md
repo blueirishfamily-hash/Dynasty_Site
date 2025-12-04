@@ -61,12 +61,12 @@ Preferred communication style: Simple, everyday language.
   - Expandable weekly breakdown with color-coded indicators
   - Team Luck Rankings table with weekly luck visualization
 - Heat Check tab on Metrics page:
-  - Compares each player's last 4 weeks average to their season average before those 4 weeks
-  - Hot players (red): performing above their baseline with positive difference
-  - Cold players (blue): performing below their baseline with negative difference
+  - Compares each team's last 4 weeks average to their season average before those 4 weeks
+  - Hot teams (red): scoring above their baseline with positive difference
+  - Cold teams (blue): scoring below their baseline with negative difference
   - Shows difference amount and percentage change
-  - Heat levels: On Fire/Ice Cold (10+), Hot/Cold (5+), Warming Up/Cooling Down (2+)
-  - Summary cards: Hottest player, coldest player, and roster temperature counts
+  - Heat levels: On Fire/Ice Cold (20+), Hot/Cold (10+), Warming Up/Cooling Down (5+)
+  - Summary cards: Hottest team, coldest team, and user's team heat status
 - Playoff predictor with points standings impact analysis:
   - PF Rank showing each team's points-for standings position
   - Points gaps to adjacent teams (behind/ahead)

@@ -61,23 +61,24 @@ interface TeamLuckResponse {
   completedWeeks: number;
 }
 
-interface HeatCheckPlayer {
-  id: string;
+interface HeatCheckTeam {
+  rosterId: number;
+  ownerId: string;
   name: string;
-  position: string;
-  team: string | null;
+  initials: string;
+  avatar: string | null;
   recentAvg: number;
   seasonAvg: number;
   difference: number;
   percentChange: number;
-  recentGames: number;
-  earlierGames: number;
+  recentWeeks: number;
+  earlierWeeks: number;
   weeklyPoints: { week: number; points: number }[];
   isHot: boolean;
 }
 
 interface HeatCheckResponse {
-  players: HeatCheckPlayer[];
+  teams: HeatCheckTeam[];
   currentWeek: number;
   recentWeeksCount: number;
   message?: string;
@@ -245,51 +246,53 @@ function TeamLuckRow({ team, rank, isUser, expanded, onToggle }: {
   );
 }
 
-function HeatCheckRow({ player }: { player: HeatCheckPlayer }) {
-  const isHot = player.difference > 0;
-  const intensity = Math.abs(player.difference);
+function HeatCheckTeamRow({ team, rank, isUser }: { team: HeatCheckTeam; rank: number; isUser: boolean }) {
+  const isHot = team.difference > 0;
+  const intensity = Math.abs(team.difference);
   
   const getHeatLevel = () => {
-    if (intensity >= 10) return isHot ? "On Fire" : "Ice Cold";
-    if (intensity >= 5) return isHot ? "Hot" : "Cold";
-    if (intensity >= 2) return isHot ? "Warming Up" : "Cooling Down";
+    if (intensity >= 20) return isHot ? "On Fire" : "Ice Cold";
+    if (intensity >= 10) return isHot ? "Hot" : "Cold";
+    if (intensity >= 5) return isHot ? "Warming Up" : "Cooling Down";
     return "Neutral";
   };
   
   const heatLevel = getHeatLevel();
   
   return (
-    <TableRow data-testid={`row-heat-check-${player.id}`}>
+    <TableRow 
+      className={isUser ? "bg-primary/5" : ""}
+      data-testid={`row-heat-check-${team.rosterId}`}
+    >
+      <TableCell className="font-medium text-center w-10">
+        {rank}
+      </TableCell>
       <TableCell>
         <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
-            isHot ? "bg-red-500/20" : "bg-blue-500/20"
-          }`}>
-            {isHot ? (
-              <Flame className="w-5 h-5 text-red-500" />
-            ) : (
-              <Snowflake className="w-5 h-5 text-blue-500" />
-            )}
-          </div>
+          <Avatar className="w-8 h-8">
+            {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+            <AvatarFallback 
+              className={`text-xs ${isUser ? "bg-primary text-primary-foreground" : isHot ? "bg-red-500/20" : "bg-blue-500/20"}`}
+            >
+              {team.initials}
+            </AvatarFallback>
+          </Avatar>
           <div>
-            <p className="font-medium">{player.name}</p>
-            <p className="text-xs text-muted-foreground">
-              {player.position} - {player.team || "FA"}
+            <p className={`font-medium ${isUser ? "text-primary" : ""}`}>
+              {team.name}
             </p>
           </div>
         </div>
       </TableCell>
       <TableCell className="text-center">
-        <span className="font-medium">{player.recentAvg.toFixed(1)}</span>
-        <p className="text-xs text-muted-foreground">Last 4 wks</p>
+        <span className="font-medium">{team.recentAvg.toFixed(1)}</span>
       </TableCell>
       <TableCell className="text-center">
-        <span className="font-medium">{player.seasonAvg.toFixed(1)}</span>
-        <p className="text-xs text-muted-foreground">Prior avg</p>
+        <span className="font-medium">{team.seasonAvg.toFixed(1)}</span>
       </TableCell>
       <TableCell className="text-center">
         <span className={`font-bold text-lg ${isHot ? "text-red-500" : "text-blue-500"}`}>
-          {player.difference >= 0 ? "+" : ""}{player.difference.toFixed(1)}
+          {team.difference >= 0 ? "+" : ""}{team.difference.toFixed(1)}
         </span>
       </TableCell>
       <TableCell className="text-center">
@@ -306,7 +309,7 @@ function HeatCheckRow({ player }: { player: HeatCheckPlayer }) {
       </TableCell>
       <TableCell className="text-center">
         <span className={isHot ? "text-red-500" : "text-blue-500"}>
-          {player.percentChange >= 0 ? "+" : ""}{player.percentChange.toFixed(0)}%
+          {team.percentChange >= 0 ? "+" : ""}{team.percentChange.toFixed(0)}%
         </span>
       </TableCell>
     </TableRow>
@@ -328,13 +331,13 @@ export default function Metrics() {
   });
 
   const { data: heatData, isLoading: heatLoading } = useQuery<HeatCheckResponse>({
-    queryKey: ["/api/sleeper/league", league?.leagueId, "heat-check", user?.userId],
+    queryKey: ["/api/sleeper/league", league?.leagueId, "heat-check"],
     queryFn: async () => {
-      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/heat-check/${user?.userId}`);
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/heat-check`);
       if (!res.ok) throw new Error("Failed to fetch heat check");
       return res.json();
     },
-    enabled: !!league?.leagueId && !!user?.userId,
+    enabled: !!league?.leagueId,
   });
 
   const toggleExpanded = (rosterId: number) => {
@@ -343,12 +346,13 @@ export default function Metrics() {
 
   const luckiestTeam = luckData?.teams[0];
   const unluckiestTeam = luckData?.teams[luckData.teams.length - 1];
-  const userTeam = luckData?.teams.find(t => t.ownerId === user?.userId);
+  const userLuckTeam = luckData?.teams.find(t => t.ownerId === user?.userId);
 
-  const hottestPlayer = heatData?.players.filter(p => p.isHot)[0];
-  const coldestPlayer = heatData?.players.filter(p => !p.isHot)[0];
-  const hotPlayers = heatData?.players.filter(p => p.isHot) || [];
-  const coldPlayers = heatData?.players.filter(p => !p.isHot) || [];
+  const hottestTeam = heatData?.teams?.filter(t => t.isHot)[0];
+  const coldestTeam = heatData?.teams?.filter(t => !t.isHot).slice(-1)[0];
+  const userHeatTeam = heatData?.teams?.find(t => t.ownerId === user?.userId);
+  const hotTeams = heatData?.teams?.filter(t => t.isHot) || [];
+  const coldTeams = heatData?.teams?.filter(t => !t.isHot) || [];
 
   return (
     <div className="p-6 space-y-6">
@@ -452,18 +456,18 @@ export default function Metrics() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {userTeam ? (
+                  {userLuckTeam ? (
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Avatar className="w-8 h-8">
-                          {userTeam.avatar && <AvatarImage src={userTeam.avatar} alt={userTeam.name} />}
+                          {userLuckTeam.avatar && <AvatarImage src={userLuckTeam.avatar} alt={userLuckTeam.name} />}
                           <AvatarFallback className="text-xs bg-primary text-primary-foreground">
-                            {userTeam.initials}
+                            {userLuckTeam.initials}
                           </AvatarFallback>
                         </Avatar>
-                        <span className="font-medium" data-testid="text-user-luck-team">{userTeam.name}</span>
+                        <span className="font-medium" data-testid="text-user-luck-team">{userLuckTeam.name}</span>
                       </div>
-                      <LuckBadge luck={userTeam.totalLuck} />
+                      <LuckBadge luck={userLuckTeam.totalLuck} />
                     </div>
                   ) : (
                     <span className="text-muted-foreground">No data</span>
@@ -602,25 +606,25 @@ export default function Metrics() {
                 <CardHeader className="pb-2">
                   <CardDescription className="flex items-center gap-1">
                     <Flame className="w-3.5 h-3.5 text-red-500" />
-                    Hottest Player
+                    Hottest Team
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {hottestPlayer ? (
+                  {hottestTeam ? (
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
-                          <Flame className="w-4 h-4 text-red-500" />
-                        </div>
-                        <div>
-                          <span className="font-medium" data-testid="text-hottest-player">{hottestPlayer.name}</span>
-                          <p className="text-xs text-muted-foreground">{hottestPlayer.position}</p>
-                        </div>
+                        <Avatar className="w-8 h-8">
+                          {hottestTeam.avatar && <AvatarImage src={hottestTeam.avatar} alt={hottestTeam.name} />}
+                          <AvatarFallback className="text-xs bg-red-500 text-white">
+                            {hottestTeam.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium" data-testid="text-hottest-team">{hottestTeam.name}</span>
                       </div>
-                      <span className="text-red-500 font-bold">+{hottestPlayer.difference.toFixed(1)}</span>
+                      <span className="text-red-500 font-bold">+{hottestTeam.difference.toFixed(1)}</span>
                     </div>
                   ) : (
-                    <span className="text-muted-foreground">No hot players</span>
+                    <span className="text-muted-foreground">No hot teams</span>
                   )}
                 </CardContent>
               </Card>
@@ -629,25 +633,25 @@ export default function Metrics() {
                 <CardHeader className="pb-2">
                   <CardDescription className="flex items-center gap-1">
                     <Snowflake className="w-3.5 h-3.5 text-blue-500" />
-                    Coldest Player
+                    Coldest Team
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {coldestPlayer ? (
+                  {coldestTeam ? (
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
-                        <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
-                          <Snowflake className="w-4 h-4 text-blue-500" />
-                        </div>
-                        <div>
-                          <span className="font-medium" data-testid="text-coldest-player">{coldestPlayer.name}</span>
-                          <p className="text-xs text-muted-foreground">{coldestPlayer.position}</p>
-                        </div>
+                        <Avatar className="w-8 h-8">
+                          {coldestTeam.avatar && <AvatarImage src={coldestTeam.avatar} alt={coldestTeam.name} />}
+                          <AvatarFallback className="text-xs bg-blue-500 text-white">
+                            {coldestTeam.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium" data-testid="text-coldest-team">{coldestTeam.name}</span>
                       </div>
-                      <span className="text-blue-500 font-bold">{coldestPlayer.difference.toFixed(1)}</span>
+                      <span className="text-blue-500 font-bold">{coldestTeam.difference.toFixed(1)}</span>
                     </div>
                   ) : (
-                    <span className="text-muted-foreground">No cold players</span>
+                    <span className="text-muted-foreground">No cold teams</span>
                   )}
                 </CardContent>
               </Card>
@@ -656,22 +660,28 @@ export default function Metrics() {
                 <CardHeader className="pb-2">
                   <CardDescription className="flex items-center gap-1">
                     <ThermometerSun className="w-3.5 h-3.5 text-primary" />
-                    Roster Temperature
+                    Your Team's Heat
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-1.5">
-                      <Flame className="w-4 h-4 text-red-500" />
-                      <span className="font-bold text-red-500" data-testid="text-hot-count">{hotPlayers.length}</span>
-                      <span className="text-sm text-muted-foreground">hot</span>
+                  {userHeatTeam ? (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-8 h-8">
+                          {userHeatTeam.avatar && <AvatarImage src={userHeatTeam.avatar} alt={userHeatTeam.name} />}
+                          <AvatarFallback className="text-xs bg-primary text-primary-foreground">
+                            {userHeatTeam.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium" data-testid="text-user-heat-team">{userHeatTeam.name}</span>
+                      </div>
+                      <span className={`font-bold ${userHeatTeam.isHot ? "text-red-500" : "text-blue-500"}`}>
+                        {userHeatTeam.difference >= 0 ? "+" : ""}{userHeatTeam.difference.toFixed(1)}
+                      </span>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <Snowflake className="w-4 h-4 text-blue-500" />
-                      <span className="font-bold text-blue-500" data-testid="text-cold-count">{coldPlayers.length}</span>
-                      <span className="text-sm text-muted-foreground">cold</span>
-                    </div>
-                  </div>
+                  ) : (
+                    <span className="text-muted-foreground">No data</span>
+                  )}
                 </CardContent>
               </Card>
             </div>
@@ -687,102 +697,98 @@ export default function Metrics() {
             </CardHeader>
             <CardContent className="text-sm text-muted-foreground space-y-2">
               <p>
-                We compare each player's <strong>last 4 weeks average</strong> to their <strong>season average before those 4 weeks</strong>.
+                We compare each team's <strong>last 4 weeks average score</strong> to their <strong>season average before those 4 weeks</strong>.
               </p>
               <ul className="list-disc list-inside space-y-1 ml-2">
                 <li>
-                  <span className="text-red-500 font-medium">Hot players:</span> Performing above their baseline (positive difference)
+                  <span className="text-red-500 font-medium">Hot teams:</span> Scoring above their baseline (positive difference)
                 </li>
                 <li>
-                  <span className="text-blue-500 font-medium">Cold players:</span> Performing below their baseline (negative difference)
+                  <span className="text-blue-500 font-medium">Cold teams:</span> Scoring below their baseline (negative difference)
                 </li>
               </ul>
               <p className="pt-2">
-                Use this to identify players who are trending up or down compared to their earlier season performance.
+                Use this to identify which teams are trending up or down compared to their earlier season performance.
               </p>
             </CardContent>
           </Card>
 
-          {/* Hot Players Table */}
-          {hotPlayers.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="font-heading text-lg flex items-center gap-2">
-                  <Flame className="w-5 h-5 text-red-500" />
-                  Hot Players
-                </CardTitle>
-                <CardDescription>
-                  Players performing above their season average
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
+          {/* Heat Check Rankings Table */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-heading text-lg flex items-center gap-2">
+                <ThermometerSun className="w-5 h-5 text-primary" />
+                Team Heat Rankings
+              </CardTitle>
+              <CardDescription>
+                {heatData?.currentWeek 
+                  ? `Comparing last 4 weeks to weeks 1-${Math.max(1, heatData.currentWeek - 4)}`
+                  : "Calculating heat based on recent performance"
+                }
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {heatLoading ? (
+                <div className="space-y-2">
+                  {[1, 2, 3, 4, 5, 6].map(i => (
+                    <Skeleton key={i} className="h-14 w-full" />
+                  ))}
+                </div>
+              ) : heatData?.teams && heatData.teams.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Player</TableHead>
-                      <TableHead className="text-center">Recent Avg</TableHead>
-                      <TableHead className="text-center">Prior Avg</TableHead>
+                      <TableHead className="w-10 text-center">#</TableHead>
+                      <TableHead>Team</TableHead>
+                      <TableHead className="text-center">
+                        <Tooltip>
+                          <TooltipTrigger className="flex items-center gap-1 mx-auto">
+                            Recent Avg
+                            <Info className="w-3 h-3" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Average points over last 4 weeks</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableHead>
+                      <TableHead className="text-center">
+                        <Tooltip>
+                          <TooltipTrigger className="flex items-center gap-1 mx-auto">
+                            Prior Avg
+                            <Info className="w-3 h-3" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Average points before the last 4 weeks</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableHead>
                       <TableHead className="text-center">Difference</TableHead>
                       <TableHead className="text-center">Status</TableHead>
                       <TableHead className="text-center">Change</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {hotPlayers.map(player => (
-                      <HeatCheckRow key={player.id} player={player} />
+                    {heatData.teams.map((team, idx) => (
+                      <HeatCheckTeamRow 
+                        key={team.rosterId}
+                        team={team}
+                        rank={idx + 1}
+                        isUser={team.ownerId === user?.userId}
+                      />
                     ))}
                   </TableBody>
                 </Table>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Cold Players Table */}
-          {coldPlayers.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle className="font-heading text-lg flex items-center gap-2">
-                  <Snowflake className="w-5 h-5 text-blue-500" />
-                  Cold Players
-                </CardTitle>
-                <CardDescription>
-                  Players performing below their season average
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Player</TableHead>
-                      <TableHead className="text-center">Recent Avg</TableHead>
-                      <TableHead className="text-center">Prior Avg</TableHead>
-                      <TableHead className="text-center">Difference</TableHead>
-                      <TableHead className="text-center">Status</TableHead>
-                      <TableHead className="text-center">Change</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {coldPlayers.map(player => (
-                      <HeatCheckRow key={player.id} player={player} />
-                    ))}
-                  </TableBody>
-                </Table>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* No data state */}
-          {!heatLoading && (!heatData?.players || heatData.players.length === 0) && (
-            <Card>
-              <CardContent className="py-12 text-center text-muted-foreground">
-                <ThermometerSun className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p className="font-medium">No heat check data available yet.</p>
-                <p className="text-sm mt-1">
-                  {heatData?.message || "Check back after at least 5 weeks of the season."}
-                </p>
-              </CardContent>
-            </Card>
-          )}
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <ThermometerSun className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p className="font-medium">No heat check data available yet.</p>
+                  <p className="text-sm mt-1">
+                    {heatData?.message || "Check back after at least 5 weeks of the season."}
+                  </p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

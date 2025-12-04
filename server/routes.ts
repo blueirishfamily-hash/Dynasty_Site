@@ -2000,22 +2000,16 @@ export async function registerRoutes(
     }
   });
 
-  // Heat Check - Compare last 4 weeks avg to season avg (excluding last 4)
-  app.get("/api/sleeper/league/:leagueId/heat-check/:userId", async (req, res) => {
+  // Heat Check - Compare team's last 4 weeks avg to season avg (excluding last 4)
+  app.get("/api/sleeper/league/:leagueId/heat-check", async (req, res) => {
     try {
-      const { leagueId, userId } = req.params;
+      const { leagueId } = req.params;
       
-      const [rosters, nflState, players] = await Promise.all([
+      const [rosters, users, nflState] = await Promise.all([
         getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
         getNFLState(),
-        getAllPlayers(),
       ]);
-      
-      // Find user's roster
-      const userRoster = rosters.find(r => r.owner_id === userId);
-      if (!userRoster || !userRoster.players) {
-        return res.json({ players: [], currentWeek: nflState.week });
-      }
       
       // Calculate completed weeks (current week - 1, since current week may not be done)
       const currentWeek = Math.max(1, nflState.week - 1);
@@ -2023,13 +2017,13 @@ export async function registerRoutes(
       // Need at least 5 weeks of data (4 recent + 1 baseline)
       if (currentWeek < 5) {
         return res.json({ 
-          players: [], 
+          teams: [], 
           currentWeek,
           message: "Need at least 5 weeks of data for Heat Check analysis"
         });
       }
       
-      // Fetch all weekly matchups to get player points
+      // Fetch all weekly matchups to get team points
       const matchupPromises = [];
       for (let week = 1; week <= currentWeek; week++) {
         matchupPromises.push(
@@ -2040,38 +2034,38 @@ export async function registerRoutes(
       }
       const weeklyMatchups = await Promise.all(matchupPromises);
       
-      // Build player weekly points map
-      const playerWeeklyPoints: Record<string, number[]> = {};
+      // Build team weekly points map
+      const teamWeeklyPoints: Record<number, number[]> = {};
       
       weeklyMatchups.forEach(({ week, matchups }) => {
-        // Find user's matchup for this week
-        const userMatchup = matchups.find(m => m.roster_id === userRoster.roster_id);
-        if (!userMatchup?.players_points) return;
-        
-        // Record each player's points for this week
-        Object.entries(userMatchup.players_points).forEach(([playerId, points]) => {
-          if (!playerWeeklyPoints[playerId]) {
-            playerWeeklyPoints[playerId] = Array(currentWeek).fill(null);
+        matchups.forEach(matchup => {
+          if (!teamWeeklyPoints[matchup.roster_id]) {
+            teamWeeklyPoints[matchup.roster_id] = Array(currentWeek).fill(null);
           }
-          playerWeeklyPoints[playerId][week - 1] = points || 0;
+          teamWeeklyPoints[matchup.roster_id][week - 1] = matchup.points || 0;
         });
       });
       
-      // Calculate heat check for each player on roster
-      const heatCheckPlayers = userRoster.players
-        .map(playerId => {
-          const weeklyPoints = playerWeeklyPoints[playerId];
+      // Create user lookup map
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+      
+      // Calculate heat check for each team
+      const heatCheckTeams = rosters
+        .map(roster => {
+          const weeklyPoints = teamWeeklyPoints[roster.roster_id];
           if (!weeklyPoints) return null;
           
-          const playerInfo = players[playerId];
-          if (!playerInfo) return null;
+          const owner = userMap.get(roster.owner_id);
+          const teamName = owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`;
+          const initials = teamName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase();
           
-          // Get last 4 weeks of actual played games (non-null values)
+          // Get last 4 weeks and earlier weeks
           const recentWeeks = weeklyPoints.slice(-4).filter(p => p !== null && p !== undefined);
           const earlierWeeks = weeklyPoints.slice(0, -4).filter(p => p !== null && p !== undefined);
           
-          // Need at least 2 games in each period for meaningful comparison
-          if (recentWeeks.length < 2 || earlierWeeks.length < 2) return null;
+          // Need data in both periods
+          if (recentWeeks.length < 2 || earlierWeeks.length < 1) return null;
           
           const recentAvg = recentWeeks.reduce((a, b) => a + b, 0) / recentWeeks.length;
           const seasonAvg = earlierWeeks.reduce((a, b) => a + b, 0) / earlierWeeks.length;
@@ -2079,16 +2073,17 @@ export async function registerRoutes(
           const percentChange = seasonAvg > 0 ? ((recentAvg - seasonAvg) / seasonAvg) * 100 : 0;
           
           return {
-            id: playerId,
-            name: playerInfo.full_name || `${playerInfo.first_name} ${playerInfo.last_name}`,
-            position: playerInfo.position,
-            team: playerInfo.team,
+            rosterId: roster.roster_id,
+            ownerId: roster.owner_id,
+            name: teamName,
+            initials,
+            avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
             recentAvg,
             seasonAvg,
             difference,
             percentChange,
-            recentGames: recentWeeks.length,
-            earlierGames: earlierWeeks.length,
+            recentWeeks: recentWeeks.length,
+            earlierWeeks: earlierWeeks.length,
             weeklyPoints: weeklyPoints.map((pts, idx) => ({
               week: idx + 1,
               points: pts
@@ -2097,10 +2092,10 @@ export async function registerRoutes(
           };
         })
         .filter(Boolean)
-        .sort((a, b) => Math.abs(b!.difference) - Math.abs(a!.difference));
+        .sort((a, b) => b!.difference - a!.difference);
       
       res.json({
-        players: heatCheckPlayers,
+        teams: heatCheckTeams,
         currentWeek,
         recentWeeksCount: 4,
       });
