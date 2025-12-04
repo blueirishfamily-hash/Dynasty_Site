@@ -2105,6 +2105,202 @@ export async function registerRoutes(
     }
   });
 
+  // Trophy Room - Get historical champions, highest scorers, and award winners
+  app.get("/api/sleeper/league/:leagueId/trophies", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      
+      // Collect all league IDs in the dynasty chain
+      const leagueIds: { leagueId: string; season: string }[] = [];
+      let checkLeagueId: string | null = leagueId;
+      
+      while (checkLeagueId) {
+        try {
+          const leagueInfo = await getLeague(checkLeagueId);
+          leagueIds.push({ leagueId: checkLeagueId, season: leagueInfo.season });
+          checkLeagueId = (leagueInfo as any).previous_league_id || null;
+        } catch {
+          break;
+        }
+      }
+      
+      interface TrophyWinner {
+        season: string;
+        rosterId: number;
+        ownerId: string;
+        teamName: string;
+        initials: string;
+        avatar: string | null;
+        value?: number; // points for highest scorer
+        managerName?: string; // for best GM
+        playerId?: string;
+        playerName?: string;
+        playerPosition?: string;
+        playerTeam?: string | null;
+      }
+      
+      const champions: TrophyWinner[] = [];
+      const highestScorers: TrophyWinner[] = [];
+      
+      // Process each season
+      for (const { leagueId: lid, season } of leagueIds) {
+        try {
+          const [rosters, users, league] = await Promise.all([
+            getLeagueRosters(lid),
+            getLeagueUsers(lid),
+            getLeague(lid),
+          ]);
+          
+          // Create user lookup map
+          const userMap = new Map<string, SleeperLeagueUser>();
+          users.forEach(u => userMap.set(u.user_id, u));
+          
+          // Find champion - roster with playoff_wins indicating they won the championship
+          // In Sleeper, the champion typically has the most playoff wins or is marked specially
+          // We'll look for the roster that finished 1st place in the final standings
+          const sortedRosters = [...rosters].sort((a, b) => {
+            // Sort by playoff rank if available, otherwise by wins and points
+            if (a.metadata?.record && b.metadata?.record) {
+              return 0; // Can't reliably determine from record string
+            }
+            // Use settings.fpts for total points
+            const aWins = a.settings?.wins || 0;
+            const bWins = b.settings?.wins || 0;
+            const aFpts = a.settings?.fpts || 0;
+            const bFpts = b.settings?.fpts || 0;
+            if (aWins !== bWins) return bWins - aWins;
+            return bFpts - aFpts;
+          });
+          
+          // The champion is typically determined by bracket results
+          // For now, find the team with highest playoff record or most wins
+          const champion = sortedRosters.find(r => {
+            // Look for playoff champion indicators
+            const metadata = r.metadata || {};
+            return metadata.streak === 'W' || r.settings?.wins > 0;
+          }) || sortedRosters[0];
+          
+          if (champion) {
+            const owner = userMap.get(champion.owner_id);
+            const teamName = owner?.metadata?.team_name || owner?.display_name || `Team ${champion.roster_id}`;
+            const initials = teamName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase();
+            
+            // Check if this season is complete (playoffs finished)
+            const status = (league as any).status;
+            if (status === 'complete' || parseInt(season) < new Date().getFullYear()) {
+              champions.push({
+                season,
+                rosterId: champion.roster_id,
+                ownerId: champion.owner_id,
+                teamName,
+                initials,
+                avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
+              });
+            }
+          }
+          
+          // Find highest scorer
+          const highestScorer = rosters.reduce((best, current) => {
+            const currentPts = (current.settings?.fpts || 0) + (current.settings?.fpts_decimal || 0) / 100;
+            const bestPts = (best.settings?.fpts || 0) + (best.settings?.fpts_decimal || 0) / 100;
+            return currentPts > bestPts ? current : best;
+          }, rosters[0]);
+          
+          if (highestScorer) {
+            const owner = userMap.get(highestScorer.owner_id);
+            const teamName = owner?.metadata?.team_name || owner?.display_name || `Team ${highestScorer.roster_id}`;
+            const initials = teamName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase();
+            const totalPts = (highestScorer.settings?.fpts || 0) + (highestScorer.settings?.fpts_decimal || 0) / 100;
+            
+            // Only include if season is complete or has substantial points
+            if (totalPts > 100) {
+              highestScorers.push({
+                season,
+                rosterId: highestScorer.roster_id,
+                ownerId: highestScorer.owner_id,
+                teamName,
+                initials,
+                avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
+                value: totalPts,
+              });
+            }
+          }
+        } catch (err) {
+          console.error(`Error processing season ${season}:`, err);
+        }
+      }
+      
+      // Get award winners from database
+      const mvpWinners: TrophyWinner[] = [];
+      const royWinners: TrophyWinner[] = [];
+      const gmWinners: TrophyWinner[] = [];
+      
+      // Fetch award data for all seasons in this league chain
+      for (const { leagueId: lid, season } of leagueIds) {
+        try {
+          const nominations = await storage.getAwardNominations(lid, season);
+          const ballots = await storage.getAwardBallots(lid, season);
+          
+          // Calculate winners for each award type
+          for (const awardType of ['mvp', 'roy', 'gm'] as const) {
+            const typeNominations = nominations.filter(n => n.awardType === awardType);
+            const typeBallots = ballots.filter(b => b.awardType === awardType);
+            
+            if (typeNominations.length === 0 || typeBallots.length === 0) continue;
+            
+            // Calculate points for each nomination
+            const points: Record<string, number> = {};
+            typeBallots.forEach(ballot => {
+              points[ballot.firstPlaceId] = (points[ballot.firstPlaceId] || 0) + 3;
+              points[ballot.secondPlaceId] = (points[ballot.secondPlaceId] || 0) + 2;
+              points[ballot.thirdPlaceId] = (points[ballot.thirdPlaceId] || 0) + 1;
+            });
+            
+            // Find winner
+            const sortedNominations = typeNominations.sort((a, b) => 
+              (points[b.id] || 0) - (points[a.id] || 0)
+            );
+            
+            const winner = sortedNominations[0];
+            if (winner && (points[winner.id] || 0) > 0) {
+              const trophy: TrophyWinner = {
+                season,
+                rosterId: winner.nominatedByRosterId,
+                ownerId: winner.nominatedBy,
+                teamName: winner.playerName,
+                initials: winner.playerName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase(),
+                avatar: null,
+                playerId: winner.playerId,
+                playerName: winner.playerName,
+                playerPosition: winner.playerPosition,
+                playerTeam: winner.playerTeam,
+                value: points[winner.id],
+              };
+              
+              if (awardType === 'mvp') mvpWinners.push(trophy);
+              else if (awardType === 'roy') royWinners.push(trophy);
+              else gmWinners.push(trophy);
+            }
+          }
+        } catch (err) {
+          // No award data for this season
+        }
+      }
+      
+      res.json({
+        champions: champions.sort((a, b) => parseInt(b.season) - parseInt(a.season)),
+        highestScorers: highestScorers.sort((a, b) => parseInt(b.season) - parseInt(a.season)),
+        mvpWinners: mvpWinners.sort((a, b) => parseInt(b.season) - parseInt(a.season)),
+        royWinners: royWinners.sort((a, b) => parseInt(b.season) - parseInt(a.season)),
+        gmWinners: gmWinners.sort((a, b) => parseInt(b.season) - parseInt(a.season)),
+        seasonsTracked: leagueIds.length,
+      });
+    } catch (error) {
+      console.error("Error fetching trophies:", error);
+      res.status(500).json({ error: "Failed to fetch trophy data" });
+    }
+  });
+
   // Search players (for nomination lookup)
   app.get("/api/sleeper/players/search", async (req, res) => {
     try {
