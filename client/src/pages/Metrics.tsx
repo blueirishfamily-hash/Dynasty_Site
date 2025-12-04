@@ -27,6 +27,9 @@ import {
   Info,
   ChevronDown,
   ChevronUp,
+  Flame,
+  Snowflake,
+  ThermometerSun,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -56,6 +59,28 @@ interface TeamLuckResponse {
   teams: TeamLuck[];
   currentWeek: number;
   completedWeeks: number;
+}
+
+interface HeatCheckPlayer {
+  id: string;
+  name: string;
+  position: string;
+  team: string | null;
+  recentAvg: number;
+  seasonAvg: number;
+  difference: number;
+  percentChange: number;
+  recentGames: number;
+  earlierGames: number;
+  weeklyPoints: { week: number; points: number }[];
+  isHot: boolean;
+}
+
+interface HeatCheckResponse {
+  players: HeatCheckPlayer[];
+  currentWeek: number;
+  recentWeeksCount: number;
+  message?: string;
 }
 
 function LuckBadge({ luck }: { luck: number }) {
@@ -220,11 +245,79 @@ function TeamLuckRow({ team, rank, isUser, expanded, onToggle }: {
   );
 }
 
+function HeatCheckRow({ player }: { player: HeatCheckPlayer }) {
+  const isHot = player.difference > 0;
+  const intensity = Math.abs(player.difference);
+  
+  const getHeatLevel = () => {
+    if (intensity >= 10) return isHot ? "On Fire" : "Ice Cold";
+    if (intensity >= 5) return isHot ? "Hot" : "Cold";
+    if (intensity >= 2) return isHot ? "Warming Up" : "Cooling Down";
+    return "Neutral";
+  };
+  
+  const heatLevel = getHeatLevel();
+  
+  return (
+    <TableRow data-testid={`row-heat-check-${player.id}`}>
+      <TableCell>
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+            isHot ? "bg-red-500/20" : "bg-blue-500/20"
+          }`}>
+            {isHot ? (
+              <Flame className="w-5 h-5 text-red-500" />
+            ) : (
+              <Snowflake className="w-5 h-5 text-blue-500" />
+            )}
+          </div>
+          <div>
+            <p className="font-medium">{player.name}</p>
+            <p className="text-xs text-muted-foreground">
+              {player.position} - {player.team || "FA"}
+            </p>
+          </div>
+        </div>
+      </TableCell>
+      <TableCell className="text-center">
+        <span className="font-medium">{player.recentAvg.toFixed(1)}</span>
+        <p className="text-xs text-muted-foreground">Last 4 wks</p>
+      </TableCell>
+      <TableCell className="text-center">
+        <span className="font-medium">{player.seasonAvg.toFixed(1)}</span>
+        <p className="text-xs text-muted-foreground">Prior avg</p>
+      </TableCell>
+      <TableCell className="text-center">
+        <span className={`font-bold text-lg ${isHot ? "text-red-500" : "text-blue-500"}`}>
+          {player.difference >= 0 ? "+" : ""}{player.difference.toFixed(1)}
+        </span>
+      </TableCell>
+      <TableCell className="text-center">
+        <Badge 
+          className={`${
+            isHot 
+              ? "bg-red-500/20 text-red-500 border-red-500/30" 
+              : "bg-blue-500/20 text-blue-500 border-blue-500/30"
+          }`}
+        >
+          {isHot ? <Flame className="w-3 h-3 mr-1" /> : <Snowflake className="w-3 h-3 mr-1" />}
+          {heatLevel}
+        </Badge>
+      </TableCell>
+      <TableCell className="text-center">
+        <span className={isHot ? "text-red-500" : "text-blue-500"}>
+          {player.percentChange >= 0 ? "+" : ""}{player.percentChange.toFixed(0)}%
+        </span>
+      </TableCell>
+    </TableRow>
+  );
+}
+
 export default function Metrics() {
   const { user, league } = useSleeper();
   const [expandedTeam, setExpandedTeam] = useState<number | null>(null);
   
-  const { data: luckData, isLoading } = useQuery<TeamLuckResponse>({
+  const { data: luckData, isLoading: luckLoading } = useQuery<TeamLuckResponse>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "team-luck"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/team-luck`);
@@ -234,6 +327,16 @@ export default function Metrics() {
     enabled: !!league?.leagueId,
   });
 
+  const { data: heatData, isLoading: heatLoading } = useQuery<HeatCheckResponse>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "heat-check", user?.userId],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/heat-check/${user?.userId}`);
+      if (!res.ok) throw new Error("Failed to fetch heat check");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!user?.userId,
+  });
+
   const toggleExpanded = (rosterId: number) => {
     setExpandedTeam(expandedTeam === rosterId ? null : rosterId);
   };
@@ -241,6 +344,11 @@ export default function Metrics() {
   const luckiestTeam = luckData?.teams[0];
   const unluckiestTeam = luckData?.teams[luckData.teams.length - 1];
   const userTeam = luckData?.teams.find(t => t.ownerId === user?.userId);
+
+  const hottestPlayer = heatData?.players.filter(p => p.isHot)[0];
+  const coldestPlayer = heatData?.players.filter(p => !p.isHot)[0];
+  const hotPlayers = heatData?.players.filter(p => p.isHot) || [];
+  const coldPlayers = heatData?.players.filter(p => !p.isHot) || [];
 
   return (
     <div className="p-6 space-y-6">
@@ -259,11 +367,15 @@ export default function Metrics() {
             <Clover className="w-4 h-4 mr-2" />
             Team Luck
           </TabsTrigger>
+          <TabsTrigger value="heat" data-testid="tab-heat-check">
+            <ThermometerSun className="w-4 h-4 mr-2" />
+            Heat Check
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="luck" className="space-y-6">
           {/* Summary Cards */}
-          {isLoading ? (
+          {luckLoading ? (
             <div className="grid gap-4 md:grid-cols-3">
               {[1, 2, 3].map(i => (
                 <Card key={i}>
@@ -406,7 +518,7 @@ export default function Metrics() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {isLoading ? (
+              {luckLoading ? (
                 <div className="space-y-2">
                   {[1, 2, 3, 4, 5, 6].map(i => (
                     <Skeleton key={i} className="h-14 w-full" />
@@ -467,6 +579,210 @@ export default function Metrics() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="heat" className="space-y-6">
+          {/* Heat Check Summary Cards */}
+          {heatLoading ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              {[1, 2, 3].map(i => (
+                <Card key={i}>
+                  <CardHeader className="pb-2">
+                    <Skeleton className="h-4 w-24" />
+                  </CardHeader>
+                  <CardContent>
+                    <Skeleton className="h-8 w-full" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription className="flex items-center gap-1">
+                    <Flame className="w-3.5 h-3.5 text-red-500" />
+                    Hottest Player
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {hottestPlayer ? (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-full bg-red-500/20 flex items-center justify-center">
+                          <Flame className="w-4 h-4 text-red-500" />
+                        </div>
+                        <div>
+                          <span className="font-medium" data-testid="text-hottest-player">{hottestPlayer.name}</span>
+                          <p className="text-xs text-muted-foreground">{hottestPlayer.position}</p>
+                        </div>
+                      </div>
+                      <span className="text-red-500 font-bold">+{hottestPlayer.difference.toFixed(1)}</span>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No hot players</span>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription className="flex items-center gap-1">
+                    <Snowflake className="w-3.5 h-3.5 text-blue-500" />
+                    Coldest Player
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {coldestPlayer ? (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-8 h-8 rounded-full bg-blue-500/20 flex items-center justify-center">
+                          <Snowflake className="w-4 h-4 text-blue-500" />
+                        </div>
+                        <div>
+                          <span className="font-medium" data-testid="text-coldest-player">{coldestPlayer.name}</span>
+                          <p className="text-xs text-muted-foreground">{coldestPlayer.position}</p>
+                        </div>
+                      </div>
+                      <span className="text-blue-500 font-bold">{coldestPlayer.difference.toFixed(1)}</span>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No cold players</span>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription className="flex items-center gap-1">
+                    <ThermometerSun className="w-3.5 h-3.5 text-primary" />
+                    Roster Temperature
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-1.5">
+                      <Flame className="w-4 h-4 text-red-500" />
+                      <span className="font-bold text-red-500" data-testid="text-hot-count">{hotPlayers.length}</span>
+                      <span className="text-sm text-muted-foreground">hot</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <Snowflake className="w-4 h-4 text-blue-500" />
+                      <span className="font-bold text-blue-500" data-testid="text-cold-count">{coldPlayers.length}</span>
+                      <span className="text-sm text-muted-foreground">cold</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Explanation Card */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Info className="w-4 h-4" />
+                How Heat Check Works
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground space-y-2">
+              <p>
+                We compare each player's <strong>last 4 weeks average</strong> to their <strong>season average before those 4 weeks</strong>.
+              </p>
+              <ul className="list-disc list-inside space-y-1 ml-2">
+                <li>
+                  <span className="text-red-500 font-medium">Hot players:</span> Performing above their baseline (positive difference)
+                </li>
+                <li>
+                  <span className="text-blue-500 font-medium">Cold players:</span> Performing below their baseline (negative difference)
+                </li>
+              </ul>
+              <p className="pt-2">
+                Use this to identify players who are trending up or down compared to their earlier season performance.
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* Hot Players Table */}
+          {hotPlayers.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-heading text-lg flex items-center gap-2">
+                  <Flame className="w-5 h-5 text-red-500" />
+                  Hot Players
+                </CardTitle>
+                <CardDescription>
+                  Players performing above their season average
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Player</TableHead>
+                      <TableHead className="text-center">Recent Avg</TableHead>
+                      <TableHead className="text-center">Prior Avg</TableHead>
+                      <TableHead className="text-center">Difference</TableHead>
+                      <TableHead className="text-center">Status</TableHead>
+                      <TableHead className="text-center">Change</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {hotPlayers.map(player => (
+                      <HeatCheckRow key={player.id} player={player} />
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Cold Players Table */}
+          {coldPlayers.length > 0 && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-heading text-lg flex items-center gap-2">
+                  <Snowflake className="w-5 h-5 text-blue-500" />
+                  Cold Players
+                </CardTitle>
+                <CardDescription>
+                  Players performing below their season average
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Player</TableHead>
+                      <TableHead className="text-center">Recent Avg</TableHead>
+                      <TableHead className="text-center">Prior Avg</TableHead>
+                      <TableHead className="text-center">Difference</TableHead>
+                      <TableHead className="text-center">Status</TableHead>
+                      <TableHead className="text-center">Change</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {coldPlayers.map(player => (
+                      <HeatCheckRow key={player.id} player={player} />
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* No data state */}
+          {!heatLoading && (!heatData?.players || heatData.players.length === 0) && (
+            <Card>
+              <CardContent className="py-12 text-center text-muted-foreground">
+                <ThermometerSun className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                <p className="font-medium">No heat check data available yet.</p>
+                <p className="text-sm mt-1">
+                  {heatData?.message || "Check back after at least 5 weeks of the season."}
+                </p>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>

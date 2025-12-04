@@ -2000,6 +2000,116 @@ export async function registerRoutes(
     }
   });
 
+  // Heat Check - Compare last 4 weeks avg to season avg (excluding last 4)
+  app.get("/api/sleeper/league/:leagueId/heat-check/:userId", async (req, res) => {
+    try {
+      const { leagueId, userId } = req.params;
+      
+      const [rosters, nflState, players] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getNFLState(),
+        getAllPlayers(),
+      ]);
+      
+      // Find user's roster
+      const userRoster = rosters.find(r => r.owner_id === userId);
+      if (!userRoster || !userRoster.players) {
+        return res.json({ players: [], currentWeek: nflState.week });
+      }
+      
+      // Calculate completed weeks (current week - 1, since current week may not be done)
+      const currentWeek = Math.max(1, nflState.week - 1);
+      
+      // Need at least 5 weeks of data (4 recent + 1 baseline)
+      if (currentWeek < 5) {
+        return res.json({ 
+          players: [], 
+          currentWeek,
+          message: "Need at least 5 weeks of data for Heat Check analysis"
+        });
+      }
+      
+      // Fetch all weekly matchups to get player points
+      const matchupPromises = [];
+      for (let week = 1; week <= currentWeek; week++) {
+        matchupPromises.push(
+          getLeagueMatchups(leagueId, week)
+            .then(matchups => ({ week, matchups }))
+            .catch(() => ({ week, matchups: [] as SleeperMatchup[] }))
+        );
+      }
+      const weeklyMatchups = await Promise.all(matchupPromises);
+      
+      // Build player weekly points map
+      const playerWeeklyPoints: Record<string, number[]> = {};
+      
+      weeklyMatchups.forEach(({ week, matchups }) => {
+        // Find user's matchup for this week
+        const userMatchup = matchups.find(m => m.roster_id === userRoster.roster_id);
+        if (!userMatchup?.players_points) return;
+        
+        // Record each player's points for this week
+        Object.entries(userMatchup.players_points).forEach(([playerId, points]) => {
+          if (!playerWeeklyPoints[playerId]) {
+            playerWeeklyPoints[playerId] = Array(currentWeek).fill(null);
+          }
+          playerWeeklyPoints[playerId][week - 1] = points || 0;
+        });
+      });
+      
+      // Calculate heat check for each player on roster
+      const heatCheckPlayers = userRoster.players
+        .map(playerId => {
+          const weeklyPoints = playerWeeklyPoints[playerId];
+          if (!weeklyPoints) return null;
+          
+          const playerInfo = players[playerId];
+          if (!playerInfo) return null;
+          
+          // Get last 4 weeks of actual played games (non-null values)
+          const recentWeeks = weeklyPoints.slice(-4).filter(p => p !== null && p !== undefined);
+          const earlierWeeks = weeklyPoints.slice(0, -4).filter(p => p !== null && p !== undefined);
+          
+          // Need at least 2 games in each period for meaningful comparison
+          if (recentWeeks.length < 2 || earlierWeeks.length < 2) return null;
+          
+          const recentAvg = recentWeeks.reduce((a, b) => a + b, 0) / recentWeeks.length;
+          const seasonAvg = earlierWeeks.reduce((a, b) => a + b, 0) / earlierWeeks.length;
+          const difference = recentAvg - seasonAvg;
+          const percentChange = seasonAvg > 0 ? ((recentAvg - seasonAvg) / seasonAvg) * 100 : 0;
+          
+          return {
+            id: playerId,
+            name: playerInfo.full_name || `${playerInfo.first_name} ${playerInfo.last_name}`,
+            position: playerInfo.position,
+            team: playerInfo.team,
+            recentAvg,
+            seasonAvg,
+            difference,
+            percentChange,
+            recentGames: recentWeeks.length,
+            earlierGames: earlierWeeks.length,
+            weeklyPoints: weeklyPoints.map((pts, idx) => ({
+              week: idx + 1,
+              points: pts
+            })).filter(w => w.points !== null),
+            isHot: difference > 0,
+          };
+        })
+        .filter(Boolean)
+        .sort((a, b) => Math.abs(b!.difference) - Math.abs(a!.difference));
+      
+      res.json({
+        players: heatCheckPlayers,
+        currentWeek,
+        recentWeeksCount: 4,
+      });
+    } catch (error) {
+      console.error("Error calculating heat check:", error);
+      res.status(500).json({ error: "Failed to calculate heat check" });
+    }
+  });
+
   // Search players (for nomination lookup)
   app.get("/api/sleeper/players/search", async (req, res) => {
     try {
