@@ -16,6 +16,7 @@ import {
   getLeagueDrafts,
   getDraftPicks,
   getDraft,
+  getWinnersBracket,
   type SleeperRoster,
   type SleeperLeagueUser,
   type SleeperPlayer,
@@ -2145,52 +2146,62 @@ export async function registerRoutes(
       // Process each season
       for (const { leagueId: lid, season } of leagueIds) {
         try {
-          const [rosters, users, league] = await Promise.all([
+          const [rosters, users, league, winnersBracket] = await Promise.all([
             getLeagueRosters(lid),
             getLeagueUsers(lid),
             getLeague(lid),
+            getWinnersBracket(lid).catch(() => []),
           ]);
           
           // Create user lookup map
           const userMap = new Map<string, SleeperLeagueUser>();
           users.forEach(u => userMap.set(u.user_id, u));
           
-          // Find champion - roster with playoff_wins indicating they won the championship
-          // In Sleeper, the champion typically has the most playoff wins or is marked specially
-          // We'll look for the roster that finished 1st place in the final standings
-          const sortedRosters = [...rosters].sort((a, b) => {
-            // Use settings.fpts for total points
-            const aWins = a.settings?.wins || 0;
-            const bWins = b.settings?.wins || 0;
-            const aFpts = a.settings?.fpts || 0;
-            const bFpts = b.settings?.fpts || 0;
-            if (aWins !== bWins) return bWins - aWins;
-            return bFpts - aFpts;
-          });
+          // Create roster lookup map
+          const rosterMap = new Map<number, SleeperRoster>();
+          rosters.forEach(r => rosterMap.set(r.roster_id, r));
           
-          // The champion is typically determined by bracket results
-          // For now, find the team with highest wins and points
-          const champion = sortedRosters.find(r => {
-            return r.settings?.wins > 0;
-          }) || sortedRosters[0];
+          // Find champion from playoff bracket (p: 1 is the championship game, w is the winner)
+          const championshipGame = winnersBracket.find(m => m.p === 1);
+          const championRosterId = championshipGame?.w;
+          
+          let champion: SleeperRoster | undefined;
+          
+          if (championRosterId) {
+            // Playoff bracket has a winner
+            champion = rosterMap.get(championRosterId);
+          } else if (winnersBracket.length === 0) {
+            // No bracket data (older seasons or API failure) - fallback to standings
+            // Only for completed seasons, use the team with most wins and points
+            const status = (league as any).status;
+            const currentSeasonYear = new Date().getFullYear();
+            if (status === 'complete' || parseInt(season) < currentSeasonYear) {
+              const sortedRosters = [...rosters].sort((a, b) => {
+                const aWins = a.settings?.wins || 0;
+                const bWins = b.settings?.wins || 0;
+                const aFpts = a.settings?.fpts || 0;
+                const bFpts = b.settings?.fpts || 0;
+                if (aWins !== bWins) return bWins - aWins;
+                return bFpts - aFpts;
+              });
+              champion = sortedRosters[0];
+            }
+          }
+          // If championship game exists but w is null, playoffs are still in progress - no champion yet
           
           if (champion) {
             const owner = userMap.get(champion.owner_id);
             const teamName = owner?.metadata?.team_name || owner?.display_name || `Team ${champion.roster_id}`;
             const initials = teamName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase();
             
-            // Check if this season is complete (playoffs finished)
-            const status = (league as any).status;
-            if (status === 'complete' || parseInt(season) < new Date().getFullYear()) {
-              champions.push({
-                season,
-                rosterId: champion.roster_id,
-                ownerId: champion.owner_id,
-                teamName,
-                initials,
-                avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
-              });
-            }
+            champions.push({
+              season,
+              rosterId: champion.roster_id,
+              ownerId: champion.owner_id,
+              teamName,
+              initials,
+              avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
+            });
           }
           
           // Find highest scorer
@@ -2229,8 +2240,24 @@ export async function registerRoutes(
       const royWinners: TrophyWinner[] = [];
       const gmWinners: TrophyWinner[] = [];
       
+      // Voting lock date - awards only shown after this date
+      // Lock date is December 9, 2025 at 12pm EST for current season (2024)
+      // For past seasons, we assume voting was locked at end of that season
+      const currentYear = new Date().getFullYear();
+      const LOCK_DATE = new Date("2025-12-09T12:00:00-05:00");
+      const now = new Date();
+      const isCurrentSeasonLocked = now >= LOCK_DATE;
+      
       // Fetch award data for all seasons in this league chain
       for (const { leagueId: lid, season } of leagueIds) {
+        // Only show award winners for past seasons or if current season voting is locked
+        const seasonYear = parseInt(season);
+        const isSeasonLocked = seasonYear < currentYear || (seasonYear === currentYear && isCurrentSeasonLocked);
+        
+        if (!isSeasonLocked) {
+          continue; // Skip this season's awards - voting not locked yet
+        }
+        
         // Calculate winners for each award type
         for (const awardType of ['mvp', 'roy', 'gm'] as const) {
           try {
