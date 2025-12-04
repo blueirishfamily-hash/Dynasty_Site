@@ -17,6 +17,7 @@ import Matchup from "@/pages/Matchup";
 import LeagueHub from "@/pages/LeagueHub";
 import Standings from "@/pages/Standings";
 import Metrics from "@/pages/Metrics";
+import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
@@ -44,6 +45,7 @@ function Router() {
       <Route path="/hub" component={LeagueHub} />
       <Route path="/standings" component={Standings} />
       <Route path="/metrics" component={Metrics} />
+      <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route component={NotFound} />
     </Switch>
