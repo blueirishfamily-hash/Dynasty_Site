@@ -237,3 +237,19 @@ export async function getDraft(draftId: string): Promise<SleeperDraft> {
 export async function getDraftPicks(draftId: string): Promise<SleeperDraftPick[]> {
   return fetchFromSleeper<SleeperDraftPick[]>(`/draft/${draftId}/picks`);
 }
+
+export interface SleeperBracketMatchup {
+  r: number; // Round number
+  m: number; // Matchup number
+  t1: number | null; // Team 1 roster ID
+  t2: number | null; // Team 2 roster ID
+  w: number | null; // Winner roster ID
+  l: number | null; // Loser roster ID
+  t1_from?: { w?: number; l?: number }; // Where team 1 comes from
+  t2_from?: { w?: number; l?: number }; // Where team 2 comes from
+  p?: number; // Final placement (1 = champion)
+}
+
+export async function getWinnersBracket(leagueId: string): Promise<SleeperBracketMatchup[]> {
+  return fetchFromSleeper<SleeperBracketMatchup[]>(`/league/${leagueId}/winners_bracket`);
+}
