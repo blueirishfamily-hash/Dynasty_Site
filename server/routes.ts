@@ -2261,30 +2261,48 @@ export async function registerRoutes(
             });
           }
           
-          // Find highest scorer
-          const highestScorer = rosters.reduce((best, current) => {
-            const currentPts = (current.settings?.fpts || 0) + (current.settings?.fpts_decimal || 0) / 100;
-            const bestPts = (best.settings?.fpts || 0) + (best.settings?.fpts_decimal || 0) / 100;
-            return currentPts > bestPts ? current : best;
-          }, rosters[0]);
+          // Find highest scorer - only award after regular season is complete
+          // Get the playoff start week from league settings (default to 15 if not set)
+          const playoffWeekStart = (league as any).settings?.playoff_week_start || 15;
+          const leagueStatus = (league as any).status;
+          const currentSeasonYear = new Date().getFullYear();
+          const nflState = await getNFLState();
           
-          if (highestScorer) {
-            const owner = userMap.get(highestScorer.owner_id);
-            const teamName = owner?.metadata?.team_name || owner?.display_name || `Team ${highestScorer.roster_id}`;
-            const initials = teamName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase();
-            const totalPts = (highestScorer.settings?.fpts || 0) + (highestScorer.settings?.fpts_decimal || 0) / 100;
+          // Regular season is complete if:
+          // 1. The league status is 'complete', OR
+          // 2. This is a past season (season year < current year), OR
+          // 3. This is the current season AND we're at or past the playoff start week
+          const isCurrentSeason = parseInt(season) === currentSeasonYear || season === nflState.season;
+          const regularSeasonComplete = 
+            leagueStatus === 'complete' || 
+            parseInt(season) < currentSeasonYear ||
+            (isCurrentSeason && nflState.week >= playoffWeekStart);
+          
+          if (regularSeasonComplete) {
+            const highestScorer = rosters.reduce((best, current) => {
+              const currentPts = (current.settings?.fpts || 0) + (current.settings?.fpts_decimal || 0) / 100;
+              const bestPts = (best.settings?.fpts || 0) + (best.settings?.fpts_decimal || 0) / 100;
+              return currentPts > bestPts ? current : best;
+            }, rosters[0]);
             
-            // Only include if season is complete or has substantial points
-            if (totalPts > 100) {
-              highestScorers.push({
-                season,
-                rosterId: highestScorer.roster_id,
-                ownerId: highestScorer.owner_id,
-                teamName,
-                initials,
-                avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
-                value: totalPts,
-              });
+            if (highestScorer) {
+              const owner = userMap.get(highestScorer.owner_id);
+              const teamName = owner?.metadata?.team_name || owner?.display_name || `Team ${highestScorer.roster_id}`;
+              const initials = teamName.split(' ').map((w: string) => w[0]).join('').substring(0, 2).toUpperCase();
+              const totalPts = (highestScorer.settings?.fpts || 0) + (highestScorer.settings?.fpts_decimal || 0) / 100;
+              
+              // Only include if has substantial points
+              if (totalPts > 100) {
+                highestScorers.push({
+                  season,
+                  rosterId: highestScorer.roster_id,
+                  ownerId: highestScorer.owner_id,
+                  teamName,
+                  initials,
+                  avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
+                  value: totalPts,
+                });
+              }
             }
           }
         } catch (err) {

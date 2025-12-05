@@ -88,7 +88,7 @@ Preferred communication style: Simple, everyday language.
 - Auto-selection of most recent completed draft in Historical tab (prefers 2024 if available)
 - Trophy Room page showcasing dynasty history:
   - Season Champions trophy case with all past champions
-  - Highest Scorers trophy case with total points for each season
+  - Highest Scorers trophy case (only awarded after regular season ends at playoff start week)
   - MVP Award winners from league voting
   - Rookie of the Year winners from league voting
   - Best GM Award winners from league voting
