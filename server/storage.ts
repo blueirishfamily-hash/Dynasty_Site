@@ -9,6 +9,7 @@ import {
   leagueSettingsTable,
   playerContractsTable,
   playerBidsTable,
+  deadCapEntriesTable,
 } from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -17,7 +18,8 @@ import type {
   RuleVote, InsertRuleVote,
   LeagueSetting,
   PlayerContract, InsertPlayerContract,
-  PlayerBid, InsertPlayerBid
+  PlayerBid, InsertPlayerBid,
+  DeadCapEntry, InsertDeadCapEntry
 } from "@shared/schema";
 
 export interface UserSession {
@@ -631,6 +633,44 @@ export class DatabaseStorage implements IStorage {
         eq(playerBidsTable.id, id),
         eq(playerBidsTable.rosterId, rosterId)
       ));
+  }
+
+  async getDeadCapEntriesByLeague(leagueId: string): Promise<DeadCapEntry[]> {
+    const rows = await db
+      .select()
+      .from(deadCapEntriesTable)
+      .where(eq(deadCapEntriesTable.leagueId, leagueId))
+      .orderBy(desc(deadCapEntriesTable.createdAt));
+
+    return rows;
+  }
+
+  async createDeadCapEntry(data: InsertDeadCapEntry): Promise<DeadCapEntry> {
+    const id = randomUUID();
+    const now = Date.now();
+
+    const [inserted] = await db.insert(deadCapEntriesTable).values({
+      id,
+      leagueId: data.leagueId,
+      rosterId: data.rosterId,
+      playerId: data.playerId,
+      playerName: data.playerName,
+      playerPosition: data.playerPosition,
+      reason: data.reason,
+      deadCap2025: data.deadCap2025,
+      deadCap2026: data.deadCap2026,
+      deadCap2027: data.deadCap2027,
+      deadCap2028: data.deadCap2028,
+      createdAt: now,
+    }).returning();
+
+    return inserted;
+  }
+
+  async deleteDeadCapEntry(id: string): Promise<void> {
+    await db
+      .delete(deadCapEntriesTable)
+      .where(eq(deadCapEntriesTable.id, id));
   }
 }
 

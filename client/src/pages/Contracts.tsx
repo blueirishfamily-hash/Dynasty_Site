@@ -5,7 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -1880,6 +1880,35 @@ interface DbPlayerContract {
   updatedAt: number;
 }
 
+interface DbDeadCapEntry {
+  id: string;
+  leagueId: string;
+  rosterId: number;
+  playerId: string;
+  playerName: string;
+  playerPosition: string;
+  reason: string;
+  deadCap2025: number;
+  deadCap2026: number;
+  deadCap2027: number;
+  deadCap2028: number;
+  createdAt: number;
+}
+
+interface OrphanedContract {
+  rosterId: number;
+  playerId: string;
+  playerName: string;
+  playerPosition: string;
+  contract: {
+    salary2025: number;
+    salary2026: number;
+    salary2027: number;
+    salary2028: number;
+  };
+  teamName: string;
+}
+
 export default function Contracts() {
   const { toast } = useToast();
   const { user, league, isLoading } = useSleeper();
@@ -1910,8 +1939,13 @@ export default function Contracts() {
     enabled: !!league?.leagueId,
   });
 
-  const { data: dbContracts } = useQuery<DbPlayerContract[]>({
+  const { data: dbContracts, refetch: refetchContracts } = useQuery<DbPlayerContract[]>({
     queryKey: ["/api/league", league?.leagueId, "contracts"],
+    enabled: !!league?.leagueId,
+  });
+
+  const { data: deadCapEntries, refetch: refetchDeadCap } = useQuery<DbDeadCapEntry[]>({
+    queryKey: ["/api/leagues", league?.leagueId, "dead-cap"],
     enabled: !!league?.leagueId,
   });
 
@@ -1972,6 +2006,88 @@ export default function Contracts() {
     if (!rosters) return [];
     return rosters.flatMap((roster: any) => roster.players || []);
   }, [rosters]);
+
+  const rosterPlayerMap = useMemo(() => {
+    if (!rosters) return new Map<number, Set<string>>();
+    const map = new Map<number, Set<string>>();
+    for (const roster of rosters) {
+      map.set(roster.roster_id, new Set(roster.players || []));
+    }
+    return map;
+  }, [rosters]);
+
+  const orphanedContracts = useMemo(() => {
+    if (!dbContracts || !rosters || !leagueUsers || !playerMap) return [];
+    
+    const userMap = new Map(
+      (leagueUsers || []).map((u: any) => [u.user_id, u])
+    );
+    
+    const rosterOwnerMap = new Map(
+      (rosters || []).map((r: any) => {
+        const owner = userMap.get(r.owner_id);
+        return [r.roster_id, owner?.metadata?.team_name || owner?.display_name || `Team ${r.roster_id}`];
+      })
+    );
+    
+    const orphans: OrphanedContract[] = [];
+    
+    for (const contract of dbContracts) {
+      const rosterPlayers = rosterPlayerMap.get(contract.rosterId);
+      const isOnRoster = rosterPlayers?.has(contract.playerId) ?? false;
+      const hasSalary = contract.salary2025 > 0 || contract.salary2026 > 0 || 
+                        contract.salary2027 > 0 || contract.salary2028 > 0;
+      
+      if (!isOnRoster && hasSalary) {
+        const player = playerMap[contract.playerId];
+        orphans.push({
+          rosterId: contract.rosterId,
+          playerId: contract.playerId,
+          playerName: player?.name || `Unknown (${contract.playerId})`,
+          playerPosition: player?.position || "NA",
+          contract: {
+            salary2025: contract.salary2025,
+            salary2026: contract.salary2026,
+            salary2027: contract.salary2027,
+            salary2028: contract.salary2028,
+          },
+          teamName: rosterOwnerMap.get(contract.rosterId) || `Team ${contract.rosterId}`,
+        });
+      }
+    }
+    
+    return orphans;
+  }, [dbContracts, rosters, leagueUsers, playerMap, rosterPlayerMap]);
+
+  const processCutTradeMutation = useMutation({
+    mutationFn: async (data: { 
+      rosterId: number; 
+      playerId: string; 
+      playerName: string;
+      playerPosition: string;
+      reason: string; 
+      contract: any;
+    }) => {
+      const response = await apiRequest("POST", `/api/leagues/${league?.leagueId}/process-cut-trade`, data);
+      return response.json();
+    },
+    onSuccess: () => {
+      refetchContracts();
+      refetchDeadCap();
+      toast({
+        title: "Contract Processed",
+        description: "The contract has been converted to dead cap.",
+      });
+    },
+    onError: (error) => {
+      console.error("Error processing cut/trade:", error);
+      toast({
+        title: "Error",
+        description: "Failed to process the cut/trade. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
 
   const handleContractChange = (
     rosterId: string, 
@@ -2063,12 +2179,23 @@ export default function Contracts() {
     (leagueUsers || []).map((u: any) => [u.user_id, u])
   );
 
+  const teamDeadCapMap = useMemo(() => {
+    const map = new Map<number, number>();
+    if (!deadCapEntries) return map;
+    
+    for (const entry of deadCapEntries) {
+      const currentDeadCap = map.get(entry.rosterId) || 0;
+      map.set(entry.rosterId, currentDeadCap + (entry.deadCap2025 / 10));
+    }
+    return map;
+  }, [deadCapEntries]);
+
   const teamCapData: TeamCapData[] = (rosters || []).map((roster: any) => {
     const owner = userMap.get(roster.owner_id);
     const rosterId = roster.roster_id.toString();
     const teamContracts = contractData[rosterId] || {};
     const salaries = calculateTeamSalary(roster.players || [], teamContracts, CURRENT_YEAR);
-    const deadCap = 0;
+    const deadCap = teamDeadCapMap.get(roster.roster_id) || 0;
     const available = TOTAL_CAP - salaries - deadCap;
 
     return {
@@ -2210,7 +2337,163 @@ export default function Contracts() {
         </TabsContent>
 
         {isCommissioner && (
-          <TabsContent value="manage-league" className="mt-6">
+          <TabsContent value="manage-league" className="mt-6 space-y-6">
+            {orphanedContracts.length > 0 && (
+              <Card className="border-orange-500/50">
+                <CardHeader className="pb-3">
+                  <CardTitle className="font-heading flex items-center gap-2 text-orange-500">
+                    <AlertTriangle className="w-5 h-5" />
+                    Cut/Traded Players Requiring Action ({orphanedContracts.length})
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    These players have contracts but are no longer on their assigned roster. 
+                    Process them to convert their remaining contract to dead cap.
+                  </p>
+                </CardHeader>
+                <CardContent>
+                  <ScrollArea className="max-h-[300px]">
+                    <div className="space-y-3">
+                      {orphanedContracts.map((orphan) => {
+                        const totalRemaining = (orphan.contract.salary2025 + orphan.contract.salary2026 + 
+                                                orphan.contract.salary2027 + orphan.contract.salary2028) / 10;
+                        const deadCapY1 = orphan.contract.salary2025 * 0.4 / 10;
+                        const deadCapY2 = (orphan.contract.salary2025 * 0.3 + orphan.contract.salary2026 * 0.4) / 10;
+                        
+                        return (
+                          <div 
+                            key={`${orphan.rosterId}-${orphan.playerId}`}
+                            className="flex items-center justify-between p-3 bg-muted/50 rounded-lg"
+                          >
+                            <div className="flex items-center gap-3">
+                              <Avatar className="h-10 w-10">
+                                <AvatarImage 
+                                  src={`https://sleepercdn.com/content/nfl/players/${orphan.playerId}.jpg`}
+                                  alt={orphan.playerName}
+                                />
+                                <AvatarFallback className="text-xs">
+                                  {orphan.playerName.split(" ").map(n => n[0]).join("")}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">{orphan.playerName}</span>
+                                  <Badge className={positionColors[orphan.playerPosition] || "bg-gray-500"}>
+                                    {orphan.playerPosition}
+                                  </Badge>
+                                </div>
+                                <p className="text-sm text-muted-foreground">
+                                  {orphan.teamName} • Remaining: ${totalRemaining.toFixed(1)}M
+                                </p>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => processCutTradeMutation.mutate({
+                                  rosterId: orphan.rosterId,
+                                  playerId: orphan.playerId,
+                                  playerName: orphan.playerName,
+                                  playerPosition: orphan.playerPosition,
+                                  reason: "cut",
+                                  contract: orphan.contract,
+                                })}
+                                disabled={processCutTradeMutation.isPending}
+                                data-testid={`button-process-cut-${orphan.playerId}`}
+                              >
+                                <UserMinus className="w-4 h-4 mr-1" />
+                                Cut
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => processCutTradeMutation.mutate({
+                                  rosterId: orphan.rosterId,
+                                  playerId: orphan.playerId,
+                                  playerName: orphan.playerName,
+                                  playerPosition: orphan.playerPosition,
+                                  reason: "traded",
+                                  contract: orphan.contract,
+                                })}
+                                disabled={processCutTradeMutation.isPending}
+                                data-testid={`button-process-trade-${orphan.playerId}`}
+                              >
+                                <ArrowRightLeft className="w-4 h-4 mr-1" />
+                                Traded
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+            )}
+
+            {deadCapEntries && deadCapEntries.length > 0 && (
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="font-heading flex items-center gap-2" style={{ color: COLORS.deadCap }}>
+                    <DollarSign className="w-5 h-5" />
+                    Dead Cap Entries ({deadCapEntries.length})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <ScrollArea className="max-h-[250px]">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Player</TableHead>
+                          <TableHead>Team</TableHead>
+                          <TableHead className="text-center">Reason</TableHead>
+                          <TableHead className="text-center">2025</TableHead>
+                          <TableHead className="text-center">2026</TableHead>
+                          <TableHead className="text-center">2027</TableHead>
+                          <TableHead className="text-center">2028</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {deadCapEntries.map((entry) => {
+                          const team = teamCapData.find(t => t.rosterId === entry.rosterId);
+                          return (
+                            <TableRow key={entry.id}>
+                              <TableCell>
+                                <div className="flex items-center gap-2">
+                                  <Badge className={positionColors[entry.playerPosition] || "bg-gray-500"}>
+                                    {entry.playerPosition}
+                                  </Badge>
+                                  <span className="font-medium">{entry.playerName}</span>
+                                </div>
+                              </TableCell>
+                              <TableCell>{team?.teamName || `Team ${entry.rosterId}`}</TableCell>
+                              <TableCell className="text-center">
+                                <Badge variant="outline" className="capitalize">
+                                  {entry.reason}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
+                                ${(entry.deadCap2025 / 10).toFixed(1)}M
+                              </TableCell>
+                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
+                                ${(entry.deadCap2026 / 10).toFixed(1)}M
+                              </TableCell>
+                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
+                                ${(entry.deadCap2027 / 10).toFixed(1)}M
+                              </TableCell>
+                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
+                                ${(entry.deadCap2028 / 10).toFixed(1)}M
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
+            )}
+
             {Object.keys(playerMap).length > 0 && (
               <ContractInputTab 
                 teams={teamCapData} 

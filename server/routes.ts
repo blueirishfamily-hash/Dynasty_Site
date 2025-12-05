@@ -3042,5 +3042,97 @@ export async function registerRoutes(
     }
   });
 
+  app.get("/api/leagues/:leagueId/dead-cap", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const entries = await storage.getDeadCapEntriesByLeague(leagueId);
+      res.json(entries);
+    } catch (error) {
+      console.error("Error fetching dead cap entries:", error);
+      res.status(500).json({ error: "Failed to fetch dead cap entries" });
+    }
+  });
+
+  app.post("/api/leagues/:leagueId/dead-cap", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const data = req.body;
+      
+      const entry = await storage.createDeadCapEntry({
+        leagueId,
+        rosterId: data.rosterId,
+        playerId: data.playerId,
+        playerName: data.playerName,
+        playerPosition: data.playerPosition,
+        reason: data.reason,
+        deadCap2025: data.deadCap2025,
+        deadCap2026: data.deadCap2026,
+        deadCap2027: data.deadCap2027,
+        deadCap2028: data.deadCap2028,
+      });
+      
+      res.json(entry);
+    } catch (error) {
+      console.error("Error creating dead cap entry:", error);
+      res.status(500).json({ error: "Failed to create dead cap entry" });
+    }
+  });
+
+  app.delete("/api/leagues/:leagueId/dead-cap/:entryId", async (req, res) => {
+    try {
+      const { entryId } = req.params;
+      await storage.deleteDeadCapEntry(entryId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting dead cap entry:", error);
+      res.status(500).json({ error: "Failed to delete dead cap entry" });
+    }
+  });
+
+  app.post("/api/leagues/:leagueId/process-cut-trade", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { rosterId, playerId, playerName, playerPosition, reason, contract } = req.body;
+      
+      const deadCapPercentages = [0.4, 0.3, 0.2, 0.1];
+      const years = [2025, 2026, 2027, 2028];
+      
+      const deadCapAmounts = {
+        deadCap2025: 0,
+        deadCap2026: 0,
+        deadCap2027: 0,
+        deadCap2028: 0,
+      };
+      
+      years.forEach((year, index) => {
+        const salaryKey = `salary${year}` as keyof typeof contract;
+        const salary = contract[salaryKey] || 0;
+        
+        for (let i = index; i < years.length; i++) {
+          const dcPercent = deadCapPercentages[i - index] || 0;
+          const dcKey = `deadCap${years[i]}` as keyof typeof deadCapAmounts;
+          deadCapAmounts[dcKey] += Math.round(salary * dcPercent);
+        }
+      });
+      
+      const entry = await storage.createDeadCapEntry({
+        leagueId,
+        rosterId,
+        playerId,
+        playerName,
+        playerPosition,
+        reason,
+        ...deadCapAmounts,
+      });
+      
+      await storage.deletePlayerContract(leagueId, rosterId, playerId);
+      
+      res.json({ deadCapEntry: entry });
+    } catch (error) {
+      console.error("Error processing cut/trade:", error);
+      res.status(500).json({ error: "Failed to process cut/trade" });
+    }
+  });
+
   return httpServer;
 }

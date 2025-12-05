@@ -91,6 +91,21 @@ export const playerBidsTable = pgTable("player_bids", {
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 
+export const deadCapEntriesTable = pgTable("dead_cap_entries", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  playerPosition: varchar("player_position", { length: 16 }).notNull(),
+  reason: varchar("reason", { length: 16 }).notNull(),
+  deadCap2025: integer("dead_cap_2025").notNull().default(0),
+  deadCap2026: integer("dead_cap_2026").notNull().default(0),
+  deadCap2027: integer("dead_cap_2027").notNull().default(0),
+  deadCap2028: integer("dead_cap_2028").notNull().default(0),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
@@ -99,6 +114,7 @@ export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).o
 export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTable).omit({ id: true, updatedAt: true });
 export const insertPlayerContractDbSchema = createInsertSchema(playerContractsTable).omit({ id: true, updatedAt: true });
 export const insertPlayerBidDbSchema = createInsertSchema(playerBidsTable).omit({ id: true, createdAt: true, updatedAt: true, status: true });
+export const insertDeadCapEntryDbSchema = createInsertSchema(deadCapEntriesTable).omit({ id: true, createdAt: true });
 
 // Player Contract types
 export type PlayerContract = typeof playerContractsTable.$inferSelect;
@@ -107,6 +123,10 @@ export type InsertPlayerContract = z.infer<typeof insertPlayerContractDbSchema>;
 // Player Bid types
 export type PlayerBid = typeof playerBidsTable.$inferSelect;
 export type InsertPlayerBid = z.infer<typeof insertPlayerBidDbSchema>;
+
+// Dead Cap Entry types
+export type DeadCapEntry = typeof deadCapEntriesTable.$inferSelect;
+export type InsertDeadCapEntry = z.infer<typeof insertDeadCapEntryDbSchema>;
 
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;
