@@ -323,6 +323,40 @@ export default function Matchup() {
                   )}
                 </Badge>
               </div>
+              
+              {/* Win Probability Bar */}
+              {(() => {
+                // Calculate win probability using projected totals
+                // Using a logistic function: probability = 1 / (1 + e^(-k * diff))
+                // where k is a scaling factor (higher k = more sensitive to point differences)
+                const projDiff = userTeam.projectedTotal - opponentTeam.projectedTotal;
+                const k = 0.1; // Scaling factor - about 10 point lead = ~73% win probability
+                const userWinProb = 1 / (1 + Math.exp(-k * projDiff));
+                const userWinPct = Math.round(userWinProb * 100);
+                const oppWinPct = 100 - userWinPct;
+                
+                return (
+                  <div className="mt-4 px-4">
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="font-medium text-emerald-500">{userWinPct}%</span>
+                      <span className="text-muted-foreground text-[10px] uppercase tracking-wide">Win Probability</span>
+                      <span className="font-medium text-red-500">{oppWinPct}%</span>
+                    </div>
+                    <div className="h-3 rounded-full overflow-hidden flex bg-muted" data-testid="win-probability-bar">
+                      <div 
+                        className="bg-emerald-500 transition-all duration-500"
+                        style={{ width: `${userWinPct}%` }}
+                        data-testid="win-probability-user"
+                      />
+                      <div 
+                        className="bg-red-500 transition-all duration-500"
+                        style={{ width: `${oppWinPct}%` }}
+                        data-testid="win-probability-opponent"
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
             </CardContent>
           </Card>
 
