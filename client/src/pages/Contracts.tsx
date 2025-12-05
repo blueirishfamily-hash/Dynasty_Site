@@ -623,24 +623,38 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             {player.yearsExp === 0 ? "R" : player.yearsExp}
                           </span>
                         </TableCell>
-                        {CONTRACT_YEARS.map(year => (
-                          <TableCell key={year} className="text-center">
-                            <div className="flex items-center justify-center gap-0.5">
-                              <span className="text-xs text-muted-foreground">$</span>
-                              <Input
-                                type="number"
-                                step="0.1"
-                                min="0"
-                                className="h-7 w-16 text-center tabular-nums text-sm"
-                                placeholder="0"
-                                value={player.salaries[year] || ""}
-                                onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
-                                data-testid={`input-salary-${player.playerId}-${year}`}
-                              />
-                              <span className="text-xs text-muted-foreground">M</span>
-                            </div>
-                          </TableCell>
-                        ))}
+                        {CONTRACT_YEARS.map((year, yearIndex) => {
+                          const salaryValue = player.salaries[year] || 0;
+                          const deadCapPercentages = [0.4, 0.3, 0.2, 0.1];
+                          const deadCapPercent = deadCapPercentages[yearIndex] || 0;
+                          const deadCapValue = salaryValue * deadCapPercent;
+
+                          return (
+                            <TableCell key={year} className="text-center">
+                              <div className="flex flex-col items-center gap-0.5">
+                                <div className="flex items-center justify-center gap-0.5">
+                                  <span className="text-xs text-muted-foreground">$</span>
+                                  <Input
+                                    type="number"
+                                    step="0.1"
+                                    min="0"
+                                    className="h-7 w-16 text-center tabular-nums text-sm"
+                                    placeholder="0"
+                                    value={player.salaries[year] || ""}
+                                    onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
+                                    data-testid={`input-salary-${player.playerId}-${year}`}
+                                  />
+                                  <span className="text-xs text-muted-foreground">M</span>
+                                </div>
+                                {salaryValue > 0 && (
+                                  <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
+                                    DC: ${deadCapValue.toFixed(1)}M ({Math.round(deadCapPercent * 100)}%)
+                                  </span>
+                                )}
+                              </div>
+                            </TableCell>
+                          );
+                        })}
                         <TableCell className="text-center">
                           {isRookie ? (
                             <div className="flex items-center justify-center gap-1">
