@@ -950,37 +950,35 @@ function ManageTeamContractsTab({
     const franchiseSalary = top5SalariesByPosition[position] || 0;
     if (franchiseSalary === 0) return;
     
+    // Find last year with salary to determine franchise year
+    const currentSalaries = leagueContractData[userTeam!.rosterId.toString()]?.[playerId]?.salaries || {};
+    let lastYearWithSalary = 0;
+    if (currentSalaries[2028] > 0) lastYearWithSalary = 2028;
+    else if (currentSalaries[2027] > 0) lastYearWithSalary = 2027;
+    else if (currentSalaries[2026] > 0) lastYearWithSalary = 2026;
+    else if (currentSalaries[2025] > 0) lastYearWithSalary = 2025;
+    
+    const franchiseYear = lastYearWithSalary < OPTION_YEAR ? lastYearWithSalary + 1 : OPTION_YEAR;
+    
     // Toggle franchise tag
     setFranchiseTaggedPlayers(prev => {
       const newSet = new Set(prev);
       if (newSet.has(playerId)) {
         newSet.delete(playerId);
-        // Remove the franchise tag year override
-        setHypotheticalData(prevData => {
-          const newOverrides = { ...prevData.salaryOverrides };
-          if (newOverrides[playerId]) {
-            const { [OPTION_YEAR]: _, ...rest } = newOverrides[playerId];
-            if (Object.keys(rest).length === 0) {
-              delete newOverrides[playerId];
-            } else {
-              newOverrides[playerId] = rest;
+        // Reset the franchise tag year to 0
+        setHypotheticalData(prevData => ({
+          ...prevData,
+          salaryOverrides: {
+            ...prevData.salaryOverrides,
+            [playerId]: {
+              ...prevData.salaryOverrides[playerId],
+              [franchiseYear]: 0,
             }
           }
-          return { ...prevData, salaryOverrides: newOverrides };
-        });
+        }));
       } else {
         newSet.add(playerId);
-        // Add 1 year to contract at franchise tag salary (adds to next year after current contract ends)
-        // Find last year with salary and add franchise to the year after
-        const currentSalaries = leagueContractData[userTeam!.rosterId.toString()]?.[playerId]?.salaries || {};
-        let lastYearWithSalary = 0;
-        if (currentSalaries[2028] > 0) lastYearWithSalary = 2028;
-        else if (currentSalaries[2027] > 0) lastYearWithSalary = 2027;
-        else if (currentSalaries[2026] > 0) lastYearWithSalary = 2026;
-        else if (currentSalaries[2025] > 0) lastYearWithSalary = 2025;
-        
-        const franchiseYear = lastYearWithSalary < OPTION_YEAR ? lastYearWithSalary + 1 : OPTION_YEAR;
-        
+        // Add 1 year to contract at franchise tag salary
         setHypotheticalData(prevData => ({
           ...prevData,
           salaryOverrides: {
@@ -2138,6 +2136,8 @@ interface DbPlayerContract {
   salary2028: number;
   fifthYearOption: string | null;
   isOnIr: number;
+  franchiseTagUsed: number;
+  franchiseTagYear: number | null;
   updatedAt: number;
 }
 
