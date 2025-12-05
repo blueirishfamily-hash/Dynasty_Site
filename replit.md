@@ -108,12 +108,15 @@ Preferred communication style: Simple, everyday language.
 - Contracts page with salary cap management ($250M per team):
   - Overview tab: League-wide salary utilization with team pie charts
   - Expiring Contracts tab: Players in final contract year with analytics
-  - Manage Team Contracts tab: Hypothetical planning without affecting official contracts
+  - Manage Team Contracts tab: Contract planning with approval workflow
     - Franchise tag toggle for roster players (star icon button)
       - Calculates salary as average of top 5 position salaries (rounded up)
       - Adds 1 year to the contract at the franchise tag salary
       - Disabled for previously franchise tagged players (tracked in database)
       - Disabled when no position salary data exists
+    - Submit for Approval button sends contracts to commissioner for review
+    - Shows "Pending Approval" badge when waiting for commissioner decision
+    - Approved contracts automatically become official league contracts
   - Player Bidding tab: Private bids on free agents (team-specific visibility)
     - Search free agents and place bids with amount, max bid, and contract years
     - Bids are stored in database and visible only to the team that placed them
@@ -130,6 +133,12 @@ Preferred communication style: Simple, everyday language.
       - Original salary shown with strikethrough for reference
     - Franchise tag tracking: franchiseTagUsed and franchiseTagYear fields
     - Contracts persist in PostgreSQL database
+  - Approvals tab (commissioner-only): Review and manage team contract submissions
+    - View pending contract approval requests from all teams
+    - Expandable rows showing each player's proposed salary by year
+    - Approve button applies submitted contracts to official league contracts
+    - Reject button with optional notes for feedback
+    - Previously reviewed section shows past approval/rejection decisions
 
 ### Backend Architecture
 
@@ -176,6 +185,7 @@ Preferred communication style: Simple, everyday language.
 - `award_ballots` - Ranked voting ballots for awards (persists across republishing)
 - `player_contracts` - Commissioner-managed salary contracts (persists across republishing)
 - `player_bids` - Team-specific private bids on free agents (persists across republishing)
+- `contract_approval_requests` - Team contract submissions pending commissioner review (persists across republishing)
 
 **Data Models:**
 - User sessions (Sleeper username, user ID, selected league) - in-memory, ephemeral

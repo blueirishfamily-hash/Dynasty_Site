@@ -5,7 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { DialogFooter } from "@/components/ui/dialog";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip } from "recharts";
@@ -729,6 +729,7 @@ interface ManageTeamContractsTabProps {
   allPlayers: SleeperPlayerData[];
   rosterPlayerIds: string[];
   dbContracts: DbPlayerContract[];
+  leagueId: string;
 }
 
 function ManageTeamContractsTab({ 
@@ -737,8 +738,10 @@ function ManageTeamContractsTab({
   leagueContractData, 
   allPlayers,
   rosterPlayerIds,
-  dbContracts
+  dbContracts,
+  leagueId
 }: ManageTeamContractsTabProps) {
+  const { toast } = useToast();
   const [hypotheticalData, setHypotheticalData] = useState<HypotheticalContractData>({
     salaryOverrides: {},
     addedFreeAgents: [],
@@ -746,6 +749,47 @@ function ManageTeamContractsTab({
   const [freeAgentSearch, setFreeAgentSearch] = useState("");
   const [showFreeAgentSearch, setShowFreeAgentSearch] = useState(false);
   const [franchiseTaggedPlayers, setFranchiseTaggedPlayers] = useState<Set<string>>(new Set());
+
+  // Query for pending approval requests
+  const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
+    queryKey: ['/api/league', leagueId, 'contract-approvals', 'pending', userTeam?.rosterId],
+    enabled: !!leagueId && !!userTeam?.rosterId,
+  });
+
+  // Submit for approval mutation
+  const submitForApprovalMutation = useMutation({
+    mutationFn: async (contracts: Array<{
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      salary2025: number;
+      salary2026: number;
+      salary2027: number;
+      salary2028: number;
+      franchiseTagApplied: boolean;
+    }>) => {
+      return apiRequest("POST", `/api/league/${leagueId}/contract-approvals`, {
+        rosterId: userTeam?.rosterId,
+        teamName: userTeam?.teamName,
+        ownerName: userTeam?.ownerName,
+        contracts,
+      });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Contracts Submitted",
+        description: "Your contracts have been submitted for commissioner approval.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contract-approvals'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Submission Failed",
+        description: error.message || "Failed to submit contracts for approval.",
+        variant: "destructive",
+      });
+    },
+  });
 
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
@@ -999,6 +1043,80 @@ function ManageTeamContractsTab({
   const hasHypotheticalChanges = Object.keys(hypotheticalData.salaryOverrides).length > 0 || 
     hypotheticalData.addedFreeAgents.length > 0;
 
+  // Build contracts array for submission
+  const buildContractsForSubmission = () => {
+    const contracts: Array<{
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      salary2025: number;
+      salary2026: number;
+      salary2027: number;
+      salary2028: number;
+      franchiseTagApplied: boolean;
+    }> = [];
+
+    // Add roster players with their salaries
+    for (const player of rosterPlayers) {
+      const salary2025 = player.hypotheticalSalaries[2025] || 0;
+      const salary2026 = player.hypotheticalSalaries[2026] || 0;
+      const salary2027 = player.hypotheticalSalaries[2027] || 0;
+      const salary2028 = player.hypotheticalSalaries[2028] || 0;
+
+      // Only include players with at least one salary value
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0) {
+        contracts.push({
+          playerId: player.playerId,
+          playerName: player.name,
+          playerPosition: player.position,
+          salary2025: Math.round(salary2025 * 10), // Store in tenths of millions
+          salary2026: Math.round(salary2026 * 10),
+          salary2027: Math.round(salary2027 * 10),
+          salary2028: Math.round(salary2028 * 10),
+          franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId),
+        });
+      }
+    }
+
+    // Add free agents with their salaries
+    for (const player of hypotheticalData.addedFreeAgents) {
+      const salary2025 = player.hypotheticalSalaries[2025] || 0;
+      const salary2026 = player.hypotheticalSalaries[2026] || 0;
+      const salary2027 = player.hypotheticalSalaries[2027] || 0;
+      const salary2028 = player.hypotheticalSalaries[2028] || 0;
+
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0) {
+        contracts.push({
+          playerId: player.playerId,
+          playerName: player.name,
+          playerPosition: player.position,
+          salary2025: Math.round(salary2025 * 10),
+          salary2026: Math.round(salary2026 * 10),
+          salary2027: Math.round(salary2027 * 10),
+          salary2028: Math.round(salary2028 * 10),
+          franchiseTagApplied: false,
+        });
+      }
+    }
+
+    return contracts;
+  };
+
+  const handleSubmitForApproval = () => {
+    const contracts = buildContractsForSubmission();
+    if (contracts.length === 0) {
+      toast({
+        title: "No Contracts",
+        description: "Please add salary values to at least one player before submitting.",
+        variant: "destructive",
+      });
+      return;
+    }
+    submitForApprovalMutation.mutate(contracts);
+  };
+
+  const hasPendingApproval = pendingApprovalData?.hasPending;
+
   return (
     <div className="space-y-6">
       <Card>
@@ -1018,7 +1136,7 @@ function ManageTeamContractsTab({
                 <p className="text-sm text-muted-foreground">{userTeam.ownerName}</p>
               </div>
             </div>
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
               <Button
                 variant="outline"
                 size="sm"
@@ -1036,6 +1154,26 @@ function ManageTeamContractsTab({
                   data-testid="button-reset-hypothetical"
                 >
                   Reset to League Values
+                </Button>
+              )}
+              {hasPendingApproval ? (
+                <Badge variant="secondary" className="flex items-center gap-1.5 px-3 py-1.5">
+                  <Clock className="w-3.5 h-3.5" />
+                  Pending Approval
+                </Badge>
+              ) : (
+                <Button
+                  size="sm"
+                  onClick={handleSubmitForApproval}
+                  disabled={submitForApprovalMutation.isPending}
+                  data-testid="button-submit-for-approval"
+                >
+                  {submitForApprovalMutation.isPending ? (
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  ) : (
+                    <Send className="w-4 h-4 mr-2" />
+                  )}
+                  Submit for Approval
                 </Button>
               )}
             </div>
@@ -1299,8 +1437,8 @@ function ManageTeamContractsTab({
 
           <div className="text-sm text-muted-foreground space-y-1">
             <p className="flex items-center gap-2">
-              <Calculator className="w-4 h-4" />
-              <span>Changes here are hypothetical and won't affect your league's official contracts.</span>
+              <Send className="w-4 h-4" />
+              <span>Click "Submit for Approval" to send your contracts to the commissioner for review. Once approved, they become official league contracts.</span>
             </p>
             <p className="flex items-center gap-2">
               <Star className="w-4 h-4" />
@@ -2977,6 +3115,7 @@ export default function Contracts() {
               allPlayers={playersArray}
               rosterPlayerIds={allRosterPlayerIds}
               dbContracts={dbContracts || []}
+              leagueId={league?.leagueId || ""}
             />
           )}
         </TabsContent>
