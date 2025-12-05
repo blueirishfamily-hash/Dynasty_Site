@@ -1683,7 +1683,15 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
         const salary2027 = contract.salaries[2027] || 0;
         const salary2028 = contract.salaries[2028] || 0;
         
-        if (salary2025 > 0 && salary2026 === 0 && salary2027 === 0 && salary2028 === 0) {
+        // Find the last year with a non-zero salary
+        let lastPaidYear = 0;
+        if (salary2028 > 0) lastPaidYear = 2028;
+        else if (salary2027 > 0) lastPaidYear = 2027;
+        else if (salary2026 > 0) lastPaidYear = 2026;
+        else if (salary2025 > 0) lastPaidYear = 2025;
+        
+        // Player is expiring if their last paid year is the current year (2025)
+        if (lastPaidYear === CURRENT_YEAR && salary2025 > 0) {
           players.push({
             playerId,
             name: player.name,
@@ -1771,7 +1779,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
               </TableHeader>
               <TableBody>
                 {expiringPlayers.map((player) => {
-                  const deadCap = player.currentSalary * 0.4;
+                  const deadCap = Math.ceil(player.currentSalary * 0.5);
                   
                   return (
                     <TableRow key={`${player.rosterId}-${player.playerId}`} data-testid={`row-expiring-${player.playerId}`}>
@@ -1811,7 +1819,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
                       </TableCell>
                       <TableCell className="text-right">
                         <span className="text-sm tabular-nums" style={{ color: COLORS.deadCap }}>
-                          ${deadCap.toFixed(1)}M
+                          ${deadCap}M
                         </span>
                       </TableCell>
                       <TableCell>
