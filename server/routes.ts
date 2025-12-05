@@ -740,7 +740,18 @@ export async function registerRoutes(
         }
 
         // Calculate projected team total from final starters
-        const projectedTotal = finalStarters.reduce((sum, p) => sum + (p?.projectedPoints || 0), 0);
+        // For current/past weeks: use actual points if player has already played, otherwise use projected
+        // For future weeks: always use projected points
+        const isCurrentOrPastWeek = week <= currentWeek;
+        const projectedTotal = finalStarters.reduce((sum, p) => {
+          if (!p) return sum;
+          // If current/past week and player has scored points, use actual score
+          if (isCurrentOrPastWeek && p.points > 0) {
+            return sum + p.points;
+          }
+          // Otherwise use projected
+          return sum + (p.projectedPoints || 0);
+        }, 0);
 
         // Build avatar URL from Sleeper CDN
         const avatarId = user?.avatar;
