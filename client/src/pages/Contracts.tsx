@@ -1233,20 +1233,22 @@ function ManageTeamContractsTab({
                             const franchiseSalary = top5SalariesByPosition[player.position] || 0;
                             const isPreviouslyTagged = isPlayerPreviouslyFranchiseTagged(player.playerId);
                             const noPositionData = franchiseSalary === 0;
-                            const isDisabled = isPreviouslyTagged || noPositionData;
+                            const isThisPlayerTagged = franchiseTaggedPlayers.has(player.playerId);
+                            const teamAlreadyUsedTag = franchiseTaggedPlayers.size > 0 && !isThisPlayerTagged;
+                            const isDisabled = isPreviouslyTagged || noPositionData || teamAlreadyUsedTag;
                             
                             return (
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <Button
                                     size="icon"
-                                    variant={franchiseTaggedPlayers.has(player.playerId) ? "default" : "ghost"}
+                                    variant={isThisPlayerTagged ? "default" : "ghost"}
                                     className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
                                     onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
                                     disabled={isDisabled}
                                     data-testid={`button-franchise-tag-${player.playerId}`}
                                   >
-                                    <Star className={`w-4 h-4 ${franchiseTaggedPlayers.has(player.playerId) ? "fill-current" : ""}`} />
+                                    <Star className={`w-4 h-4 ${isThisPlayerTagged ? "fill-current" : ""}`} />
                                   </Button>
                                 </TooltipTrigger>
                                 <TooltipContent>
@@ -1254,9 +1256,11 @@ function ManageTeamContractsTab({
                                     ? "Previously franchise tagged" 
                                     : noPositionData
                                       ? "No position salary data available"
-                                      : franchiseTaggedPlayers.has(player.playerId)
-                                        ? `Franchise tag applied: $${franchiseSalary}M`
-                                        : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
+                                      : teamAlreadyUsedTag
+                                        ? "Team can only use 1 franchise tag per season"
+                                        : isThisPlayerTagged
+                                          ? `Franchise tag applied: $${franchiseSalary}M`
+                                          : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
                                   }
                                 </TooltipContent>
                               </Tooltip>
@@ -1298,7 +1302,7 @@ function ManageTeamContractsTab({
             </p>
             <p className="flex items-center gap-2">
               <Star className="w-4 h-4" />
-              <span>Franchise tag adds 1 year at the average of top 5 salaries at that position (rounded up).</span>
+              <span>Franchise tag adds 1 year at the average of top 5 salaries at that position (rounded up). Each team gets 1 tag per season.</span>
             </p>
           </div>
         </CardContent>
