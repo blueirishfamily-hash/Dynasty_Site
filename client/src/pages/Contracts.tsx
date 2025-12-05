@@ -600,11 +600,14 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[200px]">Player</TableHead>
+                    <TableHead className="w-[180px]">Player</TableHead>
+                    <TableHead className="text-center w-[60px]">Pos</TableHead>
+                    <TableHead className="text-center w-[60px]">Team</TableHead>
+                    <TableHead className="text-center w-[70px]">NFL Yrs</TableHead>
                     {CONTRACT_YEARS.map(year => (
-                      <TableHead key={year} className="text-center w-[100px]">{year}</TableHead>
+                      <TableHead key={year} className="text-center w-[90px]">{year}</TableHead>
                     ))}
-                    <TableHead className="text-center w-[120px]">5th Year Option</TableHead>
+                    <TableHead className="text-center w-[110px]">5th Yr Opt</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -616,7 +619,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                       <TableRow key={player.playerId} data-testid={`row-input-${player.playerId}`}>
                         <TableCell>
                           <div className="flex items-center gap-2">
-                            <Avatar className="h-10 w-10">
+                            <Avatar className="h-9 w-9">
                               <AvatarImage 
                                 src={`https://sleepercdn.com/content/nfl/players/${player.playerId}.jpg`}
                                 alt={player.name}
@@ -625,34 +628,34 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                                 {player.name.split(" ").map(n => n[0]).join("")}
                               </AvatarFallback>
                             </Avatar>
-                            <div>
-                              <div className="font-medium text-sm">{player.name}</div>
-                              <div className="flex items-center gap-1">
-                                <Badge className={`${positionColors[player.position] || "bg-gray-500 text-white"} text-[10px] px-1.5 py-0`}>
-                                  {player.position}
-                                </Badge>
-                                <span className="text-xs text-muted-foreground">
-                                  {player.nflTeam || "FA"}
-                                </span>
-                                {isRookie && (
-                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-primary text-primary">
-                                    Yr {player.yearsExp + 1}
-                                  </Badge>
-                                )}
-                              </div>
-                            </div>
+                            <span className="font-medium text-sm">{player.name}</span>
                           </div>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Badge className={`${positionColors[player.position] || "bg-gray-500 text-white"} text-[10px] px-1.5 py-0`}>
+                            {player.position}
+                          </Badge>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <span className="text-sm font-medium">
+                            {player.nflTeam || "FA"}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <span className="text-sm tabular-nums">
+                            {player.yearsExp === 0 ? "R" : player.yearsExp}
+                          </span>
                         </TableCell>
                         {CONTRACT_YEARS.map(year => (
                           <TableCell key={year} className="text-center">
-                            <div className="flex items-center gap-1">
+                            <div className="flex items-center justify-center gap-0.5">
                               <span className="text-xs text-muted-foreground">$</span>
                               <Input
                                 type="number"
                                 step="0.1"
                                 min="0"
-                                className="h-8 w-20 text-center tabular-nums"
-                                placeholder="0.0"
+                                className="h-7 w-16 text-center tabular-nums text-sm"
+                                placeholder="0"
                                 value={savedContract?.salaries?.[year] || ""}
                                 onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
                                 data-testid={`input-salary-${player.playerId}-${year}`}
@@ -663,11 +666,11 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                         ))}
                         <TableCell className="text-center">
                           {isRookie ? (
-                            <div className="flex items-center justify-center gap-2">
+                            <div className="flex items-center justify-center gap-1">
                               <Button
                                 size="sm"
                                 variant={savedContract?.fifthYearOption === true ? "default" : "outline"}
-                                className="h-7 px-3 text-xs"
+                                className="h-6 px-2 text-xs"
                                 onClick={() => handleFifthYearOptionChange(player.playerId, true)}
                                 data-testid={`button-fifth-year-yes-${player.playerId}`}
                               >
@@ -676,7 +679,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                               <Button
                                 size="sm"
                                 variant={savedContract?.fifthYearOption === false ? "default" : "outline"}
-                                className="h-7 px-3 text-xs"
+                                className="h-6 px-2 text-xs"
                                 onClick={() => handleFifthYearOptionChange(player.playerId, false)}
                                 data-testid={`button-fifth-year-no-${player.playerId}`}
                               >
@@ -692,7 +695,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                   })}
                   {playerInputs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                         No players on this roster
                       </TableCell>
                     </TableRow>
