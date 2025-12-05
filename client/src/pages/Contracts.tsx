@@ -1,7 +1,9 @@
+import { useEffect } from "react";
+import { useLocation } from "wouter";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Lock, Shield } from "lucide-react";
+import { FileText, Shield } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
   "456056564008312832",
@@ -9,38 +11,26 @@ const COMMISSIONER_USER_IDS = [
 ];
 
 export default function Contracts() {
-  const { user, league } = useSleeper();
+  const { user, league, isLoading } = useSleeper();
+  const [, setLocation] = useLocation();
 
   const isCommissioner = user?.userId && (
     (league?.commissionerId && user.userId === league.commissionerId) ||
     COMMISSIONER_USER_IDS.includes(user.userId)
   );
 
-  if (!user || !league) {
-    return (
-      <div className="p-6">
-        <Card>
-          <CardContent className="py-12 text-center">
-            <Lock className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-            <p className="text-muted-foreground">Please connect your league to view this page.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
+  useEffect(() => {
+    if (!isLoading && !isCommissioner) {
+      setLocation("/");
+    }
+  }, [isLoading, isCommissioner, setLocation]);
+
+  if (isLoading) {
+    return null;
   }
 
   if (!isCommissioner) {
-    return (
-      <div className="p-6">
-        <Card>
-          <CardContent className="py-12 text-center">
-            <Shield className="w-12 h-12 mx-auto text-destructive mb-4" />
-            <h2 className="text-xl font-heading font-bold mb-2">Access Denied</h2>
-            <p className="text-muted-foreground">This page is only accessible to league commissioners.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
+    return null;
   }
 
   return (
