@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Link, useLocation } from "wouter";
+import { useSleeper } from "@/lib/sleeper-context";
 import {
   Sidebar,
   SidebarContent,
@@ -24,9 +24,15 @@ import {
   Swords,
   Sparkles,
   Medal,
+  FileText,
 } from "lucide-react";
 
-const navItems = [
+const COMMISSIONER_USER_IDS = [
+  "456056564008312832",
+  "457422007268728832",
+];
+
+const baseNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
   { title: "My Team", url: "/team", icon: Users },
   { title: "Matchup", url: "/matchup", icon: Swords },
@@ -37,6 +43,10 @@ const navItems = [
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Settings", url: "/settings", icon: Settings },
+];
+
+const commissionerNavItems = [
+  { title: "Contracts", url: "/contracts", icon: FileText },
 ];
 
 interface DraftPick {
@@ -55,6 +65,16 @@ export default function AppSidebar({
   draftPicks = [],
 }: AppSidebarProps) {
   const [location] = useLocation();
+  const { user, league } = useSleeper();
+
+  const isCommissioner = user?.userId && (
+    (league?.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  );
+
+  const navItems = isCommissioner 
+    ? [...baseNavItems, ...commissionerNavItems]
+    : baseNavItems;
 
   const getRoundColor = (round: number) => {
     if (round === 1) return "bg-primary text-primary-foreground";
