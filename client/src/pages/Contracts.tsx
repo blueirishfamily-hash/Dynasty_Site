@@ -5,8 +5,9 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign } from "lucide-react";
-import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star } from "lucide-react";
+import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip } from "recharts";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   Dialog,
@@ -238,7 +239,7 @@ function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => voi
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
-                <Tooltip
+                <RechartsTooltip
                   formatter={(value: number) => [`$${value.toFixed(1)}M`, ""]}
                   contentStyle={{
                     backgroundColor: "hsl(var(--card))",
@@ -725,6 +726,7 @@ interface ManageTeamContractsTabProps {
   leagueContractData: ContractDataStore;
   allPlayers: SleeperPlayerData[];
   rosterPlayerIds: string[];
+  dbContracts: DbPlayerContract[];
 }
 
 function ManageTeamContractsTab({ 
@@ -732,7 +734,8 @@ function ManageTeamContractsTab({
   playerMap, 
   leagueContractData, 
   allPlayers,
-  rosterPlayerIds 
+  rosterPlayerIds,
+  dbContracts
 }: ManageTeamContractsTabProps) {
   const [hypotheticalData, setHypotheticalData] = useState<HypotheticalContractData>({
     salaryOverrides: {},
@@ -740,10 +743,50 @@ function ManageTeamContractsTab({
   });
   const [freeAgentSearch, setFreeAgentSearch] = useState("");
   const [showFreeAgentSearch, setShowFreeAgentSearch] = useState(false);
+  const [franchiseTaggedPlayers, setFranchiseTaggedPlayers] = useState<Set<string>>(new Set());
 
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
+
+  // Calculate top 5 salaries by position for franchise tag calculation
+  const top5SalariesByPosition = useMemo(() => {
+    const salariesByPosition: Record<string, number[]> = {};
+    
+    for (const contract of dbContracts) {
+      const player = playerMap[contract.playerId];
+      if (!player?.position) continue;
+      
+      const salary2025 = contract.salary2025 / 10; // Convert from stored format
+      if (salary2025 <= 0) continue;
+      
+      if (!salariesByPosition[player.position]) {
+        salariesByPosition[player.position] = [];
+      }
+      salariesByPosition[player.position].push(salary2025);
+    }
+    
+    // Sort and take top 5, calculate average rounded up
+    const result: Record<string, number> = {};
+    for (const position of Object.keys(salariesByPosition)) {
+      const sorted = salariesByPosition[position].sort((a, b) => b - a);
+      const top5 = sorted.slice(0, 5);
+      if (top5.length > 0) {
+        const avg = top5.reduce((sum, s) => sum + s, 0) / top5.length;
+        result[position] = Math.ceil(avg);
+      } else {
+        result[position] = 0;
+      }
+    }
+    
+    return result;
+  }, [dbContracts, playerMap]);
+
+  // Check if player has been previously franchise tagged (from database)
+  const isPlayerPreviouslyFranchiseTagged = (playerId: string): boolean => {
+    const contract = dbContracts.find(c => c.playerId === playerId);
+    return contract?.franchiseTagUsed === 1;
+  };
 
   const freeAgentResults = useMemo(() => {
     if (!freeAgentSearch.trim() || freeAgentSearch.length < 2) return [];
@@ -899,6 +942,57 @@ function ManageTeamContractsTab({
     setHypotheticalData({
       salaryOverrides: {},
       addedFreeAgents: [],
+    });
+    setFranchiseTaggedPlayers(new Set());
+  };
+
+  const handleFranchiseTag = (playerId: string, position: string) => {
+    const franchiseSalary = top5SalariesByPosition[position] || 0;
+    if (franchiseSalary === 0) return;
+    
+    // Toggle franchise tag
+    setFranchiseTaggedPlayers(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(playerId)) {
+        newSet.delete(playerId);
+        // Remove the franchise tag year override
+        setHypotheticalData(prevData => {
+          const newOverrides = { ...prevData.salaryOverrides };
+          if (newOverrides[playerId]) {
+            const { [OPTION_YEAR]: _, ...rest } = newOverrides[playerId];
+            if (Object.keys(rest).length === 0) {
+              delete newOverrides[playerId];
+            } else {
+              newOverrides[playerId] = rest;
+            }
+          }
+          return { ...prevData, salaryOverrides: newOverrides };
+        });
+      } else {
+        newSet.add(playerId);
+        // Add 1 year to contract at franchise tag salary (adds to next year after current contract ends)
+        // Find last year with salary and add franchise to the year after
+        const currentSalaries = leagueContractData[userTeam!.rosterId.toString()]?.[playerId]?.salaries || {};
+        let lastYearWithSalary = 0;
+        if (currentSalaries[2028] > 0) lastYearWithSalary = 2028;
+        else if (currentSalaries[2027] > 0) lastYearWithSalary = 2027;
+        else if (currentSalaries[2026] > 0) lastYearWithSalary = 2026;
+        else if (currentSalaries[2025] > 0) lastYearWithSalary = 2025;
+        
+        const franchiseYear = lastYearWithSalary < OPTION_YEAR ? lastYearWithSalary + 1 : OPTION_YEAR;
+        
+        setHypotheticalData(prevData => ({
+          ...prevData,
+          salaryOverrides: {
+            ...prevData.salaryOverrides,
+            [playerId]: {
+              ...prevData.salaryOverrides[playerId],
+              [franchiseYear]: franchiseSalary,
+            }
+          }
+        }));
+      }
+      return newSet;
     });
   };
 
@@ -1136,17 +1230,52 @@ function ManageTeamContractsTab({
                         );
                       })}
                       <TableCell>
-                        {player.isFreeAgent && (
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7 text-destructive hover:text-destructive"
-                            onClick={() => handleRemoveFreeAgent(player.playerId)}
-                            data-testid={`button-remove-fa-${player.playerId}`}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {player.isRosterPlayer && !player.isFreeAgent && (() => {
+                            const franchiseSalary = top5SalariesByPosition[player.position] || 0;
+                            const isPreviouslyTagged = isPlayerPreviouslyFranchiseTagged(player.playerId);
+                            const noPositionData = franchiseSalary === 0;
+                            const isDisabled = isPreviouslyTagged || noPositionData;
+                            
+                            return (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    size="icon"
+                                    variant={franchiseTaggedPlayers.has(player.playerId) ? "default" : "ghost"}
+                                    className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                                    onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
+                                    disabled={isDisabled}
+                                    data-testid={`button-franchise-tag-${player.playerId}`}
+                                  >
+                                    <Star className={`w-4 h-4 ${franchiseTaggedPlayers.has(player.playerId) ? "fill-current" : ""}`} />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {isPreviouslyTagged 
+                                    ? "Previously franchise tagged" 
+                                    : noPositionData
+                                      ? "No position salary data available"
+                                      : franchiseTaggedPlayers.has(player.playerId)
+                                        ? `Franchise tag applied: $${franchiseSalary}M`
+                                        : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
+                                  }
+                                </TooltipContent>
+                              </Tooltip>
+                            );
+                          })()}
+                          {player.isFreeAgent && (
+                            <Button
+                              size="icon"
+                              variant="ghost"
+                              className="h-7 w-7 text-destructive hover:text-destructive"
+                              onClick={() => handleRemoveFreeAgent(player.playerId)}
+                              data-testid={`button-remove-fa-${player.playerId}`}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -1164,10 +1293,14 @@ function ManageTeamContractsTab({
 
           <Separator className="my-4" />
 
-          <div className="text-sm text-muted-foreground">
+          <div className="text-sm text-muted-foreground space-y-1">
             <p className="flex items-center gap-2">
               <Calculator className="w-4 h-4" />
               <span>Changes here are hypothetical and won't affect your league's official contracts.</span>
+            </p>
+            <p className="flex items-center gap-2">
+              <Star className="w-4 h-4" />
+              <span>Franchise tag adds 1 year at the average of top 5 salaries at that position (rounded up).</span>
             </p>
           </div>
         </CardContent>
@@ -1180,6 +1313,7 @@ interface PlayerBiddingTabProps {
   userTeam: TeamCapData;
   allPlayers: SleeperPlayerData[];
   rosterPlayerIds: string[];
+  teamContracts: Record<string, PlayerContractData>;
 }
 
 interface PlayerBid {
@@ -1199,7 +1333,7 @@ interface PlayerBid {
   updatedAt: number;
 }
 
-function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddingTabProps) {
+function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts }: PlayerBiddingTabProps) {
   const { league } = useSleeper();
   const leagueId = league?.leagueId;
   const { toast } = useToast();
@@ -1214,6 +1348,41 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
+
+  // Contract limits: 2 four-year, 3 three-year, 3 two-year
+  const CONTRACT_LIMITS = {
+    4: 2,
+    3: 3,
+    2: 3,
+  };
+
+  // Calculate existing contract counts by duration
+  const existingContractCounts = useMemo(() => {
+    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
+    
+    for (const playerId of Object.keys(teamContracts)) {
+      const contract = teamContracts[playerId];
+      if (!contract?.salaries) continue;
+      
+      const salary2025 = contract.salaries[2025] || 0;
+      const salary2026 = contract.salaries[2026] || 0;
+      const salary2027 = contract.salaries[2027] || 0;
+      const salary2028 = contract.salaries[2028] || 0;
+      
+      // Count years with non-zero salary
+      let yearsWithSalary = 0;
+      if (salary2025 > 0) yearsWithSalary++;
+      if (salary2026 > 0) yearsWithSalary++;
+      if (salary2027 > 0) yearsWithSalary++;
+      if (salary2028 > 0) yearsWithSalary++;
+      
+      if (yearsWithSalary >= 1 && yearsWithSalary <= 4) {
+        counts[yearsWithSalary]++;
+      }
+    }
+    
+    return counts;
+  }, [teamContracts]);
 
   const { data: bids = [], isLoading, refetch } = useQuery<PlayerBid[]>({
     queryKey: ['/api/league', leagueId, 'bids', userTeam.rosterId],
@@ -1353,6 +1522,43 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
 
   const activeBids = bids.filter(b => b.status === "active");
 
+  // Count active bids by contract years
+  const bidContractCounts = useMemo(() => {
+    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
+    for (const bid of activeBids) {
+      if (bid.contractYears >= 1 && bid.contractYears <= 4) {
+        counts[bid.contractYears]++;
+      }
+    }
+    return counts;
+  }, [activeBids]);
+
+  // Calculate remaining slots for each contract type
+  const remainingSlots = useMemo(() => {
+    return {
+      4: Math.max(0, CONTRACT_LIMITS[4] - existingContractCounts[4] - bidContractCounts[4]),
+      3: Math.max(0, CONTRACT_LIMITS[3] - existingContractCounts[3] - bidContractCounts[3]),
+      2: Math.max(0, CONTRACT_LIMITS[2] - existingContractCounts[2] - bidContractCounts[2]),
+    };
+  }, [existingContractCounts, bidContractCounts]);
+
+  // Check if selected contract years would exceed limit
+  const isContractYearDisabled = (years: number): boolean => {
+    if (years === 1) return false; // No limit on 1-year contracts
+    const limit = CONTRACT_LIMITS[years as 2 | 3 | 4];
+    if (!limit) return false;
+    
+    const existing = existingContractCounts[years] || 0;
+    const bidsCount = bidContractCounts[years] || 0;
+    
+    // If editing, don't count the current bid being edited
+    const adjustedBidsCount = editingBid && editingBid.contractYears === years 
+      ? bidsCount - 1 
+      : bidsCount;
+    
+    return (existing + adjustedBidsCount) >= limit;
+  };
+
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -1387,6 +1593,34 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm font-medium">Contract Limits (Existing + Pending Bids)</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-3 gap-4 text-center">
+            <div>
+              <div className={`text-lg font-bold ${remainingSlots[4] === 0 ? 'text-destructive' : 'text-foreground'}`}>
+                {existingContractCounts[4] + bidContractCounts[4]}/{CONTRACT_LIMITS[4]}
+              </div>
+              <p className="text-xs text-muted-foreground">4-Year Contracts</p>
+            </div>
+            <div>
+              <div className={`text-lg font-bold ${remainingSlots[3] === 0 ? 'text-destructive' : 'text-foreground'}`}>
+                {existingContractCounts[3] + bidContractCounts[3]}/{CONTRACT_LIMITS[3]}
+              </div>
+              <p className="text-xs text-muted-foreground">3-Year Contracts</p>
+            </div>
+            <div>
+              <div className={`text-lg font-bold ${remainingSlots[2] === 0 ? 'text-destructive' : 'text-foreground'}`}>
+                {existingContractCounts[2] + bidContractCounts[2]}/{CONTRACT_LIMITS[2]}
+              </div>
+              <p className="text-xs text-muted-foreground">2-Year Contracts</p>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
@@ -1494,12 +1728,21 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="1">1 Year</SelectItem>
-                      <SelectItem value="2">2 Years</SelectItem>
-                      <SelectItem value="3">3 Years</SelectItem>
-                      <SelectItem value="4">4 Years</SelectItem>
+                      <SelectItem value="1">1 Year (No limit)</SelectItem>
+                      <SelectItem value="2" disabled={isContractYearDisabled(2)}>
+                        2 Years ({remainingSlots[2]}/{CONTRACT_LIMITS[2]} remaining)
+                      </SelectItem>
+                      <SelectItem value="3" disabled={isContractYearDisabled(3)}>
+                        3 Years ({remainingSlots[3]}/{CONTRACT_LIMITS[3]} remaining)
+                      </SelectItem>
+                      <SelectItem value="4" disabled={isContractYearDisabled(4)}>
+                        4 Years ({remainingSlots[4]}/{CONTRACT_LIMITS[4]} remaining)
+                      </SelectItem>
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    Limits: 2 four-year, 3 three-year, 3 two-year contracts per team
+                  </p>
                 </div>
 
                 <div className="space-y-2">
@@ -2340,6 +2583,7 @@ export default function Contracts() {
               leagueContractData={contractData}
               allPlayers={playersArray}
               rosterPlayerIds={allRosterPlayerIds}
+              dbContracts={dbContracts || []}
             />
           )}
         </TabsContent>
@@ -2350,6 +2594,7 @@ export default function Contracts() {
               userTeam={userTeam}
               allPlayers={playersArray}
               rosterPlayerIds={allRosterPlayerIds}
+              teamContracts={contractData[userTeam.rosterId.toString()] || {}}
             />
           )}
         </TabsContent>

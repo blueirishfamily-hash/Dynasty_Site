@@ -109,11 +109,17 @@ Preferred communication style: Simple, everyday language.
   - Overview tab: League-wide salary utilization with team pie charts
   - Expiring Contracts tab: Players in final contract year with analytics
   - Manage Team Contracts tab: Hypothetical planning without affecting official contracts
+    - Franchise tag toggle for roster players (star icon button)
+      - Calculates salary as average of top 5 position salaries (rounded up)
+      - Adds 1 year to the contract at the franchise tag salary
+      - Disabled for previously franchise tagged players (tracked in database)
+      - Disabled when no position salary data exists
   - Player Bidding tab: Private bids on free agents (team-specific visibility)
     - Search free agents and place bids with amount, max bid, and contract years
     - Bids are stored in database and visible only to the team that placed them
     - Edit or delete bids at any time
     - Privacy indicator showing bids are private to your team
+    - Contract limits summary card showing remaining slots (2x 4-year, 3x 3-year, 3x 2-year)
   - Manage League Contracts tab (commissioner-only): Official contract management
     - Salary inputs for 4 contract years (2025-2028)
     - Dead cap calculations with year-based percentages
@@ -122,6 +128,7 @@ Preferred communication style: Simple, everyday language.
       - IR toggle per player voids their 2025 salary (shows "IR VOID" badge)
       - Voided salary excluded from team cap totals
       - Original salary shown with strikethrough for reference
+    - Franchise tag tracking: franchiseTagUsed and franchiseTagYear fields
     - Contracts persist in PostgreSQL database
 
 ### Backend Architecture
