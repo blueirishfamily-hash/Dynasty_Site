@@ -1054,10 +1054,13 @@ function ManageTeamContractsTab({
                           {player.isFreeAgent ? "FA+" : isModified ? "Mod" : "Roster"}
                         </Badge>
                       </TableCell>
-                      {CONTRACT_YEARS.map(year => {
+                      {CONTRACT_YEARS.map((year, yearIndex) => {
                         const leagueSalary = player.isRosterPlayer ? getLeagueSalary(player.playerId, year) : 0;
                         const currentValue = player.hypotheticalSalaries[year] || 0;
                         const isDifferent = player.isRosterPlayer && currentValue !== leagueSalary;
+                        const deadCapPercentages = [0.4, 0.3, 0.2, 0.1];
+                        const deadCapPercent = deadCapPercentages[yearIndex] || 0;
+                        const deadCapValue = currentValue * deadCapPercent;
 
                         return (
                           <TableCell key={year} className="text-center">
@@ -1082,6 +1085,11 @@ function ManageTeamContractsTab({
                                 />
                                 <span className="text-xs text-muted-foreground">M</span>
                               </div>
+                              {currentValue > 0 && (
+                                <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
+                                  DC: ${deadCapValue.toFixed(1)}M ({Math.round(deadCapPercent * 100)}%)
+                                </span>
+                              )}
                               {player.isRosterPlayer && leagueSalary > 0 && isDifferent && (
                                 <span className="text-[10px] text-muted-foreground">
                                   League: ${leagueSalary.toFixed(1)}M
