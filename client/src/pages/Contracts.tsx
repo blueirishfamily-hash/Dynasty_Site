@@ -1155,6 +1155,467 @@ function ManageTeamContractsTab({
   );
 }
 
+interface PlayerBiddingTabProps {
+  userTeam: TeamCapData;
+  allPlayers: SleeperPlayerData[];
+  rosterPlayerIds: string[];
+}
+
+interface PlayerBid {
+  id: string;
+  leagueId: string;
+  rosterId: number;
+  playerId: string;
+  playerName: string;
+  playerPosition: string;
+  playerTeam: string | null;
+  bidAmount: number;
+  maxBid: number | null;
+  contractYears: number;
+  notes: string | null;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddingTabProps) {
+  const { league } = useSleeper();
+  const leagueId = league?.leagueId;
+  const { toast } = useToast();
+  const [freeAgentSearch, setFreeAgentSearch] = useState("");
+  const [selectedPlayer, setSelectedPlayer] = useState<SleeperPlayerData | null>(null);
+  const [bidAmount, setBidAmount] = useState("");
+  const [maxBid, setMaxBid] = useState("");
+  const [contractYears, setContractYears] = useState("1");
+  const [notes, setNotes] = useState("");
+  const [editingBid, setEditingBid] = useState<PlayerBid | null>(null);
+
+  const allRosterPlayerIdsSet = useMemo(() => {
+    return new Set(rosterPlayerIds);
+  }, [rosterPlayerIds]);
+
+  const { data: bids = [], isLoading, refetch } = useQuery<PlayerBid[]>({
+    queryKey: ['/api/league', leagueId, 'bids', userTeam.rosterId],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${leagueId}/bids/${userTeam.rosterId}`);
+      if (!res.ok) throw new Error("Failed to fetch bids");
+      return res.json();
+    },
+    enabled: !!leagueId && !!userTeam,
+  });
+
+  const createBidMutation = useMutation({
+    mutationFn: async (data: {
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      playerTeam: string | null;
+      bidAmount: number;
+      maxBid: number | null;
+      contractYears: number;
+      notes: string | null;
+    }) => {
+      const res = await apiRequest("POST", `/api/league/${leagueId}/bids`, {
+        rosterId: userTeam.rosterId,
+        ...data,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Bid placed successfully" });
+      refetch();
+      resetForm();
+    },
+    onError: () => {
+      toast({ title: "Failed to place bid", variant: "destructive" });
+    },
+  });
+
+  const updateBidMutation = useMutation({
+    mutationFn: async (data: { bidId: string; updates: Partial<PlayerBid> }) => {
+      const res = await apiRequest("PATCH", `/api/league/${leagueId}/bids/${data.bidId}`, {
+        rosterId: userTeam.rosterId,
+        ...data.updates,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Bid updated successfully" });
+      refetch();
+      setEditingBid(null);
+      resetForm();
+    },
+    onError: () => {
+      toast({ title: "Failed to update bid", variant: "destructive" });
+    },
+  });
+
+  const deleteBidMutation = useMutation({
+    mutationFn: async (bidId: string) => {
+      const res = await apiRequest("DELETE", `/api/league/${leagueId}/bids/${bidId}/${userTeam.rosterId}`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Bid removed" });
+      refetch();
+    },
+    onError: () => {
+      toast({ title: "Failed to remove bid", variant: "destructive" });
+    },
+  });
+
+  const resetForm = () => {
+    setSelectedPlayer(null);
+    setBidAmount("");
+    setMaxBid("");
+    setContractYears("1");
+    setNotes("");
+    setFreeAgentSearch("");
+  };
+
+  const freeAgentResults = useMemo(() => {
+    if (!freeAgentSearch.trim() || freeAgentSearch.length < 2) return [];
+    
+    const searchLower = freeAgentSearch.toLowerCase();
+    const biddedPlayerIds = new Set(bids.map(b => b.playerId));
+    
+    return allPlayers
+      .filter(player => {
+        if (!player.name || !player.position) return false;
+        if (!["QB", "RB", "WR", "TE", "K"].includes(player.position)) return false;
+        if (allRosterPlayerIdsSet.has(player.id)) return false;
+        if (biddedPlayerIds.has(player.id)) return false;
+        return player.name.toLowerCase().includes(searchLower);
+      })
+      .slice(0, 10);
+  }, [freeAgentSearch, allPlayers, allRosterPlayerIdsSet, bids]);
+
+  const handleSubmitBid = () => {
+    if (!selectedPlayer || !bidAmount) return;
+
+    const bidData = {
+      playerId: selectedPlayer.id,
+      playerName: selectedPlayer.name,
+      playerPosition: selectedPlayer.position,
+      playerTeam: selectedPlayer.team || null,
+      bidAmount: parseFloat(bidAmount),
+      maxBid: maxBid ? parseFloat(maxBid) : null,
+      contractYears: parseInt(contractYears),
+      notes: notes || null,
+    };
+
+    if (editingBid) {
+      updateBidMutation.mutate({ bidId: editingBid.id, updates: bidData });
+    } else {
+      createBidMutation.mutate(bidData);
+    }
+  };
+
+  const handleEditBid = (bid: PlayerBid) => {
+    setEditingBid(bid);
+    setSelectedPlayer({
+      id: bid.playerId,
+      name: bid.playerName,
+      position: bid.playerPosition,
+      team: bid.playerTeam,
+    });
+    setBidAmount(bid.bidAmount.toString());
+    setMaxBid(bid.maxBid?.toString() || "");
+    setContractYears(bid.contractYears.toString());
+    setNotes(bid.notes || "");
+  };
+
+  const handleCancelEdit = () => {
+    setEditingBid(null);
+    resetForm();
+  };
+
+  const activeBids = bids.filter(b => b.status === "active");
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="text-3xl font-bold text-primary">
+                {activeBids.length}
+              </div>
+              <p className="text-sm text-muted-foreground">Active Bids</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="text-3xl font-bold" style={{ color: COLORS.salaries }}>
+                ${activeBids.reduce((sum, b) => sum + b.bidAmount, 0).toFixed(1)}M
+              </div>
+              <p className="text-sm text-muted-foreground">Total Bid Amount</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="text-3xl font-bold text-muted-foreground">
+                {userTeam.teamName}
+              </div>
+              <p className="text-sm text-muted-foreground">Your Team</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <UserPlus className="w-5 h-5" />
+              {editingBid ? "Edit Bid" : "Place New Bid"}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            {!selectedPlayer ? (
+              <div className="space-y-2">
+                <Label>Search Free Agents</Label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                  <Input
+                    placeholder="Search for a player..."
+                    value={freeAgentSearch}
+                    onChange={(e) => setFreeAgentSearch(e.target.value)}
+                    className="pl-9"
+                    data-testid="input-bid-search"
+                  />
+                </div>
+                {freeAgentResults.length > 0 && (
+                  <div className="border rounded-md max-h-60 overflow-auto">
+                    {freeAgentResults.map(player => (
+                      <div
+                        key={player.id}
+                        className="p-3 hover-elevate cursor-pointer flex items-center justify-between border-b last:border-b-0"
+                        onClick={() => {
+                          setSelectedPlayer(player);
+                          setFreeAgentSearch("");
+                        }}
+                        data-testid={`player-option-${player.id}`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <Badge className={positionColors[player.position] || "bg-gray-500"}>
+                            {player.position}
+                          </Badge>
+                          <span className="font-medium">{player.name}</span>
+                        </div>
+                        <span className="text-sm text-muted-foreground">
+                          {player.team || "FA"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="flex items-center justify-between p-3 bg-muted rounded-md">
+                  <div className="flex items-center gap-2">
+                    <Badge className={positionColors[selectedPlayer.position] || "bg-gray-500"}>
+                      {selectedPlayer.position}
+                    </Badge>
+                    <span className="font-medium">{selectedPlayer.name}</span>
+                    <span className="text-sm text-muted-foreground">
+                      {selectedPlayer.team || "FA"}
+                    </span>
+                  </div>
+                  {!editingBid && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setSelectedPlayer(null)}
+                      data-testid="button-clear-player"
+                    >
+                      Change
+                    </Button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Bid Amount ($M)</Label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      placeholder="e.g., 15.5"
+                      value={bidAmount}
+                      onChange={(e) => setBidAmount(e.target.value)}
+                      data-testid="input-bid-amount"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Max Bid ($M)</Label>
+                    <Input
+                      type="number"
+                      step="0.1"
+                      min="0"
+                      placeholder="Optional"
+                      value={maxBid}
+                      onChange={(e) => setMaxBid(e.target.value)}
+                      data-testid="input-max-bid"
+                    />
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Contract Length (Years)</Label>
+                  <Select value={contractYears} onValueChange={setContractYears}>
+                    <SelectTrigger data-testid="select-contract-years">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">1 Year</SelectItem>
+                      <SelectItem value="2">2 Years</SelectItem>
+                      <SelectItem value="3">3 Years</SelectItem>
+                      <SelectItem value="4">4 Years</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label>Notes</Label>
+                  <Input
+                    placeholder="Optional notes for this bid..."
+                    value={notes}
+                    onChange={(e) => setNotes(e.target.value)}
+                    data-testid="input-bid-notes"
+                  />
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleSubmitBid}
+                    disabled={!bidAmount || createBidMutation.isPending || updateBidMutation.isPending}
+                    className="flex-1"
+                    data-testid="button-submit-bid"
+                  >
+                    <Save className="w-4 h-4 mr-2" />
+                    {editingBid ? "Update Bid" : "Place Bid"}
+                  </Button>
+                  {editingBid && (
+                    <Button
+                      variant="outline"
+                      onClick={handleCancelEdit}
+                      data-testid="button-cancel-edit"
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="w-5 h-5" />
+              Your Bids
+              <Badge variant="secondary" className="ml-auto">
+                Private to your team
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {isLoading ? (
+              <div className="text-center py-8 text-muted-foreground">Loading bids...</div>
+            ) : activeBids.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground">
+                <p>No active bids yet.</p>
+                <p className="text-sm mt-1">Search for free agents to place your first bid.</p>
+              </div>
+            ) : (
+              <ScrollArea className="h-[400px]">
+                <div className="space-y-3">
+                  {activeBids.map((bid) => (
+                    <div
+                      key={bid.id}
+                      className="p-3 border rounded-md space-y-2"
+                      data-testid={`bid-card-${bid.id}`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Badge className={positionColors[bid.playerPosition] || "bg-gray-500"}>
+                            {bid.playerPosition}
+                          </Badge>
+                          <span className="font-medium">{bid.playerName}</span>
+                          <span className="text-sm text-muted-foreground">
+                            {bid.playerTeam || "FA"}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => handleEditBid(bid)}
+                            data-testid={`button-edit-bid-${bid.id}`}
+                          >
+                            <FileText className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            onClick={() => deleteBidMutation.mutate(bid.id)}
+                            data-testid={`button-delete-bid-${bid.id}`}
+                          >
+                            <Trash2 className="w-4 h-4 text-destructive" />
+                          </Button>
+                        </div>
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 text-sm">
+                        <div>
+                          <span className="text-muted-foreground">Bid:</span>{" "}
+                          <span className="font-medium">${bid.bidAmount}M</span>
+                        </div>
+                        {bid.maxBid && (
+                          <div>
+                            <span className="text-muted-foreground">Max:</span>{" "}
+                            <span className="font-medium">${bid.maxBid}M</span>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-muted-foreground">Years:</span>{" "}
+                          <span className="font-medium">{bid.contractYears}</span>
+                        </div>
+                      </div>
+                      {bid.notes && (
+                        <p className="text-sm text-muted-foreground italic">
+                          {bid.notes}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </ScrollArea>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardContent className="pt-6">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <AlertTriangle className="w-4 h-4" />
+            <span>
+              Your bids are private and only visible to you. Other teams cannot see your bid amounts or target players.
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 interface ExpiringContractsTabProps {
   teams: TeamCapData[];
   playerMap: PlayerMap;
@@ -1622,6 +2083,7 @@ export default function Contracts() {
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
           <TabsTrigger value="expiring" data-testid="tab-expiring">Expiring Contracts</TabsTrigger>
           <TabsTrigger value="manage-team" data-testid="tab-manage-team">Manage Team Contracts</TabsTrigger>
+          <TabsTrigger value="bidding" data-testid="tab-bidding">Player Bidding</TabsTrigger>
           {isCommissioner && (
             <TabsTrigger value="manage-league" data-testid="tab-manage-league">Manage League Contracts</TabsTrigger>
           )}
@@ -1689,6 +2151,16 @@ export default function Contracts() {
               userTeam={userTeam}
               playerMap={playerMap}
               leagueContractData={contractData}
+              allPlayers={playersArray}
+              rosterPlayerIds={allRosterPlayerIds}
+            />
+          )}
+        </TabsContent>
+
+        <TabsContent value="bidding" className="mt-6">
+          {Object.keys(playerMap).length > 0 && playersArray && userTeam && (
+            <PlayerBiddingTab
+              userTeam={userTeam}
               allPlayers={playersArray}
               rosterPlayerIds={allRosterPlayerIds}
             />

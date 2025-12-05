@@ -105,6 +105,20 @@ Preferred communication style: Simple, everyday language.
   - Point totals hidden from regular members by default (shown as eye-off icon)
   - Commissioner can view hidden point totals (shown with eye icon indicator)
   - Commissioner toggle to reveal/hide point totals for all members
+- Contracts page with salary cap management ($250M per team):
+  - Overview tab: League-wide salary utilization with team pie charts
+  - Expiring Contracts tab: Players in final contract year with analytics
+  - Manage Team Contracts tab: Hypothetical planning without affecting official contracts
+  - Player Bidding tab: Private bids on free agents (team-specific visibility)
+    - Search free agents and place bids with amount, max bid, and contract years
+    - Bids are stored in database and visible only to the team that placed them
+    - Edit or delete bids at any time
+    - Privacy indicator showing bids are private to your team
+  - Manage League Contracts tab (commissioner-only): Official contract management
+    - Salary inputs for 4 contract years (2025-2028)
+    - Dead cap calculations with year-based percentages
+    - Fifth-year option tracking for rookie contracts
+    - Contracts persist in PostgreSQL database
 
 ### Backend Architecture
 
@@ -149,6 +163,8 @@ Preferred communication style: Simple, everyday language.
 - `rule_votes` - Team votes on rule proposals (persists across republishing)
 - `award_nominations` - MVP and ROY player nominations (persists across republishing)
 - `award_ballots` - Ranked voting ballots for awards (persists across republishing)
+- `player_contracts` - Commissioner-managed salary contracts (persists across republishing)
+- `player_bids` - Team-specific private bids on free agents (persists across republishing)
 
 **Data Models:**
 - User sessions (Sleeper username, user ID, selected league) - in-memory, ephemeral
@@ -158,6 +174,8 @@ Preferred communication style: Simple, everyday language.
 - Draft picks (traded and current ownership) - from Sleeper API
 - Rule suggestions and votes - PostgreSQL database (persistent)
 - Award nominations and ballots - PostgreSQL database (persistent)
+- Player contracts - PostgreSQL database (persistent)
+- Player bids - PostgreSQL database (persistent, team-private)
 
 ### Authentication and Authorization
 

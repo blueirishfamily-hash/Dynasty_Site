@@ -8,6 +8,7 @@ import {
   awardBallotsTable,
   leagueSettingsTable,
   playerContractsTable,
+  playerBidsTable,
 } from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -15,7 +16,8 @@ import type {
   AwardBallot, InsertAwardBallot,
   RuleVote, InsertRuleVote,
   LeagueSetting,
-  PlayerContract, InsertPlayerContract
+  PlayerContract, InsertPlayerContract,
+  PlayerBid, InsertPlayerBid
 } from "@shared/schema";
 
 export interface UserSession {
@@ -54,6 +56,11 @@ export interface IStorage {
   getPlayerContracts(leagueId: string): Promise<PlayerContract[]>;
   upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract>;
   deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void>;
+  
+  getPlayerBidsByRoster(leagueId: string, rosterId: number): Promise<PlayerBid[]>;
+  createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid>;
+  updatePlayerBid(id: string, rosterId: number, updates: Partial<InsertPlayerBid>): Promise<PlayerBid | undefined>;
+  deletePlayerBid(id: string, rosterId: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -551,6 +558,78 @@ export class DatabaseStorage implements IStorage {
         eq(playerContractsTable.leagueId, leagueId),
         eq(playerContractsTable.rosterId, rosterId),
         eq(playerContractsTable.playerId, playerId)
+      ));
+  }
+
+  async getPlayerBidsByRoster(leagueId: string, rosterId: number): Promise<PlayerBid[]> {
+    const rows = await db
+      .select()
+      .from(playerBidsTable)
+      .where(and(
+        eq(playerBidsTable.leagueId, leagueId),
+        eq(playerBidsTable.rosterId, rosterId)
+      ))
+      .orderBy(desc(playerBidsTable.createdAt));
+
+    return rows;
+  }
+
+  async createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid> {
+    const id = randomUUID();
+    const now = Date.now();
+
+    const [inserted] = await db.insert(playerBidsTable).values({
+      id,
+      leagueId: data.leagueId,
+      rosterId: data.rosterId,
+      playerId: data.playerId,
+      playerName: data.playerName,
+      playerPosition: data.playerPosition,
+      playerTeam: data.playerTeam,
+      bidAmount: data.bidAmount,
+      maxBid: data.maxBid,
+      contractYears: data.contractYears,
+      notes: data.notes,
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    }).returning();
+
+    return inserted;
+  }
+
+  async updatePlayerBid(id: string, rosterId: number, updates: Partial<InsertPlayerBid>): Promise<PlayerBid | undefined> {
+    const [existing] = await db
+      .select()
+      .from(playerBidsTable)
+      .where(and(
+        eq(playerBidsTable.id, id),
+        eq(playerBidsTable.rosterId, rosterId)
+      ));
+
+    if (!existing) return undefined;
+
+    const [updated] = await db
+      .update(playerBidsTable)
+      .set({
+        ...updates,
+        updatedAt: Date.now(),
+      })
+      .where(and(
+        eq(playerBidsTable.id, id),
+        eq(playerBidsTable.rosterId, rosterId)
+      ))
+      .returning();
+
+    return updated;
+  }
+
+  async deletePlayerBid(id: string, rosterId: number): Promise<void> {
+    await db
+      .delete(playerBidsTable)
+      .where(and(
+        eq(playerBidsTable.id, id),
+        eq(playerBidsTable.rosterId, rosterId)
       ));
   }
 }

@@ -2964,5 +2964,83 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== PLAYER BIDS ====================
+  // Get player bids for a specific team (privacy: only returns bids for the requesting team)
+  app.get("/api/league/:leagueId/bids/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, rosterId } = req.params;
+      const bids = await storage.getPlayerBidsByRoster(leagueId, parseInt(rosterId));
+      res.json(bids);
+    } catch (error) {
+      console.error("Error fetching bids:", error);
+      res.status(500).json({ error: "Failed to fetch bids" });
+    }
+  });
+
+  // Create a new player bid
+  app.post("/api/league/:leagueId/bids", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { rosterId, playerId, playerName, playerPosition, playerTeam, bidAmount, maxBid, contractYears, notes } = req.body;
+      
+      if (!rosterId || !playerId || !playerName || !bidAmount) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      const bid = await storage.createPlayerBid({
+        leagueId,
+        rosterId,
+        playerId,
+        playerName,
+        playerPosition: playerPosition || "N/A",
+        playerTeam: playerTeam || null,
+        bidAmount,
+        maxBid: maxBid || null,
+        contractYears: contractYears || 1,
+        notes: notes || null,
+      });
+
+      res.json(bid);
+    } catch (error) {
+      console.error("Error creating bid:", error);
+      res.status(500).json({ error: "Failed to create bid" });
+    }
+  });
+
+  // Update a player bid (privacy: only allows updating if rosterId matches)
+  app.patch("/api/league/:leagueId/bids/:bidId", async (req, res) => {
+    try {
+      const { bidId } = req.params;
+      const { rosterId, ...updates } = req.body;
+      
+      if (!rosterId) {
+        return res.status(400).json({ error: "Roster ID required" });
+      }
+
+      const bid = await storage.updatePlayerBid(bidId, rosterId, updates);
+      
+      if (!bid) {
+        return res.status(404).json({ error: "Bid not found or unauthorized" });
+      }
+
+      res.json(bid);
+    } catch (error) {
+      console.error("Error updating bid:", error);
+      res.status(500).json({ error: "Failed to update bid" });
+    }
+  });
+
+  // Delete a player bid (privacy: only allows deleting if rosterId matches)
+  app.delete("/api/league/:leagueId/bids/:bidId/:rosterId", async (req, res) => {
+    try {
+      const { bidId, rosterId } = req.params;
+      await storage.deletePlayerBid(bidId, parseInt(rosterId));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting bid:", error);
+      res.status(500).json({ error: "Failed to delete bid" });
+    }
+  });
+
   return httpServer;
 }
