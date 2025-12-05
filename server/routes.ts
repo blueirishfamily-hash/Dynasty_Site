@@ -3111,7 +3111,7 @@ export async function registerRoutes(
         for (let i = index; i < years.length; i++) {
           const dcPercent = deadCapPercentages[i - index] || 0;
           const dcKey = `deadCap${years[i]}` as keyof typeof deadCapAmounts;
-          deadCapAmounts[dcKey] += Math.round(salary * dcPercent);
+          deadCapAmounts[dcKey] += Math.ceil(salary * dcPercent);
         }
       });
       

@@ -51,7 +51,8 @@ const COLORS = {
 };
 
 const CURRENT_YEAR = 2025;
-const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
+const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2];
+const OPTION_YEAR = CURRENT_YEAR + 3;
 
 interface PlayerContractData {
   salaries: Record<number, number>;
@@ -497,9 +498,10 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     onContractChange(selectedRosterId, playerId, "isOnIr", isOnIr);
   };
 
-  const totalSalaryByYear = CONTRACT_YEARS.reduce((acc, year) => {
+  const totalSalaryByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
     const total = playerInputs.reduce((sum, p) => {
       const isVoided = p.isOnIr && year === CURRENT_YEAR;
+      if (year === OPTION_YEAR && p.fifthYearOption !== "accepted") return sum;
       return sum + (isVoided ? 0 : (p.salaries[year] || 0));
     }, 0);
     return { ...acc, [year]: total };
@@ -573,11 +575,13 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-4 gap-3 mb-6 p-3 bg-muted/50 rounded-lg">
-              {CONTRACT_YEARS.map(year => (
+              {[...CONTRACT_YEARS, OPTION_YEAR].map(year => (
                 <div key={year} className="text-center">
-                  <div className="text-xs text-muted-foreground mb-1">{year} Total</div>
-                  <div className="font-bold" style={{ color: totalSalaryByYear[year] > TOTAL_CAP ? COLORS.deadCap : COLORS.salaries }}>
-                    ${totalSalaryByYear[year].toFixed(1)}M
+                  <div className="text-xs text-muted-foreground mb-1">
+                    {year === OPTION_YEAR ? `${year} (Opt)` : year} Total
+                  </div>
+                  <div className="font-bold" style={{ color: (totalSalaryByYear[year] || 0) > TOTAL_CAP ? COLORS.deadCap : COLORS.salaries }}>
+                    ${(totalSalaryByYear[year] || 0).toFixed(1)}M
                   </div>
                 </div>
               ))}
@@ -595,7 +599,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     {CONTRACT_YEARS.map(year => (
                       <TableHead key={year} className="text-center w-[90px]">{year}</TableHead>
                     ))}
-                    <TableHead className="text-center w-[110px]">5th Yr Opt</TableHead>
+                    <TableHead className="text-center w-[110px]">4th Yr Opt</TableHead>
+                    <TableHead className="text-center w-[90px]">{OPTION_YEAR}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -696,7 +701,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                 variant={player.fifthYearOption === "accepted" ? "default" : "outline"}
                                 className="h-6 px-2 text-xs"
                                 onClick={() => handleFifthYearOptionChange(player.playerId, "accepted")}
-                                data-testid={`button-fifth-year-yes-${player.playerId}`}
+                                data-testid={`button-fourth-year-yes-${player.playerId}`}
                               >
                                 Yes
                               </Button>
@@ -705,7 +710,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                 variant={player.fifthYearOption === "declined" ? "default" : "outline"}
                                 className="h-6 px-2 text-xs"
                                 onClick={() => handleFifthYearOptionChange(player.playerId, "declined")}
-                                data-testid={`button-fifth-year-no-${player.playerId}`}
+                                data-testid={`button-fourth-year-no-${player.playerId}`}
                               >
                                 No
                               </Button>
@@ -714,12 +719,39 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             <span className="text-xs text-muted-foreground">N/A</span>
                           )}
                         </TableCell>
+                        <TableCell className="text-center">
+                          {(isRookie && player.fifthYearOption === "accepted") ? (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <div className="flex items-center justify-center gap-0.5">
+                                <span className="text-xs text-muted-foreground">$</span>
+                                <Input
+                                  type="number"
+                                  step="0.1"
+                                  min="0"
+                                  className="h-7 w-16 text-center tabular-nums text-sm"
+                                  placeholder="0"
+                                  value={player.salaries[OPTION_YEAR] || ""}
+                                  onChange={(e) => handleSalaryChange(player.playerId, OPTION_YEAR, e.target.value)}
+                                  data-testid={`input-salary-${player.playerId}-${OPTION_YEAR}`}
+                                />
+                                <span className="text-xs text-muted-foreground">M</span>
+                              </div>
+                              {(player.salaries[OPTION_YEAR] || 0) > 0 && (
+                                <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
+                                  DC: ${((player.salaries[OPTION_YEAR] || 0) * 0.1).toFixed(1)}M (10%)
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          )}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
                   {playerInputs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
                         No players on this roster
                       </TableCell>
                     </TableRow>
@@ -805,7 +837,7 @@ function ManageTeamContractsTab({
     .map(id => {
       const player = playerMap[id];
       const hypotheticalSalaries: Record<number, number> = {};
-      CONTRACT_YEARS.forEach(year => {
+      [...CONTRACT_YEARS, OPTION_YEAR].forEach(year => {
         hypotheticalSalaries[year] = getEffectiveSalary(id, year);
       });
 
@@ -830,14 +862,14 @@ function ManageTeamContractsTab({
 
   const allHypotheticalPlayers = [...rosterPlayers, ...hypotheticalData.addedFreeAgents];
 
-  const hypotheticalTotalsByYear = CONTRACT_YEARS.reduce((acc, year) => {
+  const hypotheticalTotalsByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
     const total = allHypotheticalPlayers.reduce((sum, p) => {
       return sum + (p.hypotheticalSalaries[year] || 0);
     }, 0);
     return { ...acc, [year]: total };
   }, {} as Record<number, number>);
 
-  const leagueTotalsByYear = CONTRACT_YEARS.reduce((acc, year) => {
+  const leagueTotalsByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
     const total = rosterPlayers.reduce((sum, p) => {
       return sum + getLeagueSalary(p.playerId, year);
     }, 0);
@@ -860,7 +892,7 @@ function ManageTeamContractsTab({
 
   const handleAddFreeAgent = (player: SleeperPlayerData) => {
     const hypotheticalSalaries: Record<number, number> = {};
-    CONTRACT_YEARS.forEach(year => {
+    [...CONTRACT_YEARS, OPTION_YEAR].forEach(year => {
       hypotheticalSalaries[year] = 0;
     });
 
@@ -1017,16 +1049,18 @@ function ManageTeamContractsTab({
           )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-            {CONTRACT_YEARS.map(year => {
-              const leagueTotal = leagueTotalsByYear[year];
-              const hypotheticalTotal = hypotheticalTotalsByYear[year];
+            {[...CONTRACT_YEARS, OPTION_YEAR].map(year => {
+              const leagueTotal = leagueTotalsByYear[year] || 0;
+              const hypotheticalTotal = hypotheticalTotalsByYear[year] || 0;
               const difference = hypotheticalTotal - leagueTotal;
               const isOverCap = hypotheticalTotal > TOTAL_CAP;
 
               return (
                 <Card key={year} className="p-3">
                   <div className="text-center">
-                    <div className="text-xs text-muted-foreground mb-1">{year}</div>
+                    <div className="text-xs text-muted-foreground mb-1">
+                      {year === OPTION_YEAR ? `${year} (Opt)` : year}
+                    </div>
                     <div className="font-bold" style={{ color: isOverCap ? COLORS.deadCap : COLORS.salaries }}>
                       ${hypotheticalTotal.toFixed(1)}M
                     </div>
@@ -1052,8 +1086,10 @@ function ManageTeamContractsTab({
                   <TableHead className="text-center w-[60px]">Pos</TableHead>
                   <TableHead className="text-center w-[60px]">Team</TableHead>
                   <TableHead className="text-center w-[50px]">Type</TableHead>
-                  {CONTRACT_YEARS.map(year => (
-                    <TableHead key={year} className="text-center w-[100px]">{year}</TableHead>
+                  {[...CONTRACT_YEARS, OPTION_YEAR].map(year => (
+                    <TableHead key={year} className="text-center w-[100px]">
+                      {year === OPTION_YEAR ? `${year} (Opt)` : year}
+                    </TableHead>
                   ))}
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
@@ -1101,7 +1137,7 @@ function ManageTeamContractsTab({
                           {player.isFreeAgent ? "FA+" : isModified ? "Mod" : "Roster"}
                         </Badge>
                       </TableCell>
-                      {CONTRACT_YEARS.map((year, yearIndex) => {
+                      {[...CONTRACT_YEARS, OPTION_YEAR].map((year, yearIndex) => {
                         const leagueSalary = player.isRosterPlayer ? getLeagueSalary(player.playerId, year) : 0;
                         const currentValue = player.hypotheticalSalaries[year] || 0;
                         const isDifferent = player.isRosterPlayer && currentValue !== leagueSalary;
@@ -1164,7 +1200,7 @@ function ManageTeamContractsTab({
                 })}
                 {allHypotheticalPlayers.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
                       No players on this roster
                     </TableCell>
                   </TableRow>
