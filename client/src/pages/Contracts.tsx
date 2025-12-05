@@ -1,6 +1,7 @@
 import { useEffect, useState, useMemo } from "react";
 import { useLocation } from "wouter";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -53,7 +54,7 @@ const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURREN
 
 interface PlayerContractData {
   salaries: Record<number, number>;
-  fifthYearOption: boolean | null;
+  fifthYearOption: "accepted" | "declined" | null;
 }
 
 type ContractDataStore = Record<string, Record<string, PlayerContractData>>;
@@ -485,7 +486,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     });
   };
 
-  const handleFifthYearOptionChange = (playerId: string, value: boolean) => {
+  const handleFifthYearOptionChange = (playerId: string, value: "accepted" | "declined") => {
     onContractChange(selectedRosterId, playerId, "fifthYearOption", value);
   };
 
@@ -660,18 +661,18 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             <div className="flex items-center justify-center gap-1">
                               <Button
                                 size="sm"
-                                variant={player.fifthYearOption === true ? "default" : "outline"}
+                                variant={player.fifthYearOption === "accepted" ? "default" : "outline"}
                                 className="h-6 px-2 text-xs"
-                                onClick={() => handleFifthYearOptionChange(player.playerId, true)}
+                                onClick={() => handleFifthYearOptionChange(player.playerId, "accepted")}
                                 data-testid={`button-fifth-year-yes-${player.playerId}`}
                               >
                                 Yes
                               </Button>
                               <Button
                                 size="sm"
-                                variant={player.fifthYearOption === false ? "default" : "outline"}
+                                variant={player.fifthYearOption === "declined" ? "default" : "outline"}
                                 className="h-6 px-2 text-xs"
-                                onClick={() => handleFifthYearOptionChange(player.playerId, false)}
+                                onClick={() => handleFifthYearOptionChange(player.playerId, "declined")}
                                 data-testid={`button-fifth-year-no-${player.playerId}`}
                               >
                                 No
@@ -1366,6 +1367,19 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
   );
 }
 
+interface DbPlayerContract {
+  id: string;
+  leagueId: string;
+  rosterId: number;
+  playerId: string;
+  salary2025: number;
+  salary2026: number;
+  salary2027: number;
+  salary2028: number;
+  fifthYearOption: string | null;
+  updatedAt: number;
+}
+
 export default function Contracts() {
   const { toast } = useToast();
   const { user, league, isLoading } = useSleeper();
@@ -1395,6 +1409,33 @@ export default function Contracts() {
     queryKey: ["/api/sleeper/players"],
     enabled: !!league?.leagueId,
   });
+
+  const { data: dbContracts } = useQuery<DbPlayerContract[]>({
+    queryKey: ["/api/league", league?.leagueId, "contracts"],
+    enabled: !!league?.leagueId,
+  });
+
+  useEffect(() => {
+    if (dbContracts && dbContracts.length > 0) {
+      const contractStore: ContractDataStore = {};
+      for (const contract of dbContracts) {
+        const rosterId = contract.rosterId.toString();
+        if (!contractStore[rosterId]) {
+          contractStore[rosterId] = {};
+        }
+        contractStore[rosterId][contract.playerId] = {
+          salaries: {
+            2025: contract.salary2025 / 10,
+            2026: contract.salary2026 / 10,
+            2027: contract.salary2027 / 10,
+            2028: contract.salary2028 / 10,
+          },
+          fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
+        };
+      }
+      setContractData(contractStore);
+    }
+  }, [dbContracts]);
 
   const playerMap = useMemo(() => {
     if (!playersArray) return {};
@@ -1458,12 +1499,57 @@ export default function Contracts() {
     setHasChanges(true);
   };
 
+  const saveContractsMutation = useMutation({
+    mutationFn: async (contracts: any[]) => {
+      const response = await apiRequest("POST", `/api/league/${league?.leagueId}/contracts`, {
+        contracts,
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "contracts"] });
+      toast({
+        title: "Contracts Saved",
+        description: "All contract data has been saved to the database.",
+      });
+      setHasChanges(false);
+    },
+    onError: (error) => {
+      console.error("Error saving contracts:", error);
+      toast({
+        title: "Error",
+        description: "Failed to save contracts. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleSave = () => {
-    toast({
-      title: "Contracts Saved",
-      description: "All contract data has been saved successfully.",
-    });
-    setHasChanges(false);
+    if (!league?.leagueId) return;
+
+    const contractsToSave: any[] = [];
+    
+    for (const rosterId of Object.keys(contractData)) {
+      const teamContracts = contractData[rosterId];
+      for (const playerId of Object.keys(teamContracts)) {
+        const contract = teamContracts[playerId];
+        const hasSalary = Object.values(contract.salaries).some(s => s > 0);
+        
+        if (hasSalary) {
+          contractsToSave.push({
+            rosterId: parseInt(rosterId),
+            playerId,
+            salary2025: Math.round((contract.salaries[2025] || 0) * 10),
+            salary2026: Math.round((contract.salaries[2026] || 0) * 10),
+            salary2027: Math.round((contract.salaries[2027] || 0) * 10),
+            salary2028: Math.round((contract.salaries[2028] || 0) * 10),
+            fifthYearOption: contract.fifthYearOption,
+          });
+        }
+      }
+    }
+
+    saveContractsMutation.mutate(contractsToSave);
   };
 
   if (isLoading || !league || !user) {

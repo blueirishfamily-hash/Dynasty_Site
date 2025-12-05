@@ -79,6 +79,11 @@ export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ 
 export const insertAwardNominationDbSchema = createInsertSchema(awardNominationsTable).omit({ id: true, createdAt: true });
 export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).omit({ id: true, createdAt: true });
 export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTable).omit({ id: true, updatedAt: true });
+export const insertPlayerContractDbSchema = createInsertSchema(playerContractsTable).omit({ id: true, updatedAt: true });
+
+// Player Contract types
+export type PlayerContract = typeof playerContractsTable.$inferSelect;
+export type InsertPlayerContract = z.infer<typeof insertPlayerContractDbSchema>;
 
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;

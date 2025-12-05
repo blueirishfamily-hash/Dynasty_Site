@@ -7,13 +7,15 @@ import {
   awardNominationsTable,
   awardBallotsTable,
   leagueSettingsTable,
+  playerContractsTable,
 } from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
   AwardNomination, InsertAwardNomination,
   AwardBallot, InsertAwardBallot,
   RuleVote, InsertRuleVote,
-  LeagueSetting
+  LeagueSetting,
+  PlayerContract, InsertPlayerContract
 } from "@shared/schema";
 
 export interface UserSession {
@@ -48,6 +50,10 @@ export interface IStorage {
   
   getLeagueSetting(leagueId: string, settingKey: string): Promise<string | undefined>;
   setLeagueSetting(leagueId: string, settingKey: string, settingValue: string): Promise<LeagueSetting>;
+  
+  getPlayerContracts(leagueId: string): Promise<PlayerContract[]>;
+  upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract>;
+  deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -481,6 +487,71 @@ export class DatabaseStorage implements IStorage {
       settingValue,
       updatedAt,
     };
+  }
+
+  async getPlayerContracts(leagueId: string): Promise<PlayerContract[]> {
+    const rows = await db
+      .select()
+      .from(playerContractsTable)
+      .where(eq(playerContractsTable.leagueId, leagueId));
+
+    return rows;
+  }
+
+  async upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract> {
+    const [existing] = await db
+      .select()
+      .from(playerContractsTable)
+      .where(and(
+        eq(playerContractsTable.leagueId, data.leagueId),
+        eq(playerContractsTable.rosterId, data.rosterId),
+        eq(playerContractsTable.playerId, data.playerId)
+      ));
+
+    const updatedAt = Date.now();
+
+    if (existing) {
+      const [updated] = await db
+        .update(playerContractsTable)
+        .set({
+          salary2025: data.salary2025,
+          salary2026: data.salary2026,
+          salary2027: data.salary2027,
+          salary2028: data.salary2028,
+          fifthYearOption: data.fifthYearOption,
+          updatedAt,
+        })
+        .where(eq(playerContractsTable.id, existing.id))
+        .returning();
+
+      return updated;
+    }
+
+    const id = randomUUID();
+    const [inserted] = await db.insert(playerContractsTable).values({
+      id,
+      leagueId: data.leagueId,
+      rosterId: data.rosterId,
+      playerId: data.playerId,
+      salary2025: data.salary2025,
+      salary2026: data.salary2026,
+      salary2027: data.salary2027,
+      salary2028: data.salary2028,
+      fifthYearOption: data.fifthYearOption,
+      updatedAt,
+    }).returning();
+
+    return inserted;
+  }
+
+  async deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void> {
+    await db
+      .delete(playerContractsTable)
+      .where(and(
+        eq(playerContractsTable.leagueId, leagueId),
+        eq(playerContractsTable.rosterId, rosterId),
+        eq(playerContractsTable.playerId, playerId)
+      ));
   }
 }
 

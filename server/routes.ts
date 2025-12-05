@@ -2908,5 +2908,61 @@ export async function registerRoutes(
     }
   });
 
+  // Get all player contracts for a league
+  app.get("/api/league/:leagueId/contracts", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const contracts = await storage.getPlayerContracts(leagueId);
+      res.json(contracts);
+    } catch (error) {
+      console.error("Error fetching contracts:", error);
+      res.status(500).json({ error: "Failed to fetch contracts" });
+    }
+  });
+
+  // Save player contracts (bulk upsert)
+  app.post("/api/league/:leagueId/contracts", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { contracts } = req.body;
+      
+      if (!Array.isArray(contracts)) {
+        return res.status(400).json({ error: "Contracts must be an array" });
+      }
+
+      const results = [];
+      for (const contract of contracts) {
+        const result = await storage.upsertPlayerContract({
+          leagueId,
+          rosterId: contract.rosterId,
+          playerId: contract.playerId,
+          salary2025: contract.salary2025 || 0,
+          salary2026: contract.salary2026 || 0,
+          salary2027: contract.salary2027 || 0,
+          salary2028: contract.salary2028 || 0,
+          fifthYearOption: contract.fifthYearOption || null,
+        });
+        results.push(result);
+      }
+      
+      res.json({ saved: results.length, contracts: results });
+    } catch (error) {
+      console.error("Error saving contracts:", error);
+      res.status(500).json({ error: "Failed to save contracts" });
+    }
+  });
+
+  // Delete a player contract
+  app.delete("/api/league/:leagueId/contracts/:rosterId/:playerId", async (req, res) => {
+    try {
+      const { leagueId, rosterId, playerId } = req.params;
+      await storage.deletePlayerContract(leagueId, parseInt(rosterId), playerId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting contract:", error);
+      res.status(500).json({ error: "Failed to delete contract" });
+    }
+  });
+
   return httpServer;
 }
