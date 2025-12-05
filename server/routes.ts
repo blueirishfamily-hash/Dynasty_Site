@@ -3094,7 +3094,7 @@ export async function registerRoutes(
       const { leagueId } = req.params;
       const { rosterId, playerId, playerName, playerPosition, reason, contract } = req.body;
       
-      const deadCapPercentages = [0.4, 0.3, 0.2, 0.1];
+      const deadCapPercentages = [0.5, 0.25, 0.1, 0];
       const years = [2025, 2026, 2027, 2028];
       
       const deadCapAmounts = {
