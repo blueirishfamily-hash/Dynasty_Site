@@ -108,6 +108,36 @@ export const deadCapEntriesTable = pgTable("dead_cap_entries", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
+// Saved contract drafts - team-specific saved hypothetical contracts
+export const savedContractDraftsTable = pgTable("saved_contract_drafts", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  playerPosition: varchar("player_position", { length: 16 }).notNull(),
+  salary2025: integer("salary_2025").notNull().default(0),
+  salary2026: integer("salary_2026").notNull().default(0),
+  salary2027: integer("salary_2027").notNull().default(0),
+  salary2028: integer("salary_2028").notNull().default(0),
+  franchiseTagApplied: integer("franchise_tag_applied").notNull().default(0),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+// Contract approval requests - submitted by teams for commissioner approval
+export const contractApprovalRequestsTable = pgTable("contract_approval_requests", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  teamName: varchar("team_name", { length: 128 }).notNull(),
+  ownerName: varchar("owner_name", { length: 128 }).notNull(),
+  contractsJson: text("contracts_json").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  submittedAt: bigint("submitted_at", { mode: "number" }).notNull(),
+  reviewedAt: bigint("reviewed_at", { mode: "number" }),
+  reviewerNotes: text("reviewer_notes"),
+});
+
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
@@ -117,6 +147,8 @@ export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTabl
 export const insertPlayerContractDbSchema = createInsertSchema(playerContractsTable).omit({ id: true, updatedAt: true });
 export const insertPlayerBidDbSchema = createInsertSchema(playerBidsTable).omit({ id: true, createdAt: true, updatedAt: true, status: true });
 export const insertDeadCapEntryDbSchema = createInsertSchema(deadCapEntriesTable).omit({ id: true, createdAt: true });
+export const insertSavedContractDraftDbSchema = createInsertSchema(savedContractDraftsTable).omit({ id: true, updatedAt: true });
+export const insertContractApprovalRequestDbSchema = createInsertSchema(contractApprovalRequestsTable).omit({ id: true, submittedAt: true, status: true, reviewedAt: true, reviewerNotes: true });
 
 // Player Contract types
 export type PlayerContract = typeof playerContractsTable.$inferSelect;
@@ -129,6 +161,14 @@ export type InsertPlayerBid = z.infer<typeof insertPlayerBidDbSchema>;
 // Dead Cap Entry types
 export type DeadCapEntry = typeof deadCapEntriesTable.$inferSelect;
 export type InsertDeadCapEntry = z.infer<typeof insertDeadCapEntryDbSchema>;
+
+// Saved Contract Draft types
+export type SavedContractDraft = typeof savedContractDraftsTable.$inferSelect;
+export type InsertSavedContractDraft = z.infer<typeof insertSavedContractDraftDbSchema>;
+
+// Contract Approval Request types
+export type ContractApprovalRequest = typeof contractApprovalRequestsTable.$inferSelect;
+export type InsertContractApprovalRequest = z.infer<typeof insertContractApprovalRequestDbSchema>;
 
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;

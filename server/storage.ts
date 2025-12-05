@@ -10,6 +10,8 @@ import {
   playerContractsTable,
   playerBidsTable,
   deadCapEntriesTable,
+  savedContractDraftsTable,
+  contractApprovalRequestsTable,
 } from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -19,7 +21,9 @@ import type {
   LeagueSetting,
   PlayerContract, InsertPlayerContract,
   PlayerBid, InsertPlayerBid,
-  DeadCapEntry, InsertDeadCapEntry
+  DeadCapEntry, InsertDeadCapEntry,
+  SavedContractDraft, InsertSavedContractDraft,
+  ContractApprovalRequest, InsertContractApprovalRequest
 } from "@shared/schema";
 
 export interface UserSession {
@@ -63,6 +67,17 @@ export interface IStorage {
   createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid>;
   updatePlayerBid(id: string, rosterId: number, updates: Partial<InsertPlayerBid>): Promise<PlayerBid | undefined>;
   deletePlayerBid(id: string, rosterId: number): Promise<void>;
+  
+  getSavedContractDrafts(leagueId: string, rosterId: number): Promise<SavedContractDraft[]>;
+  upsertSavedContractDraft(data: InsertSavedContractDraft): Promise<SavedContractDraft>;
+  deleteSavedContractDraft(leagueId: string, rosterId: number, playerId: string): Promise<void>;
+  deleteAllSavedContractDrafts(leagueId: string, rosterId: number): Promise<void>;
+  
+  getContractApprovalRequests(leagueId: string): Promise<ContractApprovalRequest[]>;
+  getContractApprovalRequestByRoster(leagueId: string, rosterId: number): Promise<ContractApprovalRequest | undefined>;
+  createContractApprovalRequest(data: InsertContractApprovalRequest): Promise<ContractApprovalRequest>;
+  updateContractApprovalRequest(id: string, status: "pending" | "approved" | "rejected", reviewerNotes?: string): Promise<ContractApprovalRequest | undefined>;
+  deleteContractApprovalRequest(id: string): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -675,6 +690,155 @@ export class DatabaseStorage implements IStorage {
     await db
       .delete(deadCapEntriesTable)
       .where(eq(deadCapEntriesTable.id, id));
+  }
+
+  async getSavedContractDrafts(leagueId: string, rosterId: number): Promise<SavedContractDraft[]> {
+    const rows = await db
+      .select()
+      .from(savedContractDraftsTable)
+      .where(and(
+        eq(savedContractDraftsTable.leagueId, leagueId),
+        eq(savedContractDraftsTable.rosterId, rosterId)
+      ))
+      .orderBy(desc(savedContractDraftsTable.updatedAt));
+
+    return rows;
+  }
+
+  async upsertSavedContractDraft(data: InsertSavedContractDraft): Promise<SavedContractDraft> {
+    const now = Date.now();
+    
+    const [existing] = await db
+      .select()
+      .from(savedContractDraftsTable)
+      .where(and(
+        eq(savedContractDraftsTable.leagueId, data.leagueId),
+        eq(savedContractDraftsTable.rosterId, data.rosterId),
+        eq(savedContractDraftsTable.playerId, data.playerId)
+      ));
+
+    if (existing) {
+      const [updated] = await db
+        .update(savedContractDraftsTable)
+        .set({
+          playerName: data.playerName,
+          playerPosition: data.playerPosition,
+          salary2025: data.salary2025,
+          salary2026: data.salary2026,
+          salary2027: data.salary2027,
+          salary2028: data.salary2028,
+          franchiseTagApplied: data.franchiseTagApplied,
+          updatedAt: now,
+        })
+        .where(eq(savedContractDraftsTable.id, existing.id))
+        .returning();
+      return updated;
+    }
+
+    const id = randomUUID();
+    const [inserted] = await db.insert(savedContractDraftsTable).values({
+      id,
+      leagueId: data.leagueId,
+      rosterId: data.rosterId,
+      playerId: data.playerId,
+      playerName: data.playerName,
+      playerPosition: data.playerPosition,
+      salary2025: data.salary2025,
+      salary2026: data.salary2026,
+      salary2027: data.salary2027,
+      salary2028: data.salary2028,
+      franchiseTagApplied: data.franchiseTagApplied,
+      updatedAt: now,
+    }).returning();
+
+    return inserted;
+  }
+
+  async deleteSavedContractDraft(leagueId: string, rosterId: number, playerId: string): Promise<void> {
+    await db
+      .delete(savedContractDraftsTable)
+      .where(and(
+        eq(savedContractDraftsTable.leagueId, leagueId),
+        eq(savedContractDraftsTable.rosterId, rosterId),
+        eq(savedContractDraftsTable.playerId, playerId)
+      ));
+  }
+
+  async deleteAllSavedContractDrafts(leagueId: string, rosterId: number): Promise<void> {
+    await db
+      .delete(savedContractDraftsTable)
+      .where(and(
+        eq(savedContractDraftsTable.leagueId, leagueId),
+        eq(savedContractDraftsTable.rosterId, rosterId)
+      ));
+  }
+
+  async getContractApprovalRequests(leagueId: string): Promise<ContractApprovalRequest[]> {
+    const rows = await db
+      .select()
+      .from(contractApprovalRequestsTable)
+      .where(eq(contractApprovalRequestsTable.leagueId, leagueId))
+      .orderBy(desc(contractApprovalRequestsTable.submittedAt));
+
+    return rows;
+  }
+
+  async getContractApprovalRequestByRoster(leagueId: string, rosterId: number): Promise<ContractApprovalRequest | undefined> {
+    const [row] = await db
+      .select()
+      .from(contractApprovalRequestsTable)
+      .where(and(
+        eq(contractApprovalRequestsTable.leagueId, leagueId),
+        eq(contractApprovalRequestsTable.rosterId, rosterId),
+        eq(contractApprovalRequestsTable.status, "pending")
+      ));
+
+    return row;
+  }
+
+  async createContractApprovalRequest(data: InsertContractApprovalRequest): Promise<ContractApprovalRequest> {
+    const id = randomUUID();
+    const now = Date.now();
+
+    const [inserted] = await db.insert(contractApprovalRequestsTable).values({
+      id,
+      leagueId: data.leagueId,
+      rosterId: data.rosterId,
+      teamName: data.teamName,
+      ownerName: data.ownerName,
+      contractsJson: data.contractsJson,
+      status: "pending",
+      submittedAt: now,
+    }).returning();
+
+    return inserted;
+  }
+
+  async updateContractApprovalRequest(id: string, status: "pending" | "approved" | "rejected", reviewerNotes?: string): Promise<ContractApprovalRequest | undefined> {
+    const [existing] = await db
+      .select()
+      .from(contractApprovalRequestsTable)
+      .where(eq(contractApprovalRequestsTable.id, id));
+
+    if (!existing) return undefined;
+
+    const [updated] = await db
+      .update(contractApprovalRequestsTable)
+      .set({
+        status,
+        reviewedAt: Date.now(),
+        reviewerNotes: reviewerNotes || null,
+      })
+      .where(eq(contractApprovalRequestsTable.id, id))
+      .returning();
+
+    return updated;
+  }
+
+  async deleteContractApprovalRequest(id: string): Promise<void> {
+    await db
+      .delete(contractApprovalRequestsTable)
+      .where(eq(contractApprovalRequestsTable.id, id));
   }
 }
 
