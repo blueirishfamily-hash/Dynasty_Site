@@ -3136,5 +3136,177 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== SAVED CONTRACT DRAFTS ====================
+  // Get saved contract drafts for a team
+  app.get("/api/league/:leagueId/contract-drafts/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, rosterId } = req.params;
+      const drafts = await storage.getSavedContractDrafts(leagueId, parseInt(rosterId));
+      res.json(drafts);
+    } catch (error) {
+      console.error("Error fetching contract drafts:", error);
+      res.status(500).json({ error: "Failed to fetch contract drafts" });
+    }
+  });
+
+  // Save contract drafts (bulk upsert)
+  app.post("/api/league/:leagueId/contract-drafts", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { rosterId, drafts } = req.body;
+      
+      if (!Array.isArray(drafts)) {
+        return res.status(400).json({ error: "Drafts must be an array" });
+      }
+
+      // Clear existing drafts first
+      await storage.deleteAllSavedContractDrafts(leagueId, rosterId);
+
+      const results = [];
+      for (const draft of drafts) {
+        const result = await storage.upsertSavedContractDraft({
+          leagueId,
+          rosterId,
+          playerId: draft.playerId,
+          playerName: draft.playerName,
+          playerPosition: draft.playerPosition,
+          salary2025: draft.salary2025 || 0,
+          salary2026: draft.salary2026 || 0,
+          salary2027: draft.salary2027 || 0,
+          salary2028: draft.salary2028 || 0,
+          franchiseTagApplied: draft.franchiseTagApplied || 0,
+        });
+        results.push(result);
+      }
+      
+      res.json({ saved: results.length, drafts: results });
+    } catch (error) {
+      console.error("Error saving contract drafts:", error);
+      res.status(500).json({ error: "Failed to save contract drafts" });
+    }
+  });
+
+  // Delete all saved contract drafts for a team
+  app.delete("/api/league/:leagueId/contract-drafts/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, rosterId } = req.params;
+      await storage.deleteAllSavedContractDrafts(leagueId, parseInt(rosterId));
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting contract drafts:", error);
+      res.status(500).json({ error: "Failed to delete contract drafts" });
+    }
+  });
+
+  // ==================== CONTRACT APPROVAL REQUESTS ====================
+  // Get all contract approval requests for a league (commissioner only)
+  app.get("/api/league/:leagueId/contract-approvals", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const requests = await storage.getContractApprovalRequests(leagueId);
+      res.json(requests);
+    } catch (error) {
+      console.error("Error fetching contract approval requests:", error);
+      res.status(500).json({ error: "Failed to fetch contract approval requests" });
+    }
+  });
+
+  // Check if team has pending approval request
+  app.get("/api/league/:leagueId/contract-approvals/pending/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, rosterId } = req.params;
+      const request = await storage.getContractApprovalRequestByRoster(leagueId, parseInt(rosterId));
+      res.json({ hasPending: !!request, request });
+    } catch (error) {
+      console.error("Error checking pending approval:", error);
+      res.status(500).json({ error: "Failed to check pending approval" });
+    }
+  });
+
+  // Submit contracts for approval
+  app.post("/api/league/:leagueId/contract-approvals", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { rosterId, teamName, ownerName, contracts } = req.body;
+      
+      if (!rosterId || !teamName || !contracts) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Check for existing pending request
+      const existing = await storage.getContractApprovalRequestByRoster(leagueId, rosterId);
+      if (existing) {
+        return res.status(400).json({ error: "You already have a pending approval request" });
+      }
+
+      const request = await storage.createContractApprovalRequest({
+        leagueId,
+        rosterId,
+        teamName,
+        ownerName,
+        contractsJson: JSON.stringify(contracts),
+      });
+
+      res.json(request);
+    } catch (error) {
+      console.error("Error submitting for approval:", error);
+      res.status(500).json({ error: "Failed to submit for approval" });
+    }
+  });
+
+  // Approve or reject a contract approval request (commissioner only)
+  app.patch("/api/league/:leagueId/contract-approvals/:requestId", async (req, res) => {
+    try {
+      const { requestId } = req.params;
+      const { status, reviewerNotes } = req.body;
+      
+      if (!["approved", "rejected"].includes(status)) {
+        return res.status(400).json({ error: "Status must be 'approved' or 'rejected'" });
+      }
+
+      const request = await storage.updateContractApprovalRequest(requestId, status, reviewerNotes);
+      
+      if (!request) {
+        return res.status(404).json({ error: "Request not found" });
+      }
+
+      // If approved, update the official contracts
+      if (status === "approved") {
+        const contracts = JSON.parse(request.contractsJson);
+        for (const contract of contracts) {
+          await storage.upsertPlayerContract({
+            leagueId: request.leagueId,
+            rosterId: request.rosterId,
+            playerId: contract.playerId,
+            salary2025: contract.salary2025 || 0,
+            salary2026: contract.salary2026 || 0,
+            salary2027: contract.salary2027 || 0,
+            salary2028: contract.salary2028 || 0,
+            fifthYearOption: contract.fifthYearOption || null,
+            franchiseTagUsed: contract.franchiseTagApplied || 0,
+            franchiseTagYear: contract.franchiseTagApplied ? 2025 : null,
+          });
+        }
+      }
+
+      res.json(request);
+    } catch (error) {
+      console.error("Error updating approval request:", error);
+      res.status(500).json({ error: "Failed to update approval request" });
+    }
+  });
+
+  // Delete a contract approval request
+  app.delete("/api/league/:leagueId/contract-approvals/:requestId", async (req, res) => {
+    try {
+      const { requestId } = req.params;
+      await storage.deleteContractApprovalRequest(requestId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting approval request:", error);
+      res.status(500).json({ error: "Failed to delete approval request" });
+    }
+  });
+
   return httpServer;
 }

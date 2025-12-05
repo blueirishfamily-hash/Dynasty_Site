@@ -20,6 +20,7 @@ import Metrics from "@/pages/Metrics";
 import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
+import ContractApprovals from "@/pages/ContractApprovals";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
+      <Route path="/contract-approvals" component={ContractApprovals} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -130,7 +132,6 @@ function AppContent() {
           <AppSidebar
             leagueName={league?.name || "Dynasty League"}
             draftPicks={userDraftPicks}
-            faabBudget={league?.waiverBudget || 100}
           />
           <div className="flex flex-col flex-1 min-w-0">
             <header className="h-16 flex items-center justify-between gap-4 px-4 border-b border-border bg-card flex-shrink-0">
