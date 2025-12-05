@@ -78,6 +78,19 @@ interface TeamCapData {
   players: string[];
 }
 
+interface SleeperPlayerData {
+  id: string;
+  name: string;
+  position: string;
+  team: string | null;
+  age?: number;
+  yearsExp?: number;
+  status?: string;
+  injuryStatus?: string | null;
+}
+
+type PlayerMap = Record<string, SleeperPlayerData>;
+
 const positionColors: Record<string, string> = {
   QB: "bg-rose-500 text-white",
   RB: "bg-emerald-500 text-white",
@@ -87,28 +100,36 @@ const positionColors: Record<string, string> = {
   DEF: "bg-slate-500 text-white",
 };
 
+function convertPlayersArrayToMap(players: SleeperPlayerData[]): PlayerMap {
+  const map: PlayerMap = {};
+  for (const player of players) {
+    map[player.id] = player;
+  }
+  return map;
+}
+
 function getPlayersWithContracts(
   players: string[],
-  allPlayers: Record<string, any>,
+  playerMap: PlayerMap,
   teamContracts: Record<string, PlayerContractData>
 ): PlayerDisplayInfo[] {
   if (!players || players.length === 0) return [];
 
   return players
-    .filter(id => allPlayers[id])
+    .filter(id => playerMap[id])
     .map(id => {
-      const player = allPlayers[id];
+      const player = playerMap[id];
       const contract = teamContracts[id];
       const currentSalary = contract?.salaries?.[CURRENT_YEAR] || 0;
 
       return {
         playerId: id,
-        name: `${player.first_name} ${player.last_name}`,
+        name: player.name,
         position: player.position || "NA",
         nflTeam: player.team || null,
-        yearsExp: player.years_exp ?? 0,
+        yearsExp: player.yearsExp ?? 0,
         currentSalary,
-        injuryStatus: player.injury_status || null,
+        injuryStatus: player.injuryStatus || null,
       };
     })
     .sort((a, b) => {
@@ -397,14 +418,14 @@ function TeamContractModal({ team, players, contractData, open, onClose }: TeamC
 
 interface ContractInputTabProps {
   teams: TeamCapData[];
-  allPlayers: Record<string, any>;
+  playerMap: PlayerMap;
   contractData: ContractDataStore;
   onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption", value: any) => void;
   onSave: () => void;
   hasChanges: boolean;
 }
 
-function ContractInputTab({ teams, allPlayers, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
+function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
 
   const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
@@ -413,15 +434,15 @@ function ContractInputTab({ teams, allPlayers, contractData, onContractChange, o
     if (!selectedTeam) return [];
     
     return selectedTeam.players
-      .filter(id => allPlayers[id])
+      .filter(id => playerMap[id])
       .map(id => {
-        const player = allPlayers[id];
-        const yearsExp = player.years_exp ?? 0;
+        const player = playerMap[id];
+        const yearsExp = player.yearsExp ?? 0;
         const contract = contractData[selectedRosterId]?.[id];
 
         return {
           playerId: id,
-          name: `${player.first_name} ${player.last_name}`,
+          name: player.name,
           position: player.position || "NA",
           nflTeam: player.team || null,
           yearsExp,
@@ -436,7 +457,7 @@ function ContractInputTab({ teams, allPlayers, contractData, onContractChange, o
         if (posA !== posB) return posA - posB;
         return a.name.localeCompare(b.name);
       });
-  }, [selectedTeam, allPlayers, contractData, selectedRosterId]);
+  }, [selectedTeam, playerMap, contractData, selectedRosterId]);
 
   const handleSalaryChange = (playerId: string, year: number, value: string) => {
     const numValue = parseFloat(value) || 0;
@@ -674,10 +695,15 @@ export default function Contracts() {
     enabled: !!league?.leagueId,
   });
 
-  const { data: allPlayers } = useQuery<Record<string, any>>({
+  const { data: playersArray } = useQuery<SleeperPlayerData[]>({
     queryKey: ["/api/sleeper/players"],
     enabled: !!league?.leagueId,
   });
+
+  const playerMap = useMemo(() => {
+    if (!playersArray) return {};
+    return convertPlayersArrayToMap(playersArray);
+  }, [playersArray]);
 
   useEffect(() => {
     if (!isLoading && user && league && !isCommissioner) {
@@ -761,10 +787,10 @@ export default function Contracts() {
     setModalOpen(true);
   };
 
-  const selectedTeamPlayers = selectedTeam && allPlayers
+  const selectedTeamPlayers = selectedTeam && Object.keys(playerMap).length > 0
     ? getPlayersWithContracts(
         selectedTeam.players, 
-        allPlayers, 
+        playerMap, 
         contractData[selectedTeam.rosterId.toString()] || {}
       )
     : [];
@@ -839,10 +865,10 @@ export default function Contracts() {
         </TabsContent>
 
         <TabsContent value="manage" className="mt-6">
-          {allPlayers && (
+          {Object.keys(playerMap).length > 0 && (
             <ContractInputTab 
               teams={teamCapData} 
-              allPlayers={allPlayers}
+              playerMap={playerMap}
               contractData={contractData}
               onContractChange={handleContractChange}
               onSave={handleSave}
