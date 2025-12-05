@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, X, ChevronRight } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -22,6 +22,19 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
+import { useToast } from "@/hooks/use-toast";
 
 const COMMISSIONER_USER_IDS = [
   "900186363130503168",
@@ -35,6 +48,9 @@ const COLORS = {
   deadCap: "#ef4444",
 };
 
+const CURRENT_YEAR = 2025;
+const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
+
 interface PlayerContract {
   playerId: string;
   name: string;
@@ -43,6 +59,16 @@ interface PlayerContract {
   yearsRemaining: number;
   deadCap: number;
   status: "active" | "ir" | "pup";
+}
+
+interface PlayerContractInput {
+  playerId: string;
+  name: string;
+  position: string;
+  nflTeam: string | null;
+  yearsExp: number;
+  salaries: Record<number, number>;
+  fifthYearOption: boolean | null;
 }
 
 interface TeamCapData {
@@ -124,6 +150,40 @@ function generatePlayerContracts(
       status,
     };
   }).sort((a, b) => b.salary - a.salary);
+}
+
+function getPlayerContractInputs(
+  players: string[],
+  allPlayers: Record<string, any>,
+  savedContracts: Record<string, { salaries: Record<number, number>; fifthYearOption: boolean | null }>
+): PlayerContractInput[] {
+  if (!players || players.length === 0) return [];
+
+  return players
+    .filter(id => allPlayers[id])
+    .map(id => {
+      const player = allPlayers[id];
+      const yearsExp = player.years_exp ?? 0;
+      const isRookie = yearsExp <= 4;
+      const saved = savedContracts[id];
+
+      return {
+        playerId: id,
+        name: `${player.first_name} ${player.last_name}`,
+        position: player.position || "NA",
+        nflTeam: player.team || null,
+        yearsExp,
+        salaries: saved?.salaries || CONTRACT_YEARS.reduce((acc, year) => ({ ...acc, [year]: 0 }), {}),
+        fifthYearOption: isRookie ? (saved?.fifthYearOption ?? null) : null,
+      };
+    })
+    .sort((a, b) => {
+      const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
+      const posA = posOrder.indexOf(a.position);
+      const posB = posOrder.indexOf(b.position);
+      if (posA !== posB) return posA - posB;
+      return a.name.localeCompare(b.name);
+    });
 }
 
 function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => void }) {
@@ -375,11 +435,284 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
   );
 }
 
+interface ContractInputTabProps {
+  teams: TeamCapData[];
+  allPlayers: Record<string, any>;
+}
+
+function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
+  const { toast } = useToast();
+  const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
+  const [contractData, setContractData] = useState<Record<string, Record<string, { salaries: Record<number, number>; fifthYearOption: boolean | null }>>>({});
+  const [hasChanges, setHasChanges] = useState(false);
+
+  const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
+  
+  const playerInputs = selectedTeam 
+    ? getPlayerContractInputs(
+        selectedTeam.players, 
+        allPlayers, 
+        contractData[selectedRosterId] || {}
+      )
+    : [];
+
+  const handleSalaryChange = (playerId: string, year: number, value: string) => {
+    const numValue = parseFloat(value) || 0;
+    setContractData(prev => {
+      const teamContracts = prev[selectedRosterId] || {};
+      const playerContract = teamContracts[playerId] || { 
+        salaries: CONTRACT_YEARS.reduce((acc, y) => ({ ...acc, [y]: 0 }), {}),
+        fifthYearOption: null 
+      };
+      return {
+        ...prev,
+        [selectedRosterId]: {
+          ...teamContracts,
+          [playerId]: {
+            ...playerContract,
+            salaries: {
+              ...playerContract.salaries,
+              [year]: numValue
+            }
+          }
+        }
+      };
+    });
+    setHasChanges(true);
+  };
+
+  const handleFifthYearOptionChange = (playerId: string, value: boolean) => {
+    setContractData(prev => {
+      const teamContracts = prev[selectedRosterId] || {};
+      const playerContract = teamContracts[playerId] || { 
+        salaries: CONTRACT_YEARS.reduce((acc, y) => ({ ...acc, [y]: 0 }), {}),
+        fifthYearOption: null 
+      };
+      return {
+        ...prev,
+        [selectedRosterId]: {
+          ...teamContracts,
+          [playerId]: {
+            ...playerContract,
+            fifthYearOption: value
+          }
+        }
+      };
+    });
+    setHasChanges(true);
+  };
+
+  const handleSave = () => {
+    toast({
+      title: "Contracts Saved",
+      description: `Contract data for ${selectedTeam?.teamName} has been saved.`,
+    });
+    setHasChanges(false);
+  };
+
+  const totalSalaryByYear = CONTRACT_YEARS.reduce((acc, year) => {
+    const total = playerInputs.reduce((sum, p) => {
+      const saved = contractData[selectedRosterId]?.[p.playerId];
+      return sum + (saved?.salaries?.[year] || 0);
+    }, 0);
+    return { ...acc, [year]: total };
+  }, {} as Record<number, number>);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
+        <div className="flex items-center gap-4">
+          <Label htmlFor="team-select" className="text-sm font-medium whitespace-nowrap">
+            Select Team:
+          </Label>
+          <Select 
+            value={selectedRosterId} 
+            onValueChange={setSelectedRosterId}
+          >
+            <SelectTrigger className="w-[280px]" data-testid="select-team-dropdown">
+              <SelectValue placeholder="Select a team" />
+            </SelectTrigger>
+            <SelectContent>
+              {teams.map((team) => (
+                <SelectItem 
+                  key={team.rosterId} 
+                  value={team.rosterId.toString()}
+                  data-testid={`select-team-${team.rosterId}`}
+                >
+                  <div className="flex items-center gap-2">
+                    <Avatar className="h-5 w-5">
+                      {team.avatar ? (
+                        <AvatarImage src={`https://sleepercdn.com/avatars/thumbs/${team.avatar}`} />
+                      ) : null}
+                      <AvatarFallback className="text-[10px]">
+                        {team.teamName.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <span>{team.teamName}</span>
+                  </div>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <Button 
+          onClick={handleSave} 
+          disabled={!hasChanges}
+          data-testid="button-save-contracts"
+        >
+          <Save className="w-4 h-4 mr-2" />
+          Save Contracts
+        </Button>
+      </div>
+
+      {selectedTeam && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center gap-3">
+              <Avatar className="h-12 w-12">
+                {selectedTeam.avatar ? (
+                  <AvatarImage src={`https://sleepercdn.com/avatars/thumbs/${selectedTeam.avatar}`} />
+                ) : null}
+                <AvatarFallback>
+                  {selectedTeam.teamName.substring(0, 2).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <div>
+                <CardTitle className="font-heading">{selectedTeam.teamName}</CardTitle>
+                <p className="text-sm text-muted-foreground">{selectedTeam.ownerName}</p>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-4 gap-3 mb-6 p-3 bg-muted/50 rounded-lg">
+              {CONTRACT_YEARS.map(year => (
+                <div key={year} className="text-center">
+                  <div className="text-xs text-muted-foreground mb-1">{year} Total</div>
+                  <div className="font-bold" style={{ color: totalSalaryByYear[year] > TOTAL_CAP ? COLORS.deadCap : COLORS.salaries }}>
+                    ${totalSalaryByYear[year].toFixed(1)}M
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <ScrollArea className="h-[500px] pr-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[200px]">Player</TableHead>
+                    {CONTRACT_YEARS.map(year => (
+                      <TableHead key={year} className="text-center w-[100px]">{year}</TableHead>
+                    ))}
+                    <TableHead className="text-center w-[120px]">5th Year Option</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {playerInputs.map((player) => {
+                    const isRookie = player.yearsExp <= 4;
+                    const savedContract = contractData[selectedRosterId]?.[player.playerId];
+                    
+                    return (
+                      <TableRow key={player.playerId} data-testid={`row-input-${player.playerId}`}>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Avatar className="h-10 w-10">
+                              <AvatarImage 
+                                src={`https://sleepercdn.com/content/nfl/players/${player.playerId}.jpg`}
+                                alt={player.name}
+                              />
+                              <AvatarFallback className="text-xs">
+                                {player.name.split(" ").map(n => n[0]).join("")}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div>
+                              <div className="font-medium text-sm">{player.name}</div>
+                              <div className="flex items-center gap-1">
+                                <Badge className={`${positionColors[player.position] || "bg-gray-500 text-white"} text-[10px] px-1.5 py-0`}>
+                                  {player.position}
+                                </Badge>
+                                <span className="text-xs text-muted-foreground">
+                                  {player.nflTeam || "FA"}
+                                </span>
+                                {isRookie && (
+                                  <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-primary text-primary">
+                                    Yr {player.yearsExp + 1}
+                                  </Badge>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </TableCell>
+                        {CONTRACT_YEARS.map(year => (
+                          <TableCell key={year} className="text-center">
+                            <div className="flex items-center gap-1">
+                              <span className="text-xs text-muted-foreground">$</span>
+                              <Input
+                                type="number"
+                                step="0.1"
+                                min="0"
+                                className="h-8 w-20 text-center tabular-nums"
+                                placeholder="0.0"
+                                value={savedContract?.salaries?.[year] || ""}
+                                onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
+                                data-testid={`input-salary-${player.playerId}-${year}`}
+                              />
+                              <span className="text-xs text-muted-foreground">M</span>
+                            </div>
+                          </TableCell>
+                        ))}
+                        <TableCell className="text-center">
+                          {isRookie ? (
+                            <div className="flex items-center justify-center gap-2">
+                              <Button
+                                size="sm"
+                                variant={savedContract?.fifthYearOption === true ? "default" : "outline"}
+                                className="h-7 px-3 text-xs"
+                                onClick={() => handleFifthYearOptionChange(player.playerId, true)}
+                                data-testid={`button-fifth-year-yes-${player.playerId}`}
+                              >
+                                Yes
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant={savedContract?.fifthYearOption === false ? "default" : "outline"}
+                                className="h-7 px-3 text-xs"
+                                onClick={() => handleFifthYearOptionChange(player.playerId, false)}
+                                data-testid={`button-fifth-year-no-${player.playerId}`}
+                              >
+                                No
+                              </Button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-muted-foreground">N/A</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                  {playerInputs.length === 0 && (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
+                        No players on this roster
+                      </TableCell>
+                    </TableRow>
+                  )}
+                </TableBody>
+              </Table>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
+    </div>
+  );
+}
+
 export default function Contracts() {
   const { user, league, isLoading } = useSleeper();
   const [, setLocation] = useLocation();
   const [selectedTeam, setSelectedTeam] = useState<TeamCapData | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("overview");
 
   const isCommissioner = !!(user?.userId && league && (
     (league.commissionerId && user.userId === league.commissionerId) ||
@@ -467,48 +800,63 @@ export default function Contracts() {
         </Badge>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <div className="text-3xl font-bold" style={{ color: COLORS.salaries }}>
-                ${totalSalaries}M
-              </div>
-              <p className="text-sm text-muted-foreground">Total Salaries</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <div className="text-3xl font-bold" style={{ color: COLORS.deadCap }}>
-                ${totalDeadCap}M
-              </div>
-              <p className="text-sm text-muted-foreground">Total Dead Cap</p>
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-center">
-              <div className="text-3xl font-bold" style={{ color: teamsOverCap > 0 ? COLORS.deadCap : COLORS.available }}>
-                {teamsOverCap}
-              </div>
-              <p className="text-sm text-muted-foreground">Teams Over Cap</p>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
+        <TabsList>
+          <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
+          <TabsTrigger value="manage" data-testid="tab-manage">Manage Contracts</TabsTrigger>
+        </TabsList>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {teamCapData.map((team) => (
-          <TeamCapChart 
-            key={team.rosterId} 
-            team={team} 
-            onClick={() => handleTeamClick(team)}
-          />
-        ))}
-      </div>
+        <TabsContent value="overview" className="space-y-6 mt-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-3xl font-bold" style={{ color: COLORS.salaries }}>
+                    ${totalSalaries}M
+                  </div>
+                  <p className="text-sm text-muted-foreground">Total Salaries</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-3xl font-bold" style={{ color: COLORS.deadCap }}>
+                    ${totalDeadCap}M
+                  </div>
+                  <p className="text-sm text-muted-foreground">Total Dead Cap</p>
+                </div>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardContent className="pt-6">
+                <div className="text-center">
+                  <div className="text-3xl font-bold" style={{ color: teamsOverCap > 0 ? COLORS.deadCap : COLORS.available }}>
+                    {teamsOverCap}
+                  </div>
+                  <p className="text-sm text-muted-foreground">Teams Over Cap</p>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {teamCapData.map((team) => (
+              <TeamCapChart 
+                key={team.rosterId} 
+                team={team} 
+                onClick={() => handleTeamClick(team)}
+              />
+            ))}
+          </div>
+        </TabsContent>
+
+        <TabsContent value="manage" className="mt-6">
+          {allPlayers && (
+            <ContractInputTab teams={teamCapData} allPlayers={allPlayers} />
+          )}
+        </TabsContent>
+      </Tabs>
 
       <TeamContractModal
         team={selectedTeam}
