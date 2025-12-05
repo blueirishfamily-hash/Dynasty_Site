@@ -1664,19 +1664,40 @@ interface ExpiringPlayer {
 }
 
 function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: ExpiringContractsTabProps) {
+  // Build a map of playerId -> team info for roster players
+  const playerTeamMap = useMemo(() => {
+    const map = new Map<string, { teamName: string; ownerName: string; avatar: string | null; rosterId: number }>();
+    for (const team of teams) {
+      for (const playerId of team.players) {
+        map.set(playerId, {
+          teamName: team.teamName,
+          ownerName: team.ownerName,
+          avatar: team.avatar,
+          rosterId: team.rosterId,
+        });
+      }
+    }
+    return map;
+  }, [teams]);
+
   const expiringPlayers = useMemo(() => {
     const players: ExpiringPlayer[] = [];
     
-    for (const team of teams) {
-      const rosterId = team.rosterId.toString();
-      const teamContracts = contractData[rosterId] || {};
+    // Iterate over ALL contracts in the database
+    for (const rosterId of Object.keys(contractData)) {
+      const teamContracts = contractData[rosterId];
+      const team = teams.find(t => t.rosterId.toString() === rosterId);
       
-      for (const playerId of team.players) {
+      for (const playerId of Object.keys(teamContracts)) {
         const player = playerMap[playerId];
         if (!player) continue;
         
         const contract = teamContracts[playerId];
         if (!contract) continue;
+        
+        // Check if player is on current roster (either this team or any team)
+        const playerTeam = playerTeamMap.get(playerId);
+        if (!playerTeam) continue; // Player not on any roster
         
         const salary2025 = contract.salaries[2025] || 0;
         const salary2026 = contract.salaries[2026] || 0;
@@ -1699,17 +1720,17 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
             nflTeam: player.team || null,
             yearsExp: player.yearsExp ?? 0,
             currentSalary: salary2025,
-            teamName: team.teamName,
-            ownerName: team.ownerName,
-            avatar: team.avatar,
-            rosterId: team.rosterId,
+            teamName: playerTeam.teamName,
+            ownerName: playerTeam.ownerName,
+            avatar: playerTeam.avatar,
+            rosterId: playerTeam.rosterId,
           });
         }
       }
     }
     
     return players.sort((a, b) => b.currentSalary - a.currentSalary);
-  }, [teams, playerMap, contractData]);
+  }, [teams, playerMap, contractData, playerTeamMap]);
 
   const totalExpiringValue = expiringPlayers.reduce((sum, p) => sum + p.currentSalary, 0);
   const positionCounts = expiringPlayers.reduce((acc, p) => {
