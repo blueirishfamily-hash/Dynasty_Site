@@ -51,6 +51,12 @@ Preferred communication style: Simple, everyday language.
 - League Hub for governance (rule suggestions and award voting)
 - Real-time data syncing with Sleeper API
 - Unified matchup view with positional comparison and dual-sided bar graphs
+- Player detail popup on matchup page (click any player name):
+  - Season performance line graph showing actual points per week
+  - Projected totals shown as dashed line overlay
+  - Boom/bust percentages for the selected week
+  - Player info badges (age, experience, height/weight, college)
+  - Relevant news (injury status, practice participation, depth chart position)
 - Automatic lineup optimization: inactive (Out/IR/PUP/Sus/NFI/COV) and bye week players auto-replaced with eligible bench players
 - Personalized boom-bust metrics using 8-week rolling window of actual player performance
 - Position depth chart showing points above/below median (e.g., "+15.2 pts")
