@@ -528,6 +528,8 @@ export class DatabaseStorage implements IStorage {
           salary2027: data.salary2027,
           salary2028: data.salary2028,
           fifthYearOption: data.fifthYearOption,
+          franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
+          franchiseTagYear: data.franchiseTagYear ?? existing.franchiseTagYear,
           updatedAt,
         })
         .where(eq(playerContractsTable.id, existing.id))
@@ -547,6 +549,8 @@ export class DatabaseStorage implements IStorage {
       salary2027: data.salary2027,
       salary2028: data.salary2028,
       fifthYearOption: data.fifthYearOption,
+      franchiseTagUsed: data.franchiseTagUsed ?? 0,
+      franchiseTagYear: data.franchiseTagYear ?? null,
       updatedAt,
     }).returning();
 

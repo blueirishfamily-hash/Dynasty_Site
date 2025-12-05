@@ -2941,6 +2941,8 @@ export async function registerRoutes(
           salary2027: contract.salary2027 || 0,
           salary2028: contract.salary2028 || 0,
           fifthYearOption: contract.fifthYearOption || null,
+          franchiseTagUsed: contract.franchiseTagUsed,
+          franchiseTagYear: contract.franchiseTagYear,
         });
         results.push(result);
       }
