@@ -60,6 +60,19 @@ export const leagueSettingsTable = pgTable("league_settings", {
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 
+export const playerContractsTable = pgTable("player_contracts", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  salary2025: integer("salary_2025").notNull().default(0),
+  salary2026: integer("salary_2026").notNull().default(0),
+  salary2027: integer("salary_2027").notNull().default(0),
+  salary2028: integer("salary_2028").notNull().default(0),
+  fifthYearOption: varchar("fifth_year_option", { length: 8 }),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
