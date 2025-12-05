@@ -5,7 +5,9 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp } from "lucide-react";
+import { Textarea } from "@/components/ui/textarea";
+import { DialogFooter } from "@/components/ui/dialog";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip } from "recharts";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
@@ -2174,6 +2176,390 @@ interface OrphanedContract {
   teamName: string;
 }
 
+interface ContractApprovalRequest {
+  id: string;
+  leagueId: string;
+  rosterId: number;
+  teamName: string;
+  ownerName: string;
+  contractsJson: string;
+  status: string;
+  submittedAt: number;
+  reviewedAt: number | null;
+  reviewerNotes: string | null;
+}
+
+interface ApprovalContractData {
+  playerId: string;
+  playerName: string;
+  playerPosition: string;
+  salary2025: number;
+  salary2026: number;
+  salary2027: number;
+  salary2028: number;
+  franchiseTagApplied?: number;
+}
+
+interface ContractApprovalsTabProps {
+  leagueId: string;
+}
+
+function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
+  const { toast } = useToast();
+  const [expandedRequests, setExpandedRequests] = useState<Set<string>>(new Set());
+  const [reviewDialog, setReviewDialog] = useState<{ request: ContractApprovalRequest; action: "approve" | "reject" } | null>(null);
+  const [reviewNotes, setReviewNotes] = useState("");
+
+  const { data: approvalRequests, isLoading: isLoadingRequests } = useQuery<ContractApprovalRequest[]>({
+    queryKey: ["/api/league", leagueId, "contract-approvals"],
+    enabled: !!leagueId,
+  });
+
+  const reviewMutation = useMutation({
+    mutationFn: async ({ requestId, status, notes }: { requestId: string; status: "approved" | "rejected"; notes?: string }) => {
+      return apiRequest("PATCH", `/api/league/${leagueId}/contract-approvals/${requestId}`, {
+        status,
+        reviewerNotes: notes,
+      });
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contract-approvals"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contracts"] });
+      toast({
+        title: variables.status === "approved" ? "Contracts Approved" : "Contracts Rejected",
+        description: variables.status === "approved" 
+          ? "The contracts have been approved and are now official."
+          : "The contract request has been rejected.",
+      });
+      setReviewDialog(null);
+      setReviewNotes("");
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to process the request. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const toggleExpanded = (requestId: string) => {
+    setExpandedRequests(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(requestId)) {
+        newSet.delete(requestId);
+      } else {
+        newSet.add(requestId);
+      }
+      return newSet;
+    });
+  };
+
+  const pendingRequests = approvalRequests?.filter(r => r.status === "pending") || [];
+  const reviewedRequests = approvalRequests?.filter(r => r.status !== "pending") || [];
+
+  const formatDate = (timestamp: number) => {
+    return new Date(timestamp).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    });
+  };
+
+  const parseContracts = (json: string): ApprovalContractData[] => {
+    try {
+      return JSON.parse(json);
+    } catch {
+      return [];
+    }
+  };
+
+  const calculateTotalSalary = (contracts: ApprovalContractData[], year: number) => {
+    const key = `salary${year}` as keyof ApprovalContractData;
+    return contracts.reduce((sum, c) => sum + (Number(c[key]) || 0), 0) / 10;
+  };
+
+  if (isLoadingRequests) {
+    return (
+      <div className="flex items-center justify-center h-32">
+        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
+  if (pendingRequests.length === 0 && reviewedRequests.length === 0) {
+    return (
+      <Card>
+        <CardContent className="py-12">
+          <div className="text-center">
+            <CheckCircle className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
+            <h2 className="text-lg font-medium mb-2">No Approval Requests</h2>
+            <p className="text-muted-foreground">
+              Teams haven't submitted any contracts for approval yet.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Clock className="w-5 h-5 text-primary" />
+          <h2 className="text-lg font-semibold">Contract Approval Requests</h2>
+        </div>
+        <Badge variant="outline" className="gap-1">
+          <Clock className="w-3 h-3" />
+          {pendingRequests.length} Pending
+        </Badge>
+      </div>
+
+      {pendingRequests.length > 0 && (
+        <div className="space-y-4">
+          <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
+            <Clock className="w-4 h-4 text-yellow-500" />
+            Pending Requests ({pendingRequests.length})
+          </h3>
+          
+          {pendingRequests.map(request => {
+            const contracts = parseContracts(request.contractsJson);
+            const isExpanded = expandedRequests.has(request.id);
+            
+            return (
+              <Card key={request.id} data-testid={`card-approval-${request.id}`}>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-10 w-10">
+                        <AvatarFallback>
+                          {request.teamName.substring(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <CardTitle className="text-base">{request.teamName}</CardTitle>
+                        <p className="text-sm text-muted-foreground">{request.ownerName}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary">{contracts.length} players</Badge>
+                      <span className="text-xs text-muted-foreground">
+                        Submitted {formatDate(request.submittedAt)}
+                      </span>
+                    </div>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-4 gap-3 mb-4">
+                    {[2025, 2026, 2027, 2028].map(year => (
+                      <Card key={year} className="p-2">
+                        <div className="text-center">
+                          <div className="text-xs text-muted-foreground">{year}</div>
+                          <div className="font-bold text-sm text-primary">
+                            ${calculateTotalSalary(contracts, year).toFixed(1)}M
+                          </div>
+                        </div>
+                      </Card>
+                    ))}
+                  </div>
+
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full mb-3"
+                    onClick={() => toggleExpanded(request.id)}
+                    data-testid={`button-expand-${request.id}`}
+                  >
+                    {isExpanded ? (
+                      <>
+                        <ChevronUp className="w-4 h-4 mr-2" />
+                        Hide Contract Details
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="w-4 h-4 mr-2" />
+                        Show Contract Details ({contracts.length} players)
+                      </>
+                    )}
+                  </Button>
+
+                  {isExpanded && (
+                    <ScrollArea className="h-[300px] mb-4">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Player</TableHead>
+                            <TableHead className="text-center">Pos</TableHead>
+                            {[2025, 2026, 2027, 2028].map(year => (
+                              <TableHead key={year} className="text-center">{year}</TableHead>
+                            ))}
+                            <TableHead className="text-center">Tag</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {contracts.map(contract => (
+                            <TableRow key={contract.playerId}>
+                              <TableCell className="font-medium">{contract.playerName}</TableCell>
+                              <TableCell className="text-center">
+                                <Badge className={`${positionColors[contract.playerPosition] || "bg-gray-500 text-white"} text-[10px]`}>
+                                  {contract.playerPosition}
+                                </Badge>
+                              </TableCell>
+                              {[2025, 2026, 2027, 2028].map(year => {
+                                const key = `salary${year}` as keyof ApprovalContractData;
+                                const salary = (Number(contract[key]) || 0) / 10;
+                                return (
+                                  <TableCell key={year} className="text-center">
+                                    {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell className="text-center">
+                                {contract.franchiseTagApplied ? (
+                                  <Badge variant="default" className="text-[10px]">FT</Badge>
+                                ) : "-"}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </ScrollArea>
+                  )}
+
+                  <Separator className="my-3" />
+
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      onClick={() => setReviewDialog({ request, action: "reject" })}
+                      data-testid={`button-reject-${request.id}`}
+                    >
+                      <XCircle className="w-4 h-4 mr-2" />
+                      Reject
+                    </Button>
+                    <Button
+                      onClick={() => setReviewDialog({ request, action: "approve" })}
+                      data-testid={`button-approve-${request.id}`}
+                    >
+                      <CheckCircle className="w-4 h-4 mr-2" />
+                      Approve
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {reviewedRequests.length > 0 && (
+        <div className="space-y-4">
+          <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
+            <CheckCircle className="w-4 h-4" />
+            Previously Reviewed ({reviewedRequests.length})
+          </h3>
+          
+          {reviewedRequests.map(request => (
+            <Card key={request.id} className="opacity-75" data-testid={`card-reviewed-${request.id}`}>
+              <CardHeader className="pb-3">
+                <div className="flex items-center justify-between flex-wrap gap-4">
+                  <div className="flex items-center gap-3">
+                    <Avatar className="h-10 w-10">
+                      <AvatarFallback>
+                        {request.teamName.substring(0, 2).toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <CardTitle className="text-base">{request.teamName}</CardTitle>
+                      <p className="text-sm text-muted-foreground">{request.ownerName}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge 
+                      variant={request.status === "approved" ? "default" : "destructive"}
+                    >
+                      {request.status === "approved" ? (
+                        <><CheckCircle className="w-3 h-3 mr-1" /> Approved</>
+                      ) : (
+                        <><XCircle className="w-3 h-3 mr-1" /> Rejected</>
+                      )}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">
+                      {request.reviewedAt && formatDate(request.reviewedAt)}
+                    </span>
+                  </div>
+                </div>
+              </CardHeader>
+              {request.reviewerNotes && (
+                <CardContent className="pt-0">
+                  <p className="text-sm text-muted-foreground italic">
+                    "{request.reviewerNotes}"
+                  </p>
+                </CardContent>
+              )}
+            </Card>
+          ))}
+        </div>
+      )}
+
+      <Dialog open={!!reviewDialog} onOpenChange={() => setReviewDialog(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {reviewDialog?.action === "approve" ? "Approve Contracts" : "Reject Contracts"}
+            </DialogTitle>
+          </DialogHeader>
+          
+          <div className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {reviewDialog?.action === "approve" 
+                ? `Are you sure you want to approve the contracts for ${reviewDialog?.request.teamName}? This will make these contracts official.`
+                : `Are you sure you want to reject the contracts for ${reviewDialog?.request.teamName}?`
+              }
+            </p>
+            
+            <div>
+              <Label className="text-sm font-medium">Notes (optional)</Label>
+              <Textarea
+                placeholder="Add any notes for the team owner..."
+                value={reviewNotes}
+                onChange={(e) => setReviewNotes(e.target.value)}
+                className="mt-1"
+                data-testid="input-review-notes"
+              />
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setReviewDialog(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant={reviewDialog?.action === "approve" ? "default" : "destructive"}
+              onClick={() => {
+                if (reviewDialog) {
+                  reviewMutation.mutate({
+                    requestId: reviewDialog.request.id,
+                    status: reviewDialog.action === "approve" ? "approved" : "rejected",
+                    notes: reviewNotes || undefined,
+                  });
+                }
+              }}
+              disabled={reviewMutation.isPending}
+              data-testid="button-confirm-review"
+            >
+              {reviewMutation.isPending ? "Processing..." : reviewDialog?.action === "approve" ? "Approve" : "Reject"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
 export default function Contracts() {
   const { toast } = useToast();
   const { user, league, isLoading } = useSleeper();
@@ -2519,7 +2905,10 @@ export default function Contracts() {
           <TabsTrigger value="manage-team" data-testid="tab-manage-team">Manage Team Contracts</TabsTrigger>
           <TabsTrigger value="bidding" data-testid="tab-bidding">Player Bidding</TabsTrigger>
           {isCommissioner && (
-            <TabsTrigger value="manage-league" data-testid="tab-manage-league">Manage League Contracts</TabsTrigger>
+            <>
+              <TabsTrigger value="manage-league" data-testid="tab-manage-league">Manage League Contracts</TabsTrigger>
+              <TabsTrigger value="approvals" data-testid="tab-approvals">Approvals</TabsTrigger>
+            </>
           )}
         </TabsList>
 
@@ -2604,6 +2993,7 @@ export default function Contracts() {
         </TabsContent>
 
         {isCommissioner && (
+          <>
           <TabsContent value="manage-league" className="mt-6 space-y-6">
             {orphanedContracts.length > 0 && (
               <Card className="border-orange-500/50">
@@ -2772,6 +3162,13 @@ export default function Contracts() {
               />
             )}
           </TabsContent>
+
+          <TabsContent value="approvals" className="mt-6">
+            {league?.leagueId && (
+              <ContractApprovalsTab leagueId={league.leagueId} />
+            )}
+          </TabsContent>
+          </>
         )}
       </Tabs>
 
