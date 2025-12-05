@@ -1349,9 +1349,9 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
           <CardContent className="pt-6">
             <div className="text-center">
               <div className="text-3xl font-bold" style={{ color: COLORS.salaries }}>
-                ${activeBids.reduce((sum, b) => sum + b.bidAmount, 0).toFixed(1)}M
+                ${activeBids.reduce((sum, b) => sum + (b.bidAmount * b.contractYears), 0).toFixed(1)}M
               </div>
-              <p className="text-sm text-muted-foreground">Total Bid Amount</p>
+              <p className="text-sm text-muted-foreground">Total Contract Value</p>
             </div>
           </CardContent>
         </Card>
@@ -1441,7 +1441,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Bid Amount ($M)</Label>
+                    <Label>Bid Amount Per Year ($M)</Label>
                     <Input
                       type="number"
                       step="0.1"
@@ -1453,7 +1453,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Max Bid ($M)</Label>
+                    <Label>Max Bid Per Year ($M)</Label>
                     <Input
                       type="number"
                       step="0.1"
@@ -1572,21 +1572,27 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds }: PlayerBiddi
                           </Button>
                         </div>
                       </div>
-                      <div className="grid grid-cols-3 gap-2 text-sm">
+                      <div className="grid grid-cols-4 gap-2 text-sm">
                         <div>
-                          <span className="text-muted-foreground">Bid:</span>{" "}
+                          <span className="text-muted-foreground">Per Year:</span>{" "}
                           <span className="font-medium">${bid.bidAmount}M</span>
                         </div>
-                        {bid.maxBid && (
-                          <div>
-                            <span className="text-muted-foreground">Max:</span>{" "}
-                            <span className="font-medium">${bid.maxBid}M</span>
-                          </div>
-                        )}
                         <div>
                           <span className="text-muted-foreground">Years:</span>{" "}
                           <span className="font-medium">{bid.contractYears}</span>
                         </div>
+                        <div>
+                          <span className="text-muted-foreground">Total Value:</span>{" "}
+                          <span className="font-medium" style={{ color: COLORS.salaries }}>
+                            ${(bid.bidAmount * bid.contractYears).toFixed(1)}M
+                          </span>
+                        </div>
+                        {bid.maxBid && (
+                          <div>
+                            <span className="text-muted-foreground">Max/Yr:</span>{" "}
+                            <span className="font-medium">${bid.maxBid}M</span>
+                          </div>
+                        )}
                       </div>
                       {bid.notes && (
                         <p className="text-sm text-muted-foreground italic">
