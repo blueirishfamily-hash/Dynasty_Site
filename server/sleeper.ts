@@ -88,6 +88,18 @@ export interface SleeperPlayer {
   years_exp?: number;
   status?: string;
   injury_status?: string | null;
+  injury_body_part?: string | null;
+  injury_notes?: string | null;
+  injury_start_date?: string | null;
+  news_updated?: number | null;
+  practice_participation?: string | null;
+  practice_description?: string | null;
+  number?: number;
+  height?: string;
+  weight?: string;
+  college?: string;
+  depth_chart_order?: number | null;
+  depth_chart_position?: string | null;
 }
 
 export interface SleeperNFLState {

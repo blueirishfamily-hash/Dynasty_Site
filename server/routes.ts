@@ -13,6 +13,7 @@ import {
   getNFLState,
   getAllPlayers,
   getPlayerStats,
+  getPlayerProjections,
   getLeagueDrafts,
   getDraftPicks,
   getDraft,
@@ -2424,6 +2425,168 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching players:", error);
       res.status(500).json({ error: "Failed to fetch players" });
+    }
+  });
+
+  // Player detail with season stats, projections, and news
+  app.get("/api/sleeper/player/:playerId/detail", async (req, res) => {
+    try {
+      const { playerId } = req.params;
+      const week = parseInt(req.query.week as string) || 1;
+      
+      const [players, nflState] = await Promise.all([
+        getAllPlayers(),
+        getNFLState(),
+      ]);
+      
+      const player = players[playerId];
+      if (!player) {
+        return res.status(404).json({ error: "Player not found" });
+      }
+      
+      const season = nflState.season;
+      const currentWeek = nflState.week;
+      
+      // Fetch weekly stats and projections for all weeks played so far
+      const weeklyData: { week: number; actual: number | null; projected: number }[] = [];
+      
+      const statsPromises = [];
+      const projPromises = [];
+      
+      for (let w = 1; w <= Math.max(currentWeek, week); w++) {
+        statsPromises.push(
+          getPlayerStats(season, w).catch(() => ({}))
+        );
+        projPromises.push(
+          getPlayerProjections(season, w).catch(() => ({}))
+        );
+      }
+      
+      const [allStats, allProjs] = await Promise.all([
+        Promise.all(statsPromises),
+        Promise.all(projPromises),
+      ]);
+      
+      for (let w = 1; w <= Math.max(currentWeek, week); w++) {
+        const weekStats = allStats[w - 1] || {};
+        const weekProj = allProjs[w - 1] || {};
+        
+        const playerStats = weekStats[playerId] as Record<string, number> | undefined;
+        const playerProj = weekProj[playerId] as Record<string, number> | undefined;
+        
+        const actualPoints = playerStats 
+          ? (playerStats.pts_ppr || playerStats.pts_half_ppr || playerStats.pts_std || 0)
+          : null;
+        const projectedPoints = playerProj
+          ? (playerProj.pts_ppr || playerProj.pts_half_ppr || playerProj.pts_std || 0)
+          : 0;
+        
+        weeklyData.push({
+          week: w,
+          actual: w <= currentWeek ? actualPoints : null,
+          projected: projectedPoints,
+        });
+      }
+      
+      // Calculate boom/bust based on recent 8-week rolling window
+      const recentGames = weeklyData
+        .filter(d => d.actual !== null && d.actual > 0)
+        .slice(-8);
+      
+      let boom = 0;
+      let bust = 0;
+      let avgPoints = 0;
+      let stdDev = 0;
+      
+      if (recentGames.length >= 3) {
+        const points = recentGames.map(g => g.actual as number);
+        avgPoints = points.reduce((a, b) => a + b, 0) / points.length;
+        const variance = points.reduce((sum, v) => sum + Math.pow(v - avgPoints, 2), 0) / points.length;
+        stdDev = Math.sqrt(variance) || avgPoints * 0.3;
+        boom = Math.round(avgPoints + stdDev);
+        bust = Math.round(Math.max(0, avgPoints - stdDev));
+      } else {
+        // Use position baseline for players with limited data
+        const positionBaselines: Record<string, { mean: number; stdDev: number }> = {
+          QB: { mean: 18, stdDev: 6 },
+          RB: { mean: 12, stdDev: 6 },
+          WR: { mean: 11, stdDev: 6 },
+          TE: { mean: 8, stdDev: 5 },
+          K: { mean: 8, stdDev: 3 },
+          DEF: { mean: 7, stdDev: 4 },
+        };
+        const baseline = positionBaselines[player.position] || { mean: 10, stdDev: 5 };
+        avgPoints = baseline.mean;
+        stdDev = baseline.stdDev;
+        boom = Math.round(avgPoints + stdDev);
+        bust = Math.round(Math.max(0, avgPoints - stdDev));
+      }
+      
+      // Calculate boom/bust percentages based on volatility
+      const boomPct = Math.min(50, Math.round((stdDev / avgPoints) * 100)) || 25;
+      const bustPct = Math.min(50, Math.round((stdDev / avgPoints) * 80)) || 20;
+      
+      // Build news items from player metadata
+      const newsItems: { type: string; text: string; date?: string }[] = [];
+      
+      if (player.injury_status) {
+        newsItems.push({
+          type: "injury",
+          text: `${player.injury_status}${player.injury_body_part ? ` (${player.injury_body_part})` : ""}${player.injury_notes ? `: ${player.injury_notes}` : ""}`,
+          date: player.injury_start_date || undefined,
+        });
+      }
+      
+      if (player.practice_participation || player.practice_description) {
+        newsItems.push({
+          type: "practice",
+          text: `Practice: ${player.practice_participation || "Unknown"}${player.practice_description ? ` - ${player.practice_description}` : ""}`,
+        });
+      }
+      
+      if (player.depth_chart_order && player.depth_chart_position) {
+        const ordinal = ["", "1st", "2nd", "3rd", "4th"][player.depth_chart_order] || `${player.depth_chart_order}th`;
+        newsItems.push({
+          type: "depth",
+          text: `Depth Chart: ${ordinal} string ${player.depth_chart_position}`,
+        });
+      }
+      
+      // Get current week projection for display
+      const currentWeekProj = weeklyData.find(d => d.week === week);
+      const projectedTotal = currentWeekProj?.projected || 0;
+      
+      res.json({
+        player: {
+          id: player.player_id,
+          name: player.full_name || `${player.first_name} ${player.last_name}`,
+          position: player.position,
+          team: player.team,
+          number: player.number,
+          age: player.age,
+          height: player.height,
+          weight: player.weight,
+          college: player.college,
+          yearsExp: player.years_exp,
+          status: player.status,
+          injuryStatus: player.injury_status,
+        },
+        weeklyData,
+        boomBust: {
+          boom,
+          bust,
+          boomPct,
+          bustPct,
+          avgPoints: Math.round(avgPoints * 10) / 10,
+          gamesPlayed: recentGames.length,
+        },
+        projectedTotal,
+        news: newsItems,
+        selectedWeek: week,
+      });
+    } catch (error) {
+      console.error("Error fetching player detail:", error);
+      res.status(500).json({ error: "Failed to fetch player detail" });
     }
   });
 
