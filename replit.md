@@ -118,6 +118,10 @@ Preferred communication style: Simple, everyday language.
     - Salary inputs for 4 contract years (2025-2028)
     - Dead cap calculations with year-based percentages
     - Fifth-year option tracking for rookie contracts
+    - IR Void toggle: Commissioner can void a player's current year contract when placed on IR
+      - IR toggle per player voids their 2025 salary (shows "IR VOID" badge)
+      - Voided salary excluded from team cap totals
+      - Original salary shown with strikethrough for reference
     - Contracts persist in PostgreSQL database
 
 ### Backend Architecture

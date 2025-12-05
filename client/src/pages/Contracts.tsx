@@ -36,6 +36,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
+import { Switch } from "@/components/ui/switch";
 
 const COMMISSIONER_USER_IDS = [
   "900186363130503168",
@@ -55,6 +56,7 @@ const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURREN
 interface PlayerContractData {
   salaries: Record<number, number>;
   fifthYearOption: "accepted" | "declined" | null;
+  isOnIr: boolean;
 }
 
 type ContractDataStore = Record<string, Record<string, PlayerContractData>>;
@@ -438,7 +440,7 @@ interface ContractInputTabProps {
   teams: TeamCapData[];
   playerMap: PlayerMap;
   contractData: ContractDataStore;
-  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption", value: any) => void;
+  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr", value: any) => void;
   onSave: () => void;
   hasChanges: boolean;
 }
@@ -466,6 +468,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           yearsExp,
           salaries: contract?.salaries || {},
           fifthYearOption: contract?.fifthYearOption ?? null,
+          isOnIr: contract?.isOnIr ?? false,
         };
       })
       .sort((a, b) => {
@@ -490,9 +493,14 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     onContractChange(selectedRosterId, playerId, "fifthYearOption", value);
   };
 
+  const handleIrToggle = (playerId: string, isOnIr: boolean) => {
+    onContractChange(selectedRosterId, playerId, "isOnIr", isOnIr);
+  };
+
   const totalSalaryByYear = CONTRACT_YEARS.reduce((acc, year) => {
     const total = playerInputs.reduce((sum, p) => {
-      return sum + (p.salaries[year] || 0);
+      const isVoided = p.isOnIr && year === CURRENT_YEAR;
+      return sum + (isVoided ? 0 : (p.salaries[year] || 0));
     }, 0);
     return { ...acc, [year]: total };
   }, {} as Record<number, number>);
@@ -583,6 +591,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     <TableHead className="text-center w-[60px]">Pos</TableHead>
                     <TableHead className="text-center w-[60px]">Team</TableHead>
                     <TableHead className="text-center w-[70px]">NFL Yrs</TableHead>
+                    <TableHead className="text-center w-[70px]">IR Void</TableHead>
                     {CONTRACT_YEARS.map(year => (
                       <TableHead key={year} className="text-center w-[90px]">{year}</TableHead>
                     ))}
@@ -624,33 +633,56 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             {player.yearsExp === 0 ? "R" : player.yearsExp}
                           </span>
                         </TableCell>
+                        <TableCell className="text-center">
+                          <Switch
+                            checked={player.isOnIr}
+                            onCheckedChange={(checked) => handleIrToggle(player.playerId, checked)}
+                            data-testid={`switch-ir-${player.playerId}`}
+                          />
+                        </TableCell>
                         {CONTRACT_YEARS.map((year, yearIndex) => {
                           const salaryValue = player.salaries[year] || 0;
                           const deadCapPercentages = [0.4, 0.3, 0.2, 0.1];
                           const deadCapPercent = deadCapPercentages[yearIndex] || 0;
                           const deadCapValue = salaryValue * deadCapPercent;
+                          const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
 
                           return (
                             <TableCell key={year} className="text-center">
                               <div className="flex flex-col items-center gap-0.5">
-                                <div className="flex items-center justify-center gap-0.5">
-                                  <span className="text-xs text-muted-foreground">$</span>
-                                  <Input
-                                    type="number"
-                                    step="0.1"
-                                    min="0"
-                                    className="h-7 w-16 text-center tabular-nums text-sm"
-                                    placeholder="0"
-                                    value={player.salaries[year] || ""}
-                                    onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
-                                    data-testid={`input-salary-${player.playerId}-${year}`}
-                                  />
-                                  <span className="text-xs text-muted-foreground">M</span>
-                                </div>
-                                {salaryValue > 0 && (
-                                  <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
-                                    DC: ${deadCapValue.toFixed(1)}M ({Math.round(deadCapPercent * 100)}%)
-                                  </span>
+                                {isCurrentYearVoided ? (
+                                  <div className="flex flex-col items-center gap-0.5">
+                                    <Badge variant="outline" className="text-xs bg-amber-500/10 text-amber-500 border-amber-500/30">
+                                      IR VOID
+                                    </Badge>
+                                    {salaryValue > 0 && (
+                                      <span className="text-[10px] text-muted-foreground line-through">
+                                        ${salaryValue}M
+                                      </span>
+                                    )}
+                                  </div>
+                                ) : (
+                                  <>
+                                    <div className="flex items-center justify-center gap-0.5">
+                                      <span className="text-xs text-muted-foreground">$</span>
+                                      <Input
+                                        type="number"
+                                        step="0.1"
+                                        min="0"
+                                        className="h-7 w-16 text-center tabular-nums text-sm"
+                                        placeholder="0"
+                                        value={player.salaries[year] || ""}
+                                        onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
+                                        data-testid={`input-salary-${player.playerId}-${year}`}
+                                      />
+                                      <span className="text-xs text-muted-foreground">M</span>
+                                    </div>
+                                    {salaryValue > 0 && (
+                                      <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
+                                        DC: ${deadCapValue.toFixed(1)}M ({Math.round(deadCapPercent * 100)}%)
+                                      </span>
+                                    )}
+                                  </>
                                 )}
                               </div>
                             </TableCell>
@@ -687,7 +719,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                   })}
                   {playerInputs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
                         No players on this roster
                       </TableCell>
                     </TableRow>
@@ -1844,6 +1876,7 @@ interface DbPlayerContract {
   salary2027: number;
   salary2028: number;
   fifthYearOption: string | null;
+  isOnIr: number;
   updatedAt: number;
 }
 
@@ -1898,6 +1931,7 @@ export default function Contracts() {
             2028: contract.salary2028 / 10,
           },
           fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
+          isOnIr: contract.isOnIr === 1,
         };
       }
       setContractData(contractStore);
@@ -1942,14 +1976,15 @@ export default function Contracts() {
   const handleContractChange = (
     rosterId: string, 
     playerId: string, 
-    field: "salaries" | "fifthYearOption", 
+    field: "salaries" | "fifthYearOption" | "isOnIr", 
     value: any
   ) => {
     setContractData(prev => {
       const teamContracts = prev[rosterId] || {};
       const playerContract = teamContracts[playerId] || { 
         salaries: {},
-        fifthYearOption: null 
+        fifthYearOption: null,
+        isOnIr: false
       };
       
       return {
@@ -2002,7 +2037,7 @@ export default function Contracts() {
         const contract = teamContracts[playerId];
         const hasSalary = Object.values(contract.salaries).some(s => s > 0);
         
-        if (hasSalary) {
+        if (hasSalary || contract.isOnIr) {
           contractsToSave.push({
             rosterId: parseInt(rosterId),
             playerId,
@@ -2011,6 +2046,7 @@ export default function Contracts() {
             salary2027: Math.round((contract.salaries[2027] || 0) * 10),
             salary2028: Math.round((contract.salaries[2028] || 0) * 10),
             fifthYearOption: contract.fifthYearOption,
+            isOnIr: contract.isOnIr ? 1 : 0,
           });
         }
       }

@@ -70,6 +70,7 @@ export const playerContractsTable = pgTable("player_contracts", {
   salary2027: integer("salary_2027").notNull().default(0),
   salary2028: integer("salary_2028").notNull().default(0),
   fifthYearOption: varchar("fifth_year_option", { length: 8 }),
+  isOnIr: integer("is_on_ir").notNull().default(0),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 
