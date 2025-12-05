@@ -621,6 +621,9 @@ export async function registerRoutes(
         };
       };
 
+      // Determine if this is a future week (use best roster) or current/past week (use actual roster)
+      const isFutureWeek = week > currentWeek;
+
       const buildDetailedMatchupTeam = (matchup: typeof userMatchup, roster: SleeperRoster) => {
         const user = userMap.get(roster.owner_id);
         const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
@@ -650,51 +653,93 @@ export async function registerRoutes(
           return pos === slotPosition;
         };
         
-        // Build optimized starters by replacing inactive/bye players with eligible bench players
-        const usedBenchIds = new Set<string>();
-        const optimizedStarters: ReturnType<typeof buildPlayerInfo>[] = [];
-        
         // Define slot order with their eligible positions
         const slotPositions = ["QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "FLEX", "K", "DEF"];
         
-        // First pass: assign starters to slots, tracking which need replacement
-        const starterInfos = starterIds.map(pid => allPlayersInfo.get(pid)!);
+        let finalStarters: ReturnType<typeof buildPlayerInfo>[];
+        let bench: ReturnType<typeof buildPlayerInfo>[];
         
-        for (let i = 0; i < slotPositions.length; i++) {
-          const slotPos = slotPositions[i];
-          const starter = starterInfos[i];
+        if (isFutureWeek) {
+          // FUTURE WEEK: Use best/optimized roster based on projections
+          // Build optimized starters by selecting best players for each position
+          const usedPlayerIds = new Set<string>();
+          finalStarters = [];
           
-          if (starter && canPlay(starter)) {
-            // Starter is active, keep them
-            optimizedStarters.push(starter);
-          } else {
-            // Starter is out/bye - find replacement from bench
-            let replacement: ReturnType<typeof buildPlayerInfo> | null = null;
-            
-            // Find best eligible bench player who can play
-            const eligibleBench = benchIds
-              .filter(pid => !usedBenchIds.has(pid))
+          // For each slot, find the best available player
+          for (const slotPos of slotPositions) {
+            const eligiblePlayers = allRosterIds
+              .filter(pid => !usedPlayerIds.has(pid))
               .map(pid => allPlayersInfo.get(pid)!)
               .filter(p => canPlay(p) && isEligibleForPosition(p, slotPos))
               .sort((a, b) => b.projectedPoints - a.projectedPoints);
             
-            if (eligibleBench.length > 0) {
-              replacement = eligibleBench[0];
-              usedBenchIds.add(replacement.id);
+            if (eligiblePlayers.length > 0) {
+              const bestPlayer = eligiblePlayers[0];
+              finalStarters.push(bestPlayer);
+              usedPlayerIds.add(bestPlayer.id);
+            } else {
+              // No eligible player found, try to find any player for this position (even if out/bye)
+              const anyPlayer = allRosterIds
+                .filter(pid => !usedPlayerIds.has(pid))
+                .map(pid => allPlayersInfo.get(pid)!)
+                .filter(p => isEligibleForPosition(p, slotPos))
+                .sort((a, b) => b.projectedPoints - a.projectedPoints)[0];
+              
+              if (anyPlayer) {
+                finalStarters.push(anyPlayer);
+                usedPlayerIds.add(anyPlayer.id);
+              }
             }
-            
-            // Use replacement or keep original starter (with 0 projection)
-            optimizedStarters.push(replacement || starter);
           }
+          
+          // Build bench from remaining players
+          bench = allRosterIds
+            .filter(pid => !usedPlayerIds.has(pid))
+            .map(pid => allPlayersInfo.get(pid)!);
+        } else {
+          // CURRENT/PAST WEEK: Use actual roster as set by the manager
+          // Only replace inactive/bye players with eligible bench players
+          const usedBenchIds = new Set<string>();
+          finalStarters = [];
+          
+          const starterInfos = starterIds.map(pid => allPlayersInfo.get(pid)!);
+          
+          for (let i = 0; i < slotPositions.length; i++) {
+            const slotPos = slotPositions[i];
+            const starter = starterInfos[i];
+            
+            if (starter && canPlay(starter)) {
+              // Starter is active, keep them
+              finalStarters.push(starter);
+            } else {
+              // Starter is out/bye - find replacement from bench
+              let replacement: ReturnType<typeof buildPlayerInfo> | null = null;
+              
+              // Find best eligible bench player who can play
+              const eligibleBench = benchIds
+                .filter(pid => !usedBenchIds.has(pid))
+                .map(pid => allPlayersInfo.get(pid)!)
+                .filter(p => canPlay(p) && isEligibleForPosition(p, slotPos))
+                .sort((a, b) => b.projectedPoints - a.projectedPoints);
+              
+              if (eligibleBench.length > 0) {
+                replacement = eligibleBench[0];
+                usedBenchIds.add(replacement.id);
+              }
+              
+              // Use replacement or keep original starter (with 0 projection)
+              finalStarters.push(replacement || starter);
+            }
+          }
+          
+          // Build bench from remaining players
+          bench = benchIds
+            .filter(pid => !usedBenchIds.has(pid))
+            .map(pid => allPlayersInfo.get(pid)!);
         }
-        
-        // Build bench from remaining players
-        const bench = benchIds
-          .filter(pid => !usedBenchIds.has(pid))
-          .map(pid => allPlayersInfo.get(pid)!);
 
-        // Calculate projected team total from optimized starters
-        const projectedTotal = optimizedStarters.reduce((sum, p) => sum + p.projectedPoints, 0);
+        // Calculate projected team total from final starters
+        const projectedTotal = finalStarters.reduce((sum, p) => sum + (p?.projectedPoints || 0), 0);
 
         // Build avatar URL from Sleeper CDN
         const avatarId = user?.avatar;
@@ -710,7 +755,7 @@ export async function registerRoutes(
           score: matchup.points || 0,
           projectedTotal: Math.round(projectedTotal * 10) / 10,
           record: `${roster.settings.wins}-${roster.settings.losses}`,
-          starters: optimizedStarters,
+          starters: finalStarters,
           bench,
         };
       };
