@@ -570,7 +570,14 @@ export async function registerRoutes(
         const isInactive = injuryStatus && inactiveStatuses.includes(injuryStatus);
         const teamsOnBye = byeWeeks[week] || [];
         const isOnBye = playerTeam && teamsOnBye.includes(playerTeam);
-        const willNotPlay = isInactive || isOnBye;
+        
+        // Player has already started playing if they have actual points > 0
+        const hasStartedPlaying = points > 0;
+        
+        // Only treat as "will not play" if inactive/bye AND hasn't started playing yet
+        // If player started playing but status changed to Out/Questionable mid-game,
+        // we still want to show their pre-game projections
+        const willNotPlay = (isInactive || isOnBye) && !hasStartedPlaying;
         
         // Get player's historical points
         const weeklyPoints = playerWeeklyPoints.get(playerId) || [];
@@ -581,7 +588,7 @@ export async function registerRoutes(
         let projectedPoints: number;
         
         if (willNotPlay) {
-          // Player is out, IR, PUP, or on bye - project 0
+          // Player is out, IR, PUP, or on bye and hasn't started playing - project 0
           boom = 0;
           bust = 0;
           projectedPoints = 0;
