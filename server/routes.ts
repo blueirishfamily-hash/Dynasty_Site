@@ -630,14 +630,10 @@ export async function registerRoutes(
       };
 
       // Determine if we should use actual lineup or build an optimized one
-      // Use actual lineup if:
-      // 1. Week is current or past, OR
-      // 2. Matchup has starters set (user has set their lineup for this week in Sleeper)
-      // Only build optimized lineup for future weeks with no starters set
-      const shouldUseActualLineup = (matchup: { starters?: string[] | null }) => {
-        const hasStartersSet = matchup.starters && matchup.starters.length > 0 && 
-                               matchup.starters.some(s => s && s !== "0");
-        return week <= currentWeek || hasStartersSet;
+      // Use actual lineup for current week and past weeks only
+      // Future weeks get optimized lineups based on projections
+      const shouldUseActualLineup = () => {
+        return week <= currentWeek;
       };
 
       const buildDetailedMatchupTeam = (matchup: typeof userMatchup, roster: SleeperRoster) => {
@@ -675,7 +671,7 @@ export async function registerRoutes(
         let finalStarters: ReturnType<typeof buildPlayerInfo>[];
         let bench: ReturnType<typeof buildPlayerInfo>[];
         
-        if (!shouldUseActualLineup(matchup)) {
+        if (!shouldUseActualLineup()) {
           // FUTURE WEEK with no lineup set: Use best/optimized roster based on projections
           // Build optimized starters by selecting best players for each position
           const usedPlayerIds = new Set<string>();
