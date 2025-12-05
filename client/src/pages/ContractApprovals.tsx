@@ -34,6 +34,13 @@ const COMMISSIONER_USER_IDS = [
 
 const CONTRACT_YEARS = [2025, 2026, 2027, 2028];
 
+function isUserCommissioner(userId: string | undefined, league: any): boolean {
+  if (!userId || !league) return false;
+  if (league.commissionerId && userId === league.commissionerId) return true;
+  if (COMMISSIONER_USER_IDS.includes(userId)) return true;
+  return false;
+}
+
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
   RB: "bg-green-500 text-white",
@@ -75,7 +82,7 @@ export default function ContractApprovals() {
   const [reviewDialog, setReviewDialog] = useState<{ request: ContractApprovalRequest; action: "approve" | "reject" } | null>(null);
   const [reviewNotes, setReviewNotes] = useState("");
 
-  const isCommissioner = user?.userId && COMMISSIONER_USER_IDS.includes(user.userId);
+  const isCommissioner = isUserCommissioner(user?.userId, league);
 
   const { data: approvalRequests, isLoading: isLoadingRequests } = useQuery<ContractApprovalRequest[]>({
     queryKey: ["/api/league", league?.leagueId, "contract-approvals"],
