@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
@@ -32,7 +32,6 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 
@@ -51,24 +50,21 @@ const COLORS = {
 const CURRENT_YEAR = 2025;
 const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
 
-interface PlayerContract {
-  playerId: string;
-  name: string;
-  position: string;
-  salary: number;
-  yearsRemaining: number;
-  deadCap: number;
-  status: "active" | "ir" | "pup";
+interface PlayerContractData {
+  salaries: Record<number, number>;
+  fifthYearOption: boolean | null;
 }
 
-interface PlayerContractInput {
+type ContractDataStore = Record<string, Record<string, PlayerContractData>>;
+
+interface PlayerDisplayInfo {
   playerId: string;
   name: string;
   position: string;
   nflTeam: string | null;
   yearsExp: number;
-  salaries: Record<number, number>;
-  fifthYearOption: boolean | null;
+  currentSalary: number;
+  injuryStatus: string | null;
 }
 
 interface TeamCapData {
@@ -82,21 +78,6 @@ interface TeamCapData {
   players: string[];
 }
 
-const sampleCapData: Record<number, { salaries: number; deadCap: number }> = {
-  1: { salaries: 180, deadCap: 15 },
-  2: { salaries: 165, deadCap: 8 },
-  3: { salaries: 195, deadCap: 22 },
-  4: { salaries: 142, deadCap: 5 },
-  5: { salaries: 210, deadCap: 18 },
-  6: { salaries: 155, deadCap: 12 },
-  7: { salaries: 175, deadCap: 10 },
-  8: { salaries: 188, deadCap: 7 },
-  9: { salaries: 162, deadCap: 25 },
-  10: { salaries: 198, deadCap: 14 },
-  11: { salaries: 145, deadCap: 3 },
-  12: { salaries: 172, deadCap: 20 },
-};
-
 const positionColors: Record<string, string> = {
   QB: "bg-rose-500 text-white",
   RB: "bg-emerald-500 text-white",
@@ -106,75 +87,28 @@ const positionColors: Record<string, string> = {
   DEF: "bg-slate-500 text-white",
 };
 
-function generatePlayerContracts(
+function getPlayersWithContracts(
   players: string[],
   allPlayers: Record<string, any>,
-  totalSalary: number,
-  totalDeadCap: number
-): PlayerContract[] {
-  if (!players || players.length === 0) return [];
-
-  const validPlayers = players
-    .filter(id => allPlayers[id])
-    .map(id => ({
-      id,
-      player: allPlayers[id],
-    }));
-
-  if (validPlayers.length === 0) return [];
-
-  const salaryPerPlayer = totalSalary / validPlayers.length;
-  const deadCapPerPlayer = totalDeadCap / Math.max(3, Math.floor(validPlayers.length * 0.2));
-
-  return validPlayers.map((p, index) => {
-    const positionMultiplier = 
-      p.player.position === "QB" ? 1.8 :
-      p.player.position === "RB" ? 1.2 :
-      p.player.position === "WR" ? 1.3 :
-      p.player.position === "TE" ? 1.0 :
-      0.5;
-
-    const baseSalary = salaryPerPlayer * positionMultiplier * (0.5 + Math.random());
-    const hasDeadCap = index < 3;
-    const status: "active" | "ir" | "pup" = 
-      p.player.injury_status === "IR" ? "ir" : 
-      p.player.injury_status === "PUP" ? "pup" : "active";
-
-    return {
-      playerId: p.id,
-      name: `${p.player.first_name} ${p.player.last_name}`,
-      position: p.player.position || "NA",
-      salary: Math.round(baseSalary * 10) / 10,
-      yearsRemaining: Math.floor(Math.random() * 4) + 1,
-      deadCap: hasDeadCap ? Math.round(deadCapPerPlayer * (0.5 + Math.random()) * 10) / 10 : 0,
-      status,
-    };
-  }).sort((a, b) => b.salary - a.salary);
-}
-
-function getPlayerContractInputs(
-  players: string[],
-  allPlayers: Record<string, any>,
-  savedContracts: Record<string, { salaries: Record<number, number>; fifthYearOption: boolean | null }>
-): PlayerContractInput[] {
+  teamContracts: Record<string, PlayerContractData>
+): PlayerDisplayInfo[] {
   if (!players || players.length === 0) return [];
 
   return players
     .filter(id => allPlayers[id])
     .map(id => {
       const player = allPlayers[id];
-      const yearsExp = player.years_exp ?? 0;
-      const isRookie = yearsExp <= 4;
-      const saved = savedContracts[id];
+      const contract = teamContracts[id];
+      const currentSalary = contract?.salaries?.[CURRENT_YEAR] || 0;
 
       return {
         playerId: id,
         name: `${player.first_name} ${player.last_name}`,
         position: player.position || "NA",
         nflTeam: player.team || null,
-        yearsExp,
-        salaries: saved?.salaries || CONTRACT_YEARS.reduce((acc, year) => ({ ...acc, [year]: 0 }), {}),
-        fifthYearOption: isRookie ? (saved?.fifthYearOption ?? null) : null,
+        yearsExp: player.years_exp ?? 0,
+        currentSalary,
+        injuryStatus: player.injury_status || null,
       };
     })
     .sort((a, b) => {
@@ -182,8 +116,21 @@ function getPlayerContractInputs(
       const posA = posOrder.indexOf(a.position);
       const posB = posOrder.indexOf(b.position);
       if (posA !== posB) return posA - posB;
-      return a.name.localeCompare(b.name);
+      return b.currentSalary - a.currentSalary;
     });
+}
+
+function calculateTeamSalary(
+  players: string[],
+  teamContracts: Record<string, PlayerContractData>,
+  year: number = CURRENT_YEAR
+): number {
+  if (!players || players.length === 0) return 0;
+  
+  return players.reduce((sum, playerId) => {
+    const contract = teamContracts[playerId];
+    return sum + (contract?.salaries?.[year] || 0);
+  }, 0);
 }
 
 function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => void }) {
@@ -194,6 +141,7 @@ function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => voi
   ].filter(d => d.value > 0);
 
   const isOverCap = team.available < 0;
+  const hasNoData = team.salaries === 0 && team.deadCap === 0;
 
   return (
     <Card 
@@ -223,49 +171,60 @@ function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => voi
       </CardHeader>
       <CardContent>
         <div className="h-[180px]">
-          <ResponsiveContainer width="100%" height="100%">
-            <PieChart>
-              <Pie
-                data={data}
-                cx="50%"
-                cy="50%"
-                innerRadius={40}
-                outerRadius={60}
-                paddingAngle={2}
-                dataKey="value"
-              >
-                {data.map((entry, index) => (
-                  <Cell key={`cell-${index}`} fill={entry.color} />
-                ))}
-              </Pie>
-              <Tooltip
-                formatter={(value: number) => [`$${value}M`, ""]}
-                contentStyle={{
-                  backgroundColor: "hsl(var(--card))",
-                  border: "1px solid hsl(var(--border))",
-                  borderRadius: "8px",
-                }}
-              />
-              <Legend
-                iconType="circle"
-                iconSize={8}
-                wrapperStyle={{ fontSize: "11px" }}
-              />
-            </PieChart>
-          </ResponsiveContainer>
+          {hasNoData ? (
+            <div className="h-full flex items-center justify-center">
+              <div className="text-center">
+                <div className="text-4xl font-bold" style={{ color: COLORS.available }}>
+                  ${TOTAL_CAP}M
+                </div>
+                <p className="text-sm text-muted-foreground mt-2">Full Cap Available</p>
+              </div>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie
+                  data={data}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={40}
+                  outerRadius={60}
+                  paddingAngle={2}
+                  dataKey="value"
+                >
+                  {data.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.color} />
+                  ))}
+                </Pie>
+                <Tooltip
+                  formatter={(value: number) => [`$${value.toFixed(1)}M`, ""]}
+                  contentStyle={{
+                    backgroundColor: "hsl(var(--card))",
+                    border: "1px solid hsl(var(--border))",
+                    borderRadius: "8px",
+                  }}
+                />
+                <Legend
+                  iconType="circle"
+                  iconSize={8}
+                  wrapperStyle={{ fontSize: "11px" }}
+                />
+              </PieChart>
+            </ResponsiveContainer>
+          )}
         </div>
         <div className="mt-2 grid grid-cols-3 gap-1 text-center text-xs">
           <div>
-            <div className="font-medium" style={{ color: COLORS.salaries }}>${team.salaries}M</div>
+            <div className="font-medium" style={{ color: COLORS.salaries }}>${team.salaries.toFixed(1)}M</div>
             <div className="text-muted-foreground">Salaries</div>
           </div>
           <div>
-            <div className="font-medium" style={{ color: COLORS.deadCap }}>${team.deadCap}M</div>
+            <div className="font-medium" style={{ color: COLORS.deadCap }}>${team.deadCap.toFixed(1)}M</div>
             <div className="text-muted-foreground">Dead Cap</div>
           </div>
           <div>
             <div className="font-medium" style={{ color: isOverCap ? COLORS.deadCap : COLORS.available }}>
-              ${team.available}M
+              ${team.available.toFixed(1)}M
             </div>
             <div className="text-muted-foreground">Available</div>
           </div>
@@ -277,17 +236,17 @@ function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => voi
 
 interface TeamContractModalProps {
   team: TeamCapData | null;
-  contracts: PlayerContract[];
+  players: PlayerDisplayInfo[];
+  contractData: Record<string, PlayerContractData>;
   open: boolean;
   onClose: () => void;
 }
 
-function TeamContractModal({ team, contracts, open, onClose }: TeamContractModalProps) {
+function TeamContractModal({ team, players, contractData, open, onClose }: TeamContractModalProps) {
   if (!team) return null;
 
   const isOverCap = team.available < 0;
-  const totalContractSalary = contracts.reduce((sum, c) => sum + c.salary, 0);
-  const totalContractDeadCap = contracts.reduce((sum, c) => sum + c.deadCap, 0);
+  const totalContractSalary = players.reduce((sum, p) => sum + p.currentSalary, 0);
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -307,7 +266,7 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
               <p className="text-sm text-muted-foreground">{team.ownerName}</p>
             </div>
             {isOverCap && (
-              <Badge variant="destructive">Over Cap by ${Math.abs(team.available)}M</Badge>
+              <Badge variant="destructive">Over Cap by ${Math.abs(team.available).toFixed(1)}M</Badge>
             )}
           </div>
         </DialogHeader>
@@ -325,7 +284,7 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
             <CardContent className="pt-4 pb-3">
               <div className="text-center">
                 <div className="text-xl font-bold" style={{ color: COLORS.salaries }}>
-                  ${team.salaries}M
+                  ${team.salaries.toFixed(1)}M
                 </div>
                 <p className="text-xs text-muted-foreground">Salaries</p>
               </div>
@@ -335,7 +294,7 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
             <CardContent className="pt-4 pb-3">
               <div className="text-center">
                 <div className="text-xl font-bold" style={{ color: COLORS.deadCap }}>
-                  ${team.deadCap}M
+                  ${team.deadCap.toFixed(1)}M
                 </div>
                 <p className="text-xs text-muted-foreground">Dead Cap</p>
               </div>
@@ -345,7 +304,7 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
             <CardContent className="pt-4 pb-3">
               <div className="text-center">
                 <div className="text-xl font-bold" style={{ color: isOverCap ? COLORS.deadCap : COLORS.available }}>
-                  ${team.available}M
+                  ${team.available.toFixed(1)}M
                 </div>
                 <p className="text-xs text-muted-foreground">Available</p>
               </div>
@@ -358,58 +317,62 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
             <TableHeader>
               <TableRow>
                 <TableHead>Player</TableHead>
-                <TableHead className="text-center">Position</TableHead>
-                <TableHead className="text-center">Years</TableHead>
-                <TableHead className="text-right">Salary</TableHead>
-                <TableHead className="text-right">Dead Cap</TableHead>
+                <TableHead className="text-center">Pos</TableHead>
+                <TableHead className="text-center">Team</TableHead>
+                <TableHead className="text-center">NFL Yrs</TableHead>
+                <TableHead className="text-right">{CURRENT_YEAR} Salary</TableHead>
                 <TableHead className="text-center">Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {contracts.map((contract) => (
-                <TableRow key={contract.playerId} data-testid={`row-contract-${contract.playerId}`}>
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <Avatar className="h-8 w-8">
-                        <AvatarImage 
-                          src={`https://sleepercdn.com/content/nfl/players/${contract.playerId}.jpg`}
-                          alt={contract.name}
-                        />
-                        <AvatarFallback className="text-xs">
-                          {contract.name.split(" ").map(n => n[0]).join("")}
-                        </AvatarFallback>
-                      </Avatar>
-                      <span className="font-medium">{contract.name}</span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Badge className={positionColors[contract.position] || "bg-gray-500 text-white"}>
-                      {contract.position}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-center tabular-nums">
-                    {contract.yearsRemaining}yr
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums font-medium" style={{ color: COLORS.salaries }}>
-                    ${contract.salary.toFixed(1)}M
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums" style={{ color: contract.deadCap > 0 ? COLORS.deadCap : "inherit" }}>
-                    {contract.deadCap > 0 ? `$${contract.deadCap.toFixed(1)}M` : "—"}
-                  </TableCell>
-                  <TableCell className="text-center">
-                    <Badge 
-                      variant={contract.status === "active" ? "secondary" : "destructive"}
-                      className="text-xs"
-                    >
-                      {contract.status === "active" ? "Active" : contract.status.toUpperCase()}
-                    </Badge>
-                  </TableCell>
-                </TableRow>
-              ))}
-              {contracts.length === 0 && (
+              {players.map((player) => {
+                const status = player.injuryStatus === "IR" ? "ir" : 
+                               player.injuryStatus === "PUP" ? "pup" : "active";
+                return (
+                  <TableRow key={player.playerId} data-testid={`row-contract-${player.playerId}`}>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Avatar className="h-8 w-8">
+                          <AvatarImage 
+                            src={`https://sleepercdn.com/content/nfl/players/${player.playerId}.jpg`}
+                            alt={player.name}
+                          />
+                          <AvatarFallback className="text-xs">
+                            {player.name.split(" ").map(n => n[0]).join("")}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium">{player.name}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge className={positionColors[player.position] || "bg-gray-500 text-white"}>
+                        {player.position}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-center text-sm">
+                      {player.nflTeam || "FA"}
+                    </TableCell>
+                    <TableCell className="text-center tabular-nums">
+                      {player.yearsExp === 0 ? "R" : player.yearsExp}
+                    </TableCell>
+                    <TableCell className="text-right tabular-nums font-medium" style={{ color: player.currentSalary > 0 ? COLORS.salaries : "inherit" }}>
+                      {player.currentSalary > 0 ? `$${player.currentSalary.toFixed(1)}M` : "$0"}
+                    </TableCell>
+                    <TableCell className="text-center">
+                      <Badge 
+                        variant={status === "active" ? "secondary" : "destructive"}
+                        className="text-xs"
+                      >
+                        {status === "active" ? "Active" : status.toUpperCase()}
+                      </Badge>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+              {players.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={6} className="text-center text-muted-foreground py-8">
-                    No contract data available
+                    No players on this roster
                   </TableCell>
                 </TableRow>
               )}
@@ -419,13 +382,10 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
 
         <div className="border-t pt-4 mt-2">
           <div className="flex justify-between text-sm">
-            <span className="text-muted-foreground">Total ({contracts.length} players)</span>
+            <span className="text-muted-foreground">Total ({players.length} players)</span>
             <div className="flex gap-6">
               <span>
-                Salaries: <span className="font-medium" style={{ color: COLORS.salaries }}>${totalContractSalary.toFixed(1)}M</span>
-              </span>
-              <span>
-                Dead Cap: <span className="font-medium" style={{ color: COLORS.deadCap }}>${totalContractDeadCap.toFixed(1)}M</span>
+                {CURRENT_YEAR} Salaries: <span className="font-medium" style={{ color: COLORS.salaries }}>${totalContractSalary.toFixed(1)}M</span>
               </span>
             </div>
           </div>
@@ -438,82 +398,62 @@ function TeamContractModal({ team, contracts, open, onClose }: TeamContractModal
 interface ContractInputTabProps {
   teams: TeamCapData[];
   allPlayers: Record<string, any>;
+  contractData: ContractDataStore;
+  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption", value: any) => void;
+  onSave: () => void;
+  hasChanges: boolean;
 }
 
-function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
-  const { toast } = useToast();
+function ContractInputTab({ teams, allPlayers, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
-  const [contractData, setContractData] = useState<Record<string, Record<string, { salaries: Record<number, number>; fifthYearOption: boolean | null }>>>({});
-  const [hasChanges, setHasChanges] = useState(false);
 
   const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
   
-  const playerInputs = selectedTeam 
-    ? getPlayerContractInputs(
-        selectedTeam.players, 
-        allPlayers, 
-        contractData[selectedRosterId] || {}
-      )
-    : [];
+  const playerInputs = useMemo(() => {
+    if (!selectedTeam) return [];
+    
+    return selectedTeam.players
+      .filter(id => allPlayers[id])
+      .map(id => {
+        const player = allPlayers[id];
+        const yearsExp = player.years_exp ?? 0;
+        const contract = contractData[selectedRosterId]?.[id];
+
+        return {
+          playerId: id,
+          name: `${player.first_name} ${player.last_name}`,
+          position: player.position || "NA",
+          nflTeam: player.team || null,
+          yearsExp,
+          salaries: contract?.salaries || {},
+          fifthYearOption: contract?.fifthYearOption ?? null,
+        };
+      })
+      .sort((a, b) => {
+        const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
+        const posA = posOrder.indexOf(a.position);
+        const posB = posOrder.indexOf(b.position);
+        if (posA !== posB) return posA - posB;
+        return a.name.localeCompare(b.name);
+      });
+  }, [selectedTeam, allPlayers, contractData, selectedRosterId]);
 
   const handleSalaryChange = (playerId: string, year: number, value: string) => {
     const numValue = parseFloat(value) || 0;
-    setContractData(prev => {
-      const teamContracts = prev[selectedRosterId] || {};
-      const playerContract = teamContracts[playerId] || { 
-        salaries: CONTRACT_YEARS.reduce((acc, y) => ({ ...acc, [y]: 0 }), {}),
-        fifthYearOption: null 
-      };
-      return {
-        ...prev,
-        [selectedRosterId]: {
-          ...teamContracts,
-          [playerId]: {
-            ...playerContract,
-            salaries: {
-              ...playerContract.salaries,
-              [year]: numValue
-            }
-          }
-        }
-      };
+    const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
+    onContractChange(selectedRosterId, playerId, "salaries", {
+      ...currentSalaries,
+      [year]: numValue
     });
-    setHasChanges(true);
   };
 
   const handleFifthYearOptionChange = (playerId: string, value: boolean) => {
-    setContractData(prev => {
-      const teamContracts = prev[selectedRosterId] || {};
-      const playerContract = teamContracts[playerId] || { 
-        salaries: CONTRACT_YEARS.reduce((acc, y) => ({ ...acc, [y]: 0 }), {}),
-        fifthYearOption: null 
-      };
-      return {
-        ...prev,
-        [selectedRosterId]: {
-          ...teamContracts,
-          [playerId]: {
-            ...playerContract,
-            fifthYearOption: value
-          }
-        }
-      };
-    });
-    setHasChanges(true);
-  };
-
-  const handleSave = () => {
-    toast({
-      title: "Contracts Saved",
-      description: `Contract data for ${selectedTeam?.teamName} has been saved.`,
-    });
-    setHasChanges(false);
+    onContractChange(selectedRosterId, playerId, "fifthYearOption", value);
   };
 
   const totalSalaryByYear = CONTRACT_YEARS.reduce((acc, year) => {
     const total = playerInputs.reduce((sum, p) => {
-      const saved = contractData[selectedRosterId]?.[p.playerId];
-      return sum + (saved?.salaries?.[year] || 0);
+      return sum + (p.salaries[year] || 0);
     }, 0);
     return { ...acc, [year]: total };
   }, {} as Record<number, number>);
@@ -557,7 +497,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
         </div>
 
         <Button 
-          onClick={handleSave} 
+          onClick={onSave} 
           disabled={!hasChanges}
           data-testid="button-save-contracts"
         >
@@ -613,7 +553,6 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                 <TableBody>
                   {playerInputs.map((player) => {
                     const isRookie = player.yearsExp <= 4;
-                    const savedContract = contractData[selectedRosterId]?.[player.playerId];
                     
                     return (
                       <TableRow key={player.playerId} data-testid={`row-input-${player.playerId}`}>
@@ -656,7 +595,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                                 min="0"
                                 className="h-7 w-16 text-center tabular-nums text-sm"
                                 placeholder="0"
-                                value={savedContract?.salaries?.[year] || ""}
+                                value={player.salaries[year] || ""}
                                 onChange={(e) => handleSalaryChange(player.playerId, year, e.target.value)}
                                 data-testid={`input-salary-${player.playerId}-${year}`}
                               />
@@ -669,7 +608,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                             <div className="flex items-center justify-center gap-1">
                               <Button
                                 size="sm"
-                                variant={savedContract?.fifthYearOption === true ? "default" : "outline"}
+                                variant={player.fifthYearOption === true ? "default" : "outline"}
                                 className="h-6 px-2 text-xs"
                                 onClick={() => handleFifthYearOptionChange(player.playerId, true)}
                                 data-testid={`button-fifth-year-yes-${player.playerId}`}
@@ -678,7 +617,7 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
                               </Button>
                               <Button
                                 size="sm"
-                                variant={savedContract?.fifthYearOption === false ? "default" : "outline"}
+                                variant={player.fifthYearOption === false ? "default" : "outline"}
                                 className="h-6 px-2 text-xs"
                                 onClick={() => handleFifthYearOptionChange(player.playerId, false)}
                                 data-testid={`button-fifth-year-no-${player.playerId}`}
@@ -711,11 +650,14 @@ function ContractInputTab({ teams, allPlayers }: ContractInputTabProps) {
 }
 
 export default function Contracts() {
+  const { toast } = useToast();
   const { user, league, isLoading } = useSleeper();
   const [, setLocation] = useLocation();
   const [selectedTeam, setSelectedTeam] = useState<TeamCapData | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
+  const [contractData, setContractData] = useState<ContractDataStore>({});
+  const [hasChanges, setHasChanges] = useState(false);
 
   const isCommissioner = !!(user?.userId && league && (
     (league.commissionerId && user.userId === league.commissionerId) ||
@@ -743,6 +685,41 @@ export default function Contracts() {
     }
   }, [isLoading, user, league, isCommissioner, setLocation]);
 
+  const handleContractChange = (
+    rosterId: string, 
+    playerId: string, 
+    field: "salaries" | "fifthYearOption", 
+    value: any
+  ) => {
+    setContractData(prev => {
+      const teamContracts = prev[rosterId] || {};
+      const playerContract = teamContracts[playerId] || { 
+        salaries: {},
+        fifthYearOption: null 
+      };
+      
+      return {
+        ...prev,
+        [rosterId]: {
+          ...teamContracts,
+          [playerId]: {
+            ...playerContract,
+            [field]: value
+          }
+        }
+      };
+    });
+    setHasChanges(true);
+  };
+
+  const handleSave = () => {
+    toast({
+      title: "Contracts Saved",
+      description: "All contract data has been saved successfully.",
+    });
+    setHasChanges(false);
+  };
+
   if (isLoading || !league) {
     return null;
   }
@@ -757,16 +734,19 @@ export default function Contracts() {
 
   const teamCapData: TeamCapData[] = (rosters || []).map((roster: any) => {
     const owner = userMap.get(roster.owner_id);
-    const capInfo = sampleCapData[roster.roster_id] || { salaries: 150, deadCap: 10 };
-    const available = TOTAL_CAP - capInfo.salaries - capInfo.deadCap;
+    const rosterId = roster.roster_id.toString();
+    const teamContracts = contractData[rosterId] || {};
+    const salaries = calculateTeamSalary(roster.players || [], teamContracts, CURRENT_YEAR);
+    const deadCap = 0;
+    const available = TOTAL_CAP - salaries - deadCap;
 
     return {
       rosterId: roster.roster_id,
       teamName: owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`,
       ownerName: owner?.display_name || "Unknown",
       avatar: owner?.avatar || null,
-      salaries: capInfo.salaries,
-      deadCap: capInfo.deadCap,
+      salaries,
+      deadCap,
       available,
       players: roster.players || [],
     };
@@ -781,8 +761,12 @@ export default function Contracts() {
     setModalOpen(true);
   };
 
-  const selectedTeamContracts = selectedTeam && allPlayers
-    ? generatePlayerContracts(selectedTeam.players, allPlayers, selectedTeam.salaries, selectedTeam.deadCap)
+  const selectedTeamPlayers = selectedTeam && allPlayers
+    ? getPlayersWithContracts(
+        selectedTeam.players, 
+        allPlayers, 
+        contractData[selectedTeam.rosterId.toString()] || {}
+      )
     : [];
 
   return (
@@ -815,7 +799,7 @@ export default function Contracts() {
               <CardContent className="pt-6">
                 <div className="text-center">
                   <div className="text-3xl font-bold" style={{ color: COLORS.salaries }}>
-                    ${totalSalaries}M
+                    ${totalSalaries.toFixed(1)}M
                   </div>
                   <p className="text-sm text-muted-foreground">Total Salaries</p>
                 </div>
@@ -825,7 +809,7 @@ export default function Contracts() {
               <CardContent className="pt-6">
                 <div className="text-center">
                   <div className="text-3xl font-bold" style={{ color: COLORS.deadCap }}>
-                    ${totalDeadCap}M
+                    ${totalDeadCap.toFixed(1)}M
                   </div>
                   <p className="text-sm text-muted-foreground">Total Dead Cap</p>
                 </div>
@@ -856,14 +840,22 @@ export default function Contracts() {
 
         <TabsContent value="manage" className="mt-6">
           {allPlayers && (
-            <ContractInputTab teams={teamCapData} allPlayers={allPlayers} />
+            <ContractInputTab 
+              teams={teamCapData} 
+              allPlayers={allPlayers}
+              contractData={contractData}
+              onContractChange={handleContractChange}
+              onSave={handleSave}
+              hasChanges={hasChanges}
+            />
           )}
         </TabsContent>
       </Tabs>
 
       <TeamContractModal
         team={selectedTeam}
-        contracts={selectedTeamContracts}
+        players={selectedTeamPlayers}
+        contractData={contractData[selectedTeam?.rosterId.toString() || ""] || {}}
         open={modalOpen}
         onClose={() => setModalOpen(false)}
       />
