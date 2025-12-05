@@ -689,7 +689,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                       </div>
                                       {salaryValue > 0 && deadCapPercent > 0 && (
                                         <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
-                                          DC: ${deadCapValue.toFixed(1)}M ({Math.round(deadCapPercent * 100)}%)
+                                          DC: ${Math.ceil(deadCapValue)}M ({Math.round(deadCapPercent * 100)}%)
                                         </span>
                                       )}
                                     </>
@@ -1123,7 +1123,7 @@ function ManageTeamContractsTab({
                               </div>
                               {currentValue > 0 && deadCapPercent > 0 && (
                                 <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
-                                  DC: ${deadCapValue.toFixed(1)}M ({Math.round(deadCapPercent * 100)}%)
+                                  DC: ${Math.ceil(deadCapValue)}M ({Math.round(deadCapPercent * 100)}%)
                                 </span>
                               )}
                               {player.isRosterPlayer && leagueSalary > 0 && isDifferent && (
