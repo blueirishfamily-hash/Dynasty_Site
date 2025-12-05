@@ -28,8 +28,7 @@ import {
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
-  "456056564008312832",
-  "457422007268728832",
+  "900186363130503168",
 ];
 
 const baseNavItems = [
