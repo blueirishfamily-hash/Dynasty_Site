@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from "recharts";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
@@ -1154,6 +1154,218 @@ function ManageTeamContractsTab({
   );
 }
 
+interface ExpiringContractsTabProps {
+  teams: TeamCapData[];
+  playerMap: PlayerMap;
+  contractData: ContractDataStore;
+  leagueUsers: any[];
+}
+
+interface ExpiringPlayer {
+  playerId: string;
+  name: string;
+  position: string;
+  nflTeam: string | null;
+  yearsExp: number;
+  currentSalary: number;
+  teamName: string;
+  ownerName: string;
+  avatar: string | null;
+  rosterId: number;
+}
+
+function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: ExpiringContractsTabProps) {
+  const expiringPlayers = useMemo(() => {
+    const players: ExpiringPlayer[] = [];
+    
+    for (const team of teams) {
+      const rosterId = team.rosterId.toString();
+      const teamContracts = contractData[rosterId] || {};
+      
+      for (const playerId of team.players) {
+        const player = playerMap[playerId];
+        if (!player) continue;
+        
+        const contract = teamContracts[playerId];
+        if (!contract) continue;
+        
+        const salary2025 = contract.salaries[2025] || 0;
+        const salary2026 = contract.salaries[2026] || 0;
+        const salary2027 = contract.salaries[2027] || 0;
+        const salary2028 = contract.salaries[2028] || 0;
+        
+        if (salary2025 > 0 && salary2026 === 0 && salary2027 === 0 && salary2028 === 0) {
+          players.push({
+            playerId,
+            name: player.name,
+            position: player.position || "NA",
+            nflTeam: player.team || null,
+            yearsExp: player.yearsExp ?? 0,
+            currentSalary: salary2025,
+            teamName: team.teamName,
+            ownerName: team.ownerName,
+            avatar: team.avatar,
+            rosterId: team.rosterId,
+          });
+        }
+      }
+    }
+    
+    return players.sort((a, b) => b.currentSalary - a.currentSalary);
+  }, [teams, playerMap, contractData]);
+
+  const totalExpiringValue = expiringPlayers.reduce((sum, p) => sum + p.currentSalary, 0);
+  const positionCounts = expiringPlayers.reduce((acc, p) => {
+    acc[p.position] = (acc[p.position] || 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="text-3xl font-bold text-orange-500">
+                {expiringPlayers.length}
+              </div>
+              <p className="text-sm text-muted-foreground">Expiring Contracts</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="text-3xl font-bold" style={{ color: COLORS.salaries }}>
+                ${totalExpiringValue.toFixed(1)}M
+              </div>
+              <p className="text-sm text-muted-foreground">Total Expiring Value</p>
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-center">
+              <div className="flex justify-center gap-2 flex-wrap">
+                {Object.entries(positionCounts).map(([pos, count]) => (
+                  <Badge key={pos} className={`${positionColors[pos] || "bg-gray-500 text-white"}`}>
+                    {pos}: {count}
+                  </Badge>
+                ))}
+              </div>
+              <p className="text-sm text-muted-foreground mt-2">By Position</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="font-heading flex items-center gap-2">
+            <AlertTriangle className="w-5 h-5 text-orange-500" />
+            Players in Final Contract Year
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <ScrollArea className="h-[500px] pr-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-[180px]">Player</TableHead>
+                  <TableHead className="text-center w-[60px]">Pos</TableHead>
+                  <TableHead className="text-center w-[60px]">NFL</TableHead>
+                  <TableHead className="text-center w-[60px]">Exp</TableHead>
+                  <TableHead className="text-right w-[100px]">2025 Salary</TableHead>
+                  <TableHead className="text-right w-[100px]">Dead Cap</TableHead>
+                  <TableHead className="w-[180px]">Team</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {expiringPlayers.map((player) => {
+                  const deadCap = player.currentSalary * 0.4;
+                  
+                  return (
+                    <TableRow key={`${player.rosterId}-${player.playerId}`} data-testid={`row-expiring-${player.playerId}`}>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Avatar className="h-9 w-9">
+                            <AvatarImage 
+                              src={`https://sleepercdn.com/content/nfl/players/${player.playerId}.jpg`}
+                              alt={player.name}
+                            />
+                            <AvatarFallback className="text-xs">
+                              {player.name.split(" ").map(n => n[0]).join("")}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="font-medium text-sm">{player.name}</span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Badge className={`${positionColors[player.position] || "bg-gray-500 text-white"} text-[10px] px-1.5 py-0`}>
+                          {player.position}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="text-sm font-medium">
+                          {player.nflTeam || "FA"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <span className="text-sm tabular-nums">
+                          {player.yearsExp === 0 ? "R" : player.yearsExp}
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="font-medium tabular-nums" style={{ color: COLORS.salaries }}>
+                          ${player.currentSalary.toFixed(1)}M
+                        </span>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <span className="text-sm tabular-nums" style={{ color: COLORS.deadCap }}>
+                          ${deadCap.toFixed(1)}M
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Avatar className="h-6 w-6">
+                            {player.avatar ? (
+                              <AvatarImage src={`https://sleepercdn.com/avatars/thumbs/${player.avatar}`} />
+                            ) : null}
+                            <AvatarFallback className="text-[8px]">
+                              {player.teamName.substring(0, 2).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="text-sm">{player.teamName}</span>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+                {expiringPlayers.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                      No players with expiring contracts found
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </ScrollArea>
+
+          <Separator className="my-4" />
+
+          <div className="text-sm text-muted-foreground">
+            <p className="flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-orange-500" />
+              <span>Players shown have salary for 2025 only, with no contract beyond this season.</span>
+            </p>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 export default function Contracts() {
   const { toast } = useToast();
   const { user, league, isLoading } = useSleeper();
@@ -1322,6 +1534,7 @@ export default function Contracts() {
       <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="overview" data-testid="tab-overview">Overview</TabsTrigger>
+          <TabsTrigger value="expiring" data-testid="tab-expiring">Expiring Contracts</TabsTrigger>
           <TabsTrigger value="manage-team" data-testid="tab-manage-team">Manage Team Contracts</TabsTrigger>
           {isCommissioner && (
             <TabsTrigger value="manage-league" data-testid="tab-manage-league">Manage League Contracts</TabsTrigger>
@@ -1371,6 +1584,17 @@ export default function Contracts() {
               />
             ))}
           </div>
+        </TabsContent>
+
+        <TabsContent value="expiring" className="mt-6">
+          {Object.keys(playerMap).length > 0 && (
+            <ExpiringContractsTab
+              teams={teamCapData}
+              playerMap={playerMap}
+              contractData={contractData}
+              leagueUsers={leagueUsers || []}
+            />
+          )}
         </TabsContent>
 
         <TabsContent value="manage-team" className="mt-6">
