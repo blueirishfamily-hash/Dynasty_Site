@@ -11,7 +11,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ChevronLeft, ChevronRight, Trophy, Info } from "lucide-react";
+import { ChevronLeft, ChevronRight, Trophy } from "lucide-react";
+import { PlayerDetailModal } from "@/components/PlayerDetailModal";
 
 interface MatchupPlayer {
   id: string;
@@ -112,6 +113,7 @@ function DualSidedBar({
 export default function Matchup() {
   const { user, league, currentWeek } = useSleeper();
   const [selectedWeek, setSelectedWeek] = useState(currentWeek);
+  const [selectedPlayer, setSelectedPlayer] = useState<{ id: string; name: string } | null>(null);
 
   const { data: matchup, isLoading } = useQuery<MatchupData>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "matchup-detail", user?.userId, selectedWeek],
@@ -360,15 +362,23 @@ export default function Matchup() {
                     >
                       <div className="flex items-center justify-end gap-2">
                         <div className="text-right min-w-0 flex-1">
-                          <p className="text-sm font-medium truncate">
-                            {slot.userPlayer?.name || "—"}
-                            {slot.userPlayer?.status && (
-                              <span className="ml-1 text-xs text-destructive font-normal">({slot.userPlayer.status})</span>
-                            )}
-                            {slot.userPlayer?.isOnBye && (
-                              <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
-                            )}
-                          </p>
+                          {slot.userPlayer ? (
+                            <button
+                              onClick={() => setSelectedPlayer({ id: slot.userPlayer!.id, name: slot.userPlayer!.name })}
+                              className="text-sm font-medium truncate hover:text-primary hover:underline transition-colors text-right w-full"
+                              data-testid={`player-button-user-${slot.slotLabel}`}
+                            >
+                              {slot.userPlayer.name}
+                              {slot.userPlayer.status && (
+                                <span className="ml-1 text-xs text-destructive font-normal">({slot.userPlayer.status})</span>
+                              )}
+                              {slot.userPlayer.isOnBye && (
+                                <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
+                              )}
+                            </button>
+                          ) : (
+                            <p className="text-sm font-medium truncate text-muted-foreground">—</p>
+                          )}
                           <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
                             <span>{slot.userPlayer?.team || ""}</span>
                             {slot.userPlayer && (
@@ -411,15 +421,23 @@ export default function Matchup() {
 
                       <div className="flex items-center gap-2">
                         <div className="text-left min-w-0 flex-1">
-                          <p className="text-sm font-medium truncate">
-                            {slot.opponentPlayer?.name || "—"}
-                            {slot.opponentPlayer?.status && (
-                              <span className="ml-1 text-xs text-destructive font-normal">({slot.opponentPlayer.status})</span>
-                            )}
-                            {slot.opponentPlayer?.isOnBye && (
-                              <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
-                            )}
-                          </p>
+                          {slot.opponentPlayer ? (
+                            <button
+                              onClick={() => setSelectedPlayer({ id: slot.opponentPlayer!.id, name: slot.opponentPlayer!.name })}
+                              className="text-sm font-medium truncate hover:text-primary hover:underline transition-colors text-left w-full"
+                              data-testid={`player-button-opp-${slot.slotLabel}`}
+                            >
+                              {slot.opponentPlayer.name}
+                              {slot.opponentPlayer.status && (
+                                <span className="ml-1 text-xs text-destructive font-normal">({slot.opponentPlayer.status})</span>
+                              )}
+                              {slot.opponentPlayer.isOnBye && (
+                                <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
+                              )}
+                            </button>
+                          ) : (
+                            <p className="text-sm font-medium truncate text-muted-foreground">—</p>
+                          )}
                           <div className="flex items-center gap-2 text-xs text-muted-foreground">
                             {slot.opponentPlayer && (
                               <Tooltip>
@@ -464,6 +482,13 @@ export default function Matchup() {
           </CardContent>
         </Card>
       )}
+
+      <PlayerDetailModal
+        playerId={selectedPlayer?.id || null}
+        playerName={selectedPlayer?.name || ""}
+        week={selectedWeek}
+        onClose={() => setSelectedPlayer(null)}
+      />
     </div>
   );
 }
