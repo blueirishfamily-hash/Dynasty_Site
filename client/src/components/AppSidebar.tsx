@@ -67,10 +67,10 @@ export default function AppSidebar({
   const [location] = useLocation();
   const { user, league } = useSleeper();
 
-  const isCommissioner = user?.userId && (
-    (league?.commissionerId && user.userId === league.commissionerId) ||
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
     COMMISSIONER_USER_IDS.includes(user.userId)
-  );
+  ));
 
   const navItems = isCommissioner 
     ? [...baseNavItems, ...commissionerNavItems]

@@ -14,22 +14,22 @@ export default function Contracts() {
   const { user, league, isLoading } = useSleeper();
   const [, setLocation] = useLocation();
 
-  const isCommissioner = user?.userId && (
-    (league?.commissionerId && user.userId === league.commissionerId) ||
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
     COMMISSIONER_USER_IDS.includes(user.userId)
-  );
+  ));
 
   useEffect(() => {
-    if (!isLoading && !isCommissioner) {
+    if (!isLoading && user && league && !isCommissioner) {
       setLocation("/");
     }
-  }, [isLoading, isCommissioner, setLocation]);
+  }, [isLoading, user, league, isCommissioner, setLocation]);
 
-  if (isLoading) {
+  if (isLoading || !league) {
     return null;
   }
 
-  if (!isCommissioner) {
+  if (!user || !isCommissioner) {
     return null;
   }
 
