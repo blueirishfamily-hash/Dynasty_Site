@@ -2450,15 +2450,16 @@ export async function registerRoutes(
       // Fetch weekly stats and projections for all weeks played so far
       const weeklyData: { week: number; actual: number | null; projected: number }[] = [];
       
-      const statsPromises = [];
-      const projPromises = [];
+      type StatsRecord = Record<string, Record<string, number>>;
+      const statsPromises: Promise<StatsRecord>[] = [];
+      const projPromises: Promise<StatsRecord>[] = [];
       
       for (let w = 1; w <= Math.max(currentWeek, week); w++) {
         statsPromises.push(
-          getPlayerStats(season, w).catch(() => ({}))
+          getPlayerStats(season, w).catch(() => ({} as StatsRecord))
         );
         projPromises.push(
-          getPlayerProjections(season, w).catch(() => ({}))
+          getPlayerProjections(season, w).catch(() => ({} as StatsRecord))
         );
       }
       
@@ -2471,8 +2472,8 @@ export async function registerRoutes(
         const weekStats = allStats[w - 1] || {};
         const weekProj = allProjs[w - 1] || {};
         
-        const playerStats = weekStats[playerId] as Record<string, number> | undefined;
-        const playerProj = weekProj[playerId] as Record<string, number> | undefined;
+        const playerStats = weekStats[playerId];
+        const playerProj = weekProj[playerId];
         
         const actualPoints = playerStats 
           ? (playerStats.pts_ppr || playerStats.pts_half_ppr || playerStats.pts_std || 0)
