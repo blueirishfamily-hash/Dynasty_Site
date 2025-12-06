@@ -657,9 +657,10 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             .filter(y => (player.salaries[y] || 0) > 0)
                             .pop() || year;
                           const yearsRemaining = contractEndYear - year + 1;
-                          // Dead cap based on years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
+                          // Current year = 100% dead cap; future years based on years remaining
+                          // Years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
                           const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
-                          const deadCapPercent = deadCapByYearsRemaining[yearsRemaining] || 0;
+                          const deadCapPercent = year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0);
                           const deadCapValue = salaryValue * deadCapPercent;
                           const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
                           const isVetOnlyYear = year === OPTION_YEAR;
@@ -1547,9 +1548,10 @@ function ManageTeamContractsTab({
                           .filter(y => (player.hypotheticalSalaries[y] || 0) > 0)
                           .pop() || year;
                         const yearsRemaining = contractEndYear - year + 1;
-                        // Dead cap based on years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
+                        // Current year = 100% dead cap; future years based on years remaining
+                        // Years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
                         const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
-                        const deadCapPercent = deadCapByYearsRemaining[yearsRemaining] || 0;
+                        const deadCapPercent = year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0);
                         const deadCapValue = currentValue * deadCapPercent;
 
                         return (
