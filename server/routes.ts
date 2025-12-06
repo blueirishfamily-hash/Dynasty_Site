@@ -2926,12 +2926,16 @@ export async function registerRoutes(
       const { leagueId } = req.params;
       const { contracts } = req.body;
       
+      console.log(`[CONTRACTS] Saving ${contracts?.length || 0} contracts for league ${leagueId}`);
+      console.log(`[CONTRACTS] Contract data:`, JSON.stringify(contracts, null, 2));
+      
       if (!Array.isArray(contracts)) {
         return res.status(400).json({ error: "Contracts must be an array" });
       }
 
       const results = [];
       for (const contract of contracts) {
+        console.log(`[CONTRACTS] Upserting contract for player ${contract.playerId} roster ${contract.rosterId}`);
         const result = await storage.upsertPlayerContract({
           leagueId,
           rosterId: contract.rosterId,
@@ -2941,6 +2945,7 @@ export async function registerRoutes(
           salary2027: contract.salary2027 || 0,
           salary2028: contract.salary2028 || 0,
           fifthYearOption: contract.fifthYearOption || null,
+          isOnIr: contract.isOnIr || 0,
           franchiseTagUsed: contract.franchiseTagUsed,
           franchiseTagYear: contract.franchiseTagYear,
           originalContractYears: contract.originalContractYears,

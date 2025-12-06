@@ -3327,6 +3327,7 @@ export default function Contracts() {
   });
 
   useEffect(() => {
+    console.log("[CONTRACTS UI] useEffect triggered, dbContracts:", dbContracts?.length, "contracts");
     if (dbContracts && dbContracts.length > 0) {
       const contractStore: ContractDataStore = {};
       for (const contract of dbContracts) {
@@ -3344,8 +3345,10 @@ export default function Contracts() {
           fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
           isOnIr: contract.isOnIr === 1,
         };
+        console.log(`[CONTRACTS UI] Loaded contract for player ${contract.playerId}: 2025=$${contract.salary2025/10}M, 2026=$${contract.salary2026/10}M`);
       }
       setContractData(contractStore);
+      console.log("[CONTRACTS UI] contractData set with", Object.keys(contractStore).length, "rosters");
     }
   }, [dbContracts]);
 
