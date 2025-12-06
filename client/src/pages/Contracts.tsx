@@ -814,6 +814,33 @@ function ManageTeamContractsTab({
     enabled: !!leagueId && !!userTeam?.rosterId,
   });
 
+  // Track the league contract data to detect commissioner changes
+  const [prevLeagueContractData, setPrevLeagueContractData] = useState<ContractDataStore | null>(null);
+
+  // Sync with league contract changes - reset overrides when commissioner updates contracts
+  useEffect(() => {
+    if (!userTeam) return;
+    
+    const rosterId = userTeam.rosterId.toString();
+    const currentTeamContracts = leagueContractData[rosterId];
+    const prevTeamContracts = prevLeagueContractData?.[rosterId];
+    
+    // If league contracts changed after initial load, reset local overrides to sync
+    if (prevLeagueContractData !== null && 
+        JSON.stringify(currentTeamContracts) !== JSON.stringify(prevTeamContracts)) {
+      // League contracts were updated by commissioner - clear local overrides
+      setHypotheticalData({
+        salaryOverrides: {},
+        addedFreeAgents: [],
+      });
+      setFranchiseTaggedPlayers(new Set());
+      setLastSavedAt(null);
+      setDraftsLoaded(false);
+    }
+    
+    setPrevLeagueContractData(leagueContractData);
+  }, [leagueContractData, userTeam, prevLeagueContractData]);
+
   // Load saved drafts into hypothetical data on initial load
   useEffect(() => {
     if (savedDrafts && savedDrafts.length > 0 && !draftsLoaded) {
