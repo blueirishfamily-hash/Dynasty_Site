@@ -706,10 +706,13 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                         })}
                         <TableCell className="text-center">
                           {(() => {
-                            const totalValue = [...CONTRACT_YEARS, OPTION_YEAR].reduce((sum, year) => {
-                              if (year === OPTION_YEAR && player.fifthYearOption !== "accepted") return sum;
-                              return sum + (player.salaries[year] || 0);
-                            }, 0);
+                            // Total = only completed seasons (years before current year)
+                            const totalValue = [...CONTRACT_YEARS, OPTION_YEAR]
+                              .filter(year => year < CURRENT_YEAR)
+                              .reduce((sum, year) => {
+                                if (year === OPTION_YEAR && player.fifthYearOption !== "accepted") return sum;
+                                return sum + (player.salaries[year] || 0);
+                              }, 0);
                             return totalValue > 0 ? (
                               <span className="font-medium text-primary tabular-nums">${totalValue.toFixed(1)}M</span>
                             ) : "-";
@@ -717,8 +720,9 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                         </TableCell>
                         <TableCell className="text-center">
                           {(() => {
+                            // Remaining = current + future years
                             const remainingValue = [...CONTRACT_YEARS, OPTION_YEAR]
-                              .filter(year => year > CURRENT_YEAR)
+                              .filter(year => year >= CURRENT_YEAR)
                               .reduce((sum, year) => {
                                 if (year === OPTION_YEAR && player.fifthYearOption !== "accepted") return sum;
                                 return sum + (player.salaries[year] || 0);
@@ -1575,9 +1579,10 @@ function ManageTeamContractsTab({
                       })}
                       <TableCell className="text-center">
                         {(() => {
-                          const totalValue = [...CONTRACT_YEARS, OPTION_YEAR].reduce((sum, year) => {
-                            return sum + (player.hypotheticalSalaries[year] || 0);
-                          }, 0);
+                          // Total = only completed seasons (years before current year)
+                          const totalValue = [...CONTRACT_YEARS, OPTION_YEAR]
+                            .filter(year => year < CURRENT_YEAR)
+                            .reduce((sum, year) => sum + (player.hypotheticalSalaries[year] || 0), 0);
                           return totalValue > 0 ? (
                             <span className="font-medium text-primary tabular-nums">${totalValue.toFixed(1)}M</span>
                           ) : "-";
@@ -1585,8 +1590,9 @@ function ManageTeamContractsTab({
                       </TableCell>
                       <TableCell className="text-center">
                         {(() => {
+                          // Remaining = current + future years
                           const remainingValue = [...CONTRACT_YEARS, OPTION_YEAR]
-                            .filter(year => year > CURRENT_YEAR)
+                            .filter(year => year >= CURRENT_YEAR)
                             .reduce((sum, year) => sum + (player.hypotheticalSalaries[year] || 0), 0);
                           return remainingValue > 0 ? (
                             <span className="font-medium text-emerald-600 tabular-nums">${remainingValue.toFixed(1)}M</span>
