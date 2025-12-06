@@ -815,7 +815,7 @@ function ManageTeamContractsTab({
   });
 
   // Track the league contract data to detect commissioner changes
-  const [prevLeagueContractData, setPrevLeagueContractData] = useState<ContractDataStore | null>(null);
+  const [prevLeagueContractDataRef, setPrevLeagueContractDataRef] = useState<string | null>(null);
 
   // Sync with league contract changes - reset overrides when commissioner updates contracts
   useEffect(() => {
@@ -823,23 +823,23 @@ function ManageTeamContractsTab({
     
     const rosterId = userTeam.rosterId.toString();
     const currentTeamContracts = leagueContractData[rosterId];
-    const prevTeamContracts = prevLeagueContractData?.[rosterId];
+    const currentContractsJson = JSON.stringify(currentTeamContracts);
     
     // If league contracts changed after initial load, reset local overrides to sync
-    if (prevLeagueContractData !== null && 
-        JSON.stringify(currentTeamContracts) !== JSON.stringify(prevTeamContracts)) {
+    if (prevLeagueContractDataRef !== null && currentContractsJson !== prevLeagueContractDataRef) {
       // League contracts were updated by commissioner - clear local overrides
+      // Keep draftsLoaded = true so old saved drafts don't get reloaded
       setHypotheticalData({
         salaryOverrides: {},
         addedFreeAgents: [],
       });
       setFranchiseTaggedPlayers(new Set());
       setLastSavedAt(null);
-      setDraftsLoaded(false);
+      // Don't set draftsLoaded to false - we want to keep using league values
     }
     
-    setPrevLeagueContractData(leagueContractData);
-  }, [leagueContractData, userTeam, prevLeagueContractData]);
+    setPrevLeagueContractDataRef(currentContractsJson);
+  }, [leagueContractData, userTeam]);
 
   // Load saved drafts into hypothetical data on initial load
   useEffect(() => {
