@@ -3398,21 +3398,34 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Request not found" });
       }
 
-      // If approved, update the official contracts
+      // If approved, update the official contracts in the permanent database
       if (status === "approved") {
         const contracts = JSON.parse(request.contractsJson);
         for (const contract of contracts) {
+          // Calculate original contract years based on how many years have salary values
+          const salary2025 = contract.salary2025 || 0;
+          const salary2026 = contract.salary2026 || 0;
+          const salary2027 = contract.salary2027 || 0;
+          const salary2028 = contract.salary2028 || 0;
+          
+          let originalContractYears = 0;
+          if (salary2025 > 0) originalContractYears++;
+          if (salary2026 > 0) originalContractYears++;
+          if (salary2027 > 0) originalContractYears++;
+          if (salary2028 > 0) originalContractYears++;
+          
           await storage.upsertPlayerContract({
             leagueId: request.leagueId,
             rosterId: request.rosterId,
             playerId: contract.playerId,
-            salary2025: contract.salary2025 || 0,
-            salary2026: contract.salary2026 || 0,
-            salary2027: contract.salary2027 || 0,
-            salary2028: contract.salary2028 || 0,
+            salary2025,
+            salary2026,
+            salary2027,
+            salary2028,
             fifthYearOption: contract.fifthYearOption || null,
-            franchiseTagUsed: contract.franchiseTagApplied || 0,
+            franchiseTagUsed: contract.franchiseTagApplied ? 1 : 0,
             franchiseTagYear: contract.franchiseTagApplied ? 2025 : null,
+            originalContractYears: originalContractYears || 1,
           });
         }
       }

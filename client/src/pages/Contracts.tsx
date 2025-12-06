@@ -3531,15 +3531,29 @@ export default function Contracts() {
         const hasSalary = Object.values(contract.salaries).some(s => s > 0);
         
         if (hasSalary || contract.isOnIr) {
+          // Calculate original contract years based on how many years have salaries
+          const salary2025 = Math.round((contract.salaries[2025] || 0) * 10);
+          const salary2026 = Math.round((contract.salaries[2026] || 0) * 10);
+          const salary2027 = Math.round((contract.salaries[2027] || 0) * 10);
+          const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
+          
+          // Count how many years have salary values (this becomes originalContractYears)
+          let originalContractYears = 0;
+          if (salary2025 > 0) originalContractYears++;
+          if (salary2026 > 0) originalContractYears++;
+          if (salary2027 > 0) originalContractYears++;
+          if (salary2028 > 0) originalContractYears++;
+          
           contractsToSave.push({
             rosterId: parseInt(rosterId),
             playerId,
-            salary2025: Math.round((contract.salaries[2025] || 0) * 10),
-            salary2026: Math.round((contract.salaries[2026] || 0) * 10),
-            salary2027: Math.round((contract.salaries[2027] || 0) * 10),
-            salary2028: Math.round((contract.salaries[2028] || 0) * 10),
+            salary2025,
+            salary2026,
+            salary2027,
+            salary2028,
             fifthYearOption: contract.fifthYearOption,
             isOnIr: contract.isOnIr ? 1 : 0,
+            originalContractYears: originalContractYears || 1,
           });
         }
       }
