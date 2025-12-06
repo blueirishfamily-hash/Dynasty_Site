@@ -604,6 +604,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                         {year}{idx === 3 ? " (Vet)" : ""}
                       </TableHead>
                     ))}
+                    <TableHead className="text-center w-[80px]">Total</TableHead>
+                    <TableHead className="text-center w-[80px]">Remaining</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -702,12 +704,36 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             </TableCell>
                           );
                         })}
+                        <TableCell className="text-center">
+                          {(() => {
+                            const totalValue = [...CONTRACT_YEARS, OPTION_YEAR].reduce((sum, year) => {
+                              if (year === OPTION_YEAR && player.fifthYearOption !== "accepted") return sum;
+                              return sum + (player.salaries[year] || 0);
+                            }, 0);
+                            return totalValue > 0 ? (
+                              <span className="font-medium text-primary tabular-nums">${totalValue.toFixed(1)}M</span>
+                            ) : "-";
+                          })()}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {(() => {
+                            const remainingValue = [...CONTRACT_YEARS, OPTION_YEAR]
+                              .filter(year => year > CURRENT_YEAR)
+                              .reduce((sum, year) => {
+                                if (year === OPTION_YEAR && player.fifthYearOption !== "accepted") return sum;
+                                return sum + (player.salaries[year] || 0);
+                              }, 0);
+                            return remainingValue > 0 ? (
+                              <span className="font-medium text-emerald-600 tabular-nums">${remainingValue.toFixed(1)}M</span>
+                            ) : "-";
+                          })()}
+                        </TableCell>
                       </TableRow>
                     );
                   })}
                   {playerInputs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
                         No players on this roster
                       </TableCell>
                     </TableRow>
@@ -1454,6 +1480,8 @@ function ManageTeamContractsTab({
                       {idx === 3 ? `${year} (Vet)` : year}
                     </TableHead>
                   ))}
+                  <TableHead className="text-center w-[80px]">Total</TableHead>
+                  <TableHead className="text-center w-[80px]">Remaining</TableHead>
                   <TableHead className="w-[50px]"></TableHead>
                 </TableRow>
               </TableHeader>
@@ -1545,6 +1573,26 @@ function ManageTeamContractsTab({
                           </TableCell>
                         );
                       })}
+                      <TableCell className="text-center">
+                        {(() => {
+                          const totalValue = [...CONTRACT_YEARS, OPTION_YEAR].reduce((sum, year) => {
+                            return sum + (player.hypotheticalSalaries[year] || 0);
+                          }, 0);
+                          return totalValue > 0 ? (
+                            <span className="font-medium text-primary tabular-nums">${totalValue.toFixed(1)}M</span>
+                          ) : "-";
+                        })()}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {(() => {
+                          const remainingValue = [...CONTRACT_YEARS, OPTION_YEAR]
+                            .filter(year => year > CURRENT_YEAR)
+                            .reduce((sum, year) => sum + (player.hypotheticalSalaries[year] || 0), 0);
+                          return remainingValue > 0 ? (
+                            <span className="font-medium text-emerald-600 tabular-nums">${remainingValue.toFixed(1)}M</span>
+                          ) : "-";
+                        })()}
+                      </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
                           {player.isRosterPlayer && !player.isFreeAgent && (() => {
@@ -1602,7 +1650,7 @@ function ManageTeamContractsTab({
                 })}
                 {allHypotheticalPlayers.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={9} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={11} className="text-center text-muted-foreground py-8">
                       No players on this roster
                     </TableCell>
                   </TableRow>
