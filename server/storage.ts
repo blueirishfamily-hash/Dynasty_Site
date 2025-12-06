@@ -12,6 +12,7 @@ import {
   deadCapEntriesTable,
   savedContractDraftsTable,
   contractApprovalRequestsTable,
+  teamExtensionsTable,
 } from "@shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -23,7 +24,8 @@ import type {
   PlayerBid, InsertPlayerBid,
   DeadCapEntry, InsertDeadCapEntry,
   SavedContractDraft, InsertSavedContractDraft,
-  ContractApprovalRequest, InsertContractApprovalRequest
+  ContractApprovalRequest, InsertContractApprovalRequest,
+  TeamExtension, InsertTeamExtension
 } from "@shared/schema";
 
 export interface UserSession {
@@ -78,6 +80,10 @@ export interface IStorage {
   createContractApprovalRequest(data: InsertContractApprovalRequest): Promise<ContractApprovalRequest>;
   updateContractApprovalRequest(id: string, status: "pending" | "approved" | "rejected", reviewerNotes?: string): Promise<ContractApprovalRequest | undefined>;
   deleteContractApprovalRequest(id: string): Promise<void>;
+  
+  getTeamExtensions(leagueId: string, season: number): Promise<TeamExtension[]>;
+  getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined>;
+  createTeamExtension(data: InsertTeamExtension): Promise<TeamExtension>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -839,6 +845,51 @@ export class DatabaseStorage implements IStorage {
     await db
       .delete(contractApprovalRequestsTable)
       .where(eq(contractApprovalRequestsTable.id, id));
+  }
+
+  async getTeamExtensions(leagueId: string, season: number): Promise<TeamExtension[]> {
+    const rows = await db
+      .select()
+      .from(teamExtensionsTable)
+      .where(and(
+        eq(teamExtensionsTable.leagueId, leagueId),
+        eq(teamExtensionsTable.season, season)
+      ))
+      .orderBy(desc(teamExtensionsTable.createdAt));
+
+    return rows;
+  }
+
+  async getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined> {
+    const [row] = await db
+      .select()
+      .from(teamExtensionsTable)
+      .where(and(
+        eq(teamExtensionsTable.leagueId, leagueId),
+        eq(teamExtensionsTable.rosterId, rosterId),
+        eq(teamExtensionsTable.season, season)
+      ));
+
+    return row;
+  }
+
+  async createTeamExtension(data: InsertTeamExtension): Promise<TeamExtension> {
+    const id = randomUUID();
+    const now = Date.now();
+
+    const [inserted] = await db.insert(teamExtensionsTable).values({
+      id,
+      leagueId: data.leagueId,
+      rosterId: data.rosterId,
+      season: data.season,
+      playerId: data.playerId,
+      playerName: data.playerName,
+      extensionSalary: data.extensionSalary,
+      extensionYear: data.extensionYear,
+      createdAt: now,
+    }).returning();
+
+    return inserted;
   }
 }
 
