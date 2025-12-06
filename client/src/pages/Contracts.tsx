@@ -3327,7 +3327,6 @@ export default function Contracts() {
   });
 
   useEffect(() => {
-    console.log("[CONTRACTS UI] useEffect triggered, dbContracts:", dbContracts?.length, "contracts");
     if (dbContracts && dbContracts.length > 0) {
       const contractStore: ContractDataStore = {};
       for (const contract of dbContracts) {
@@ -3345,10 +3344,8 @@ export default function Contracts() {
           fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
           isOnIr: contract.isOnIr === 1,
         };
-        console.log(`[CONTRACTS UI] Loaded contract for player ${contract.playerId}: 2025=$${contract.salary2025/10}M, 2026=$${contract.salary2026/10}M`);
       }
       setContractData(contractStore);
-      console.log("[CONTRACTS UI] contractData set with", Object.keys(contractStore).length, "rosters");
     }
   }, [dbContracts]);
 
@@ -3522,10 +3519,11 @@ export default function Contracts() {
     },
   });
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!league?.leagueId) return;
 
     const contractsToSave: any[] = [];
+    const contractsToDelete: Array<{rosterId: number, playerId: string}> = [];
     
     for (const rosterId of Object.keys(contractData)) {
       const teamContracts = contractData[rosterId];
@@ -3533,13 +3531,13 @@ export default function Contracts() {
         const contract = teamContracts[playerId];
         const hasSalary = Object.values(contract.salaries).some(s => s > 0);
         
+        // Calculate salaries
+        const salary2025 = Math.round((contract.salaries[2025] || 0) * 10);
+        const salary2026 = Math.round((contract.salaries[2026] || 0) * 10);
+        const salary2027 = Math.round((contract.salaries[2027] || 0) * 10);
+        const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
+        
         if (hasSalary || contract.isOnIr) {
-          // Calculate original contract years based on how many years have salaries
-          const salary2025 = Math.round((contract.salaries[2025] || 0) * 10);
-          const salary2026 = Math.round((contract.salaries[2026] || 0) * 10);
-          const salary2027 = Math.round((contract.salaries[2027] || 0) * 10);
-          const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
-          
           // Count how many years have salary values (this becomes originalContractYears)
           let originalContractYears = 0;
           if (salary2025 > 0) originalContractYears++;
@@ -3558,11 +3556,41 @@ export default function Contracts() {
             isOnIr: contract.isOnIr ? 1 : 0,
             originalContractYears: originalContractYears || 1,
           });
+        } else {
+          // All salaries are 0 and not on IR - check if this player had a contract before
+          const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
+          if (existingContract) {
+            // Player had a contract, now all zeros - mark for deletion
+            contractsToDelete.push({
+              rosterId: parseInt(rosterId),
+              playerId,
+            });
+          }
         }
       }
     }
 
-    saveContractsMutation.mutate(contractsToSave);
+    // Delete contracts that were cleared (set to all zeros)
+    for (const { rosterId, playerId } of contractsToDelete) {
+      try {
+        await apiRequest("DELETE", `/api/league/${league.leagueId}/contracts/${rosterId}/${playerId}`);
+      } catch (error) {
+        console.error(`Failed to delete contract for player ${playerId}:`, error);
+      }
+    }
+
+    // Save/update contracts with non-zero values
+    if (contractsToSave.length > 0) {
+      saveContractsMutation.mutate(contractsToSave);
+    } else if (contractsToDelete.length > 0) {
+      // If we only deleted contracts (no saves), still refresh and show success
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league.leagueId, "contracts"] });
+      toast({
+        title: "Contracts Updated",
+        description: `${contractsToDelete.length} contract(s) cleared successfully.`,
+      });
+      setHasChanges(false);
+    }
   };
 
   if (isLoading || !league || !user) {
