@@ -2716,34 +2716,51 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                             {[2025, 2026, 2027, 2028].map(year => (
                               <TableHead key={year} className="text-center">{year}</TableHead>
                             ))}
+                            <TableHead className="text-center">Total</TableHead>
+                            <TableHead className="text-center">Remaining</TableHead>
                             <TableHead className="text-center">Tag</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {contracts.map(contract => (
-                            <TableRow key={contract.playerId}>
-                              <TableCell className="font-medium">{contract.playerName}</TableCell>
-                              <TableCell className="text-center">
-                                <Badge className={`${positionColors[contract.playerPosition] || "bg-gray-500 text-white"} text-[10px]`}>
-                                  {contract.playerPosition}
-                                </Badge>
-                              </TableCell>
-                              {[2025, 2026, 2027, 2028].map(year => {
-                                const key = `salary${year}` as keyof ApprovalContractData;
-                                const salary = (Number(contract[key]) || 0) / 10;
-                                return (
-                                  <TableCell key={year} className="text-center">
-                                    {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
-                                  </TableCell>
-                                );
-                              })}
-                              <TableCell className="text-center">
-                                {contract.franchiseTagApplied ? (
-                                  <Badge variant="default" className="text-[10px]">FT</Badge>
-                                ) : "-"}
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                          {contracts.map(contract => {
+                            const salary2025 = (Number(contract.salary2025) || 0) / 10;
+                            const salary2026 = (Number(contract.salary2026) || 0) / 10;
+                            const salary2027 = (Number(contract.salary2027) || 0) / 10;
+                            const salary2028 = (Number(contract.salary2028) || 0) / 10;
+                            const totalValue = salary2025 + salary2026 + salary2027 + salary2028;
+                            const remainingValue = salary2026 + salary2027 + salary2028;
+                            
+                            return (
+                              <TableRow key={contract.playerId}>
+                                <TableCell className="font-medium">{contract.playerName}</TableCell>
+                                <TableCell className="text-center">
+                                  <Badge className={`${positionColors[contract.playerPosition] || "bg-gray-500 text-white"} text-[10px]`}>
+                                    {contract.playerPosition}
+                                  </Badge>
+                                </TableCell>
+                                {[2025, 2026, 2027, 2028].map(year => {
+                                  const key = `salary${year}` as keyof ApprovalContractData;
+                                  const salary = (Number(contract[key]) || 0) / 10;
+                                  return (
+                                    <TableCell key={year} className="text-center">
+                                      {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
+                                    </TableCell>
+                                  );
+                                })}
+                                <TableCell className="text-center font-medium text-primary">
+                                  {totalValue > 0 ? `$${totalValue.toFixed(1)}M` : "-"}
+                                </TableCell>
+                                <TableCell className="text-center font-medium text-emerald-600">
+                                  {remainingValue > 0 ? `$${remainingValue.toFixed(1)}M` : "-"}
+                                </TableCell>
+                                <TableCell className="text-center">
+                                  {contract.franchiseTagApplied ? (
+                                    <Badge variant="default" className="text-[10px]">FT</Badge>
+                                  ) : "-"}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
                         </TableBody>
                       </Table>
                     </ScrollArea>
@@ -2782,46 +2799,132 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
             Previously Reviewed ({reviewedRequests.length})
           </h3>
           
-          {reviewedRequests.map(request => (
-            <Card key={request.id} className="opacity-75" data-testid={`card-reviewed-${request.id}`}>
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between flex-wrap gap-4">
-                  <div className="flex items-center gap-3">
-                    <Avatar className="h-10 w-10">
-                      <AvatarFallback>
-                        {request.teamName.substring(0, 2).toUpperCase()}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <CardTitle className="text-base">{request.teamName}</CardTitle>
-                      <p className="text-sm text-muted-foreground">{request.ownerName}</p>
+          {reviewedRequests.map(request => {
+            const contracts = parseContracts(request.contractsJson);
+            const isExpanded = expandedRequests.has(request.id);
+            
+            return (
+              <Card key={request.id} className="opacity-90" data-testid={`card-reviewed-${request.id}`}>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between flex-wrap gap-4">
+                    <div className="flex items-center gap-3">
+                      <Avatar className="h-10 w-10">
+                        <AvatarFallback>
+                          {request.teamName.substring(0, 2).toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <CardTitle className="text-base">{request.teamName}</CardTitle>
+                        <p className="text-sm text-muted-foreground">{request.ownerName}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="secondary">{contracts.length} players</Badge>
+                      <Badge 
+                        variant={request.status === "approved" ? "default" : "destructive"}
+                      >
+                        {request.status === "approved" ? (
+                          <><CheckCircle className="w-3 h-3 mr-1" /> Approved</>
+                        ) : (
+                          <><XCircle className="w-3 h-3 mr-1" /> Rejected</>
+                        )}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        {request.reviewedAt && formatDate(request.reviewedAt)}
+                      </span>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge 
-                      variant={request.status === "approved" ? "default" : "destructive"}
-                    >
-                      {request.status === "approved" ? (
-                        <><CheckCircle className="w-3 h-3 mr-1" /> Approved</>
-                      ) : (
-                        <><XCircle className="w-3 h-3 mr-1" /> Rejected</>
-                      )}
-                    </Badge>
-                    <span className="text-xs text-muted-foreground">
-                      {request.reviewedAt && formatDate(request.reviewedAt)}
-                    </span>
-                  </div>
-                </div>
-              </CardHeader>
-              {request.reviewerNotes && (
+                </CardHeader>
                 <CardContent className="pt-0">
-                  <p className="text-sm text-muted-foreground italic">
-                    "{request.reviewerNotes}"
-                  </p>
+                  {request.reviewerNotes && (
+                    <p className="text-sm text-muted-foreground italic mb-3">
+                      "{request.reviewerNotes}"
+                    </p>
+                  )}
+                  
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => toggleExpanded(request.id)}
+                    data-testid={`button-expand-reviewed-${request.id}`}
+                  >
+                    {isExpanded ? (
+                      <>
+                        <ChevronUp className="w-4 h-4 mr-2" />
+                        Hide Contract Details
+                      </>
+                    ) : (
+                      <>
+                        <ChevronDown className="w-4 h-4 mr-2" />
+                        Show Contract Details ({contracts.length} players)
+                      </>
+                    )}
+                  </Button>
+
+                  {isExpanded && (
+                    <ScrollArea className="h-[300px] mt-3">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Player</TableHead>
+                            <TableHead className="text-center">Pos</TableHead>
+                            {[2025, 2026, 2027, 2028].map(year => (
+                              <TableHead key={year} className="text-center">{year}</TableHead>
+                            ))}
+                            <TableHead className="text-center">Total</TableHead>
+                            <TableHead className="text-center">Remaining</TableHead>
+                            <TableHead className="text-center">Tag</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {contracts.map(contract => {
+                            const salary2025 = (Number(contract.salary2025) || 0) / 10;
+                            const salary2026 = (Number(contract.salary2026) || 0) / 10;
+                            const salary2027 = (Number(contract.salary2027) || 0) / 10;
+                            const salary2028 = (Number(contract.salary2028) || 0) / 10;
+                            const totalValue = salary2025 + salary2026 + salary2027 + salary2028;
+                            const remainingValue = salary2026 + salary2027 + salary2028;
+                            
+                            return (
+                              <TableRow key={contract.playerId}>
+                                <TableCell className="font-medium">{contract.playerName}</TableCell>
+                                <TableCell className="text-center">
+                                  <Badge className={`${positionColors[contract.playerPosition] || "bg-gray-500 text-white"} text-[10px]`}>
+                                    {contract.playerPosition}
+                                  </Badge>
+                                </TableCell>
+                                {[2025, 2026, 2027, 2028].map(year => {
+                                  const key = `salary${year}` as keyof ApprovalContractData;
+                                  const salary = (Number(contract[key]) || 0) / 10;
+                                  return (
+                                    <TableCell key={year} className="text-center">
+                                      {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
+                                    </TableCell>
+                                  );
+                                })}
+                                <TableCell className="text-center font-medium text-primary">
+                                  {totalValue > 0 ? `$${totalValue.toFixed(1)}M` : "-"}
+                                </TableCell>
+                                <TableCell className="text-center font-medium text-emerald-600">
+                                  {remainingValue > 0 ? `$${remainingValue.toFixed(1)}M` : "-"}
+                                </TableCell>
+                                <TableCell className="text-center">
+                                  {contract.franchiseTagApplied ? (
+                                    <Badge variant="default" className="text-[10px]">FT</Badge>
+                                  ) : "-"}
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })}
+                        </TableBody>
+                      </Table>
+                    </ScrollArea>
+                  )}
                 </CardContent>
-              )}
-            </Card>
-          ))}
+              </Card>
+            );
+          })}
         </div>
       )}
 
