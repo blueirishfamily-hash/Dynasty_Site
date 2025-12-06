@@ -841,22 +841,14 @@ function ManageTeamContractsTab({
     setPrevLeagueContractDataRef(currentContractsJson);
   }, [leagueContractData, userTeam]);
 
-  // Load saved drafts into hypothetical data on initial load
+  // Load saved drafts - but DON'T override league contract values
+  // Drafts are now only used as a reference; league contracts are always the source of truth
   useEffect(() => {
     if (savedDrafts && savedDrafts.length > 0 && !draftsLoaded) {
-      const overrides: Record<string, Record<number, number>> = {};
       const taggedPlayers = new Set<string>();
       let latestUpdatedAt = 0;
       
       for (const draft of savedDrafts) {
-        // Convert from stored format (tenths of millions) to display format
-        overrides[draft.playerId] = {
-          2025: draft.salary2025 / 10,
-          2026: draft.salary2026 / 10,
-          2027: draft.salary2027 / 10,
-          2028: draft.salary2028 / 10,
-        };
-        
         if (draft.franchiseTagApplied === 1) {
           taggedPlayers.add(draft.playerId);
         }
@@ -866,10 +858,8 @@ function ManageTeamContractsTab({
         }
       }
       
-      setHypotheticalData(prev => ({
-        ...prev,
-        salaryOverrides: overrides,
-      }));
+      // Only load franchise tag info, NOT salary overrides
+      // This ensures league contracts are always displayed
       setFranchiseTaggedPlayers(taggedPlayers);
       setLastSavedAt(latestUpdatedAt);
       setDraftsLoaded(true);
@@ -1022,10 +1012,26 @@ function ManageTeamContractsTab({
     return leagueContractData[rosterId]?.[playerId]?.salaries?.[year] || 0;
   };
 
+  // Always use league contracts as the source of truth
+  // Overrides are only used for the approval workflow (proposing changes)
   const getEffectiveSalary = (playerId: string, year: number): number => {
+    // Check if there's a local override for proposal purposes
     const override = hypotheticalData.salaryOverrides[playerId]?.[year];
     if (override !== undefined) return override;
+    // Default to league contract value (commissioner-set)
     return getLeagueSalary(playerId, year);
+  };
+
+  // Check if player has any local overrides (for display purposes)
+  const hasLocalOverride = (playerId: string): boolean => {
+    const overrides = hypotheticalData.salaryOverrides[playerId];
+    if (!overrides) return false;
+    // Check if any override differs from league value
+    return CONTRACT_YEARS.some(year => {
+      const override = overrides[year];
+      const leagueValue = getLeagueSalary(playerId, year);
+      return override !== undefined && override !== leagueValue;
+    });
   };
 
   const rosterPlayers: HypotheticalPlayer[] = userTeam.players
