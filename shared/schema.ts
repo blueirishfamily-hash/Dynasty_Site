@@ -73,7 +73,24 @@ export const playerContractsTable = pgTable("player_contracts", {
   isOnIr: integer("is_on_ir").notNull().default(0),
   franchiseTagUsed: integer("franchise_tag_used").notNull().default(0),
   franchiseTagYear: integer("franchise_tag_year"),
+  originalContractYears: integer("original_contract_years").notNull().default(1),
+  extensionApplied: integer("extension_applied").notNull().default(0),
+  extensionYear: integer("extension_year"),
+  extensionSalary: integer("extension_salary"),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+// Team extension usage tracking per season
+export const teamExtensionsTable = pgTable("team_extensions", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  season: integer("season").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  extensionSalary: integer("extension_salary").notNull(),
+  extensionYear: integer("extension_year").notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 export const playerBidsTable = pgTable("player_bids", {
@@ -149,6 +166,7 @@ export const insertPlayerBidDbSchema = createInsertSchema(playerBidsTable).omit(
 export const insertDeadCapEntryDbSchema = createInsertSchema(deadCapEntriesTable).omit({ id: true, createdAt: true });
 export const insertSavedContractDraftDbSchema = createInsertSchema(savedContractDraftsTable).omit({ id: true, updatedAt: true });
 export const insertContractApprovalRequestDbSchema = createInsertSchema(contractApprovalRequestsTable).omit({ id: true, submittedAt: true, status: true, reviewedAt: true, reviewerNotes: true });
+export const insertTeamExtensionDbSchema = createInsertSchema(teamExtensionsTable).omit({ id: true, createdAt: true });
 
 // Player Contract types
 export type PlayerContract = typeof playerContractsTable.$inferSelect;
@@ -169,6 +187,10 @@ export type InsertSavedContractDraft = z.infer<typeof insertSavedContractDraftDb
 // Contract Approval Request types
 export type ContractApprovalRequest = typeof contractApprovalRequestsTable.$inferSelect;
 export type InsertContractApprovalRequest = z.infer<typeof insertContractApprovalRequestDbSchema>;
+
+// Team Extension types
+export type TeamExtension = typeof teamExtensionsTable.$inferSelect;
+export type InsertTeamExtension = z.infer<typeof insertTeamExtensionDbSchema>;
 
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;
