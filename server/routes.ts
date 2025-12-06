@@ -2943,6 +2943,10 @@ export async function registerRoutes(
           fifthYearOption: contract.fifthYearOption || null,
           franchiseTagUsed: contract.franchiseTagUsed,
           franchiseTagYear: contract.franchiseTagYear,
+          originalContractYears: contract.originalContractYears,
+          extensionApplied: contract.extensionApplied,
+          extensionYear: contract.extensionYear,
+          extensionSalary: contract.extensionSalary,
         });
         results.push(result);
       }
@@ -3019,6 +3023,33 @@ export async function registerRoutes(
         });
       }
 
+      // Validate extension year is within supported range (2025-2028)
+      if (extensionYear < 2025 || extensionYear > 2028) {
+        return res.status(400).json({ 
+          error: "Extension year must be between 2025 and 2028" 
+        });
+      }
+
+      // Validate player contract exists and is eligible
+      const contracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = contracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      
+      if (!playerContract) {
+        return res.status(400).json({ error: "Player contract not found" });
+      }
+
+      // Check if originally signed to multi-year deal
+      if ((playerContract.originalContractYears || 1) < 2) {
+        return res.status(400).json({ 
+          error: "Player was not originally signed to a multi-year deal" 
+        });
+      }
+
+      // Check if extension already applied
+      if (playerContract.extensionApplied === 1) {
+        return res.status(400).json({ error: "Extension already applied to this player" });
+      }
+
       // Create the extension record
       const extension = await storage.createTeamExtension({
         leagueId,
@@ -3030,37 +3061,31 @@ export async function registerRoutes(
         extensionYear,
       });
 
-      // Update the player's contract with extension info
-      const contracts = await storage.getPlayerContracts(leagueId);
-      const playerContract = contracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      // Update the player's contract with extension info (reuse playerContract from validation above)
+      const salaryUpdates: any = {
+        leagueId,
+        rosterId,
+        playerId,
+        salary2025: playerContract.salary2025,
+        salary2026: playerContract.salary2026,
+        salary2027: playerContract.salary2027,
+        salary2028: playerContract.salary2028,
+        fifthYearOption: playerContract.fifthYearOption,
+        franchiseTagUsed: playerContract.franchiseTagUsed,
+        franchiseTagYear: playerContract.franchiseTagYear,
+        originalContractYears: playerContract.originalContractYears,
+        extensionApplied: 1,
+        extensionYear,
+        extensionSalary,
+      };
       
-      if (playerContract) {
-        // Update the contract with the extension year salary
-        const salaryUpdates: any = {
-          leagueId,
-          rosterId,
-          playerId,
-          salary2025: playerContract.salary2025,
-          salary2026: playerContract.salary2026,
-          salary2027: playerContract.salary2027,
-          salary2028: playerContract.salary2028,
-          fifthYearOption: playerContract.fifthYearOption,
-          franchiseTagUsed: playerContract.franchiseTagUsed,
-          franchiseTagYear: playerContract.franchiseTagYear,
-          originalContractYears: playerContract.originalContractYears,
-          extensionApplied: 1,
-          extensionYear,
-          extensionSalary,
-        };
-        
-        // Set the extension year salary
-        if (extensionYear === 2025) salaryUpdates.salary2025 = extensionSalary;
-        else if (extensionYear === 2026) salaryUpdates.salary2026 = extensionSalary;
-        else if (extensionYear === 2027) salaryUpdates.salary2027 = extensionSalary;
-        else if (extensionYear === 2028) salaryUpdates.salary2028 = extensionSalary;
-        
-        await storage.upsertPlayerContract(salaryUpdates);
-      }
+      // Set the extension year salary
+      if (extensionYear === 2025) salaryUpdates.salary2025 = extensionSalary;
+      else if (extensionYear === 2026) salaryUpdates.salary2026 = extensionSalary;
+      else if (extensionYear === 2027) salaryUpdates.salary2027 = extensionSalary;
+      else if (extensionYear === 2028) salaryUpdates.salary2028 = extensionSalary;
+      
+      await storage.upsertPlayerContract(salaryUpdates);
 
       res.json({ success: true, extension });
     } catch (error) {

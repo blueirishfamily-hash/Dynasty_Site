@@ -838,6 +838,55 @@ function ManageTeamContractsTab({
     enabled: !!leagueId && !!userTeam?.rosterId,
   });
 
+  // Query for team extension status
+  interface TeamExtension {
+    id: string;
+    leagueId: string;
+    rosterId: number;
+    season: number;
+    playerId: string;
+    playerName: string;
+    extensionSalary: number;
+    extensionYear: number;
+    createdAt: number;
+  }
+
+  const { data: extensionStatus } = useQuery<{ hasUsedExtension: boolean; extension: TeamExtension | null }>({
+    queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId],
+    enabled: !!leagueId && !!userTeam?.rosterId,
+  });
+
+  // Extension mutation
+  const applyExtensionMutation = useMutation({
+    mutationFn: async (data: {
+      playerId: string;
+      playerName: string;
+      extensionSalary: number;
+      extensionYear: number;
+    }) => {
+      return apiRequest("POST", `/api/league/${leagueId}/extensions`, {
+        rosterId: userTeam?.rosterId,
+        season: CURRENT_YEAR,
+        ...data,
+      });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Extension Applied",
+        description: "The player's contract has been extended for 1 additional year.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Extension Failed",
+        description: error.message || "Failed to apply extension",
+        variant: "destructive",
+      });
+    },
+  });
+
   // Track the league contract data to detect commissioner changes
   const [prevLeagueContractDataRef, setPrevLeagueContractDataRef] = useState<string | null>(null);
 
@@ -1000,6 +1049,69 @@ function ManageTeamContractsTab({
   const isPlayerPreviouslyFranchiseTagged = (playerId: string): boolean => {
     const contract = dbContracts.find(c => c.playerId === playerId);
     return contract?.franchiseTagUsed === 1;
+  };
+
+  // Check if player is eligible for extension
+  // Eligible if: 1) In last year of contract, 2) Was originally signed to multi-year deal (2+ years)
+  // Extension can only be applied if contract ends in a year where we have room for another year (up to 2028)
+  const isPlayerEligibleForExtension = (playerId: string): { eligible: boolean; reason: string; extensionYear: number; currentSalary: number } => {
+    const contract = dbContracts.find(c => c.playerId === playerId && c.rosterId === userTeam?.rosterId);
+    if (!contract) {
+      return { eligible: false, reason: "No contract found", extensionYear: 0, currentSalary: 0 };
+    }
+
+    // Check if originally signed to multi-year deal
+    const originalYears = contract.originalContractYears || 1;
+    if (originalYears < 2) {
+      return { eligible: false, reason: "Player was not originally signed to a multi-year deal", extensionYear: 0, currentSalary: 0 };
+    }
+
+    // Check if already has an extension applied
+    if (contract.extensionApplied === 1) {
+      return { eligible: false, reason: "Extension already applied", extensionYear: 0, currentSalary: 0 };
+    }
+
+    // Get salaries to determine if player is in last year (stored in tenths of millions)
+    const salary2025 = (contract.salary2025 || 0) / 10;
+    const salary2026 = (contract.salary2026 || 0) / 10;
+    const salary2027 = (contract.salary2027 || 0) / 10;
+    const salary2028 = (contract.salary2028 || 0) / 10;
+
+    // Find last contract year - player must be in their final year
+    let lastYearWithSalary = 0;
+    let currentSalary = 0;
+    
+    // Check years in reverse order to find the last year with salary
+    if (salary2028 > 0) { lastYearWithSalary = 2028; currentSalary = salary2028; }
+    else if (salary2027 > 0) { lastYearWithSalary = 2027; currentSalary = salary2027; }
+    else if (salary2026 > 0) { lastYearWithSalary = 2026; currentSalary = salary2026; }
+    else if (salary2025 > 0) { lastYearWithSalary = 2025; currentSalary = salary2025; }
+
+    // Cannot extend if already at 2028 (max year in schema)
+    if (lastYearWithSalary === 2028) {
+      return { eligible: false, reason: "Cannot extend - 2028 is the maximum contract year", extensionYear: 0, currentSalary: 0 };
+    }
+
+    // Must be in last year of contract (current year is the only remaining year)
+    if (lastYearWithSalary !== CURRENT_YEAR) {
+      return { eligible: false, reason: "Player is not in the final year of their contract", extensionYear: 0, currentSalary: 0 };
+    }
+
+    // Player is eligible - extension year would be next year (max 2028)
+    const extensionYear = Math.min(CURRENT_YEAR + 1, 2028);
+    return { eligible: true, reason: "Eligible for 1-year extension", extensionYear, currentSalary };
+  };
+
+  // Handle applying extension
+  const handleApplyExtension = (playerId: string, playerName: string, extensionYear: number, currentSalary: number) => {
+    // Extension salary is the same as current year salary
+    const extensionSalary = Math.round(currentSalary * 10); // Convert to tenths for storage
+    applyExtensionMutation.mutate({
+      playerId,
+      playerName,
+      extensionSalary,
+      extensionYear,
+    });
   };
 
   const freeAgentResults = useMemo(() => {
@@ -1704,33 +1816,67 @@ function ManageTeamContractsTab({
                             const teamAlreadyUsedTag = franchiseTaggedPlayers.size > 0 && !isThisPlayerTagged;
                             const isDisabled = isPreviouslyTagged || noPositionData || teamAlreadyUsedTag;
                             
+                            // Extension eligibility check
+                            const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
+                            const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
+                            const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending;
+                            
                             return (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    size="icon"
-                                    variant={isThisPlayerTagged ? "default" : "ghost"}
-                                    className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                                    onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
-                                    disabled={isDisabled}
-                                    data-testid={`button-franchise-tag-${player.playerId}`}
-                                  >
-                                    <Star className={`w-4 h-4 ${isThisPlayerTagged ? "fill-current" : ""}`} />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  {isPreviouslyTagged 
-                                    ? "Previously franchise tagged" 
-                                    : noPositionData
-                                      ? "No position salary data available"
-                                      : teamAlreadyUsedTag
-                                        ? "Team can only use 1 franchise tag per season"
-                                        : isThisPlayerTagged
-                                          ? `Franchise tag applied: $${franchiseSalary}M`
-                                          : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
-                                  }
-                                </TooltipContent>
-                              </Tooltip>
+                              <>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="icon"
+                                      variant={isThisPlayerTagged ? "default" : "ghost"}
+                                      className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                                      onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
+                                      disabled={isDisabled}
+                                      data-testid={`button-franchise-tag-${player.playerId}`}
+                                    >
+                                      <Star className={`w-4 h-4 ${isThisPlayerTagged ? "fill-current" : ""}`} />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {isPreviouslyTagged 
+                                      ? "Previously franchise tagged" 
+                                      : noPositionData
+                                        ? "No position salary data available"
+                                        : teamAlreadyUsedTag
+                                          ? "Team can only use 1 franchise tag per season"
+                                          : isThisPlayerTagged
+                                            ? `Franchise tag applied: $${franchiseSalary}M`
+                                            : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
+                                    }
+                                  </TooltipContent>
+                                </Tooltip>
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="icon"
+                                      variant={extensionEligibility.eligible && !extensionDisabled ? "outline" : "ghost"}
+                                      className={`h-7 w-7 ${extensionDisabled ? "opacity-50 cursor-not-allowed" : "text-emerald-600 border-emerald-600"}`}
+                                      onClick={() => !extensionDisabled && handleApplyExtension(
+                                        player.playerId, 
+                                        player.name, 
+                                        extensionEligibility.extensionYear, 
+                                        extensionEligibility.currentSalary
+                                      )}
+                                      disabled={extensionDisabled}
+                                      data-testid={`button-extend-${player.playerId}`}
+                                    >
+                                      <ArrowRightLeft className="w-4 h-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {teamUsedExtension 
+                                      ? `Team has already used their ${CURRENT_YEAR} extension`
+                                      : extensionEligibility.eligible 
+                                        ? `Apply 1-year extension at $${extensionEligibility.currentSalary.toFixed(1)}M for ${extensionEligibility.extensionYear}`
+                                        : extensionEligibility.reason
+                                    }
+                                  </TooltipContent>
+                                </Tooltip>
+                              </>
                             );
                           })()}
                           {player.isFreeAgent && (
@@ -1774,6 +1920,10 @@ function ManageTeamContractsTab({
             <p className="flex items-center gap-2">
               <Star className="w-4 h-4" />
               <span>Franchise tag adds 1 year at the average of top 5 salaries at that position (rounded up). Each team gets 1 tag per season.</span>
+            </p>
+            <p className="flex items-center gap-2">
+              <ArrowRightLeft className="w-4 h-4" />
+              <span>Extension adds 1 year at current salary. Only available for players in final contract year who were originally signed to multi-year deals. Each team gets 1 extension per season.</span>
             </p>
           </div>
         </CardContent>
@@ -2613,6 +2763,10 @@ interface DbPlayerContract {
   isOnIr: number;
   franchiseTagUsed: number;
   franchiseTagYear: number | null;
+  originalContractYears: number;
+  extensionApplied: number;
+  extensionYear: number | null;
+  extensionSalary: number | null;
   updatedAt: number;
 }
 
