@@ -114,6 +114,10 @@ Preferred communication style: Simple, everyday language.
       - Adds 1 year to the contract at the franchise tag salary
       - Disabled for previously franchise tagged players (tracked in database)
       - Disabled when no position salary data exists
+    - Save Draft button saves contract changes for later reference
+      - Drafts are automatically loaded when returning to the page
+      - Shows "Last saved" timestamp after saving
+      - Does not affect official league contracts
     - Submit for Approval button sends contracts to commissioner for review
     - Shows "Pending Approval" badge when waiting for commissioner decision
     - Approved contracts automatically become official league contracts

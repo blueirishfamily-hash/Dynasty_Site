@@ -749,11 +749,101 @@ function ManageTeamContractsTab({
   const [freeAgentSearch, setFreeAgentSearch] = useState("");
   const [showFreeAgentSearch, setShowFreeAgentSearch] = useState(false);
   const [franchiseTaggedPlayers, setFranchiseTaggedPlayers] = useState<Set<string>>(new Set());
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [draftsLoaded, setDraftsLoaded] = useState(false);
 
   // Query for pending approval requests
   const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
     queryKey: ['/api/league', leagueId, 'contract-approvals', 'pending', userTeam?.rosterId],
     enabled: !!leagueId && !!userTeam?.rosterId,
+  });
+
+  // Query for saved contract drafts
+  interface SavedDraft {
+    id: string;
+    playerId: string;
+    playerName: string;
+    playerPosition: string;
+    salary2025: number;
+    salary2026: number;
+    salary2027: number;
+    salary2028: number;
+    franchiseTagApplied: number;
+    updatedAt: number;
+  }
+  
+  const { data: savedDrafts } = useQuery<SavedDraft[]>({
+    queryKey: ['/api/league', leagueId, 'contract-drafts', userTeam?.rosterId],
+    enabled: !!leagueId && !!userTeam?.rosterId,
+  });
+
+  // Load saved drafts into hypothetical data on initial load
+  useEffect(() => {
+    if (savedDrafts && savedDrafts.length > 0 && !draftsLoaded) {
+      const overrides: Record<string, Record<number, number>> = {};
+      const taggedPlayers = new Set<string>();
+      let latestUpdatedAt = 0;
+      
+      for (const draft of savedDrafts) {
+        // Convert from stored format (tenths of millions) to display format
+        overrides[draft.playerId] = {
+          2025: draft.salary2025 / 10,
+          2026: draft.salary2026 / 10,
+          2027: draft.salary2027 / 10,
+          2028: draft.salary2028 / 10,
+        };
+        
+        if (draft.franchiseTagApplied === 1) {
+          taggedPlayers.add(draft.playerId);
+        }
+        
+        if (draft.updatedAt > latestUpdatedAt) {
+          latestUpdatedAt = draft.updatedAt;
+        }
+      }
+      
+      setHypotheticalData(prev => ({
+        ...prev,
+        salaryOverrides: overrides,
+      }));
+      setFranchiseTaggedPlayers(taggedPlayers);
+      setLastSavedAt(latestUpdatedAt);
+      setDraftsLoaded(true);
+    }
+  }, [savedDrafts, draftsLoaded]);
+
+  // Save draft mutation
+  const saveDraftMutation = useMutation({
+    mutationFn: async (drafts: Array<{
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      salary2025: number;
+      salary2026: number;
+      salary2027: number;
+      salary2028: number;
+      franchiseTagApplied: number;
+    }>) => {
+      return apiRequest("POST", `/api/league/${leagueId}/contract-drafts`, {
+        rosterId: userTeam?.rosterId,
+        drafts,
+      });
+    },
+    onSuccess: () => {
+      setLastSavedAt(Date.now());
+      toast({
+        title: "Draft Saved",
+        description: "Your contract changes have been saved for later.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contract-drafts'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Save Failed",
+        description: error.message || "Failed to save draft.",
+        variant: "destructive",
+      });
+    },
   });
 
   // Submit for approval mutation
@@ -1115,6 +1205,75 @@ function ManageTeamContractsTab({
     submitForApprovalMutation.mutate(contracts);
   };
 
+  const handleSaveDraft = () => {
+    // Build drafts array with all players that have salary values
+    const drafts: Array<{
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      salary2025: number;
+      salary2026: number;
+      salary2027: number;
+      salary2028: number;
+      franchiseTagApplied: number;
+    }> = [];
+
+    // Add roster players with their hypothetical salaries
+    for (const player of rosterPlayers) {
+      const salary2025 = player.hypotheticalSalaries[2025] || 0;
+      const salary2026 = player.hypotheticalSalaries[2026] || 0;
+      const salary2027 = player.hypotheticalSalaries[2027] || 0;
+      const salary2028 = player.hypotheticalSalaries[2028] || 0;
+
+      // Include if there's any salary value or overrides
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 ||
+          hypotheticalData.salaryOverrides[player.playerId]) {
+        drafts.push({
+          playerId: player.playerId,
+          playerName: player.name,
+          playerPosition: player.position,
+          salary2025: Math.round(salary2025 * 10),
+          salary2026: Math.round(salary2026 * 10),
+          salary2027: Math.round(salary2027 * 10),
+          salary2028: Math.round(salary2028 * 10),
+          franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId) ? 1 : 0,
+        });
+      }
+    }
+
+    // Add free agents with their salaries
+    for (const player of hypotheticalData.addedFreeAgents) {
+      const salary2025 = player.hypotheticalSalaries[2025] || 0;
+      const salary2026 = player.hypotheticalSalaries[2026] || 0;
+      const salary2027 = player.hypotheticalSalaries[2027] || 0;
+      const salary2028 = player.hypotheticalSalaries[2028] || 0;
+
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0) {
+        drafts.push({
+          playerId: player.playerId,
+          playerName: player.name,
+          playerPosition: player.position,
+          salary2025: Math.round(salary2025 * 10),
+          salary2026: Math.round(salary2026 * 10),
+          salary2027: Math.round(salary2027 * 10),
+          salary2028: Math.round(salary2028 * 10),
+          franchiseTagApplied: 0,
+        });
+      }
+    }
+
+    if (drafts.length === 0) {
+      toast({
+        title: "Nothing to Save",
+        description: "Make changes to contract values before saving.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    saveDraftMutation.mutate(drafts);
+  };
+
   const hasPendingApproval = pendingApprovalData?.hasPending;
 
   return (
@@ -1136,7 +1295,7 @@ function ManageTeamContractsTab({
                 <p className="text-sm text-muted-foreground">{userTeam.ownerName}</p>
               </div>
             </div>
-            <div className="flex gap-2 flex-wrap">
+            <div className="flex gap-2 flex-wrap items-center">
               <Button
                 variant="outline"
                 size="sm"
@@ -1156,6 +1315,20 @@ function ManageTeamContractsTab({
                   Reset to League Values
                 </Button>
               )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleSaveDraft}
+                disabled={saveDraftMutation.isPending}
+                data-testid="button-save-draft"
+              >
+                {saveDraftMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="w-4 h-4 mr-2" />
+                )}
+                Save Draft
+              </Button>
               {hasPendingApproval ? (
                 <Badge variant="secondary" className="flex items-center gap-1.5 px-3 py-1.5">
                   <Clock className="w-3.5 h-3.5" />
@@ -1175,6 +1348,11 @@ function ManageTeamContractsTab({
                   )}
                   Submit for Approval
                 </Button>
+              )}
+              {lastSavedAt && (
+                <span className="text-xs text-muted-foreground ml-2">
+                  Last saved: {new Date(lastSavedAt).toLocaleString()}
+                </span>
               )}
             </div>
           </div>
@@ -1436,6 +1614,10 @@ function ManageTeamContractsTab({
           <Separator className="my-4" />
 
           <div className="text-sm text-muted-foreground space-y-1">
+            <p className="flex items-center gap-2">
+              <Save className="w-4 h-4" />
+              <span>Click "Save Draft" to save your contract changes for later. Saved drafts are automatically loaded when you return to this page.</span>
+            </p>
             <p className="flex items-center gap-2">
               <Send className="w-4 h-4" />
               <span>Click "Submit for Approval" to send your contracts to the commissioner for review. Once approved, they become official league contracts.</span>
