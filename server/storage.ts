@@ -551,6 +551,10 @@ export class DatabaseStorage implements IStorage {
           fifthYearOption: data.fifthYearOption,
           franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
           franchiseTagYear: data.franchiseTagYear ?? existing.franchiseTagYear,
+          originalContractYears: data.originalContractYears ?? existing.originalContractYears,
+          extensionApplied: data.extensionApplied ?? existing.extensionApplied,
+          extensionYear: data.extensionYear ?? existing.extensionYear,
+          extensionSalary: data.extensionSalary ?? existing.extensionSalary,
           updatedAt,
         })
         .where(eq(playerContractsTable.id, existing.id))
@@ -572,6 +576,10 @@ export class DatabaseStorage implements IStorage {
       fifthYearOption: data.fifthYearOption,
       franchiseTagUsed: data.franchiseTagUsed ?? 0,
       franchiseTagYear: data.franchiseTagYear ?? null,
+      originalContractYears: data.originalContractYears ?? 1,
+      extensionApplied: data.extensionApplied ?? 0,
+      extensionYear: data.extensionYear ?? null,
+      extensionSalary: data.extensionSalary ?? null,
       updatedAt,
     }).returning();
 

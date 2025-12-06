@@ -2966,6 +2966,109 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== TEAM EXTENSIONS ====================
+  // Get all team extensions for a season
+  app.get("/api/league/:leagueId/extensions/:season", async (req, res) => {
+    try {
+      const { leagueId, season } = req.params;
+      const extensions = await storage.getTeamExtensions(leagueId, parseInt(season));
+      res.json(extensions);
+    } catch (error) {
+      console.error("Error fetching extensions:", error);
+      res.status(500).json({ error: "Failed to fetch extensions" });
+    }
+  });
+
+  // Check if team has used their extension for a season
+  app.get("/api/league/:leagueId/extensions/:season/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, season, rosterId } = req.params;
+      const extension = await storage.getTeamExtensionByRoster(
+        leagueId, 
+        parseInt(rosterId), 
+        parseInt(season)
+      );
+      res.json({ hasUsedExtension: !!extension, extension: extension || null });
+    } catch (error) {
+      console.error("Error checking extension status:", error);
+      res.status(500).json({ error: "Failed to check extension status" });
+    }
+  });
+
+  // Apply an extension to a player
+  app.post("/api/league/:leagueId/extensions", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { rosterId, season, playerId, playerName, extensionSalary, extensionYear } = req.body;
+      
+      if (!rosterId || !season || !playerId || !playerName || !extensionSalary || !extensionYear) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Check if team already used their extension this season
+      const existingExtension = await storage.getTeamExtensionByRoster(
+        leagueId, 
+        rosterId, 
+        season
+      );
+      
+      if (existingExtension) {
+        return res.status(400).json({ 
+          error: "Team has already used their extension for this season",
+          existingExtension 
+        });
+      }
+
+      // Create the extension record
+      const extension = await storage.createTeamExtension({
+        leagueId,
+        rosterId,
+        season,
+        playerId,
+        playerName,
+        extensionSalary,
+        extensionYear,
+      });
+
+      // Update the player's contract with extension info
+      const contracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = contracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      
+      if (playerContract) {
+        // Update the contract with the extension year salary
+        const salaryUpdates: any = {
+          leagueId,
+          rosterId,
+          playerId,
+          salary2025: playerContract.salary2025,
+          salary2026: playerContract.salary2026,
+          salary2027: playerContract.salary2027,
+          salary2028: playerContract.salary2028,
+          fifthYearOption: playerContract.fifthYearOption,
+          franchiseTagUsed: playerContract.franchiseTagUsed,
+          franchiseTagYear: playerContract.franchiseTagYear,
+          originalContractYears: playerContract.originalContractYears,
+          extensionApplied: 1,
+          extensionYear,
+          extensionSalary,
+        };
+        
+        // Set the extension year salary
+        if (extensionYear === 2025) salaryUpdates.salary2025 = extensionSalary;
+        else if (extensionYear === 2026) salaryUpdates.salary2026 = extensionSalary;
+        else if (extensionYear === 2027) salaryUpdates.salary2027 = extensionSalary;
+        else if (extensionYear === 2028) salaryUpdates.salary2028 = extensionSalary;
+        
+        await storage.upsertPlayerContract(salaryUpdates);
+      }
+
+      res.json({ success: true, extension });
+    } catch (error) {
+      console.error("Error applying extension:", error);
+      res.status(500).json({ error: "Failed to apply extension" });
+    }
+  });
+
   // ==================== PLAYER BIDS ====================
   // Get player bids for a specific team (privacy: only returns bids for the requesting team)
   app.get("/api/league/:leagueId/bids/:rosterId", async (req, res) => {
