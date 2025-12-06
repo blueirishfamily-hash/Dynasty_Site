@@ -451,6 +451,7 @@ interface ContractInputTabProps {
 
 function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
+  const [positionFilter, setPositionFilter] = useState<string>("ALL");
 
   const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
   
@@ -475,6 +476,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           isOnIr: contract?.isOnIr ?? false,
         };
       })
+      .filter(p => positionFilter === "ALL" || p.position === positionFilter)
       .sort((a, b) => {
         const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
         const posA = posOrder.indexOf(a.position);
@@ -482,7 +484,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         if (posA !== posB) return posA - posB;
         return a.name.localeCompare(b.name);
       });
-  }, [selectedTeam, playerMap, contractData, selectedRosterId]);
+  }, [selectedTeam, playerMap, contractData, selectedRosterId, positionFilter]);
 
   const handleSalaryChange = (playerId: string, year: number, value: string) => {
     const numValue = parseFloat(value) || 0;
@@ -513,7 +515,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-4 flex-wrap">
           <Label htmlFor="team-select" className="text-sm font-medium whitespace-nowrap">
             Select Team:
           </Label>
@@ -544,6 +546,27 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                   </div>
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+
+          <Label className="text-sm font-medium whitespace-nowrap ml-4">
+            Position:
+          </Label>
+          <Select 
+            value={positionFilter} 
+            onValueChange={setPositionFilter}
+          >
+            <SelectTrigger className="w-[140px]" data-testid="select-position-filter-league">
+              <SelectValue placeholder="All Positions" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="ALL">All Positions</SelectItem>
+              <SelectItem value="QB">QB</SelectItem>
+              <SelectItem value="RB">RB</SelectItem>
+              <SelectItem value="WR">WR</SelectItem>
+              <SelectItem value="TE">TE</SelectItem>
+              <SelectItem value="K">K</SelectItem>
+              <SelectItem value="DEF">DEF</SelectItem>
             </SelectContent>
           </Select>
         </div>
@@ -788,6 +811,7 @@ function ManageTeamContractsTab({
   const [franchiseTaggedPlayers, setFranchiseTaggedPlayers] = useState<Set<string>>(new Set());
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
+  const [positionFilter, setPositionFilter] = useState<string>("ALL");
 
   // Query for pending approval requests
   const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
@@ -1054,6 +1078,7 @@ function ManageTeamContractsTab({
         isFreeAgent: false,
       };
     })
+    .filter(p => positionFilter === "ALL" || p.position === positionFilter)
     .sort((a, b) => {
       const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
       const posA = posOrder.indexOf(a.position);
@@ -1509,6 +1534,29 @@ function ManageTeamContractsTab({
                 </Card>
               );
             })}
+          </div>
+
+          <div className="flex items-center gap-4 mb-4">
+            <Label className="text-sm font-medium whitespace-nowrap">
+              Filter by Position:
+            </Label>
+            <Select 
+              value={positionFilter} 
+              onValueChange={setPositionFilter}
+            >
+              <SelectTrigger className="w-[160px]" data-testid="select-position-filter-team">
+                <SelectValue placeholder="All Positions" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All Positions</SelectItem>
+                <SelectItem value="QB">QB</SelectItem>
+                <SelectItem value="RB">RB</SelectItem>
+                <SelectItem value="WR">WR</SelectItem>
+                <SelectItem value="TE">TE</SelectItem>
+                <SelectItem value="K">K</SelectItem>
+                <SelectItem value="DEF">DEF</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
 
           <ScrollArea className="h-[450px] pr-4">
