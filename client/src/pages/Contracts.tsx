@@ -652,8 +652,14 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                         </TableCell>
                         {[...CONTRACT_YEARS, OPTION_YEAR].map((year, yearIndex) => {
                           const salaryValue = player.salaries[year] || 0;
-                          const deadCapPercentages = [0.5, 0.25, 0.1, 0];
-                          const deadCapPercent = deadCapPercentages[yearIndex] || 0;
+                          // Find contract end year (last year with salary > 0)
+                          const contractEndYear = [...CONTRACT_YEARS, OPTION_YEAR]
+                            .filter(y => (player.salaries[y] || 0) > 0)
+                            .pop() || year;
+                          const yearsRemaining = contractEndYear - year + 1;
+                          // Dead cap based on years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
+                          const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
+                          const deadCapPercent = deadCapByYearsRemaining[yearsRemaining] || 0;
                           const deadCapValue = salaryValue * deadCapPercent;
                           const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
                           const isVetOnlyYear = year === OPTION_YEAR;
@@ -1536,8 +1542,14 @@ function ManageTeamContractsTab({
                         const leagueSalary = player.isRosterPlayer ? getLeagueSalary(player.playerId, year) : 0;
                         const currentValue = player.hypotheticalSalaries[year] || 0;
                         const isDifferent = player.isRosterPlayer && currentValue !== leagueSalary;
-                        const deadCapPercentages = [0.5, 0.25, 0.1, 0];
-                        const deadCapPercent = deadCapPercentages[yearIndex] || 0;
+                        // Find contract end year (last year with salary > 0)
+                        const contractEndYear = [...CONTRACT_YEARS, OPTION_YEAR]
+                          .filter(y => (player.hypotheticalSalaries[y] || 0) > 0)
+                          .pop() || year;
+                        const yearsRemaining = contractEndYear - year + 1;
+                        // Dead cap based on years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
+                        const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
+                        const deadCapPercent = deadCapByYearsRemaining[yearsRemaining] || 0;
                         const deadCapValue = currentValue * deadCapPercent;
 
                         return (
