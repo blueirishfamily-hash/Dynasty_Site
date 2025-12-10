@@ -1724,6 +1724,64 @@ export async function registerRoutes(
     }
   });
 
+  // Get playoff bracket
+  app.get("/api/sleeper/league/:leagueId/bracket", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const [bracket, rosters, users] = await Promise.all([
+        getWinnersBracket(leagueId),
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+      ]);
+
+      // Build team info map
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const teamMap = new Map<number, { name: string; initials: string; avatar: string | null }>();
+      rosters.forEach(roster => {
+        const user = userMap.get(roster.owner_id);
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        teamMap.set(roster.roster_id, {
+          name,
+          initials: getTeamInitials(name),
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+        });
+      });
+
+      // Transform bracket matchups with team names
+      const bracketWithNames = bracket.map(matchup => ({
+        round: matchup.r,
+        matchupId: matchup.m,
+        team1: matchup.t1 ? {
+          rosterId: matchup.t1,
+          ...teamMap.get(matchup.t1),
+        } : null,
+        team2: matchup.t2 ? {
+          rosterId: matchup.t2,
+          ...teamMap.get(matchup.t2),
+        } : null,
+        winner: matchup.w,
+        loser: matchup.l,
+        team1From: matchup.t1_from,
+        team2From: matchup.t2_from,
+        placement: matchup.p,
+      }));
+
+      // Determine number of rounds
+      const maxRound = Math.max(...bracket.map(m => m.r), 0);
+
+      res.json({
+        matchups: bracketWithNames,
+        rounds: maxRound,
+        teams: Object.fromEntries(teamMap),
+      });
+    } catch (error) {
+      console.error("Error fetching playoff bracket:", error);
+      res.status(500).json({ error: "Failed to fetch playoff bracket" });
+    }
+  });
+
   // Team Luck - calculate luck based on points vs league median
   app.get("/api/sleeper/league/:leagueId/team-luck", async (req, res) => {
     try {
