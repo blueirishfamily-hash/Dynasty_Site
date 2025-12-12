@@ -1115,7 +1115,7 @@ function ManageTeamContractsTab({
   };
 
   // Check if player is eligible for extension
-  // Eligible if: 1) In last year of contract, 2) Was originally signed to multi-year deal (2+ years)
+  // Eligible if: 1) In last year of contract, 2) Has a valid contract
   // Extension types: 1 = 1-year at 1.2x salary, 2 = 2-year at 1.5x salary (both rounded up)
   interface ExtensionEligibility {
     eligible: boolean;
@@ -1145,12 +1145,6 @@ function ManageTeamContractsTab({
     const contract = dbContracts.find(c => c.playerId === playerId && c.rosterId === userTeam?.rosterId);
     if (!contract) {
       return defaultResult;
-    }
-
-    // Check if originally signed to multi-year deal
-    const originalYears = contract.originalContractYears || 1;
-    if (originalYears < 2) {
-      return { ...defaultResult, reason: "Player was not originally signed to a multi-year deal" };
     }
 
     // Check if already has an extension applied

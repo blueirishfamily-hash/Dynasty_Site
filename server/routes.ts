@@ -3132,13 +3132,6 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Player contract not found" });
       }
 
-      // Check if originally signed to multi-year deal
-      if ((playerContract.originalContractYears || 1) < 2) {
-        return res.status(400).json({ 
-          error: "Player was not originally signed to a multi-year deal" 
-        });
-      }
-
       // Check if extension already applied
       if (playerContract.extensionApplied === 1) {
         return res.status(400).json({ error: "Extension already applied to this player" });
