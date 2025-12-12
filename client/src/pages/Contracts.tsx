@@ -1926,7 +1926,9 @@ function ManageTeamContractsTab({
                   ))}
                   <TableHead className="text-center w-[80px]">Total</TableHead>
                   <TableHead className="text-center w-[80px]">Remaining</TableHead>
-                  <TableHead className="w-[50px]"></TableHead>
+                  <TableHead className="text-center w-[50px]">Tag</TableHead>
+                  <TableHead className="text-center w-[50px]">Extend</TableHead>
+                  <TableHead className="w-[40px]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -2071,152 +2073,160 @@ function ManageTeamContractsTab({
                           ) : "-";
                         })()}
                       </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-1">
-                          {player.isRosterPlayer && !player.isFreeAgent && (() => {
-                            const franchiseSalary = top5SalariesByPosition[player.position] || 0;
-                            const isPreviouslyTagged = isPlayerPreviouslyFranchiseTagged(player.playerId);
-                            const noPositionData = franchiseSalary === 0;
-                            const isThisPlayerTagged = franchiseTaggedPlayers.has(player.playerId);
-                            const teamAlreadyUsedTag = franchiseTaggedPlayers.size > 0 && !isThisPlayerTagged;
-                            const isDisabled = isPreviouslyTagged || noPositionData || teamAlreadyUsedTag;
-                            
-                            // Extension eligibility check
-                            const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
-                            const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
-                            const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending;
-                            
-                            return (
-                              <>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
+                      {/* Franchise Tag Column */}
+                      <TableCell className="text-center">
+                        {player.isRosterPlayer && !player.isFreeAgent && (() => {
+                          const franchiseSalary = top5SalariesByPosition[player.position] || 0;
+                          const isPreviouslyTagged = isPlayerPreviouslyFranchiseTagged(player.playerId);
+                          const noPositionData = franchiseSalary === 0;
+                          const isThisPlayerTagged = franchiseTaggedPlayers.has(player.playerId);
+                          const teamAlreadyUsedTag = franchiseTaggedPlayers.size > 0 && !isThisPlayerTagged;
+                          const isDisabled = isPreviouslyTagged || noPositionData || teamAlreadyUsedTag;
+                          
+                          return (
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <Button
+                                  size="icon"
+                                  variant={isThisPlayerTagged ? "default" : "ghost"}
+                                  className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
+                                  onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
+                                  disabled={isDisabled}
+                                  data-testid={`button-franchise-tag-${player.playerId}`}
+                                >
+                                  <Star className={`w-4 h-4 ${isThisPlayerTagged ? "fill-current" : ""}`} />
+                                </Button>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                {isPreviouslyTagged 
+                                  ? "Previously franchise tagged" 
+                                  : noPositionData
+                                    ? "No position salary data available"
+                                    : teamAlreadyUsedTag
+                                      ? "Team can only use 1 franchise tag per season"
+                                      : isThisPlayerTagged
+                                        ? `Franchise tag applied: $${franchiseSalary}M`
+                                        : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
+                                }
+                              </TooltipContent>
+                            </Tooltip>
+                          );
+                        })()}
+                      </TableCell>
+                      
+                      {/* Extension Column */}
+                      <TableCell className="text-center">
+                        {player.isRosterPlayer && !player.isFreeAgent && (() => {
+                          const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
+                          const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
+                          const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending;
+                          
+                          return (
+                            <Popover>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <PopoverTrigger asChild>
                                     <Button
                                       size="icon"
-                                      variant={isThisPlayerTagged ? "default" : "ghost"}
-                                      className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                                      onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
-                                      disabled={isDisabled}
-                                      data-testid={`button-franchise-tag-${player.playerId}`}
+                                      variant={extensionEligibility.eligible && !extensionDisabled ? "outline" : "ghost"}
+                                      className={`h-7 w-7 ${extensionDisabled ? "opacity-50 cursor-not-allowed" : "text-emerald-600 border-emerald-600"}`}
+                                      disabled={extensionDisabled}
+                                      data-testid={`button-extend-${player.playerId}`}
                                     >
-                                      <Star className={`w-4 h-4 ${isThisPlayerTagged ? "fill-current" : ""}`} />
+                                      <ArrowRightLeft className="w-4 h-4" />
                                     </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {isPreviouslyTagged 
-                                      ? "Previously franchise tagged" 
-                                      : noPositionData
-                                        ? "No position salary data available"
-                                        : teamAlreadyUsedTag
-                                          ? "Team can only use 1 franchise tag per season"
-                                          : isThisPlayerTagged
-                                            ? `Franchise tag applied: $${franchiseSalary}M`
-                                            : `Apply franchise tag ($${franchiseSalary}M - avg of top 5 ${player.position}s)`
-                                    }
-                                  </TooltipContent>
-                                </Tooltip>
-                                <Popover>
-                                  <Tooltip>
-                                    <TooltipTrigger asChild>
-                                      <PopoverTrigger asChild>
-                                        <Button
-                                          size="icon"
-                                          variant={extensionEligibility.eligible && !extensionDisabled ? "outline" : "ghost"}
-                                          className={`h-7 w-7 ${extensionDisabled ? "opacity-50 cursor-not-allowed" : "text-emerald-600 border-emerald-600"}`}
-                                          disabled={extensionDisabled}
-                                          data-testid={`button-extend-${player.playerId}`}
-                                        >
-                                          <ArrowRightLeft className="w-4 h-4" />
-                                        </Button>
-                                      </PopoverTrigger>
-                                    </TooltipTrigger>
-                                    <TooltipContent>
-                                      {teamUsedExtension 
-                                        ? `Team has already used their ${CURRENT_YEAR} extension`
-                                        : extensionEligibility.eligible 
-                                          ? `Extend player (1 per team per season)`
-                                          : extensionEligibility.reason
-                                      }
-                                    </TooltipContent>
-                                  </Tooltip>
-                                  <PopoverContent className="w-72 p-3" align="end">
-                                    <div className="space-y-3">
-                                      <div className="text-sm font-medium">Extend {player.name}</div>
-                                      <div className="text-xs text-muted-foreground">
-                                        Current salary: ${extensionEligibility.currentSalary.toFixed(1)}M
-                                      </div>
-                                      <div className="space-y-2">
-                                        {extensionEligibility.canDo1Year && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="w-full justify-between"
-                                            onClick={() => handleApplyExtension(
-                                              player.playerId,
-                                              player.name,
-                                              extensionEligibility.extensionYear,
-                                              extensionEligibility.currentSalaryTenths,
-                                              1
-                                            )}
-                                            disabled={applyExtensionMutation.isPending}
-                                            data-testid={`button-extend-1yr-${player.playerId}`}
-                                          >
-                                            <span>1-Year Extension</span>
-                                            <span className="text-emerald-600 font-medium">${extensionEligibility.oneYearSalary}M (1.2x)</span>
-                                          </Button>
+                                  </PopoverTrigger>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  {teamUsedExtension 
+                                    ? `Team has already used their ${CURRENT_YEAR} extension`
+                                    : extensionEligibility.eligible 
+                                      ? `Extend player (1 per team per season)`
+                                      : extensionEligibility.reason
+                                  }
+                                </TooltipContent>
+                              </Tooltip>
+                              <PopoverContent className="w-72 p-3" align="end">
+                                <div className="space-y-3">
+                                  <div className="text-sm font-medium">Extend {player.name}</div>
+                                  <div className="text-xs text-muted-foreground">
+                                    Current salary: ${extensionEligibility.currentSalary.toFixed(1)}M
+                                  </div>
+                                  <div className="space-y-2">
+                                    {extensionEligibility.canDo1Year && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="w-full justify-between"
+                                        onClick={() => handleApplyExtension(
+                                          player.playerId,
+                                          player.name,
+                                          extensionEligibility.extensionYear,
+                                          extensionEligibility.currentSalaryTenths,
+                                          1
                                         )}
-                                        {extensionEligibility.canDo2Year && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="w-full justify-between"
-                                            onClick={() => handleApplyExtension(
-                                              player.playerId,
-                                              player.name,
-                                              extensionEligibility.extensionYear,
-                                              extensionEligibility.currentSalaryTenths,
-                                              2
-                                            )}
-                                            disabled={applyExtensionMutation.isPending}
-                                            data-testid={`button-extend-2yr-${player.playerId}`}
-                                          >
-                                            <span>2-Year Extension</span>
-                                            <span className="text-emerald-600 font-medium">${extensionEligibility.twoYearSalary}M/yr (1.5x)</span>
-                                          </Button>
+                                        disabled={applyExtensionMutation.isPending}
+                                        data-testid={`button-extend-1yr-${player.playerId}`}
+                                      >
+                                        <span>1-Year Extension</span>
+                                        <span className="text-emerald-600 font-medium">${extensionEligibility.oneYearSalary}M (1.2x)</span>
+                                      </Button>
+                                    )}
+                                    {extensionEligibility.canDo2Year && (
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="w-full justify-between"
+                                        onClick={() => handleApplyExtension(
+                                          player.playerId,
+                                          player.name,
+                                          extensionEligibility.extensionYear,
+                                          extensionEligibility.currentSalaryTenths,
+                                          2
                                         )}
-                                        {!extensionEligibility.canDo2Year && extensionEligibility.canDo1Year && (
-                                          <div className="text-xs text-muted-foreground italic">
-                                            2-year option unavailable (would exceed 2029)
-                                          </div>
-                                        )}
+                                        disabled={applyExtensionMutation.isPending}
+                                        data-testid={`button-extend-2yr-${player.playerId}`}
+                                      >
+                                        <span>2-Year Extension</span>
+                                        <span className="text-emerald-600 font-medium">${extensionEligibility.twoYearSalary}M/yr (1.5x)</span>
+                                      </Button>
+                                    )}
+                                    {!extensionEligibility.canDo2Year && extensionEligibility.canDo1Year && (
+                                      <div className="text-xs text-muted-foreground italic">
+                                        2-year option unavailable (would exceed {CURRENT_YEAR + 4})
                                       </div>
-                                      <div className="text-xs text-muted-foreground border-t pt-2">
-                                        Each team gets 1 extension per season. Applies to final-year players on multi-year deals.
-                                      </div>
-                                    </div>
-                                  </PopoverContent>
-                                </Popover>
-                              </>
-                            );
-                          })()}
-                          {player.isFreeAgent && (
-                            <Button
-                              size="icon"
-                              variant="ghost"
-                              className="h-7 w-7 text-destructive hover:text-destructive"
-                              onClick={() => handleRemoveFreeAgent(player.playerId)}
-                              data-testid={`button-remove-fa-${player.playerId}`}
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
-                          )}
-                        </div>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-muted-foreground border-t pt-2">
+                                    Each team gets 1 extension per season. Applies to final-year players on multi-year deals.
+                                  </div>
+                                </div>
+                              </PopoverContent>
+                            </Popover>
+                          );
+                        })()}
+                      </TableCell>
+                      
+                      {/* Remove Free Agent Column */}
+                      <TableCell>
+                        {player.isFreeAgent && (
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => handleRemoveFreeAgent(player.playerId)}
+                            data-testid={`button-remove-fa-${player.playerId}`}
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
                 })}
                 {allHypotheticalPlayers.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={14} className="text-center text-muted-foreground py-8">
                       No players on this roster
                     </TableCell>
                   </TableRow>
