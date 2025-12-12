@@ -1635,6 +1635,21 @@ export async function registerRoutes(
       }
 
       // Convert to percentages and format response
+      // Apply Bayesian smoothing to prevent 0%/100% unless mathematically certain
+      // This accounts for upset potential and uncertainty in remaining games
+      const smoothProbability = (successes: number, trials: number): number => {
+        // Bayesian smoothing with prior: (successes + 1) / (trials + 2)
+        // This ensures even 0/10000 becomes 0.01% and 10000/10000 becomes 99.99%
+        const smoothed = (successes + 1) / (trials + 2);
+        const pct = smoothed * 100;
+        // Round to 1 decimal place
+        return Math.round(pct * 10) / 10;
+      };
+
+      // Only apply smoothing if regular season hasn't ended
+      // If remainingWeeks === 0, use raw percentages (teams are clinched/eliminated)
+      const applySmoothing = remainingWeeks > 0;
+
       // Sort by same criteria as dashboard standings: record → points scored → H2H
       const predictions = teams
         .map(team => {
@@ -1643,6 +1658,26 @@ export async function registerRoutes(
           const gaps = pointsGapMap.get(team.rosterId) || { behind: null, ahead: null };
           
           const projectedPointsFor = Math.round((r.avgFinalPoints / SIMULATIONS) * 10) / 10;
+          
+          // Calculate raw percentages
+          const rawMakePlayoffsPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
+          const rawOneSeedPct = Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10;
+          const rawDivisionWinnerPct = hasDivisions 
+            ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
+            : undefined;
+          
+          // Apply smoothing for probabilities when season is ongoing
+          let makePlayoffsPct = rawMakePlayoffsPct;
+          let oneSeedPct = rawOneSeedPct;
+          let divisionWinnerPct = rawDivisionWinnerPct;
+          
+          if (applySmoothing) {
+            makePlayoffsPct = smoothProbability(r.makePlayoffs, SIMULATIONS);
+            oneSeedPct = smoothProbability(r.oneSeed, SIMULATIONS);
+            if (hasDivisions) {
+              divisionWinnerPct = smoothProbability(r.divisionWinner, SIMULATIONS);
+            }
+          }
           
           return {
             rosterId: team.rosterId,
@@ -1658,11 +1693,9 @@ export async function registerRoutes(
             projectedPointsPerWeek: Math.round(team.projectedPointsPerWeek * 10) / 10,
             projectedPointsFor,
             division: hasDivisions ? team.division : undefined,
-            oneSeedPct: Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10,
-            divisionWinnerPct: hasDivisions 
-              ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
-              : undefined,
-            makePlayoffsPct: Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10,
+            oneSeedPct,
+            divisionWinnerPct,
+            makePlayoffsPct,
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
           };
         })
