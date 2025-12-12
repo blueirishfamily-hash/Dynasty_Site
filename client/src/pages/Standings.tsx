@@ -328,10 +328,11 @@ export default function Standings() {
                     <Trophy className="w-5 h-5 text-primary" />
                     Playoff Bracket
                   </CardTitle>
+                  <p className="text-sm text-muted-foreground">Reseeding tournament format</p>
                 </CardHeader>
                 <CardContent>
-                  <div className="overflow-x-auto">
-                    <div className="flex gap-8 min-w-max p-4">
+                  <div className="overflow-x-auto pb-4">
+                    <div className="flex items-stretch min-w-max">
                       {Array.from({ length: bracketData.rounds }, (_, i) => i + 1).map((round) => {
                         const roundMatchups = bracketData.matchups
                           .filter((m) => m.round === round)
@@ -342,46 +343,74 @@ export default function Standings() {
                           : round === bracketData.rounds - 1 
                             ? "Semifinals" 
                             : `Round ${round}`;
+                        
+                        const isLastRound = round === bracketData.rounds;
+                        const matchupHeight = 88;
+                        const matchupGap = round === 1 ? 16 : matchupHeight * Math.pow(2, round - 1) - matchupHeight + 16 * Math.pow(2, round - 1);
 
                         return (
-                          <div key={round} className="flex flex-col gap-4">
-                            <h3 className="font-heading text-sm font-semibold text-muted-foreground text-center border-b border-border pb-2">
-                              {roundName}
-                            </h3>
-                            <div className="flex flex-col gap-6 justify-center flex-1">
-                              {roundMatchups.map((matchup) => {
-                                const isChampionship = matchup.placement === 1;
-                                const champion = matchup.winner ? bracketData.teams[matchup.winner] : null;
-                                
-                                return (
-                                  <div
-                                    key={matchup.matchupId}
-                                    className={`flex flex-col gap-1 ${isChampionship ? "border-2 border-primary rounded-lg p-2" : ""}`}
-                                    data-testid={`bracket-matchup-${round}-${matchup.matchupId}`}
-                                  >
-                                    {isChampionship && champion && (
-                                      <div className="flex items-center justify-center gap-2 mb-2 text-primary">
-                                        <Crown className="w-5 h-5" />
-                                        <span className="font-heading font-bold text-sm">Champion</span>
+                          <div key={round} className="flex items-stretch">
+                            <div className="flex flex-col" style={{ minWidth: 200 }}>
+                              <div className="text-center mb-4 px-2">
+                                <span className="font-heading text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                  {roundName}
+                                </span>
+                              </div>
+                              <div 
+                                className="flex flex-col justify-around flex-1"
+                                style={{ gap: matchupGap }}
+                              >
+                                {roundMatchups.map((matchup) => {
+                                  const isChampionship = matchup.placement === 1;
+                                  const champion = matchup.winner ? bracketData.teams[matchup.winner] : null;
+                                  
+                                  return (
+                                    <div
+                                      key={matchup.matchupId}
+                                      className="relative"
+                                      data-testid={`bracket-matchup-${round}-${matchup.matchupId}`}
+                                    >
+                                      {isChampionship && champion && (
+                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary">
+                                          <Crown className="w-4 h-4" />
+                                          <span className="font-heading font-bold text-xs whitespace-nowrap">Champion</span>
+                                        </div>
+                                      )}
+                                      <div className={`flex flex-col border rounded-lg overflow-hidden ${isChampionship ? "border-primary border-2 ring-2 ring-primary/20" : "border-border"}`}>
+                                        <BracketTeamRow
+                                          team={matchup.team1}
+                                          seed={matchup.team1?.rosterId}
+                                          isWinner={matchup.winner === matchup.team1?.rosterId}
+                                          isLoser={matchup.loser === matchup.team1?.rosterId}
+                                          fromMatchup={matchup.team1From}
+                                          isTop
+                                        />
+                                        <div className="border-t border-border" />
+                                        <BracketTeamRow
+                                          team={matchup.team2}
+                                          seed={matchup.team2?.rosterId}
+                                          isWinner={matchup.winner === matchup.team2?.rosterId}
+                                          isLoser={matchup.loser === matchup.team2?.rosterId}
+                                          fromMatchup={matchup.team2From}
+                                        />
                                       </div>
-                                    )}
-                                    <BracketTeamSlot
-                                      team={matchup.team1}
-                                      isWinner={matchup.winner === matchup.team1?.rosterId}
-                                      isLoser={matchup.loser === matchup.team1?.rosterId}
-                                      fromMatchup={matchup.team1From}
-                                    />
-                                    <div className="text-center text-xs text-muted-foreground">vs</div>
-                                    <BracketTeamSlot
-                                      team={matchup.team2}
-                                      isWinner={matchup.winner === matchup.team2?.rosterId}
-                                      isLoser={matchup.loser === matchup.team2?.rosterId}
-                                      fromMatchup={matchup.team2From}
-                                    />
-                                  </div>
-                                );
-                              })}
+                                    </div>
+                                  );
+                                })}
+                              </div>
                             </div>
+                            {!isLastRound && (
+                              <div className="flex flex-col justify-around flex-1 py-8" style={{ width: 32 }}>
+                                {roundMatchups.map((_, idx) => (
+                                  idx % 2 === 0 && (
+                                    <div key={idx} className="flex flex-col items-center" style={{ height: matchupHeight * 2 + matchupGap }}>
+                                      <div className="w-4 border-t-2 border-r-2 border-border rounded-tr-lg flex-1" />
+                                      <div className="w-4 border-b-2 border-r-2 border-border rounded-br-lg flex-1" />
+                                    </div>
+                                  )
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -392,21 +421,25 @@ export default function Standings() {
 
               <Card>
                 <CardHeader className="pb-3">
-                  <CardTitle className="font-heading text-lg">Bracket Legend</CardTitle>
+                  <CardTitle className="font-heading text-lg">Legend</CardTitle>
                 </CardHeader>
                 <CardContent>
                   <div className="flex flex-wrap gap-6">
                     <div className="flex items-center gap-2 text-sm">
                       <div className="w-4 h-4 rounded bg-primary" />
-                      <span className="text-muted-foreground">Winner</span>
+                      <span className="text-muted-foreground">Advanced</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
-                      <div className="w-4 h-4 rounded bg-destructive/30" />
+                      <div className="w-4 h-4 rounded bg-destructive/20 border border-destructive/30" />
                       <span className="text-muted-foreground">Eliminated</span>
                     </div>
                     <div className="flex items-center gap-2 text-sm">
                       <div className="w-4 h-4 rounded border border-border bg-card" />
                       <span className="text-muted-foreground">Pending</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Crown className="w-4 h-4 text-primary" />
+                      <span className="text-muted-foreground">Champion</span>
                     </div>
                   </div>
                 </CardContent>
@@ -419,59 +452,62 @@ export default function Standings() {
   );
 }
 
-function BracketTeamSlot({
+function BracketTeamRow({
   team,
+  seed,
   isWinner,
   isLoser,
   fromMatchup,
+  isTop,
 }: {
   team: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
+  seed?: number;
   isWinner: boolean;
   isLoser: boolean;
   fromMatchup?: { w?: number; l?: number };
+  isTop?: boolean;
 }) {
   if (!team) {
     const fromText = fromMatchup?.w 
-      ? `Winner of M${fromMatchup.w}` 
+      ? `W${fromMatchup.w}` 
       : fromMatchup?.l 
-        ? `Loser of M${fromMatchup.l}` 
+        ? `L${fromMatchup.l}` 
         : "TBD";
     
     return (
-      <div className="flex items-center gap-2 p-2 rounded border border-dashed border-muted-foreground/30 bg-muted/30 min-w-[180px]">
-        <div className="w-8 h-8 rounded-full bg-muted flex items-center justify-center">
-          <span className="text-xs text-muted-foreground">?</span>
+      <div className={`flex items-center gap-2 px-3 py-2 bg-muted/30 h-11 ${isTop ? "" : ""}`}>
+        <div className="w-6 h-6 rounded-full bg-muted/50 flex items-center justify-center shrink-0">
+          <span className="text-[10px] text-muted-foreground">?</span>
         </div>
-        <span className="text-sm text-muted-foreground italic">{fromText}</span>
+        <span className="text-xs text-muted-foreground italic truncate">{fromText}</span>
       </div>
     );
   }
 
   return (
     <div
-      className={`flex items-center gap-2 p-2 rounded min-w-[180px] transition-colors ${
+      className={`flex items-center gap-2 px-3 py-2 h-11 transition-colors ${
         isWinner
-          ? "bg-primary/20 border border-primary"
+          ? "bg-primary/15"
           : isLoser
-            ? "bg-destructive/10 border border-destructive/30 opacity-60"
-            : "bg-card border border-border"
+            ? "bg-destructive/10 opacity-50"
+            : "bg-card"
       }`}
       data-testid={`bracket-team-${team.rosterId}`}
     >
-      <Avatar className="w-8 h-8">
+      <Avatar className="w-6 h-6 shrink-0">
         {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
-        <AvatarFallback className={`text-xs ${isWinner ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+        <AvatarFallback className={`text-[10px] ${isWinner ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
           {team.initials}
         </AvatarFallback>
       </Avatar>
-      <span className={`text-sm font-medium truncate ${isWinner ? "text-primary font-semibold" : ""}`}>
+      <span className={`text-xs font-medium truncate flex-1 ${isWinner ? "text-primary font-semibold" : isLoser ? "text-muted-foreground line-through" : ""}`}>
         {team.name}
       </span>
       {isWinner && (
-        <Badge variant="default" className="ml-auto text-xs">W</Badge>
-      )}
-      {isLoser && (
-        <Badge variant="secondary" className="ml-auto text-xs opacity-70">L</Badge>
+        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
+          <span className="text-[10px] font-bold text-primary-foreground">W</span>
+        </div>
       )}
     </div>
   );
