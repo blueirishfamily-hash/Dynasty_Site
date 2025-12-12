@@ -3135,6 +3135,32 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Extension already applied to this player" });
       }
 
+      // Validate extension target years are currently empty (no salary)
+      const getSalaryForYear = (year: number): number => {
+        switch (year) {
+          case 2025: return playerContract.salary2025 || 0;
+          case 2026: return playerContract.salary2026 || 0;
+          case 2027: return playerContract.salary2027 || 0;
+          case 2028: return playerContract.salary2028 || 0;
+          case 2029: return (playerContract as any).salary2029 || 0;
+          default: return 0;
+        }
+      };
+
+      // Check that extension year(s) don't have existing salary
+      if (getSalaryForYear(extensionYear) > 0) {
+        console.error(`Extension blocked: Player ${playerId} already has salary in ${extensionYear}`);
+        return res.status(400).json({ 
+          error: `Cannot extend - player already has salary for ${extensionYear}` 
+        });
+      }
+      if (extensionType === 2 && getSalaryForYear(extensionYear + 1) > 0) {
+        console.error(`Extension blocked: Player ${playerId} already has salary in ${extensionYear + 1}`);
+        return res.status(400).json({ 
+          error: `Cannot apply 2-year extension - player already has salary for ${extensionYear + 1}` 
+        });
+      }
+
       // Create the extension record
       const extension = await storage.createTeamExtension({
         leagueId,

@@ -557,6 +557,7 @@ export class DatabaseStorage implements IStorage {
           extensionApplied: data.extensionApplied ?? existing.extensionApplied,
           extensionYear: data.extensionYear ?? existing.extensionYear,
           extensionSalary: data.extensionSalary ?? existing.extensionSalary,
+          extensionType: (data as any).extensionType ?? existing.extensionType,
           updatedAt,
         })
         .where(eq(playerContractsTable.id, existing.id))
@@ -584,6 +585,7 @@ export class DatabaseStorage implements IStorage {
       extensionApplied: data.extensionApplied ?? 0,
       extensionYear: data.extensionYear ?? null,
       extensionSalary: data.extensionSalary ?? null,
+      extensionType: (data as any).extensionType ?? null,
       updatedAt,
     }).returning();
 
