@@ -3747,6 +3747,17 @@ export default function Contracts() {
     return map;
   }, [rosters]);
 
+  const teamDeadCapMap = useMemo(() => {
+    const map = new Map<number, number>();
+    if (!deadCapEntries) return map;
+    
+    for (const entry of deadCapEntries) {
+      const currentDeadCap = map.get(entry.rosterId) || 0;
+      map.set(entry.rosterId, currentDeadCap + (entry.deadCap2025 / 10));
+    }
+    return map;
+  }, [deadCapEntries]);
+
   const orphanedContracts = useMemo(() => {
     if (!dbContracts || !rosters || !leagueUsers || !playerMap) return [];
     
@@ -3985,17 +3996,6 @@ export default function Contracts() {
   const userMap = new Map(
     (leagueUsers || []).map((u: any) => [u.user_id, u])
   );
-
-  const teamDeadCapMap = useMemo(() => {
-    const map = new Map<number, number>();
-    if (!deadCapEntries) return map;
-    
-    for (const entry of deadCapEntries) {
-      const currentDeadCap = map.get(entry.rosterId) || 0;
-      map.set(entry.rosterId, currentDeadCap + (entry.deadCap2025 / 10));
-    }
-    return map;
-  }, [deadCapEntries]);
 
   const teamCapData: TeamCapData[] = (rosters || []).map((roster: any) => {
     const owner = userMap.get(roster.owner_id);
