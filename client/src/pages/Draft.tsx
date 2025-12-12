@@ -156,7 +156,7 @@ export default function Draft() {
     enabled: !!selectedDraftId,
   });
 
-  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[] }>({
+  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[]; remainingWeeks: number }>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
@@ -249,11 +249,13 @@ export default function Draft() {
   // Non-playoff teams get picks 1-5 based on max points (lowest = pick 1)
   // Playoff teams get picks 6-12 based on postseason finish (worst finisher = pick 6, champion = pick 12)
   // Bubble teams have odds spread across all picks based on their playoff probability
+  // After regular season ends (remainingWeeks === 0), eliminated teams are locked into draft slots by points scored
   const calculateDraftOdds = (): DraftOddsTeam[] => {
     if (!standings) return [];
 
     const SIMULATIONS = 10000;
     const NON_PLAYOFF_PICKS = 5; // Picks 1-5 for non-playoff teams
+    const regularSeasonEnded = playoffPredictions?.remainingWeeks === 0;
 
     const predictionMap = new Map(
       (playoffPredictions?.predictions || []).map(p => [p.rosterId, p])
@@ -300,7 +302,62 @@ export default function Draft() {
       pickCounts.set(team.rosterId, new Array(totalTeams).fill(0));
     });
 
-    // Run Monte Carlo simulations
+    // If regular season has ended, lock eliminated teams into draft slots by points scored
+    // Lowest points = Pick 1, highest points among eliminated = Pick 5
+    if (regularSeasonEnded) {
+      const eliminatedTeams = teamsWithData.filter(t => t.status === "eliminated");
+      const clinched = teamsWithData.filter(t => t.status === "clinched");
+      
+      // Sort eliminated teams by points (lowest first = pick 1)
+      eliminatedTeams.sort((a, b) => a.pointsFor - b.pointsFor);
+      
+      // Assign 100% odds for eliminated teams (locked in)
+      eliminatedTeams.forEach((team, index) => {
+        if (index < NON_PLAYOFF_PICKS) {
+          team.pickOdds[index] = 100;
+        }
+      });
+      
+      // For playoff teams, still run Monte Carlo for picks 6-12 based on playoff finish
+      for (let sim = 0; sim < SIMULATIONS; sim++) {
+        // Sort clinched teams with random variance for playoff finish
+        const sortedClinched = [...clinched].sort((a, b) => {
+          const varianceA = (Math.random() - 0.5) * 2;
+          const varianceB = (Math.random() - 0.5) * 2;
+          const winsA = (a.projectedWins ?? a.wins) + varianceA;
+          const winsB = (b.projectedWins ?? b.wins) + varianceB;
+          if (Math.abs(winsA - winsB) > 0.1) return winsA - winsB;
+          return a.pointsFor - b.pointsFor;
+        });
+        
+        sortedClinched.forEach((team, index) => {
+          const pickPosition = NON_PLAYOFF_PICKS + index;
+          if (pickPosition < totalTeams) {
+            const counts = pickCounts.get(team.rosterId)!;
+            counts[pickPosition]++;
+          }
+        });
+      }
+      
+      // Convert counts to percentages for playoff teams only
+      clinched.forEach(team => {
+        const counts = pickCounts.get(team.rosterId)!;
+        team.pickOdds = counts.map(count => (count / SIMULATIONS) * 100);
+      });
+      
+      // Sort teams by their most likely pick position
+      teamsWithData.sort((a, b) => {
+        const maxOddsA = Math.max(...a.pickOdds);
+        const maxOddsB = Math.max(...b.pickOdds);
+        const bestPickA = a.pickOdds.indexOf(maxOddsA);
+        const bestPickB = b.pickOdds.indexOf(maxOddsB);
+        return bestPickA - bestPickB;
+      });
+      
+      return teamsWithData;
+    }
+
+    // Run Monte Carlo simulations (regular season still ongoing)
     for (let sim = 0; sim < SIMULATIONS; sim++) {
       // For each simulation, determine which teams make playoffs
       const madePlayoffs: DraftOddsTeam[] = [];
