@@ -5,7 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2 } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2, PieChart as PieChartIcon } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { DialogFooter } from "@/components/ui/dialog";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip } from "recharts";
@@ -812,6 +812,7 @@ function ManageTeamContractsTab({
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
+  const [activeView, setActiveView] = useState<"contracts" | "salary-breakdown">("contracts");
 
   // Query for pending approval requests
   const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
@@ -1564,6 +1565,129 @@ function ManageTeamContractsTab({
             </div>
           </div>
         </CardHeader>
+
+        <div className="px-6 pb-4">
+          <Tabs value={activeView} onValueChange={(v) => setActiveView(v as "contracts" | "salary-breakdown")}>
+            <TabsList className="grid w-full max-w-md grid-cols-2">
+              <TabsTrigger value="contracts" data-testid="tab-contracts">
+                <FileText className="w-4 h-4 mr-2" />
+                Contracts
+              </TabsTrigger>
+              <TabsTrigger value="salary-breakdown" data-testid="tab-salary-breakdown">
+                <PieChartIcon className="w-4 h-4 mr-2" />
+                Salary Breakdown
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
+
+        {activeView === "salary-breakdown" ? (
+          <CardContent>
+            <div className="space-y-6">
+              <p className="text-sm text-muted-foreground">
+                View your team's salary allocation by position for the next four years.
+              </p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => {
+                  const positionTotals: Record<string, number> = {};
+                  
+                  allHypotheticalPlayers.forEach(player => {
+                    const salary = player.hypotheticalSalaries[year] || 0;
+                    if (salary > 0) {
+                      const pos = player.position || "OTHER";
+                      positionTotals[pos] = (positionTotals[pos] || 0) + salary;
+                    }
+                  });
+                  
+                  const pieData = Object.entries(positionTotals)
+                    .map(([position, total]) => ({
+                      name: position,
+                      value: Math.round(total * 10) / 10,
+                    }))
+                    .sort((a, b) => b.value - a.value);
+                  
+                  const totalSalary = pieData.reduce((sum, d) => sum + d.value, 0);
+                  
+                  const PIE_COLORS: Record<string, string> = {
+                    QB: "#ef4444",
+                    RB: "#10b981",
+                    WR: "#3b82f6",
+                    TE: "#f97316",
+                    K: "#8b5cf6",
+                    DEF: "#6b7280",
+                    OTHER: "#a3a3a3",
+                  };
+                  
+                  return (
+                    <Card key={year} className="p-4">
+                      <div className="text-center mb-2">
+                        <h3 className="font-semibold text-lg">
+                          {idx === 3 ? `${year} (Vet Option)` : year}
+                        </h3>
+                        <p className="text-sm text-muted-foreground">
+                          Total: ${totalSalary.toFixed(1)}M
+                        </p>
+                      </div>
+                      
+                      {pieData.length > 0 ? (
+                        <div className="h-64">
+                          <ResponsiveContainer width="100%" height="100%">
+                            <PieChart>
+                              <Pie
+                                data={pieData}
+                                cx="50%"
+                                cy="50%"
+                                innerRadius={40}
+                                outerRadius={80}
+                                paddingAngle={2}
+                                dataKey="value"
+                                label={({ name, value, percent }) => 
+                                  `${name}: $${value}M (${(percent * 100).toFixed(0)}%)`
+                                }
+                                labelLine={true}
+                              >
+                                {pieData.map((entry, index) => (
+                                  <Cell 
+                                    key={`cell-${index}`} 
+                                    fill={PIE_COLORS[entry.name] || PIE_COLORS.OTHER}
+                                  />
+                                ))}
+                              </Pie>
+                              <RechartsTooltip 
+                                formatter={(value: number) => [`$${value.toFixed(1)}M`, 'Salary']}
+                              />
+                              <Legend />
+                            </PieChart>
+                          </ResponsiveContainer>
+                        </div>
+                      ) : (
+                        <div className="h-64 flex items-center justify-center text-muted-foreground">
+                          No salary data for {year}
+                        </div>
+                      )}
+                      
+                      <div className="mt-4 space-y-1">
+                        {pieData.map(({ name, value }) => (
+                          <div key={name} className="flex items-center justify-between text-sm">
+                            <div className="flex items-center gap-2">
+                              <div 
+                                className="w-3 h-3 rounded-full" 
+                                style={{ backgroundColor: PIE_COLORS[name] || PIE_COLORS.OTHER }}
+                              />
+                              <span>{name}</span>
+                            </div>
+                            <span className="font-medium tabular-nums">${value.toFixed(1)}M</span>
+                          </div>
+                        ))}
+                      </div>
+                    </Card>
+                  );
+                })}
+              </div>
+            </div>
+          </CardContent>
+        ) : (
         <CardContent>
           {showFreeAgentSearch && (
             <div className="mb-4 p-4 bg-muted/50 rounded-lg space-y-3">
@@ -1927,6 +2051,7 @@ function ManageTeamContractsTab({
             </p>
           </div>
         </CardContent>
+        )}
       </Card>
     </div>
   );
