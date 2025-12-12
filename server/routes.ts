@@ -3064,10 +3064,17 @@ export async function registerRoutes(
   app.post("/api/league/:leagueId/extensions", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { rosterId, season, playerId, playerName, currentSalary, extensionType, extensionYear } = req.body;
+      const { rosterId, playerId, playerName, currentSalary, extensionType, extensionYear } = req.body;
+      let { season } = req.body;
       
       if (!rosterId || !season || !playerId || !playerName || !currentSalary || !extensionType || !extensionYear) {
         return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Validate and normalize season to a number
+      season = parseInt(season);
+      if (isNaN(season) || season < 2020 || season > 2100) {
+        return res.status(400).json({ error: "Invalid season year" });
       }
 
       // Validate extension type (1 = 1-year, 2 = 2-year)
@@ -3107,11 +3114,13 @@ export async function registerRoutes(
         extensionSalary2 = salaryPerYear;
       }
 
-      // Validate extension year(s) are within supported range (2025-2029)
+      // Validate extension year(s) are within supported range (current season to season+4)
+      // Contract years are: season, season+1, season+2, season+3, with year 5 (season+4) for extensions
+      const maxContractYear = season + 4; // Option year / max extension year
       const maxExtensionYear = extensionType === 1 ? extensionYear : extensionYear + 1;
-      if (extensionYear < 2025 || maxExtensionYear > 2029) {
+      if (extensionYear < season || maxExtensionYear > maxContractYear) {
         return res.status(400).json({ 
-          error: `Extension would exceed maximum contract year (2029)` 
+          error: `Extension would exceed maximum contract year (${maxContractYear})` 
         });
       }
 

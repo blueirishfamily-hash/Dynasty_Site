@@ -54,9 +54,13 @@ const COLORS = {
   deadCap: "#ef4444",
 };
 
-const CURRENT_YEAR = 2025;
-const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
-const OPTION_YEAR = CURRENT_YEAR + 4; // Year 5 for extensions, tags, options on 4-year contracts
+// Dynamic year calculation - derived from Sleeper season or current date
+// These will be overridden by the component using useSleeper().season
+const getContractYears = (currentYear: number) => ({
+  CURRENT_YEAR: currentYear,
+  CONTRACT_YEARS: [currentYear, currentYear + 1, currentYear + 2, currentYear + 3],
+  OPTION_YEAR: currentYear + 4, // Year 5 for extensions, tags, options on 4-year contracts
+});
 
 interface PlayerContractData {
   salaries: Record<number, number>;
@@ -137,7 +141,8 @@ function convertPlayersArrayToMap(players: SleeperPlayerData[]): PlayerMap {
 function getPlayersWithContracts(
   players: string[],
   playerMap: PlayerMap,
-  teamContracts: Record<string, PlayerContractData>
+  teamContracts: Record<string, PlayerContractData>,
+  currentYear: number
 ): PlayerDisplayInfo[] {
   if (!players || players.length === 0) return [];
 
@@ -146,7 +151,7 @@ function getPlayersWithContracts(
     .map(id => {
       const player = playerMap[id];
       const contract = teamContracts[id];
-      const currentSalary = contract?.salaries?.[CURRENT_YEAR] || 0;
+      const currentSalary = contract?.salaries?.[currentYear] || 0;
 
       return {
         playerId: id,
@@ -170,7 +175,7 @@ function getPlayersWithContracts(
 function calculateTeamSalary(
   players: string[],
   teamContracts: Record<string, PlayerContractData>,
-  year: number = CURRENT_YEAR
+  year: number
 ): number {
   if (!players || players.length === 0) return 0;
   
@@ -290,6 +295,9 @@ interface TeamContractModalProps {
 }
 
 function TeamContractModal({ team, players, contractData, open, onClose }: TeamContractModalProps) {
+  const { season } = useSleeper();
+  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
+  
   if (!team) return null;
 
   const isOverCap = team.available < 0;
@@ -452,6 +460,11 @@ interface ContractInputTabProps {
 }
 
 function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
+  const { season } = useSleeper();
+  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
+  const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
+  const OPTION_YEAR = CURRENT_YEAR + 4;
+  
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
 
@@ -836,6 +849,12 @@ function ManageTeamContractsTab({
   leagueId
 }: ManageTeamContractsTabProps) {
   const { toast } = useToast();
+  const { season } = useSleeper();
+  
+  // Dynamic year calculation from Sleeper season
+  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
+  const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
+  const OPTION_YEAR = CURRENT_YEAR + 4;
   const [hypotheticalData, setHypotheticalData] = useState<HypotheticalContractData>({
     salaryOverrides: {},
     addedFreeAgents: [],
@@ -2831,6 +2850,9 @@ interface ExpiringPlayer {
 }
 
 function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: ExpiringContractsTabProps) {
+  const { season } = useSleeper();
+  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
+  
   // Build a map of playerId -> team info for roster players
   const playerTeamMap = useMemo(() => {
     const map = new Map<string, { teamName: string; ownerName: string; avatar: string | null; rosterId: number }>();
@@ -3597,13 +3619,25 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
 
 export default function Contracts() {
   const { toast } = useToast();
-  const { user, league, isLoading } = useSleeper();
+  const { user, league, isLoading, season } = useSleeper();
   const [, setLocation] = useLocation();
   const [selectedTeam, setSelectedTeam] = useState<TeamCapData | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState("overview");
   const [contractData, setContractData] = useState<ContractDataStore>({});
   const [hasChanges, setHasChanges] = useState(false);
+
+  // Memoized year constants from Sleeper season - used consistently across all components
+  const yearConstants = useMemo(() => {
+    const currentYear = parseInt(season) || new Date().getFullYear();
+    return {
+      CURRENT_YEAR: currentYear,
+      CONTRACT_YEARS: [currentYear, currentYear + 1, currentYear + 2, currentYear + 3],
+      OPTION_YEAR: currentYear + 4,
+    };
+  }, [season]);
+  
+  const { CURRENT_YEAR, CONTRACT_YEARS, OPTION_YEAR } = yearConstants;
 
   const isCommissioner = !!(user?.userId && league && (
     (league.commissionerId && user.userId === league.commissionerId) ||
@@ -3986,7 +4020,8 @@ export default function Contracts() {
     ? getPlayersWithContracts(
         selectedTeam.players, 
         playerMap, 
-        contractData[selectedTeam.rosterId.toString()] || {}
+        contractData[selectedTeam.rosterId.toString()] || {},
+        CURRENT_YEAR
       )
     : [];
 
