@@ -709,45 +709,12 @@ export async function registerRoutes(
             .filter(pid => !usedPlayerIds.has(pid))
             .map(pid => allPlayersInfo.get(pid)!);
         } else {
-          // CURRENT/PAST WEEK: Use actual roster as set by the manager
-          // Only replace inactive/bye players with eligible bench players
-          const usedBenchIds = new Set<string>();
-          finalStarters = [];
-          
-          const starterInfos = starterIds.map(pid => allPlayersInfo.get(pid)!);
-          
-          for (let i = 0; i < slotPositions.length; i++) {
-            const slotPos = slotPositions[i];
-            const starter = starterInfos[i];
-            
-            if (starter && canPlay(starter)) {
-              // Starter is active, keep them
-              finalStarters.push(starter);
-            } else {
-              // Starter is out/bye - find replacement from bench
-              let replacement: ReturnType<typeof buildPlayerInfo> | null = null;
-              
-              // Find best eligible bench player who can play
-              const eligibleBench = benchIds
-                .filter(pid => !usedBenchIds.has(pid))
-                .map(pid => allPlayersInfo.get(pid)!)
-                .filter(p => canPlay(p) && isEligibleForPosition(p, slotPos))
-                .sort((a, b) => b.projectedPoints - a.projectedPoints);
-              
-              if (eligibleBench.length > 0) {
-                replacement = eligibleBench[0];
-                usedBenchIds.add(replacement.id);
-              }
-              
-              // Use replacement or keep original starter (with 0 projection)
-              finalStarters.push(replacement || starter);
-            }
-          }
+          // CURRENT/PAST WEEK: Use exact roster as set by the manager in Sleeper
+          // Do NOT replace any players - show the actual lineup the user set
+          finalStarters = starterIds.map(pid => allPlayersInfo.get(pid)!);
           
           // Build bench from remaining players
-          bench = benchIds
-            .filter(pid => !usedBenchIds.has(pid))
-            .map(pid => allPlayersInfo.get(pid)!);
+          bench = benchIds.map(pid => allPlayersInfo.get(pid)!);
         }
 
         // Calculate projected team total from final starters
