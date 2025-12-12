@@ -302,6 +302,15 @@ export default function Draft() {
       pickCounts.set(team.rosterId, new Array(totalTeams).fill(0));
     });
 
+    // Bayesian smoothing function to prevent 0%/100% for playoff teams
+    // This accounts for upset potential in playoffs
+    const smoothProbability = (successes: number, trials: number): number => {
+      // Bayesian smoothing: (successes + 1) / (trials + 2)
+      // 0/10000 becomes 0.01%, 10000/10000 becomes 99.99%
+      const smoothed = (successes + 1) / (trials + 2);
+      return Math.round(smoothed * 1000) / 10; // Round to 1 decimal place
+    };
+
     // If regular season has ended, lock eliminated teams into draft slots by points scored
     // Lowest points = Pick 1, highest points among eliminated = Pick 5
     if (regularSeasonEnded) {
@@ -311,14 +320,14 @@ export default function Draft() {
       // Sort eliminated teams by points (lowest first = pick 1)
       eliminatedTeams.sort((a, b) => a.pointsFor - b.pointsFor);
       
-      // Assign 100% odds for eliminated teams (locked in)
+      // Assign 100% odds for eliminated teams (locked in - no uncertainty)
       eliminatedTeams.forEach((team, index) => {
         if (index < NON_PLAYOFF_PICKS) {
           team.pickOdds[index] = 100;
         }
       });
       
-      // For playoff teams, still run Monte Carlo for picks 6-12 based on playoff finish
+      // For playoff teams, run Monte Carlo for picks 6-12 based on playoff finish
       for (let sim = 0; sim < SIMULATIONS; sim++) {
         // Sort clinched teams with random variance for playoff finish
         const sortedClinched = [...clinched].sort((a, b) => {
@@ -339,10 +348,17 @@ export default function Draft() {
         });
       }
       
-      // Convert counts to percentages for playoff teams only
+      // Convert counts to percentages with Bayesian smoothing for playoff teams
+      // This ensures no playoff team shows exactly 0% or 100% for any pick in their range
       clinched.forEach(team => {
         const counts = pickCounts.get(team.rosterId)!;
-        team.pickOdds = counts.map(count => (count / SIMULATIONS) * 100);
+        team.pickOdds = counts.map((count, pickIndex) => {
+          // Only apply smoothing to picks 6-12 (playoff team range)
+          if (pickIndex >= NON_PLAYOFF_PICKS && pickIndex < totalTeams) {
+            return smoothProbability(count, SIMULATIONS);
+          }
+          return 0; // Playoff teams have 0% chance at picks 1-5
+        });
       });
       
       // Sort teams by their most likely pick position
