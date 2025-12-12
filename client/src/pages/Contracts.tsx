@@ -61,6 +61,7 @@ interface PlayerContractData {
   salaries: Record<number, number>;
   fifthYearOption: "accepted" | "declined" | null;
   isOnIr: boolean;
+  originalContractYears: number;
 }
 
 type ContractDataStore = Record<string, Record<string, PlayerContractData>>;
@@ -444,7 +445,7 @@ interface ContractInputTabProps {
   teams: TeamCapData[];
   playerMap: PlayerMap;
   contractData: ContractDataStore;
-  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr", value: any) => void;
+  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears", value: any) => void;
   onSave: () => void;
   hasChanges: boolean;
 }
@@ -474,6 +475,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           salaries: contract?.salaries || {},
           fifthYearOption: contract?.fifthYearOption ?? null,
           isOnIr: contract?.isOnIr ?? false,
+          originalContractYears: contract?.originalContractYears ?? 0,
         };
       })
       .filter(p => positionFilter === "ALL" || p.position === positionFilter)
@@ -620,6 +622,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     <TableHead className="w-[180px]">Player</TableHead>
                     <TableHead className="text-center w-[60px]">Pos</TableHead>
                     <TableHead className="text-center w-[60px]">Team</TableHead>
+                    <TableHead className="text-center w-[55px]">Len</TableHead>
+                    <TableHead className="text-center w-[55px]">Rem</TableHead>
                     <TableHead className="text-center w-[70px]">NFL Yrs</TableHead>
                     <TableHead className="text-center w-[70px]">IR Void</TableHead>
                     {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
@@ -660,6 +664,35 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           <span className="text-sm font-medium">
                             {player.nflTeam || "FA"}
                           </span>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          <Select
+                            value={player.originalContractYears?.toString() || "0"}
+                            onValueChange={(value) => onContractChange(selectedRosterId, player.playerId, "originalContractYears", parseInt(value))}
+                          >
+                            <SelectTrigger className="h-7 w-12 text-center" data-testid={`select-len-${player.playerId}`}>
+                              <SelectValue placeholder="-" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="0">-</SelectItem>
+                              <SelectItem value="1">1</SelectItem>
+                              <SelectItem value="2">2</SelectItem>
+                              <SelectItem value="3">3</SelectItem>
+                              <SelectItem value="4">4</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {(() => {
+                            const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.salaries[y] || 0) > 0);
+                            const lastYear = contractYears.length > 0 ? Math.max(...contractYears) : 0;
+                            const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + 1 : 0;
+                            return (
+                              <span className="text-sm tabular-nums font-medium">
+                                {remainingYears > 0 ? remainingYears : "-"}
+                              </span>
+                            );
+                          })()}
                         </TableCell>
                         <TableCell className="text-center">
                           <span className="text-sm tabular-nums">
@@ -1817,6 +1850,8 @@ function ManageTeamContractsTab({
                   <TableHead className="w-[180px]">Player</TableHead>
                   <TableHead className="text-center w-[60px]">Pos</TableHead>
                   <TableHead className="text-center w-[60px]">Team</TableHead>
+                  <TableHead className="text-center w-[55px]">Len</TableHead>
+                  <TableHead className="text-center w-[55px]">Rem</TableHead>
                   <TableHead className="text-center w-[50px]">Type</TableHead>
                   {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
                     <TableHead key={year} className="text-center w-[100px]">
@@ -1862,6 +1897,31 @@ function ManageTeamContractsTab({
                         <span className="text-sm font-medium">
                           {player.nflTeam || "FA"}
                         </span>
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {(() => {
+                          // Get contract length from league data (read-only display)
+                          const rosterId = userTeam?.rosterId?.toString() || "";
+                          const leaguePlayerData = leagueContractData[rosterId]?.[player.playerId];
+                          const contractLength = leaguePlayerData?.originalContractYears || 0;
+                          return (
+                            <span className="text-sm tabular-nums font-medium">
+                              {contractLength > 0 ? contractLength : "-"}
+                            </span>
+                          );
+                        })()}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {(() => {
+                          const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.hypotheticalSalaries[y] || 0) > 0);
+                          const lastYear = contractYears.length > 0 ? Math.max(...contractYears) : 0;
+                          const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + 1 : 0;
+                          return (
+                            <span className="text-sm tabular-nums font-medium">
+                              {remainingYears > 0 ? remainingYears : "-"}
+                            </span>
+                          );
+                        })()}
                       </TableCell>
                       <TableCell className="text-center">
                         <Badge 
@@ -3491,6 +3551,7 @@ export default function Contracts() {
           },
           fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
           isOnIr: contract.isOnIr === 1,
+          originalContractYears: contract.originalContractYears || 0,
         };
       }
       setContractData(contractStore);
@@ -3619,7 +3680,7 @@ export default function Contracts() {
   const handleContractChange = (
     rosterId: string, 
     playerId: string, 
-    field: "salaries" | "fifthYearOption" | "isOnIr", 
+    field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears", 
     value: any
   ) => {
     setContractData(prev => {
@@ -3627,7 +3688,8 @@ export default function Contracts() {
       const playerContract = teamContracts[playerId] || { 
         salaries: {},
         fifthYearOption: null,
-        isOnIr: false
+        isOnIr: false,
+        originalContractYears: 0
       };
       
       return {
@@ -3688,12 +3750,24 @@ export default function Contracts() {
         const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
         
         if (hasSalary || contract.isOnIr) {
-          // Count how many years have salary values (this becomes originalContractYears)
+          // Use the commissioner-set originalContractYears value if valid (1-4)
+          // Otherwise preserve existing DB value, or fall back to counting years with salary
           let originalContractYears = 0;
-          if (salary2025 > 0) originalContractYears++;
-          if (salary2026 > 0) originalContractYears++;
-          if (salary2027 > 0) originalContractYears++;
-          if (salary2028 > 0) originalContractYears++;
+          if (contract.originalContractYears >= 1 && contract.originalContractYears <= 4) {
+            originalContractYears = contract.originalContractYears;
+          } else {
+            // Check for existing DB value
+            const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
+            if (existingContract?.originalContractYears && existingContract.originalContractYears >= 1) {
+              originalContractYears = existingContract.originalContractYears;
+            } else {
+              // Fall back to counting years with salary values
+              if (salary2025 > 0) originalContractYears++;
+              if (salary2026 > 0) originalContractYears++;
+              if (salary2027 > 0) originalContractYears++;
+              if (salary2028 > 0) originalContractYears++;
+            }
+          }
           
           contractsToSave.push({
             rosterId: parseInt(rosterId),
