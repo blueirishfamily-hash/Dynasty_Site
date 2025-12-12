@@ -3736,6 +3736,7 @@ export default function Contracts() {
 
     const contractsToSave: any[] = [];
     const contractsToDelete: Array<{rosterId: number, playerId: string}> = [];
+    const invalidContracts: string[] = []; // Track players with invalid contract length
     
     for (const rosterId of Object.keys(contractData)) {
       const teamContracts = contractData[rosterId];
@@ -3750,23 +3751,22 @@ export default function Contracts() {
         const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
         
         if (hasSalary || contract.isOnIr) {
-          // Use the commissioner-set originalContractYears value if valid (1-4)
-          // Otherwise preserve existing DB value, or fall back to counting years with salary
+          // Determine originalContractYears: use commissioner-set value if valid,
+          // otherwise preserve existing DB value
           let originalContractYears = 0;
+          const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
+          
           if (contract.originalContractYears >= 1 && contract.originalContractYears <= 4) {
+            // Commissioner explicitly set a valid value
             originalContractYears = contract.originalContractYears;
+          } else if (existingContract?.originalContractYears && existingContract.originalContractYears >= 1) {
+            // Preserve existing DB value
+            originalContractYears = existingContract.originalContractYears;
           } else {
-            // Check for existing DB value
-            const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
-            if (existingContract?.originalContractYears && existingContract.originalContractYears >= 1) {
-              originalContractYears = existingContract.originalContractYears;
-            } else {
-              // Fall back to counting years with salary values
-              if (salary2025 > 0) originalContractYears++;
-              if (salary2026 > 0) originalContractYears++;
-              if (salary2027 > 0) originalContractYears++;
-              if (salary2028 > 0) originalContractYears++;
-            }
+            // New contract without valid length - this is invalid
+            // Track this player for validation error
+            invalidContracts.push(playerId);
+            continue; // Skip this contract, don't save it
           }
           
           contractsToSave.push({
@@ -3778,7 +3778,7 @@ export default function Contracts() {
             salary2028,
             fifthYearOption: contract.fifthYearOption,
             isOnIr: contract.isOnIr ? 1 : 0,
-            originalContractYears: originalContractYears || 1,
+            originalContractYears,
           });
         } else {
           // All salaries are 0 and not on IR - check if this player had a contract before
@@ -3792,6 +3792,16 @@ export default function Contracts() {
           }
         }
       }
+    }
+
+    // Show validation error if any new contracts are missing contract length
+    if (invalidContracts.length > 0) {
+      toast({
+        title: "Missing Contract Length",
+        description: `${invalidContracts.length} player(s) have salaries but no contract length set. Please set a contract length (1-4 years) for all new contracts.`,
+        variant: "destructive",
+      });
+      // Still continue to save valid contracts and delete cleared ones
     }
 
     // Delete contracts that were cleared (set to all zeros)
@@ -3814,6 +3824,12 @@ export default function Contracts() {
         description: `${contractsToDelete.length} contract(s) cleared successfully.`,
       });
       setHasChanges(false);
+    } else if (invalidContracts.length === 0) {
+      // No contracts to save, delete, or invalid - nothing changed
+      toast({
+        title: "No Changes",
+        description: "No contract changes to save.",
+      });
     }
   };
 
