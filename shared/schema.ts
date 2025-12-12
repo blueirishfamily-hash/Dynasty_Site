@@ -78,6 +78,7 @@ export const playerContractsTable = pgTable("player_contracts", {
   extensionApplied: integer("extension_applied").notNull().default(0),
   extensionYear: integer("extension_year"),
   extensionSalary: integer("extension_salary"),
+  extensionType: integer("extension_type"), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 
@@ -91,6 +92,8 @@ export const teamExtensionsTable = pgTable("team_extensions", {
   playerName: varchar("player_name", { length: 128 }).notNull(),
   extensionSalary: integer("extension_salary").notNull(),
   extensionYear: integer("extension_year").notNull(),
+  extensionType: integer("extension_type").notNull().default(1), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
+  extensionSalary2: integer("extension_salary_2"), // Second year salary for 2-year extensions
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 

@@ -3060,13 +3060,19 @@ export async function registerRoutes(
   });
 
   // Apply an extension to a player
+  // Extension types: 1 = 1-year at 1.2x salary, 2 = 2-year at 1.5x salary (both rounded up)
   app.post("/api/league/:leagueId/extensions", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { rosterId, season, playerId, playerName, extensionSalary, extensionYear } = req.body;
+      const { rosterId, season, playerId, playerName, currentSalary, extensionType, extensionYear } = req.body;
       
-      if (!rosterId || !season || !playerId || !playerName || !extensionSalary || !extensionYear) {
+      if (!rosterId || !season || !playerId || !playerName || !currentSalary || !extensionType || !extensionYear) {
         return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Validate extension type (1 = 1-year, 2 = 2-year)
+      if (extensionType !== 1 && extensionType !== 2) {
+        return res.status(400).json({ error: "Extension type must be 1 (1-year) or 2 (2-year)" });
       }
 
       // Check if team already used their extension this season
@@ -3083,10 +3089,29 @@ export async function registerRoutes(
         });
       }
 
-      // Validate extension year is within supported range (2025-2028)
-      if (extensionYear < 2025 || extensionYear > 2028) {
+      // Calculate extension salaries based on type
+      // currentSalary is already in tenths (e.g., 230 = $23.0M)
+      // For 1-year: 1.2x rounded up to nearest whole number
+      // For 2-year: 1.5x rounded up to nearest whole number
+      const currentSalaryInMillions = currentSalary / 10;
+      let extensionSalary1: number;
+      let extensionSalary2: number | null = null;
+      
+      if (extensionType === 1) {
+        // 1-year extension at 1.2x, rounded up to nearest whole number (then multiply by 10 for storage)
+        extensionSalary1 = Math.ceil(currentSalaryInMillions * 1.2) * 10;
+      } else {
+        // 2-year extension at 1.5x, rounded up to nearest whole number (then multiply by 10 for storage)
+        const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.5) * 10;
+        extensionSalary1 = salaryPerYear;
+        extensionSalary2 = salaryPerYear;
+      }
+
+      // Validate extension year(s) are within supported range (2025-2029)
+      const maxExtensionYear = extensionType === 1 ? extensionYear : extensionYear + 1;
+      if (extensionYear < 2025 || maxExtensionYear > 2029) {
         return res.status(400).json({ 
-          error: "Extension year must be between 2025 and 2028" 
+          error: `Extension would exceed maximum contract year (2029)` 
         });
       }
 
@@ -3117,11 +3142,13 @@ export async function registerRoutes(
         season,
         playerId,
         playerName,
-        extensionSalary,
+        extensionSalary: extensionSalary1,
         extensionYear,
+        extensionType,
+        extensionSalary2,
       });
 
-      // Update the player's contract with extension info (reuse playerContract from validation above)
+      // Update the player's contract with extension info
       const salaryUpdates: any = {
         leagueId,
         rosterId,
@@ -3137,15 +3164,23 @@ export async function registerRoutes(
         originalContractYears: playerContract.originalContractYears,
         extensionApplied: 1,
         extensionYear,
-        extensionSalary,
+        extensionSalary: extensionSalary1,
+        extensionType,
       };
       
-      // Set the extension year salary
-      if (extensionYear === 2025) salaryUpdates.salary2025 = extensionSalary;
-      else if (extensionYear === 2026) salaryUpdates.salary2026 = extensionSalary;
-      else if (extensionYear === 2027) salaryUpdates.salary2027 = extensionSalary;
-      else if (extensionYear === 2028) salaryUpdates.salary2028 = extensionSalary;
-      else if (extensionYear === 2029) salaryUpdates.salary2029 = extensionSalary;
+      // Set the extension year salary(s)
+      const setYearSalary = (year: number, salary: number) => {
+        if (year === 2025) salaryUpdates.salary2025 = salary;
+        else if (year === 2026) salaryUpdates.salary2026 = salary;
+        else if (year === 2027) salaryUpdates.salary2027 = salary;
+        else if (year === 2028) salaryUpdates.salary2028 = salary;
+        else if (year === 2029) salaryUpdates.salary2029 = salary;
+      };
+      
+      setYearSalary(extensionYear, extensionSalary1);
+      if (extensionType === 2 && extensionSalary2 !== null) {
+        setYearSalary(extensionYear + 1, extensionSalary2);
+      }
       
       await storage.upsertPlayerContract(salaryUpdates);
 

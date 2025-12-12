@@ -40,6 +40,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 const COMMISSIONER_USER_IDS = [
   "900186363130503168",
@@ -883,6 +884,8 @@ function ManageTeamContractsTab({
     playerName: string;
     extensionSalary: number;
     extensionYear: number;
+    extensionType: number; // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
+    extensionSalary2: number | null;
     createdAt: number;
   }
 
@@ -891,12 +894,13 @@ function ManageTeamContractsTab({
     enabled: !!leagueId && !!userTeam?.rosterId,
   });
 
-  // Extension mutation
+  // Extension mutation - now supports 1-year (1.2x) or 2-year (1.5x) extensions
   const applyExtensionMutation = useMutation({
     mutationFn: async (data: {
       playerId: string;
       playerName: string;
-      extensionSalary: number;
+      currentSalary: number; // Current salary in tenths (e.g., 230 = $23.0M)
+      extensionType: 1 | 2; // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
       extensionYear: number;
     }) => {
       return apiRequest("POST", `/api/league/${leagueId}/extensions`, {
@@ -905,10 +909,13 @@ function ManageTeamContractsTab({
         ...data,
       });
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
+      const extensionTypeText = variables.extensionType === 1 
+        ? "1 additional year at 1.2x salary" 
+        : "2 additional years at 1.5x salary";
       toast({
         title: "Extension Applied",
-        description: "The player's contract has been extended for 1 additional year.",
+        description: `The player's contract has been extended for ${extensionTypeText}.`,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
@@ -1090,22 +1097,46 @@ function ManageTeamContractsTab({
 
   // Check if player is eligible for extension
   // Eligible if: 1) In last year of contract, 2) Was originally signed to multi-year deal (2+ years)
-  // Extension can only be applied if contract ends in a year where we have room for another year (up to 2028)
-  const isPlayerEligibleForExtension = (playerId: string): { eligible: boolean; reason: string; extensionYear: number; currentSalary: number } => {
+  // Extension types: 1 = 1-year at 1.2x salary, 2 = 2-year at 1.5x salary (both rounded up)
+  interface ExtensionEligibility {
+    eligible: boolean;
+    reason: string;
+    extensionYear: number;
+    currentSalary: number; // In millions (display format)
+    currentSalaryTenths: number; // In tenths for API
+    canDo1Year: boolean;
+    canDo2Year: boolean;
+    oneYearSalary: number; // 1.2x rounded up
+    twoYearSalary: number; // 1.5x rounded up
+  }
+
+  const isPlayerEligibleForExtension = (playerId: string): ExtensionEligibility => {
+    const defaultResult: ExtensionEligibility = {
+      eligible: false,
+      reason: "No contract found",
+      extensionYear: 0,
+      currentSalary: 0,
+      currentSalaryTenths: 0,
+      canDo1Year: false,
+      canDo2Year: false,
+      oneYearSalary: 0,
+      twoYearSalary: 0,
+    };
+
     const contract = dbContracts.find(c => c.playerId === playerId && c.rosterId === userTeam?.rosterId);
     if (!contract) {
-      return { eligible: false, reason: "No contract found", extensionYear: 0, currentSalary: 0 };
+      return defaultResult;
     }
 
     // Check if originally signed to multi-year deal
     const originalYears = contract.originalContractYears || 1;
     if (originalYears < 2) {
-      return { eligible: false, reason: "Player was not originally signed to a multi-year deal", extensionYear: 0, currentSalary: 0 };
+      return { ...defaultResult, reason: "Player was not originally signed to a multi-year deal" };
     }
 
     // Check if already has an extension applied
     if (contract.extensionApplied === 1) {
-      return { eligible: false, reason: "Extension already applied", extensionYear: 0, currentSalary: 0 };
+      return { ...defaultResult, reason: "Extension already applied" };
     }
 
     // Get salaries to determine if player is in last year (stored in tenths of millions)
@@ -1128,27 +1159,43 @@ function ManageTeamContractsTab({
 
     // Cannot extend if already at 2029 (max year in schema)
     if (lastYearWithSalary === 2029) {
-      return { eligible: false, reason: "Cannot extend - 2029 is the maximum contract year", extensionYear: 0, currentSalary: 0 };
+      return { ...defaultResult, reason: "Cannot extend - 2029 is the maximum contract year" };
     }
 
     // Must be in last year of contract (current year is the only remaining year)
     if (lastYearWithSalary !== CURRENT_YEAR) {
-      return { eligible: false, reason: "Player is not in the final year of their contract", extensionYear: 0, currentSalary: 0 };
+      return { ...defaultResult, reason: "Player is not in the final year of their contract" };
     }
 
-    // Player is eligible - extension year would be next year (max 2029)
-    const extensionYear = Math.min(lastYearWithSalary + 1, 2029);
-    return { eligible: true, reason: "Eligible for 1-year extension", extensionYear, currentSalary };
+    // Calculate extension year and salary options
+    const extensionYear = lastYearWithSalary + 1;
+    const oneYearSalary = Math.ceil(currentSalary * 1.2); // 1.2x rounded up
+    const twoYearSalary = Math.ceil(currentSalary * 1.5); // 1.5x rounded up
+    
+    // Check if we can do 1-year or 2-year extension (max year is 2029)
+    const canDo1Year = extensionYear <= 2029;
+    const canDo2Year = extensionYear + 1 <= 2029;
+
+    return {
+      eligible: canDo1Year,
+      reason: canDo1Year ? "Eligible for extension" : "Cannot extend - would exceed 2029",
+      extensionYear,
+      currentSalary,
+      currentSalaryTenths: Math.round(currentSalary * 10),
+      canDo1Year,
+      canDo2Year,
+      oneYearSalary,
+      twoYearSalary,
+    };
   };
 
-  // Handle applying extension
-  const handleApplyExtension = (playerId: string, playerName: string, extensionYear: number, currentSalary: number) => {
-    // Extension salary is the same as current year salary
-    const extensionSalary = Math.round(currentSalary * 10); // Convert to tenths for storage
+  // Handle applying extension with type selection
+  const handleApplyExtension = (playerId: string, playerName: string, extensionYear: number, currentSalaryTenths: number, extensionType: 1 | 2) => {
     applyExtensionMutation.mutate({
       playerId,
       playerName,
-      extensionSalary,
+      currentSalary: currentSalaryTenths,
+      extensionType,
       extensionYear,
     });
   };
@@ -2048,33 +2095,87 @@ function ManageTeamContractsTab({
                                     }
                                   </TooltipContent>
                                 </Tooltip>
-                                <Tooltip>
-                                  <TooltipTrigger asChild>
-                                    <Button
-                                      size="icon"
-                                      variant={extensionEligibility.eligible && !extensionDisabled ? "outline" : "ghost"}
-                                      className={`h-7 w-7 ${extensionDisabled ? "opacity-50 cursor-not-allowed" : "text-emerald-600 border-emerald-600"}`}
-                                      onClick={() => !extensionDisabled && handleApplyExtension(
-                                        player.playerId, 
-                                        player.name, 
-                                        extensionEligibility.extensionYear, 
-                                        extensionEligibility.currentSalary
-                                      )}
-                                      disabled={extensionDisabled}
-                                      data-testid={`button-extend-${player.playerId}`}
-                                    >
-                                      <ArrowRightLeft className="w-4 h-4" />
-                                    </Button>
-                                  </TooltipTrigger>
-                                  <TooltipContent>
-                                    {teamUsedExtension 
-                                      ? `Team has already used their ${CURRENT_YEAR} extension`
-                                      : extensionEligibility.eligible 
-                                        ? `Apply 1-year extension at $${extensionEligibility.currentSalary.toFixed(1)}M for ${extensionEligibility.extensionYear}`
-                                        : extensionEligibility.reason
-                                    }
-                                  </TooltipContent>
-                                </Tooltip>
+                                <Popover>
+                                  <Tooltip>
+                                    <TooltipTrigger asChild>
+                                      <PopoverTrigger asChild>
+                                        <Button
+                                          size="icon"
+                                          variant={extensionEligibility.eligible && !extensionDisabled ? "outline" : "ghost"}
+                                          className={`h-7 w-7 ${extensionDisabled ? "opacity-50 cursor-not-allowed" : "text-emerald-600 border-emerald-600"}`}
+                                          disabled={extensionDisabled}
+                                          data-testid={`button-extend-${player.playerId}`}
+                                        >
+                                          <ArrowRightLeft className="w-4 h-4" />
+                                        </Button>
+                                      </PopoverTrigger>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      {teamUsedExtension 
+                                        ? `Team has already used their ${CURRENT_YEAR} extension`
+                                        : extensionEligibility.eligible 
+                                          ? `Extend player (1 per team per season)`
+                                          : extensionEligibility.reason
+                                      }
+                                    </TooltipContent>
+                                  </Tooltip>
+                                  <PopoverContent className="w-72 p-3" align="end">
+                                    <div className="space-y-3">
+                                      <div className="text-sm font-medium">Extend {player.name}</div>
+                                      <div className="text-xs text-muted-foreground">
+                                        Current salary: ${extensionEligibility.currentSalary.toFixed(1)}M
+                                      </div>
+                                      <div className="space-y-2">
+                                        {extensionEligibility.canDo1Year && (
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="w-full justify-between"
+                                            onClick={() => handleApplyExtension(
+                                              player.playerId,
+                                              player.name,
+                                              extensionEligibility.extensionYear,
+                                              extensionEligibility.currentSalaryTenths,
+                                              1
+                                            )}
+                                            disabled={applyExtensionMutation.isPending}
+                                            data-testid={`button-extend-1yr-${player.playerId}`}
+                                          >
+                                            <span>1-Year Extension</span>
+                                            <span className="text-emerald-600 font-medium">${extensionEligibility.oneYearSalary}M (1.2x)</span>
+                                          </Button>
+                                        )}
+                                        {extensionEligibility.canDo2Year && (
+                                          <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="w-full justify-between"
+                                            onClick={() => handleApplyExtension(
+                                              player.playerId,
+                                              player.name,
+                                              extensionEligibility.extensionYear,
+                                              extensionEligibility.currentSalaryTenths,
+                                              2
+                                            )}
+                                            disabled={applyExtensionMutation.isPending}
+                                            data-testid={`button-extend-2yr-${player.playerId}`}
+                                          >
+                                            <span>2-Year Extension</span>
+                                            <span className="text-emerald-600 font-medium">${extensionEligibility.twoYearSalary}M/yr (1.5x)</span>
+                                          </Button>
+                                        )}
+                                        {!extensionEligibility.canDo2Year && extensionEligibility.canDo1Year && (
+                                          <div className="text-xs text-muted-foreground italic">
+                                            2-year option unavailable (would exceed 2029)
+                                          </div>
+                                        )}
+                                      </div>
+                                      <div className="text-xs text-muted-foreground border-t pt-2">
+                                        Each team gets 1 extension per season. Applies to final-year players on multi-year deals.
+                                      </div>
+                                    </div>
+                                  </PopoverContent>
+                                </Popover>
                               </>
                             );
                           })()}
@@ -2122,7 +2223,7 @@ function ManageTeamContractsTab({
             </p>
             <p className="flex items-center gap-2">
               <ArrowRightLeft className="w-4 h-4" />
-              <span>Extension adds 1 year at current salary. Only available for players in final contract year who were originally signed to multi-year deals. Each team gets 1 extension per season.</span>
+              <span>Extension options: 1-year at 1.2x salary OR 2-year at 1.5x salary (rounded up). Only for players in final contract year who were originally signed to multi-year deals. Each team gets 1 extension per season.</span>
             </p>
           </div>
         </CardContent>
