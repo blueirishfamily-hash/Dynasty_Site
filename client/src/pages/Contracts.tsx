@@ -2120,15 +2120,13 @@ function ManageTeamContractsTab({
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <PopoverTrigger asChild>
-                                    <Button
-                                      size="icon"
-                                      variant={extensionEligibility.eligible && !extensionDisabled ? "outline" : "ghost"}
-                                      className={`h-7 w-7 ${extensionDisabled ? "opacity-50 cursor-not-allowed" : "text-emerald-600 border-emerald-600"}`}
-                                      disabled={extensionDisabled}
-                                      data-testid={`button-extend-${player.playerId}`}
-                                    >
-                                      <ArrowRightLeft className="w-4 h-4" />
-                                    </Button>
+                                    <div>
+                                      <Switch
+                                        checked={false}
+                                        disabled={extensionDisabled}
+                                        data-testid={`switch-extend-${player.playerId}`}
+                                      />
+                                    </div>
                                   </PopoverTrigger>
                                 </TooltipTrigger>
                                 <TooltipContent>
@@ -2192,7 +2190,7 @@ function ManageTeamContractsTab({
                                     )}
                                   </div>
                                   <div className="text-xs text-muted-foreground border-t pt-2">
-                                    Each team gets 1 extension per season. Applies to final-year players on multi-year deals.
+                                    Each team gets 1 extension per season.
                                   </div>
                                 </div>
                               </PopoverContent>
