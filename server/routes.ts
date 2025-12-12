@@ -2998,6 +2998,7 @@ export async function registerRoutes(
           salary2026: contract.salary2026 || 0,
           salary2027: contract.salary2027 || 0,
           salary2028: contract.salary2028 || 0,
+          salary2029: contract.salary2029 || 0,
           fifthYearOption: contract.fifthYearOption || null,
           isOnIr: contract.isOnIr || 0,
           franchiseTagUsed: contract.franchiseTagUsed,
@@ -3129,6 +3130,7 @@ export async function registerRoutes(
         salary2026: playerContract.salary2026,
         salary2027: playerContract.salary2027,
         salary2028: playerContract.salary2028,
+        salary2029: (playerContract as any).salary2029 || 0,
         fifthYearOption: playerContract.fifthYearOption,
         franchiseTagUsed: playerContract.franchiseTagUsed,
         franchiseTagYear: playerContract.franchiseTagYear,
@@ -3143,6 +3145,7 @@ export async function registerRoutes(
       else if (extensionYear === 2026) salaryUpdates.salary2026 = extensionSalary;
       else if (extensionYear === 2027) salaryUpdates.salary2027 = extensionSalary;
       else if (extensionYear === 2028) salaryUpdates.salary2028 = extensionSalary;
+      else if (extensionYear === 2029) salaryUpdates.salary2029 = extensionSalary;
       
       await storage.upsertPlayerContract(salaryUpdates);
 
@@ -3361,6 +3364,7 @@ export async function registerRoutes(
           salary2026: draft.salary2026 || 0,
           salary2027: draft.salary2027 || 0,
           salary2028: draft.salary2028 || 0,
+          salary2029: draft.salary2029 || 0,
           franchiseTagApplied: draft.franchiseTagApplied || 0,
         });
         results.push(result);
@@ -3466,12 +3470,14 @@ export async function registerRoutes(
           const salary2026 = contract.salary2026 || 0;
           const salary2027 = contract.salary2027 || 0;
           const salary2028 = contract.salary2028 || 0;
+          const salary2029 = contract.salary2029 || 0;
           
           let originalContractYears = 0;
           if (salary2025 > 0) originalContractYears++;
           if (salary2026 > 0) originalContractYears++;
           if (salary2027 > 0) originalContractYears++;
           if (salary2028 > 0) originalContractYears++;
+          if (salary2029 > 0) originalContractYears++;
           
           await storage.upsertPlayerContract({
             leagueId: request.leagueId,
@@ -3481,6 +3487,7 @@ export async function registerRoutes(
             salary2026,
             salary2027,
             salary2028,
+            salary2029,
             fifthYearOption: contract.fifthYearOption || null,
             franchiseTagUsed: contract.franchiseTagApplied ? 1 : 0,
             franchiseTagYear: contract.franchiseTagApplied ? 2025 : null,
