@@ -1,10 +1,6 @@
 import requests
 import google.generativeai as genai
 import os
-from dotenv import load_dotenv
-
-# Load environment variables from .env file
-load_dotenv()
 
 # --- Configuration ---
 LEAGUE_ID = "1194798912048705536"  # Replace with your Sleeper League ID
@@ -12,7 +8,7 @@ SEASON = "2025" # Replace with current season if needed
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 
 if not GOOGLE_API_KEY:
-    raise ValueError("GOOGLE_API_KEY environment variable not set. Please set it or create a .env file.")
+    raise ValueError("GOOGLE_API_KEY environment variable not set. Please set it in Replit Secrets.")
 
 # Configure the Generative AI model
 genai.configure(api_key=GOOGLE_API_KEY)

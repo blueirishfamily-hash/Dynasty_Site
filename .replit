@@ -1,6 +1,4 @@
-run = "python main.py"
+run = "pip install -r requirements.txt && python main.py"
 
 [nix]
 channel = "stable-23_11"
-
-

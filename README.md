@@ -35,12 +35,13 @@ This repository contains a Python script designed to fetch the latest standings 
     pip install -r requirements.txt
     ```
 
-4.  **Configure Environment Variables**:
-    Create a `.env` file in the root directory (or set them directly in your environment) with your Google API Key:
-    ```
-    GOOGLE_API_KEY="YOUR_GOOGLE_GENERATIVE_AI_API_KEY"
-    ```
-    Replace `YOUR_GOOGLE_GENERATIVE_AI_API_KEY` with your actual key.
+4.  **Configure Environment Variables (for Replit)**:
+    For `GOOGLE_API_KEY`, use Replit's built-in "Secrets" feature:
+    *   Go to the 'Secrets' tab (lock icon) in the Replit sidebar.
+    *   Add `GOOGLE_API_KEY` as the key.
+    *   Enter your Google Generative AI API Key as the value.
+    
+    The script will automatically pick up this environment variable.
 
 5.  **Update Configuration in `main.py`**:
     Open `main.py` and update `LEAGUE_ID` and `SEASON` with your Sleeper League ID and the current season if they are different from the default.
