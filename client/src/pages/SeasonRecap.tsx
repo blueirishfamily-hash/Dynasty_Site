@@ -169,17 +169,19 @@ export default function SeasonRecap() {
 
       const champion = standings.length > 0 ? standings[0] : null;
 
-      const mostPointsFor = standings.reduce(
-        (prev, current) => (prev.fpts > current.fpts ? prev : current),
-        standings[0] || { fpts: 0 } as TeamStat // Provide a default for reduce if standings is empty
-      );
+      const mostPointsFor = standings.length > 0
+        ? standings.reduce(
+            (prev, current) => (prev.fpts > current.fpts ? prev : current),
+            standings[0]
+          )
+        : null;
       
       return {
         leagueName: mockSeasonData.league_name,
         season: mockSeasonData.season,
         standings,
         champion,
-        mostPointsFor: mostPointsFor as TeamStat // Cast since initial value might not match perfectly
+        mostPointsFor: mostPointsFor
       };
     },
     staleTime: Infinity, // Data for a past season is static

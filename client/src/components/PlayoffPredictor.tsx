@@ -483,4 +483,3 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 const bubbleTeamsWithSameRecord = predictions.filter(
                   p => p.rosterId !== team.rosterId && 
                        p.curren
-...[TRUNCATED]

@@ -180,7 +180,7 @@ export default function DraftBoard({
           </>
         ) : (
           <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
+            <p className="text-sm text-muted-foreground"> 
               View historical draft results by selecting a previous year.
             </p>
             <div className="flex gap-2">
