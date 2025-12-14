@@ -65,7 +65,7 @@ export default function TradeCenter({
   const [selectedUserPlayers, setSelectedUserPlayers] = useState<Set<string>>(new Set());
   const [selectedUserPicks, setSelectedUserPicks] = useState<Set<string>>(new Set());
   const [selectedTheirPlayers, setSelectedTheirPlayers] = useState<Set<string>>(new Set());
-  const [selectedTheirPicks, setSelectedTheirPicks] = useState<Set<string>>(new Set());
+  const [selectedTheirPicks, setSelectedTheirTheirPicks] = useState<Set<string>>(new Set());
 
   const selectedTeam = leagueTeams.find((t) => t.teamId === selectedTeamId);
 

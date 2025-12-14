@@ -39,7 +39,7 @@ export default function DraftBoardExample() {
         currentOwner: currentTeam,
         isUserPick: currentTeam.initials === "GK",
         player: hasPlayer
-          ? {
+          ? { 
               name: names[(round - 1) * 6 + pick - 1] || "TBD",
               position: positions[Math.floor(Math.random() * positions.length)],
             }

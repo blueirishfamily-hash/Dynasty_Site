@@ -104,7 +104,7 @@ export function PlayerDetailModal({ playerId, playerName, week, onClose }: Playe
   };
 
   return (
-    <Dialog open={!!playerId} onOpenChange={() => onClose()}>
+    <Dialog open={!!playerId} onOpenChange={() => onClose()}> 
       <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-3">
@@ -159,7 +159,7 @@ export function PlayerDetailModal({ playerId, playerName, week, onClose }: Playe
                         }}
                         labelStyle={{ color: 'hsl(var(--foreground))' }}
                         formatter={(value: number, name: string) => [
-                          value?.toFixed(1) || "—",
+                          value?.toFixed(1) || "â€”",
                           name === "actual" ? "Actual" : "Projected"
                         ]}
                       />

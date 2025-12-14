@@ -131,7 +131,7 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
                   {(() => {
                     const leaderWins = standings[0]?.wins || 0;
                     const gb = leaderWins - team.wins;
-                    return gb === 0 ? "—" : gb.toString();
+                    return gb === 0 ? "â€”" : gb.toString();
                   })()}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">

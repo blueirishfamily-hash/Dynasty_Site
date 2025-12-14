@@ -20,6 +20,7 @@ import Metrics from "@/pages/Metrics";
 import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
+import SeasonRecap from "@/pages/SeasonRecap";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -49,6 +50,7 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
+      <Route path="/recap" component={SeasonRecap} />
       <Route component={NotFound} />
     </Switch>
   );

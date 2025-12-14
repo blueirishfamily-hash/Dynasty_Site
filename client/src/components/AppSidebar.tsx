@@ -25,6 +25,7 @@ import {
   Sparkles,
   Medal,
   FileText,
+  Award
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -38,6 +39,7 @@ const baseNavItems = [
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "Trophy Room", url: "/trophies", icon: Medal },
+  { title: "Season Recap", url: "/recap", icon: Award },
   { title: "League Hub", url: "/hub", icon: MessageSquare },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
