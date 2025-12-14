@@ -475,11 +475,85 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
               {bubbleTeams.map((team, idx) => {
                 const standingIndex = predictions.findIndex(p => p.rosterId === team.rosterId);
                 const isInPlayoffPosition = standingIndex < playoffTeams;
-                const gamesBack = playoffCutoffTeam ? team.currentWins - playoffCutoffTeam.currentWins : 0;
-                const gamesAhead = firstOutTeam ? team.currentWins - firstOutTeam.currentWins : 0;
                 
                 const conditions: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
                 
-                const bubbleTeamsWithSameRecord = predictions.filter(
-                  p => p.rosterId !== team.rosterId && 
-                       p.curren
+                // Condition 1: Current Playoff Position Status
+                if (isInPlayoffPosition) {
+                  conditions.push({ type: "positive", text: `Currently in a playoff spot (Rank ${standingIndex + 1})` });
+                } else {
+                  conditions.push({ type: "negative", text: `Currently outside playoff spots (Rank ${standingIndex + 1})` });
+                  const spotsToGain = standingIndex + 1 - playoffTeams;
+                  if (spotsToGain === 1 && playoffCutoffTeam) {
+                    conditions.push({ type: "neutral", text: `Needs to overtake ${playoffCutoffTeam.name} to enter playoffs` });
+                  } else if (playoffCutoffTeam) {
+                    conditions.push({ type: "neutral", text: `Needs to overtake ${spotsToGain} teams to enter playoffs` });
+                  }
+                }
+
+                // Condition 2: Games Back/Ahead from Playoff Cutoff
+                if (remainingWeeks > 0 && playoffCutoffTeam) {
+                  const winsNeeded = playoffCutoffTeam.currentWins - team.currentWins + (isInPlayoffPosition ? 0 : 1);
+                  if (winsNeeded > 0) {
+                    conditions.push({ type: "neutral", text: `Needs ${winsNeeded} more win(s) to match current playoff cutoff record` });
+                  } else if (winsNeeded === 0 && !isInPlayoffPosition) {
+                    conditions.push({ type: "neutral", text: `Tied with playoff cutoff team (${playoffCutoffTeam.name})` });
+                  }
+                }
+                
+                // Condition 3: Points For impact (tiebreaker)
+                if (team.pointsRank > playoffTeams && firstOutTeam && firstOutTeam.pointsFor && team.pointsFor) {
+                  const pointsNeeded = firstOutTeam.pointsFor - team.pointsFor;
+                  if (pointsNeeded > 0) {
+                    conditions.push({ type: "neutral", text: `Needs to gain ${pointsNeeded.toFixed(1)} PF to pass ${firstOutTeam.name} for tiebreaker` });
+                  }
+                } else if (team.pointsRank <= playoffTeams && playoffCutoffTeam && playoffCutoffTeam.pointsFor && team.pointsFor) {
+                    const pointsAhead = team.pointsFor - playoffCutoffTeam.pointsFor;
+                    if (pointsAhead > 0) {
+                      conditions.push({ type: "positive", text: `Currently has +${pointsAhead.toFixed(1)} PF tiebreaker advantage over teams on the bubble` });
+                    }
+                }
+
+                // Generic condition for "win all remaining games" or "need help"
+                if (remainingWeeks > 0) {
+                    conditions.push({ type: "neutral", text: `Win all remaining ${remainingWeeks} game(s) to maximize chances` });
+                    if (team.makePlayoffsPct < 50 && !isInPlayoffPosition) {
+                        conditions.push({ type: "negative", text: `Also needs other bubble teams to lose` });
+                    }
+                }
+                
+                return (
+                  <div key={team.rosterId} className="p-3 rounded-md bg-muted/50 border border-border">
+                    <div className="flex items-center gap-2 mb-2">
+                      <Avatar className="w-8 h-8">
+                        <AvatarFallback className="text-xs bg-muted">
+                          {team.initials}
+                        </AvatarFallback>
+                      </Avatar>
+                      <h4 className="font-semibold text-sm">{team.name}</h4>
+                      <Badge className={getStandingsBadgeClass(team.makePlayoffsPct)}>
+                        {team.makePlayoffsPct.toFixed(1)}% Playoffs
+                      </Badge>
+                    </div>
+                    <ul className="text-sm space-y-1">
+                      {conditions.map((cond, condIdx) => (
+                        <li key={condIdx} className="flex items-start gap-2">
+                          {cond.type === "positive" && <CheckCircle2 className="w-4 h-4 text-primary shrink-0 mt-0.5" />}
+                          {cond.type === "negative" && <XCircle className="w-4 h-4 text-destructive shrink-0 mt-0.5" />}
+                          {cond.type === "neutral" && <Info className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />}
+                          <span className={`${cond.type === "positive" ? "text-primary" : cond.type === "negative" ? "text-destructive" : ""}`}>
+                            {cond.text}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        );
+      })()}
+    </div>
+  );
+}
