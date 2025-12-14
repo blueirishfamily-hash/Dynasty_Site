@@ -1,274 +1,171 @@
 import { useQuery } from "@tanstack/react-query";
+import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Trophy, Award, BarChart3, Star } from "lucide-react";
-import { useSleeper } from "@/lib/sleeper-context";
+import { Loader2, Trophy, Crown, TrendingUp, TrendingDown, Frown, Smile } from "lucide-react";
+import { Fragment } from "react";
 
-// Mock data based on the provided LIVE SLEEPER API DATA
-const mockSeasonData = {
-  league_name: "ATL Dynasty",
-  season: "2025",
-  rosters: [
-    {
-      owner_name: "crainey0",
-      team_name: "All Ws",
-      wins: 13,
-      losses: 1,
-      ties: 0,
-      fpts: 2231.24
-    },
-    {
-      owner_name: "NoCapDoNotSleepOnMe",
-      team_name: "NoCapDoNotSleepOnMe",
-      wins: 9,
-      losses: 5,
-      ties: 0,
-      fpts: 1812.28
-    },
-    {
-      owner_name: "jwilly1306",
-      team_name: "PRISON BALL",
-      wins: 9,
-      losses: 5,
-      ties: 0,
-      fpts: 1628.82
-    },
-    {
-      owner_name: "RagingParrots",
-      team_name: "CoolTeamName_placeholder",
-      wins: 8,
-      losses: 6,
-      ties: 0,
-      fpts: 1821.88
-    },
-    {
-      owner_name: "mvprainey",
-      team_name: "Wakanda Panthers",
-      wins: 8,
-      losses: 6,
-      ties: 0,
-      fpts: 1708.84
-    },
-    {
-      owner_name: "elwthree",
-      team_name: "Rough Start",
-      wins: 7,
-      losses: 7,
-      ties: 0,
-      fpts: 1687.86
-    },
-    {
-      owner_name: "amweathers",
-      team_name: "All Stars",
-      wins: 6,
-      losses: 8,
-      ties: 0,
-      fpts: 1579.2
-    },
-    {
-      owner_name: "ecooper1209",
-      team_name: "BetterLuckNextTime",
-      wins: 6,
-      losses: 8,
-      ties: 0,
-      fpts: 1502.2
-    },
-    {
-      owner_name: "baskettball26",
-      team_name: "baskettball26",
-      wins: 5,
-      losses: 9,
-      ties: 0,
-      fpts: 1514.86
-    },
-    {
-      owner_name: "PNice7",
-      team_name: "PNice7",
-      wins: 5,
-      losses: 9,
-      ties: 0,
-      fpts: 1332.24
-    },
-    {
-      owner_name: "DJDougie12",
-      team_name: "Just Better",
-      wins: 4,
-      losses: 10,
-      ties: 0,
-      fpts: 1706.68
-    },
-    {
-      owner_name: "Twill09",
-      team_name: "Twill09",
-      wins: 4,
-      losses: 10,
-      ties: 0,
-      fpts: 1548.02
-    }
-  ]
-};
-
-interface TeamStat {
-  team_name: string;
+interface RosterData {
   owner_name: string;
+  team_name: string;
   wins: number;
   losses: number;
   ties: number;
   fpts: number;
+  avatar?: string;
 }
-
-interface SeasonRecapData {
-  leagueName: string;
-  season: string;
-  standings: (
-    TeamStat &
-    { rank: number; initials: string; record: string }
-  )[];
-  champion: TeamStat | null;
-  mostPointsFor: TeamStat | null;
-}
-
-const getInitials = (name: string) => {
-  if (!name) return "??";
-  return name
-    .split(" ")
-    .map((n) => n[0])
-    .join("")
-    .toUpperCase();
-};
 
 export default function SeasonRecap() {
-  const { league } = useSleeper();
+  const { league, season } = useSleeper();
 
-  // Simulate fetching data, using mock data provided by the prompt
-  const { data, isLoading, error } = useQuery<SeasonRecapData>({
-    queryKey: ["seasonRecap", league?.leagueId, mockSeasonData.season],
+  const { data: rosters, isLoading, error } = useQuery<RosterData[]>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "rosters", season],
     queryFn: async () => {
-      // In a real application, you would fetch from your backend or Sleeper API
-      // For now, use the mock data
-      const rawRosters = mockSeasonData.rosters;
+      if (!league?.leagueId || !season) return [];
+      // For a season recap, we typically want data from the *previous* completed season.
+      // Assuming `season` from useSleeper is the current active season, 
+      // we might need to adjust or query historical data if the API supports it.
+      // For now, we'll use the current 'season' value, which in the live data is '2025'.
+      const res = await fetch(`/api/sleeper/league/${league.leagueId}/rosters?season=${season}`);
+      if (!res.ok) throw new Error("Failed to fetch rosters");
+      const rosterData = await res.json();
 
-      const sortedStandings = [...rawRosters].sort((a, b) => {
-        if (b.wins !== a.wins) {
-          return b.wins - a.wins; // Sort by wins descending
-        }
-        if (b.ties !== a.ties) {
-          return b.ties - a.ties; // Sort by ties descending
-        }
-        return b.fpts - a.fpts; // Then by points for descending
+      const usersRes = await fetch(`/api/sleeper/league/${league.leagueId}/users`);
+      if (!usersRes.ok) throw new Error("Failed to fetch users");
+      const users = await usersRes.json();
+
+      return rosterData.map((roster: any) => {
+        const user = users.find((u: any) => u.user_id === roster.owner_id);
+        return {
+          owner_name: user?.display_name || 'Unknown Owner',
+          team_name: user?.metadata?.team_name || 'Unknown Team',
+          wins: roster.settings?.wins || 0,
+          losses: roster.settings?.losses || 0,
+          ties: roster.settings?.ties || 0,
+          fpts: roster.settings?.fpts || 0,
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+        };
       });
-
-      const standings = sortedStandings.map((roster, index) => ({
-        ...roster,
-        rank: index + 1,
-        initials: getInitials(roster.team_name || roster.owner_name),
-        record: `${roster.wins}-${roster.losses}${roster.ties > 0 ? `-${roster.ties}` : ""}`,
-      }));
-
-      const champion = standings.length > 0 ? standings[0] : null;
-
-      const mostPointsFor = standings.length > 0
-        ? standings.reduce(
-            (prev, current) => (prev.fpts > current.fpts ? prev : current),
-            standings[0]
-          )
-        : null;
-      
-      return {
-        leagueName: mockSeasonData.league_name,
-        season: mockSeasonData.season,
-        standings,
-        champion,
-        mostPointsFor: mostPointsFor
-      };
     },
-    staleTime: Infinity, // Data for a past season is static
+    enabled: !!league?.leagueId && !!season,
   });
 
+  const sortedRosters = (rosters || []).sort((a, b) => {
+    if (a.wins !== b.wins) return b.wins - a.wins; // More wins first
+    if (a.ties !== b.ties) return b.ties - a.ties; // More ties (better record) second
+    return b.fpts - a.fpts; // Higher points for as tie-breaker
+  });
+
+  const leagueWinner = sortedRosters.length > 0 ? sortedRosters[0] : null;
+  const highestScoringTeam = rosters?.reduce((max, team) => (team.fpts > max.fpts ? team : max), rosters[0] || null);
+  const lowestScoringTeam = rosters?.reduce((min, team) => (team.fpts < min.fpts ? team : min), rosters[0] || null);
+
   if (isLoading) {
-    return <div className="p-6 text-center text-muted-foreground">Loading season recap...</div>;
+    return (
+      <div className="flex items-center justify-center h-full min-h-[500px]">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        <p className="ml-3 text-muted-foreground">Loading season recap...</p>
+      </div>
+    );
   }
 
-  if (error || !data) {
-    return <div className="p-6 text-center text-destructive">Failed to load season recap.</div>;
+  if (error) {
+    return (
+      <div className="p-6 text-center text-destructive">
+        <p>Error loading season recap: {error.message}</p>
+      </div>
+    );
   }
 
-  const { leagueName, season, standings, champion, mostPointsFor } = data;
+  if (!league || !season || !rosters || rosters.length === 0) {
+    return (
+      <div className="p-6 text-center text-muted-foreground">
+        <p>No season data available for {season}.</p>
+        <p>Please ensure your league has completed a season.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="p-4 sm:px-6 sm:py-8 lg:p-10 space-y-6">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+    <div className="container mx-auto p-4 space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="font-heading text-3xl font-bold">
-          {leagueName} {season} Recap
+          {league?.name} Season Recap
         </h1>
-        <Badge variant="outline" className="text-sm px-3 py-1">
+        <Badge variant="secondary" className="text-sm px-3 py-1">
           Season {season}
         </Badge>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {champion && (
-          <Card className="hover-elevate">
-            <CardHeader className="pb-3">
-              <CardTitle className="font-heading text-xl flex items-center gap-2">
-                <Trophy className="w-6 h-6 text-yellow-500" />
-                League Champion
-              </CardTitle>
-              <CardDescription className="text-muted-foreground">
-                Best record in the {season} regular season.
-              </CardDescription>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {leagueWinner && (
+          <Card className="text-center hover-elevate">
+            <CardHeader className="pb-2">
+              <Trophy className="w-8 h-8 text-primary mx-auto mb-2" />
+              <CardTitle className="text-xl font-heading">League Champion</CardTitle>
+              <CardDescription className="text-xs">Most Wins & Best Record</CardDescription>
             </CardHeader>
-            <CardContent className="flex items-center gap-4">
-              <Avatar className="w-16 h-16">
-                <AvatarFallback className="bg-primary text-primary-foreground text-2xl font-bold">
-                  {getInitials(champion.team_name || champion.owner_name)}
+            <CardContent className="flex flex-col items-center">
+              <Avatar className="w-20 h-20 mb-2 border-2 border-primary">
+                {leagueWinner.avatar && <AvatarImage src={leagueWinner.avatar} alt={leagueWinner.team_name} />}
+                <AvatarFallback className="text-xl bg-primary text-primary-foreground">
+                  {leagueWinner.team_name.split(' ').map(n => n[0]).join('')}
                 </AvatarFallback>
               </Avatar>
-              <div>
-                <p className="text-2xl font-bold text-foreground">
-                  {champion.team_name || champion.owner_name}
-                </p>
-                <p className="text-lg text-muted-foreground">
-                  {champion.record} Record
-                </p>
-                <p className="text-sm text-chart-2">
-                  {champion.fpts.toFixed(2)} Points For
-                </p>
-              </div>
+              <p className="font-bold text-lg">{leagueWinner.team_name}</p>
+              <p className="text-sm text-muted-foreground">{leagueWinner.owner_name}</p>
+              <Badge variant="default" className="mt-2 px-3 py-1">
+                {leagueWinner.wins}-{leagueWinner.losses}{leagueWinner.ties > 0 ? `-${leagueWinner.ties}` : ''}
+              </Badge>
+              <p className="text-xs text-muted-foreground mt-1">{leagueWinner.fpts.toFixed(2)} FPTS</p>
             </CardContent>
           </Card>
         )}
 
-        {mostPointsFor && (
-          <Card className="hover-elevate">
-            <CardHeader className="pb-3">
-              <CardTitle className="font-heading text-xl flex items-center gap-2">
-                <Star className="w-6 h-6 text-blue-400" />
-                Most Points For
-              </CardTitle>
-              <CardDescription className="text-muted-foreground">
-                Highest total points scored during the {season} season.
-              </CardDescription>
+        {highestScoringTeam && (
+          <Card className="text-center hover-elevate">
+            <CardHeader className="pb-2">
+              <Smile className="w-8 h-8 text-chart-2 mx-auto mb-2" />
+              <CardTitle className="text-xl font-heading">Highest Scorer</CardTitle>
+              <CardDescription className="text-xs">Most Regular Season Points For</CardDescription>
             </CardHeader>
-            <CardContent className="flex items-center gap-4">
-              <Avatar className="w-16 h-16">
-                <AvatarFallback className="bg-chart-2 text-white text-2xl font-bold">
-                  {getInitials(mostPointsFor.team_name || mostPointsFor.owner_name)}
+            <CardContent className="flex flex-col items-center">
+              <Avatar className="w-20 h-20 mb-2 border-2 border-chart-2">
+                {highestScoringTeam.avatar && <AvatarImage src={highestScoringTeam.avatar} alt={highestScoringTeam.team_name} />}
+                <AvatarFallback className="text-xl bg-chart-2 text-primary-foreground">
+                  {highestScoringTeam.team_name.split(' ').map(n => n[0]).join('')}
                 </AvatarFallback>
               </Avatar>
-              <div>
-                <p className="text-2xl font-bold text-foreground">
-                  {mostPointsFor.team_name || mostPointsFor.owner_name}
-                </p>
-                <p className="text-lg text-muted-foreground">
-                  {mostPointsFor.fpts.toFixed(2)} Total Points
-                </p>
-                <p className="text-sm text-chart-4">
-                  {mostPointsFor.record} Record
-                </p>
-              </div>
+              <p className="font-bold text-lg">{highestScoringTeam.team_name}</p>
+              <p className="text-sm text-muted-foreground">{highestScoringTeam.owner_name}</p>
+              <Badge variant="default" className="bg-chart-2/20 text-chart-2 mt-2 px-3 py-1">
+                {highestScoringTeam.fpts.toFixed(2)} FPTS
+              </Badge>
+            </CardContent>
+          </Card>
+        )}
+
+        {lowestScoringTeam && (
+          <Card className="text-center hover-elevate">
+            <CardHeader className="pb-2">
+              <Frown className="w-8 h-8 text-destructive mx-auto mb-2" />
+              <CardTitle className="text-xl font-heading">Lowest Scorer</CardTitle>
+              <CardDescription className="text-xs">Least Regular Season Points For</CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col items-center">
+              <Avatar className="w-20 h-20 mb-2 border-2 border-destructive">
+                {lowestScoringTeam.avatar && <AvatarImage src={lowestScoringTeam.avatar} alt={lowestScoringTeam.team_name} />}
+                <AvatarFallback className="text-xl bg-destructive text-primary-foreground">
+                  {lowestScoringTeam.team_name.split(' ').map(n => n[0]).join('')}
+                </AvatarFallback>
+              </Avatar>
+              <p className="font-bold text-lg">{lowestScoringTeam.team_name}</p>
+              <p className="text-sm text-muted-foreground">{lowestScoringTeam.owner_name}</p>
+              <Badge variant="default" className="bg-destructive/20 text-destructive mt-2 px-3 py-1">
+                {lowestScoringTeam.fpts.toFixed(2)} FPTS
+              </Badge>
             </CardContent>
           </Card>
         )}
@@ -276,65 +173,48 @@ export default function SeasonRecap() {
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="font-heading text-xl flex items-center gap-2">
-            <BarChart3 className="w-6 h-6 text-primary" />
-            Final Standings
-          </CardTitle>
+          <CardTitle className="font-heading text-lg">Final Standings</CardTitle>
+          <CardDescription>Overall records and points scored.</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-12 text-center">Rank</TableHead>
+                <TableHead className="w-12 text-center">#</TableHead>
                 <TableHead>Team</TableHead>
-                <TableHead className="text-center">Record</TableHead>
-                <TableHead className="text-right">PF</TableHead>
-                <TableHead className="text-right">Wins</TableHead>
-                <TableHead className="text-right">Losses</TableHead>
-                {standings.some(s => s.ties > 0) && (
-                  <TableHead className="text-right">Ties</TableHead>
-                )}
+                <TableHead className="text-center">W-L-T</TableHead>
+                <TableHead className="text-right">FPTS</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {standings.map((team) => (
-                <TableRow key={team.rank} data-testid={`team-standing-${team.rank}`}>
-                  <TableCell className="text-center font-medium">
+              {sortedRosters.map((team, index) => (
+                <TableRow key={team.owner_name} className={team === leagueWinner ? "bg-primary/5" : ""}>
+                  <TableCell className="text-center">
                     <Badge
                       className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-semibold ${
-                        team.rank === 1 ? "bg-yellow-500 text-yellow-500-foreground" : "bg-muted text-muted-foreground"
+                        team === leagueWinner ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"
                       }`}
                     >
-                      {team.rank}
+                      {index + 1}
                     </Badge>
                   </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Avatar className="w-8 h-8">
-                        <AvatarFallback className="bg-muted text-muted-foreground text-xs">
-                          {team.initials}
+                        {team.avatar && <AvatarImage src={team.avatar} alt={team.team_name} />}
+                        <AvatarFallback className="text-xs bg-muted">
+                          {team.team_name.split(' ').map(n => n[0]).join('')}
                         </AvatarFallback>
                       </Avatar>
-                      <span className="font-medium">{team.team_name || team.owner_name}</span>
+                      <span className="font-medium">{team.team_name}</span>
                     </div>
                   </TableCell>
                   <TableCell className="text-center tabular-nums font-medium">
-                    {team.record}
+                    {team.wins}-{team.losses}{team.ties > 0 ? `-${team.ties}` : ''}
                   </TableCell>
                   <TableCell className="text-right tabular-nums">
                     {team.fpts.toFixed(2)}
                   </TableCell>
-                  <TableCell className="text-right tabular-nums text-primary">
-                    {team.wins}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums text-destructive">
-                    {team.losses}
-                  </TableCell>
-                  {standings.some(s => s.ties > 0) && (
-                    <TableCell className="text-right tabular-nums text-muted-foreground">
-                      {team.ties}
-                    </TableCell>
-                  )}
                 </TableRow>
               ))}
             </TableBody>

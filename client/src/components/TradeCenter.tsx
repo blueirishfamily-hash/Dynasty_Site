@@ -284,26 +284,5 @@ export default function TradeCenter({
                   <span>
                     Giving: {selectedUserPlayers.size + selectedUserPicks.size} assets
                   </span>
-                  <ArrowLeftRight className="w-3 h-3" />
-                  <span>
-                    Receiving: {selectedTheirPlayers.size + selectedTheirPicks.size} assets
-                  </span>
-                </div>
-              </div>
-              <div className="flex gap-2">
-                <Button variant="outline" size="sm" onClick={clearAll} data-testid="button-clear-trade">
-                  <X className="w-4 h-4 mr-1" />
-                  Clear
-                </Button>
-                <Button size="sm" onClick={handlePropose} data-testid="button-propose-trade">
-                  <Check className="w-4 h-4 mr-1" />
-                  Propose Trade
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
+       
+...[TRUNCATED]

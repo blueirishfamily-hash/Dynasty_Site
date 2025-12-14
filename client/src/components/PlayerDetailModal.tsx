@@ -159,7 +159,7 @@ export function PlayerDetailModal({ playerId, playerName, week, onClose }: Playe
                         }}
                         labelStyle={{ color: 'hsl(var(--foreground))' }}
                         formatter={(value: number, name: string) => [
-                          value?.toFixed(1) || "â€”",
+                          value?.toFixed(1) || "â€•",
                           name === "actual" ? "Actual" : "Projected"
                         ]}
                       />
@@ -264,29 +264,5 @@ export function PlayerDetailModal({ playerId, playerName, week, onClose }: Playe
                     {data.news.map((item, idx) => (
                       <div
                         key={idx}
-                        className="flex items-start gap-2 p-2 rounded-md bg-muted/50"
-                        data-testid={`news-item-${idx}`}
-                      >
-                        {getNewsIcon(item.type)}
-                        <div className="flex-1 min-w-0">
-                          <p className="text-sm">{item.text}</p>
-                          {item.date && (
-                            <p className="text-xs text-muted-foreground mt-0.5">{item.date}</p>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground text-center py-4">
-                    No recent news or updates
-                  </p>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        ) : null}
-      </DialogContent>
-    </Dialog>
-  );
-}
+                        className="flex
+...[TRUNCATED]

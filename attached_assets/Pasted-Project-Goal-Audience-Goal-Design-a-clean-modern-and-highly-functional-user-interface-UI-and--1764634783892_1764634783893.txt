@@ -30,7 +30,7 @@ Start/Bench: Intuitive drag-and-drop functionality for setting lineups, validati
 
 Player Card/Pop-up: Clicking a player should display a detailed card using Sleeper Players data with recent news, a season schedule, and an embedded stats graph of their Sleeper weekly scoring data.
 
-C. Trade Center (The Negotiation Room)
+D. Trade Center (The Negotiation Room)
 Focus: Intuitive and transparent trade proposal and negotiation, ensuring all assets are verifiable via the API.
 
 Elements:
@@ -62,4 +62,5 @@ Data Visualization: Use charts, graphs, and heatmaps effectively.
 Example: On the League Standings page, use a small line graph next to each team showing their win/loss trend over the last five weeks, based on Sleeper Matchups data.
 
 Dynasty Specific UX: Incorporate player Age and Position Rank (based on Sleeper-provided stats) as primary data points, perhaps using color coding for quick assessment.
+
 

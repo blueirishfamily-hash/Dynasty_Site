@@ -67,7 +67,7 @@ export default function LeagueConnect({ onConnect }: LeagueConnectProps) {
           >
             {isLoading ? (
               "Connecting..."
-            ) : (
+            ) :
               <>
                 Connect to Sleeper
                 <ArrowRight className="w-4 h-4 ml-2" />

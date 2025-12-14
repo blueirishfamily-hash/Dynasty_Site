@@ -244,7 +244,7 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                     </Badge>
                   </TableCell>
                   <TableCell className={`text-center font-medium ${getAgeColor(player.age)}`}>
-                    {player.age || "â€”"}
+                    {player.age || "â€•"}
                   </TableCell>
                   <TableCell className="text-center">
                     <Badge variant="outline" className="text-xs">
@@ -264,32 +264,5 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                         player.positionRank <= 12
                           ? "bg-primary/20 text-primary"
                           : player.positionRank <= 24
-                          ? "bg-chart-4/20 text-chart-4"
-                          : ""
-                      }`}
-                    >
-                      {player.position}{player.positionRank}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onPlayerClick?.(player);
-                      }}
-                      data-testid={`button-player-info-${player.id}`}
-                    >
-                      <Info className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
+                          ? "b
+...[TRUNCATED]
