@@ -112,7 +112,8 @@ const ChartTooltipContent = React.forwardRef<
       nameKey?: string
       labelKey?: string
     }
->((
+>(
+  (
     {
       active,
       payload,
@@ -264,7 +265,8 @@ const ChartLegendContent = React.forwardRef<
       hideIcon?: boolean
       nameKey?: string
     }
->((
+>(
+  (
     { className, hideIcon = false, payload, verticalAlign = "bottom", nameKey },
     ref
   ) => {

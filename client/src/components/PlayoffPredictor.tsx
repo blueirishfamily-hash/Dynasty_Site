@@ -53,11 +53,11 @@ interface PlayoffPredictorProps {
   userId?: string;
 }
 
-function ProbabilityBar({
-  value,
-  colorClass = "bg-primary"
-}: {
-  value: number;
+function ProbabilityBar({ 
+  value, 
+  colorClass = "bg-primary" 
+}: { 
+  value: number; 
   colorClass?: string;
 }) {
   return (
@@ -342,7 +342,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                         {(() => {
                           const leaderWins = predictions[0]?.currentWins || 0;
                           const gb = leaderWins - team.currentWins;
-                          return gb === 0 ? "â€”" : gb.toString();
+                          return gb === 0 ? "—" : gb.toString();
                         })()}
                       </TableCell>
                       <TableCell className="text-center tabular-nums font-medium">
@@ -449,7 +449,8 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 <span>Eliminated (0%)</span>
               </div>
             </div>
-          </CardContent>
+          </div>
+        </CardContent>
       </Card>
 
       {/* Bubble Watch - Qualification Conditions */}
@@ -482,4 +483,181 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 
                 const bubbleTeamsWithSameRecord = predictions.filter(
                   p => p.rosterId !== team.rosterId && 
-                       p.curren
+                       p.currentWins === team.currentWins && 
+                       p.currentLosses === team.currentLosses &&
+                       p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100
+                );
+                
+                const pointsScenarios: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
+                
+                // Calculate tiebreaker status among bubble teams only
+                const hasHighestPointsAmongBubble = bubbleTeamsWithSameRecord.length === 0 || 
+                  bubbleTeamsWithSameRecord.every(rival => team.pointsFor > rival.pointsFor);
+                const teamsAheadInPoints = bubbleTeamsWithSameRecord.filter(rival => rival.pointsFor > team.pointsFor);
+                
+                if (isInPlayoffPosition) {
+                  if (gamesAhead >= remainingWeeks) {
+                    conditions.push({ type: "positive", text: `Can clinch with ${remainingWeeks - gamesAhead} more win${remainingWeeks - gamesAhead !== 1 ? 's' : ''}` });
+                  } else if (gamesAhead > 0) {
+                    conditions.push({ type: "positive", text: `${gamesAhead} game${gamesAhead !== 1 ? 's' : ''} ahead of ${firstOutTeam?.name || 'next team'}` });
+                  } else if (gamesAhead === 0) {
+                    conditions.push({ type: "neutral", text: `Tied with ${firstOutTeam?.name || 'next team'} - tiebreakers matter` });
+                  }
+                  
+                  conditions.push({ type: "neutral", text: "Win remaining games to secure spot" });
+                  
+                  // Show tiebreaker status among bubble teams
+                  if (bubbleTeamsWithSameRecord.length > 0) {
+                    if (hasHighestPointsAmongBubble) {
+                      conditions.push({ type: "positive", text: `Highest points among bubble teams at ${team.currentWins}-${team.currentLosses} - wins tiebreaker` });
+                    } else {
+                      const closestRival = teamsAheadInPoints.reduce((closest, rival) => 
+                        (rival.pointsFor - team.pointsFor) < (closest.pointsFor - team.pointsFor) ? rival : closest
+                      );
+                      const pointsNeeded = closestRival.pointsFor - team.pointsFor;
+                      pointsScenarios.push({ 
+                        type: "negative", 
+                        text: `${pointsNeeded.toFixed(1)} pts behind ${closestRival.name} (same record) - outscore to win tiebreaker` 
+                      });
+                    }
+                  }
+                } else {
+                  const winsNeeded = Math.abs(gamesBack) + 1;
+                  if (winsNeeded <= remainingWeeks) {
+                    conditions.push({ type: "neutral", text: `Need to win ${winsNeeded}+ of remaining ${remainingWeeks} games` });
+                  } else {
+                    conditions.push({ type: "negative", text: `${Math.abs(gamesBack)} game${Math.abs(gamesBack) !== 1 ? 's' : ''} back - needs help` });
+                  }
+                  
+                  // Only show bubble teams that need to lose (exclude clinched teams)
+                  const bubbleTeamsToPass = predictions
+                    .slice(0, playoffTeams)
+                    .filter(p => p.rosterId !== team.rosterId && p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
+                  
+                  if (bubbleTeamsToPass.length > 0) {
+                    const teamNames = bubbleTeamsToPass.slice(0, 2).map(t => t.name);
+                    const moreCount = bubbleTeamsToPass.length - 2;
+                    conditions.push({ 
+                      type: "neutral", 
+                      text: `Need ${teamNames.join(' or ')}${moreCount > 0 ? ` (+${moreCount} more)` : ''} to lose` 
+                    });
+                  }
+                  
+                  // Show tiebreaker status among bubble teams with same record
+                  if (bubbleTeamsWithSameRecord.length > 0) {
+                    if (hasHighestPointsAmongBubble) {
+                      conditions.push({ type: "positive", text: `Highest points among bubble teams at ${team.currentWins}-${team.currentLosses} - wins tiebreaker` });
+                    } else {
+                      // Show how much they need to outscore the bubble teams ahead of them
+                      teamsAheadInPoints.forEach(rival => {
+                        const pointsNeeded = rival.pointsFor - team.pointsFor;
+                        const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
+                        
+                        if (rivalStandingIdx < playoffTeams) {
+                          pointsScenarios.push({ 
+                            type: "neutral", 
+                            text: `Outscore ${rival.name} by ${pointsNeeded.toFixed(1)}+ pts to take their spot (same ${team.currentWins}-${team.currentLosses} record)` 
+                          });
+                        } else {
+                          pointsScenarios.push({ 
+                            type: "negative", 
+                            text: `${pointsNeeded.toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
+                          });
+                        }
+                      });
+                    }
+                  }
+                }
+                
+                return (
+                  <div 
+                    key={team.rosterId}
+                    className={`p-4 rounded-lg border ${team.ownerId === userId ? 'bg-primary/5 border-primary/30' : 'bg-muted/30'}`}
+                    data-testid={`bubble-team-${team.rosterId}`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="w-8 h-8">
+                          <AvatarFallback 
+                            className={`text-xs ${team.ownerId === userId ? "bg-primary text-primary-foreground" : "bg-muted"}`}
+                          >
+                            {team.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className={`font-medium ${team.ownerId === userId ? 'text-primary' : ''}`}>
+                            {team.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {team.currentWins}-{team.currentLosses} • #{standingIndex + 1} in standings
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <Badge className={getStandingsBadgeClass(team.makePlayoffsPct)}>
+                          {team.makePlayoffsPct.toFixed(1)}%
+                        </Badge>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {isInPlayoffPosition ? "In playoff position" : "Outside looking in"}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Path to Playoffs
+                        </p>
+                        <ul className="space-y-1.5">
+                          {conditions.map((condition, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm">
+                              {condition.type === "positive" ? (
+                                <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                              ) : condition.type === "negative" ? (
+                                <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                              ) : (
+                                <ArrowUp className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                              )}
+                              <span className={condition.type === "negative" ? "text-muted-foreground" : ""}>
+                                {condition.text}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      
+                      {pointsScenarios.length > 0 && (
+                        <div className="space-y-2 pt-2 border-t border-border/50">
+                          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                            <Hash className="w-3 h-3" />
+                            Points Tiebreaker Scenarios
+                          </p>
+                          <ul className="space-y-1.5">
+                            {pointsScenarios.map((scenario, i) => (
+                              <li key={i} className="flex items-start gap-2 text-sm">
+                                {scenario.type === "positive" ? (
+                                  <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                                ) : scenario.type === "negative" ? (
+                                  <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                                ) : (
+                                  <ArrowDown className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                                )}
+                                <span className={scenario.type === "negative" ? "text-muted-foreground" : ""}>
+                                  {scenario.text}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        );
+      })()}
+    </div>
+  );
+}

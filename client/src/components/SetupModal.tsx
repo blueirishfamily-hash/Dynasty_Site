@@ -80,8 +80,8 @@ export default function SetupModal({ open, onComplete }: SetupModalProps) {
   };
 
   return (
-    <Dialog open={open}> 
-      <DialogContent className="sm:max-w-lg" onPointerDownOutside={(e) => e.preventDefault()}> 
+    <Dialog open={open}>
+      <DialogContent className="sm:max-w-lg" onPointerDownOutside={(e) => e.preventDefault()}>
         <DialogHeader>
           <DialogTitle className="font-heading text-2xl flex items-center gap-2">
             <Trophy className="w-6 h-6 text-primary" />
