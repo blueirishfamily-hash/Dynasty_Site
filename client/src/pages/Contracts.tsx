@@ -1733,22 +1733,72 @@ function ManageTeamContractsTab({
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => {
-                  const positionTotals: Record<string, number> = {};
+                  // Calculate approved and unapproved totals by position
+                  const positionApproved: Record<string, number> = {};
+                  const positionUnapproved: Record<string, number> = {};
                   
                   allHypotheticalPlayers.forEach(player => {
-                    const salary = player.hypotheticalSalaries[year] || 0;
-                    if (salary > 0) {
+                    const effectiveSalary = player.hypotheticalSalaries[year] || 0;
+                    const officialSalary = player.isRosterPlayer 
+                      ? getLeagueSalary(player.playerId, year)
+                      : 0; // Free agents are all unapproved
+                    
+                    const unapprovedAmount = player.isFreeAgent 
+                      ? effectiveSalary 
+                      : Math.max(0, effectiveSalary - officialSalary);
+                    const approvedAmount = player.isFreeAgent ? 0 : officialSalary;
+                    
+                    if (effectiveSalary > 0) {
                       const pos = player.position || "OTHER";
-                      positionTotals[pos] = (positionTotals[pos] || 0) + salary;
+                      positionApproved[pos] = (positionApproved[pos] || 0) + approvedAmount;
+                      if (unapprovedAmount > 0) {
+                        positionUnapproved[pos] = (positionUnapproved[pos] || 0) + unapprovedAmount;
+                      }
                     }
                   });
                   
-                  const pieData = Object.entries(positionTotals)
-                    .map(([position, total]) => ({
-                      name: position,
-                      value: Math.round(total * 10) / 10,
-                    }))
-                    .sort((a, b) => b.value - a.value);
+                  // Create pie data with both approved and unapproved segments
+                  const pieData: Array<{ name: string; value: number; isUnapproved: boolean; position: string }> = [];
+                  
+                  // Get all positions that have either approved or unapproved salaries
+                  const allPositions = new Set([
+                    ...Object.keys(positionApproved),
+                    ...Object.keys(positionUnapproved)
+                  ]);
+                  
+                  allPositions.forEach(position => {
+                    const approved = positionApproved[position] || 0;
+                    const unapproved = positionUnapproved[position] || 0;
+                    
+                    // Add approved segment first
+                    if (approved > 0) {
+                      pieData.push({
+                        name: position,
+                        value: Math.round(approved * 10) / 10,
+                        isUnapproved: false,
+                        position,
+                      });
+                    }
+                    
+                    // Add unapproved segment
+                    if (unapproved > 0) {
+                      pieData.push({
+                        name: `${position} (Pending)`,
+                        value: Math.round(unapproved * 10) / 10,
+                        isUnapproved: true,
+                        position,
+                      });
+                    }
+                  });
+                  
+                  pieData.sort((a, b) => {
+                    // Sort by position first, then by approved/unapproved
+                    if (a.position !== b.position) {
+                      const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF", "OTHER"];
+                      return (posOrder.indexOf(a.position) - posOrder.indexOf(b.position)) || a.position.localeCompare(b.position);
+                    }
+                    return a.isUnapproved ? 1 : -1; // Approved first
+                  });
                   
                   const totalSalary = pieData.reduce((sum, d) => sum + d.value, 0);
                   
@@ -1761,6 +1811,19 @@ function ManageTeamContractsTab({
                     DEF: "#6b7280",
                     OTHER: "#a3a3a3",
                   };
+                  
+                  // Function to lighten a color (reduce opacity)
+                  const lightenColor = (color: string): string => {
+                    // Convert hex to rgba with reduced opacity
+                    const hex = color.replace('#', '');
+                    const r = parseInt(hex.substr(0, 2), 16);
+                    const g = parseInt(hex.substr(2, 2), 16);
+                    const b = parseInt(hex.substr(4, 2), 16);
+                    return `rgba(${r}, ${g}, ${b}, 0.5)`;
+                  };
+                  
+                  // Generate unique pattern IDs for each position
+                  const patternId = (pos: string) => `diagonal-${pos}-${year}`;
                   
                   return (
                     <Card key={year} className="p-4">
@@ -1777,6 +1840,32 @@ function ManageTeamContractsTab({
                         <div className="h-64">
                           <ResponsiveContainer width="100%" height="100%">
                             <PieChart>
+                              <defs>
+                                {Object.keys(PIE_COLORS).map(position => {
+                                  const baseColor = PIE_COLORS[position];
+                                  const lightColor = lightenColor(baseColor);
+                                  return (
+                                    <pattern
+                                      key={patternId(position)}
+                                      id={patternId(position)}
+                                      patternUnits="userSpaceOnUse"
+                                      width="10"
+                                      height="10"
+                                      patternTransform="rotate(45)"
+                                    >
+                                      <rect width="10" height="10" fill={lightColor} />
+                                      <line
+                                        x1="0"
+                                        y1="0"
+                                        x2="10"
+                                        y2="10"
+                                        stroke="rgba(0,0,0,0.3)"
+                                        strokeWidth="1.5"
+                                      />
+                                    </pattern>
+                                  );
+                                })}
+                              </defs>
                               <Pie
                                 data={pieData}
                                 cx="50%"
@@ -1786,19 +1875,26 @@ function ManageTeamContractsTab({
                                 paddingAngle={2}
                                 dataKey="value"
                                 label={({ name, value, percent }) => 
-                                  `${name}: $${value}M (${(percent * 100).toFixed(0)}%)`
+                                  `${name.replace(' (Pending)', '')}: $${value}M (${(percent * 100).toFixed(0)}%)`
                                 }
                                 labelLine={true}
                               >
-                                {pieData.map((entry, index) => (
-                                  <Cell 
-                                    key={`cell-${index}`} 
-                                    fill={PIE_COLORS[entry.name] || PIE_COLORS.OTHER}
-                                  />
-                                ))}
+                                {pieData.map((entry, index) => {
+                                  const baseColor = PIE_COLORS[entry.position] || PIE_COLORS.OTHER;
+                                  const fill = entry.isUnapproved 
+                                    ? `url(#${patternId(entry.position)})`
+                                    : baseColor;
+                                  
+                                  return (
+                                    <Cell 
+                                      key={`cell-${index}`} 
+                                      fill={fill}
+                                    />
+                                  );
+                                })}
                               </Pie>
                               <RechartsTooltip 
-                                formatter={(value: number) => [`$${value.toFixed(1)}M`, 'Salary']}
+                                formatter={(value: number, name: string) => [`$${value.toFixed(1)}M`, name.includes('Pending') ? 'Pending Approval' : 'Approved']}
                               />
                               <Legend />
                             </PieChart>
@@ -1811,18 +1907,57 @@ function ManageTeamContractsTab({
                       )}
                       
                       <div className="mt-4 space-y-1">
-                        {pieData.map(({ name, value }) => (
-                          <div key={name} className="flex items-center justify-between text-sm">
-                            <div className="flex items-center gap-2">
-                              <div 
-                                className="w-3 h-3 rounded-full" 
-                                style={{ backgroundColor: PIE_COLORS[name] || PIE_COLORS.OTHER }}
-                              />
-                              <span>{name}</span>
+                        {Object.keys({...positionApproved, ...positionUnapproved}).map(position => {
+                          const approved = positionApproved[position] || 0;
+                          const unapproved = positionUnapproved[position] || 0;
+                          const total = approved + unapproved;
+                          const baseColor = PIE_COLORS[position] || PIE_COLORS.OTHER;
+                          const lightColor = lightenColor(baseColor);
+                          
+                          return (
+                            <div key={position}>
+                              <div className="flex items-center justify-between text-sm">
+                                <div className="flex items-center gap-2">
+                                  <div 
+                                    className="w-3 h-3 rounded-full" 
+                                    style={{ backgroundColor: baseColor }}
+                                  />
+                                  <span>{position}</span>
+                                </div>
+                                <span className="font-medium tabular-nums">${total.toFixed(1)}M</span>
+                              </div>
+                              {unapproved > 0 && (
+                                <div className="flex items-center justify-between text-xs text-muted-foreground ml-5 mt-0.5">
+                                  <div className="flex items-center gap-2">
+                                    <svg width="10" height="10" className="inline-block">
+                                      <defs>
+                                        <pattern
+                                          id={`legend-pattern-${position}-${year}`}
+                                          patternUnits="userSpaceOnUse"
+                                          width="4"
+                                          height="4"
+                                          patternTransform="rotate(45)"
+                                        >
+                                          <rect width="4" height="4" fill={lightColor} />
+                                          <line
+                                            x1="0"
+                                            y1="0"
+                                            x2="4"
+                                            y2="4"
+                                            stroke="rgba(0,0,0,0.3)"
+                                            strokeWidth="0.8"
+                                          />
+                                        </pattern>
+                                      </defs>
+                                      <rect width="10" height="10" fill={`url(#legend-pattern-${position}-${year})`} />
+                                    </svg>
+                                    <span>Pending: ${unapproved.toFixed(1)}M</span>
+                                  </div>
+                                </div>
+                              )}
                             </div>
-                            <span className="font-medium tabular-nums">${value.toFixed(1)}M</span>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     </Card>
                   );
