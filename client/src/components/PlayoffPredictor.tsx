@@ -53,11 +53,11 @@ interface PlayoffPredictorProps {
   userId?: string;
 }
 
-function ProbabilityBar({
-  value,
-  colorClass = "bg-primary"
-}: {
-  value: number;
+function ProbabilityBar({ 
+  value, 
+  colorClass = "bg-primary" 
+}: { 
+  value: number; 
   colorClass?: string;
 }) {
   return (
@@ -277,5 +277,388 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                           PF Rank
                         </div>
                       </TooltipTrigger>
- 
-...[TRUNCATED]
+                      <TooltipContent>
+                        <p>Points For standings rank</p>
+                        <p className="text-xs text-muted-foreground">Used as tiebreaker</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableHead>
+                  <TableHead>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <div className="flex items-center gap-1 cursor-help">
+                          <Zap className="w-3 h-3" />
+                          Proj PF
+                        </div>
+                      </TooltipTrigger>
+                      <TooltipContent>
+                        <p>Projected points for</p>
+                        <p className="text-xs text-muted-foreground">Based on roster projections</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {predictions.map((team, index) => {
+                  const isInPlayoffPosition = index < playoffTeams;
+                  const isUser = team.ownerId === userId;
+
+                  return (
+                    <TableRow 
+                      key={team.rosterId}
+                      className={isUser ? "bg-primary/5" : undefined}
+                      data-testid={`row-prediction-${team.rosterId}`}
+                    >
+                      <TableCell className="font-medium">
+                        <div 
+                          className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-semibold ${getStandingsBadgeClass(team.makePlayoffsPct)}`}
+                        >
+                          {index + 1}
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-2">
+                          <Avatar className="w-8 h-8">
+                            <AvatarFallback 
+                              className={`text-xs ${
+                                isUser 
+                                  ? "bg-primary text-primary-foreground" 
+                                  : "bg-muted"
+                              }`}
+                            >
+                              {team.initials}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className={`font-medium ${isUser ? "text-primary" : ""}`}>
+                            {team.name}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell className="text-center tabular-nums">
+                        {team.currentWins}-{team.currentLosses}
+                      </TableCell>
+                      <TableCell className="text-center tabular-nums text-muted-foreground">
+                        {(() => {
+                          const leaderWins = predictions[0]?.currentWins || 0;
+                          const gb = leaderWins - team.currentWins;
+                          return gb === 0 ? "—" : gb.toString();
+                        })()}
+                      </TableCell>
+                      <TableCell className="text-center tabular-nums font-medium">
+                        {team.projectedWins.toFixed(1)}
+                      </TableCell>
+                      <TableCell>
+                        <ProbabilityBar 
+                          value={team.oneSeedPct} 
+                          colorClass={getProbabilityColor(team.oneSeedPct)}
+                        />
+                      </TableCell>
+                      {hasDivisions && (
+                        <TableCell>
+                          <ProbabilityBar 
+                            value={team.divisionWinnerPct || 0}
+                            colorClass={getProbabilityColor(team.divisionWinnerPct || 0)}
+                          />
+                        </TableCell>
+                      )}
+                      <TableCell>
+                        <ProbabilityBar 
+                          value={team.makePlayoffsPct}
+                          colorClass={getProbabilityColor(team.makePlayoffsPct)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="flex items-center gap-1 cursor-help">
+                              <Badge variant="outline" className="tabular-nums">
+                                #{team.pointsRank}
+                              </Badge>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="font-medium">{team.pointsFor.toFixed(1)} PF</p>
+                            {team.pointsBehind !== null && (
+                              <p className="text-xs">
+                                <span className="text-chart-2">{team.pointsBehind.toFixed(1)}</span> pts behind #{team.pointsRank - 1}
+                              </p>
+                            )}
+                            {team.pointsAhead !== null && (
+                              <p className="text-xs">
+                                <span className="text-destructive">{team.pointsAhead.toFixed(1)}</span> pts ahead of #{team.pointsRank + 1}
+                              </p>
+                            )}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                      <TableCell>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="cursor-help">
+                              <span className="text-sm tabular-nums font-medium">
+                                {team.projectedPointsFor.toFixed(1)}
+                              </span>
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p className="font-medium">Projected End-of-Season PF</p>
+                            <p className="text-xs">
+                              Current: {team.pointsFor.toFixed(1)}
+                            </p>
+                            <p className="text-xs">
+                              +{(team.projectedPointsFor - team.pointsFor).toFixed(1)} projected
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              ~{team.projectedPointsPerWeek.toFixed(1)} pts/week
+                            </p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-border">
+            <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-primary" />
+                <span>Clinched (100%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-chart-2" />
+                <span>Good chance (70-99%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-chart-4" />
+                <span>Coin flip (50-69%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-chart-3" />
+                <span>Longshot (25-49%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-destructive" />
+                <span>Unlikely (1-24%)</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="w-3 h-3 rounded-full bg-muted-foreground/50" />
+                <span>Eliminated (0%)</span>
+              </div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Bubble Watch - Qualification Conditions */}
+      {(() => {
+        const bubbleTeams = predictions.filter(p => p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
+        const playoffCutoffTeam = predictions[playoffTeams - 1];
+        const firstOutTeam = predictions[playoffTeams];
+        
+        if (bubbleTeams.length === 0 || remainingWeeks === 0) return null;
+        
+        return (
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="font-heading text-lg flex items-center gap-2">
+                <AlertCircle className="w-5 h-5 text-chart-4" />
+                Bubble Watch
+              </CardTitle>
+              <CardDescription>
+                How teams on the bubble can qualify for playoffs
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {bubbleTeams.map((team, idx) => {
+                const standingIndex = predictions.findIndex(p => p.rosterId === team.rosterId);
+                const isInPlayoffPosition = standingIndex < playoffTeams;
+                const gamesBack = playoffCutoffTeam ? team.currentWins - playoffCutoffTeam.currentWins : 0;
+                const gamesAhead = firstOutTeam ? team.currentWins - firstOutTeam.currentWins : 0;
+                
+                const conditions: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
+                
+                const bubbleTeamsWithSameRecord = predictions.filter(
+                  p => p.rosterId !== team.rosterId && 
+                       p.currentWins === team.currentWins && 
+                       p.currentLosses === team.currentLosses &&
+                       p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100
+                );
+                
+                const pointsScenarios: { type: "positive" | "negative" | "neutral"; text: string }[] = [];
+                
+                // Calculate tiebreaker status among bubble teams only
+                const hasHighestPointsAmongBubble = bubbleTeamsWithSameRecord.length === 0 || 
+                  bubbleTeamsWithSameRecord.every(rival => team.pointsFor > rival.pointsFor);
+                const teamsAheadInPoints = bubbleTeamsWithSameRecord.filter(rival => rival.pointsFor > team.pointsFor);
+                
+                if (isInPlayoffPosition) {
+                  if (gamesAhead >= remainingWeeks) {
+                    conditions.push({ type: "positive", text: `Can clinch with ${remainingWeeks - gamesAhead} more win${remainingWeeks - gamesAhead !== 1 ? 's' : ''}` });
+                  } else if (gamesAhead > 0) {
+                    conditions.push({ type: "positive", text: `${gamesAhead} game${gamesAhead !== 1 ? 's' : ''} ahead of ${firstOutTeam?.name || 'next team'}` });
+                  } else if (gamesAhead === 0) {
+                    conditions.push({ type: "neutral", text: `Tied with ${firstOutTeam?.name || 'next team'} - tiebreakers matter` });
+                  }
+                  
+                  conditions.push({ type: "neutral", text: "Win remaining games to secure spot" });
+                  
+                  // Show tiebreaker status among bubble teams
+                  if (bubbleTeamsWithSameRecord.length > 0) {
+                    if (hasHighestPointsAmongBubble) {
+                      conditions.push({ type: "positive", text: `Highest points among bubble teams at ${team.currentWins}-${team.currentLosses} - wins tiebreaker` });
+                    } else {
+                      const closestRival = teamsAheadInPoints.reduce((closest, rival) => 
+                        (rival.pointsFor - team.pointsFor) < (closest.pointsFor - team.pointsFor) ? rival : closest
+                      );
+                      const pointsNeeded = closestRival.pointsFor - team.pointsFor;
+                      pointsScenarios.push({ 
+                        type: "negative", 
+                        text: `${pointsNeeded.toFixed(1)} pts behind ${closestRival.name} (same record) - outscore to win tiebreaker` 
+                      });
+                    }
+                  }
+                } else {
+                  const winsNeeded = Math.abs(gamesBack) + 1;
+                  if (winsNeeded <= remainingWeeks) {
+                    conditions.push({ type: "neutral", text: `Need to win ${winsNeeded}+ of remaining ${remainingWeeks} games` });
+                  } else {
+                    conditions.push({ type: "negative", text: `${Math.abs(gamesBack)} game${Math.abs(gamesBack) !== 1 ? 's' : ''} back - needs help` });
+                  }
+                  
+                  // Only show bubble teams that need to lose (exclude clinched teams)
+                  const bubbleTeamsToPass = predictions
+                    .slice(0, playoffTeams)
+                    .filter(p => p.rosterId !== team.rosterId && p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100);
+                  
+                  if (bubbleTeamsToPass.length > 0) {
+                    const teamNames = bubbleTeamsToPass.slice(0, 2).map(t => t.name);
+                    const moreCount = bubbleTeamsToPass.length - 2;
+                    conditions.push({ 
+                      type: "neutral", 
+                      text: `Need ${teamNames.join(' or ')}${moreCount > 0 ? ` (+${moreCount} more)` : ''} to lose` 
+                    });
+                  }
+                  
+                  // Show tiebreaker status among bubble teams with same record
+                  if (bubbleTeamsWithSameRecord.length > 0) {
+                    if (hasHighestPointsAmongBubble) {
+                      conditions.push({ type: "positive", text: `Highest points among bubble teams at ${team.currentWins}-${team.currentLosses} - wins tiebreaker` });
+                    } else {
+                      // Show how much they need to outscore the bubble teams ahead of them
+                      teamsAheadInPoints.forEach(rival => {
+                        const pointsNeeded = rival.pointsFor - team.pointsFor;
+                        const rivalStandingIdx = predictions.findIndex(p => p.rosterId === rival.rosterId);
+                        
+                        if (rivalStandingIdx < playoffTeams) {
+                          pointsScenarios.push({ 
+                            type: "neutral", 
+                            text: `Outscore ${rival.name} by ${pointsNeeded.toFixed(1)}+ pts to take their spot (same ${team.currentWins}-${team.currentLosses} record)` 
+                          });
+                        } else {
+                          pointsScenarios.push({ 
+                            type: "negative", 
+                            text: `${pointsNeeded.toFixed(1)} pts behind ${rival.name} (same record) - outscore to win tiebreaker` 
+                          });
+                        }
+                      });
+                    }
+                  }
+                }
+                
+                return (
+                  <div 
+                    key={team.rosterId}
+                    className={`p-4 rounded-lg border ${team.ownerId === userId ? 'bg-primary/5 border-primary/30' : 'bg-muted/30'}`}
+                    data-testid={`bubble-team-${team.rosterId}`}
+                  >
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center gap-3">
+                        <Avatar className="w-8 h-8">
+                          <AvatarFallback 
+                            className={`text-xs ${team.ownerId === userId ? "bg-primary text-primary-foreground" : "bg-muted"}`}
+                          >
+                            {team.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div>
+                          <p className={`font-medium ${team.ownerId === userId ? 'text-primary' : ''}`}>
+                            {team.name}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {team.currentWins}-{team.currentLosses} • #{standingIndex + 1} in standings
+                          </p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <Badge className={getStandingsBadgeClass(team.makePlayoffsPct)}>
+                          {team.makePlayoffsPct.toFixed(1)}%
+                        </Badge>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          {isInPlayoffPosition ? "In playoff position" : "Outside looking in"}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-3">
+                      <div className="space-y-2">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                          Path to Playoffs
+                        </p>
+                        <ul className="space-y-1.5">
+                          {conditions.map((condition, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm">
+                              {condition.type === "positive" ? (
+                                <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                              ) : condition.type === "negative" ? (
+                                <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                              ) : (
+                                <ArrowUp className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                              )}
+                              <span className={condition.type === "negative" ? "text-muted-foreground" : ""}>
+                                {condition.text}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      
+                      {pointsScenarios.length > 0 && (
+                        <div className="space-y-2 pt-2 border-t border-border/50">
+                          <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+                            <Hash className="w-3 h-3" />
+                            Points Tiebreaker Scenarios
+                          </p>
+                          <ul className="space-y-1.5">
+                            {pointsScenarios.map((scenario, i) => (
+                              <li key={i} className="flex items-start gap-2 text-sm">
+                                {scenario.type === "positive" ? (
+                                  <CheckCircle2 className="w-4 h-4 text-chart-2 mt-0.5 shrink-0" />
+                                ) : scenario.type === "negative" ? (
+                                  <XCircle className="w-4 h-4 text-destructive mt-0.5 shrink-0" />
+                                ) : (
+                                  <ArrowDown className="w-4 h-4 text-chart-4 mt-0.5 shrink-0" />
+                                )}
+                                <span className={scenario.type === "negative" ? "text-muted-foreground" : ""}>
+                                  {scenario.text}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </CardContent>
+          </Card>
+        );
+      })()}
+    </div>
+  );
+}
+>>>>>>> origin/replit2

@@ -21,7 +21,7 @@ export default function TradeCenterExample() {
   };
 
   const mockLeagueTeams = [
-    { 
+    {
       teamId: "team1",
       teamName: "TD Machines",
       teamInitials: "TD",
@@ -37,7 +37,7 @@ export default function TradeCenterExample() {
         { id: "td3", year: 2026, round: 2 },
       ],
     },
-    { 
+    {
       teamId: "team2",
       teamName: "Fantasy Legends",
       teamInitials: "FL",

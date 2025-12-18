@@ -244,7 +244,7 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                     </Badge>
                   </TableCell>
                   <TableCell className={`text-center font-medium ${getAgeColor(player.age)}`}>
-                    {player.age || "â€•"}
+                    {player.age || "—"}
                   </TableCell>
                   <TableCell className="text-center">
                     <Badge variant="outline" className="text-xs">

@@ -709,45 +709,12 @@ export async function registerRoutes(
             .filter(pid => !usedPlayerIds.has(pid))
             .map(pid => allPlayersInfo.get(pid)!);
         } else {
-          // CURRENT/PAST WEEK: Use actual roster as set by the manager
-          // Only replace inactive/bye players with eligible bench players
-          const usedBenchIds = new Set<string>();
-          finalStarters = [];
-          
-          const starterInfos = starterIds.map(pid => allPlayersInfo.get(pid)!);
-          
-          for (let i = 0; i < slotPositions.length; i++) {
-            const slotPos = slotPositions[i];
-            const starter = starterInfos[i];
-            
-            if (starter && canPlay(starter)) {
-              // Starter is active, keep them
-              finalStarters.push(starter);
-            } else {
-              // Starter is out/bye - find replacement from bench
-              let replacement: ReturnType<typeof buildPlayerInfo> | null = null;
-              
-              // Find best eligible bench player who can play
-              const eligibleBench = benchIds
-                .filter(pid => !usedBenchIds.has(pid))
-                .map(pid => allPlayersInfo.get(pid)!)
-                .filter(p => canPlay(p) && isEligibleForPosition(p, slotPos))
-                .sort((a, b) => b.projectedPoints - a.projectedPoints);
-              
-              if (eligibleBench.length > 0) {
-                replacement = eligibleBench[0];
-                usedBenchIds.add(replacement.id);
-              }
-              
-              // Use replacement or keep original starter (with 0 projection)
-              finalStarters.push(replacement || starter);
-            }
-          }
+          // CURRENT/PAST WEEK: Use exact roster as set by the manager in Sleeper
+          // Do NOT replace any players - show the actual lineup the user set
+          finalStarters = starterIds.map(pid => allPlayersInfo.get(pid)!);
           
           // Build bench from remaining players
-          bench = benchIds
-            .filter(pid => !usedBenchIds.has(pid))
-            .map(pid => allPlayersInfo.get(pid)!);
+          bench = benchIds.map(pid => allPlayersInfo.get(pid)!);
         }
 
         // Calculate projected team total from final starters
@@ -1668,6 +1635,21 @@ export async function registerRoutes(
       }
 
       // Convert to percentages and format response
+      // Apply Bayesian smoothing to prevent 0%/100% unless mathematically certain
+      // This accounts for upset potential and uncertainty in remaining games
+      const smoothProbability = (successes: number, trials: number): number => {
+        // Bayesian smoothing with prior: (successes + 1) / (trials + 2)
+        // This ensures even 0/10000 becomes 0.01% and 10000/10000 becomes 99.99%
+        const smoothed = (successes + 1) / (trials + 2);
+        const pct = smoothed * 100;
+        // Round to 1 decimal place
+        return Math.round(pct * 10) / 10;
+      };
+
+      // Only apply smoothing if regular season hasn't ended
+      // If remainingWeeks === 0, use raw percentages (teams are clinched/eliminated)
+      const applySmoothing = remainingWeeks > 0;
+
       // Sort by same criteria as dashboard standings: record → points scored → H2H
       const predictions = teams
         .map(team => {
@@ -1676,6 +1658,26 @@ export async function registerRoutes(
           const gaps = pointsGapMap.get(team.rosterId) || { behind: null, ahead: null };
           
           const projectedPointsFor = Math.round((r.avgFinalPoints / SIMULATIONS) * 10) / 10;
+          
+          // Calculate raw percentages
+          const rawMakePlayoffsPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
+          const rawOneSeedPct = Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10;
+          const rawDivisionWinnerPct = hasDivisions 
+            ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
+            : undefined;
+          
+          // Apply smoothing for probabilities when season is ongoing
+          let makePlayoffsPct = rawMakePlayoffsPct;
+          let oneSeedPct = rawOneSeedPct;
+          let divisionWinnerPct = rawDivisionWinnerPct;
+          
+          if (applySmoothing) {
+            makePlayoffsPct = smoothProbability(r.makePlayoffs, SIMULATIONS);
+            oneSeedPct = smoothProbability(r.oneSeed, SIMULATIONS);
+            if (hasDivisions) {
+              divisionWinnerPct = smoothProbability(r.divisionWinner, SIMULATIONS);
+            }
+          }
           
           return {
             rosterId: team.rosterId,
@@ -1691,11 +1693,9 @@ export async function registerRoutes(
             projectedPointsPerWeek: Math.round(team.projectedPointsPerWeek * 10) / 10,
             projectedPointsFor,
             division: hasDivisions ? team.division : undefined,
-            oneSeedPct: Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10,
-            divisionWinnerPct: hasDivisions 
-              ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
-              : undefined,
-            makePlayoffsPct: Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10,
+            oneSeedPct,
+            divisionWinnerPct,
+            makePlayoffsPct,
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
           };
         })
@@ -1721,6 +1721,64 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error calculating playoff predictions:", error);
       res.status(500).json({ error: "Failed to calculate playoff predictions" });
+    }
+  });
+
+  // Get playoff bracket
+  app.get("/api/sleeper/league/:leagueId/bracket", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const [bracket, rosters, users] = await Promise.all([
+        getWinnersBracket(leagueId),
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+      ]);
+
+      // Build team info map
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const teamMap = new Map<number, { name: string; initials: string; avatar: string | null }>();
+      rosters.forEach(roster => {
+        const user = userMap.get(roster.owner_id);
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        teamMap.set(roster.roster_id, {
+          name,
+          initials: getTeamInitials(name),
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+        });
+      });
+
+      // Transform bracket matchups with team names
+      const bracketWithNames = bracket.map(matchup => ({
+        round: matchup.r,
+        matchupId: matchup.m,
+        team1: matchup.t1 ? {
+          rosterId: matchup.t1,
+          ...teamMap.get(matchup.t1),
+        } : null,
+        team2: matchup.t2 ? {
+          rosterId: matchup.t2,
+          ...teamMap.get(matchup.t2),
+        } : null,
+        winner: matchup.w,
+        loser: matchup.l,
+        team1From: matchup.t1_from,
+        team2From: matchup.t2_from,
+        placement: matchup.p,
+      }));
+
+      // Determine number of rounds
+      const maxRound = Math.max(...bracket.map(m => m.r), 0);
+
+      res.json({
+        matchups: bracketWithNames,
+        rounds: maxRound,
+        teams: Object.fromEntries(teamMap),
+      });
+    } catch (error) {
+      console.error("Error fetching playoff bracket:", error);
+      res.status(500).json({ error: "Failed to fetch playoff bracket" });
     }
   });
 
@@ -2940,6 +2998,7 @@ export async function registerRoutes(
           salary2026: contract.salary2026 || 0,
           salary2027: contract.salary2027 || 0,
           salary2028: contract.salary2028 || 0,
+          salary2029: contract.salary2029 || 0,
           fifthYearOption: contract.fifthYearOption || null,
           isOnIr: contract.isOnIr || 0,
           franchiseTagUsed: contract.franchiseTagUsed,
@@ -3001,13 +3060,26 @@ export async function registerRoutes(
   });
 
   // Apply an extension to a player
+  // Extension types: 1 = 1-year at 1.2x salary, 2 = 2-year at 1.5x salary (both rounded up)
   app.post("/api/league/:leagueId/extensions", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { rosterId, season, playerId, playerName, extensionSalary, extensionYear } = req.body;
+      const { rosterId, playerId, playerName, currentSalary, extensionType, extensionYear } = req.body;
+      let { season } = req.body;
       
-      if (!rosterId || !season || !playerId || !playerName || !extensionSalary || !extensionYear) {
+      if (!rosterId || !season || !playerId || !playerName || !currentSalary || !extensionType || !extensionYear) {
         return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Validate and normalize season to a number
+      season = parseInt(season);
+      if (isNaN(season) || season < 2020 || season > 2100) {
+        return res.status(400).json({ error: "Invalid season year" });
+      }
+
+      // Validate extension type (1 = 1-year, 2 = 2-year)
+      if (extensionType !== 1 && extensionType !== 2) {
+        return res.status(400).json({ error: "Extension type must be 1 (1-year) or 2 (2-year)" });
       }
 
       // Check if team already used their extension this season
@@ -3024,10 +3096,31 @@ export async function registerRoutes(
         });
       }
 
-      // Validate extension year is within supported range (2025-2028)
-      if (extensionYear < 2025 || extensionYear > 2028) {
+      // Calculate extension salaries based on type
+      // currentSalary is already in tenths (e.g., 230 = $23.0M)
+      // For 1-year: 1.2x rounded up to nearest whole number
+      // For 2-year: 1.5x rounded up to nearest whole number
+      const currentSalaryInMillions = currentSalary / 10;
+      let extensionSalary1: number;
+      let extensionSalary2: number | null = null;
+      
+      if (extensionType === 1) {
+        // 1-year extension at 1.2x, rounded up to nearest whole number (then multiply by 10 for storage)
+        extensionSalary1 = Math.ceil(currentSalaryInMillions * 1.2) * 10;
+      } else {
+        // 2-year extension at 1.5x, rounded up to nearest whole number (then multiply by 10 for storage)
+        const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.5) * 10;
+        extensionSalary1 = salaryPerYear;
+        extensionSalary2 = salaryPerYear;
+      }
+
+      // Validate extension year(s) are within supported range (current season to season+4)
+      // Contract years are: season, season+1, season+2, season+3, with year 5 (season+4) for extensions
+      const maxContractYear = season + 4; // Option year / max extension year
+      const maxExtensionYear = extensionType === 1 ? extensionYear : extensionYear + 1;
+      if (extensionYear < season || maxExtensionYear > maxContractYear) {
         return res.status(400).json({ 
-          error: "Extension year must be between 2025 and 2028" 
+          error: `Extension would exceed maximum contract year (${maxContractYear})` 
         });
       }
 
@@ -3039,16 +3132,35 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Player contract not found" });
       }
 
-      // Check if originally signed to multi-year deal
-      if ((playerContract.originalContractYears || 1) < 2) {
-        return res.status(400).json({ 
-          error: "Player was not originally signed to a multi-year deal" 
-        });
-      }
-
       // Check if extension already applied
       if (playerContract.extensionApplied === 1) {
         return res.status(400).json({ error: "Extension already applied to this player" });
+      }
+
+      // Validate extension target years are currently empty (no salary)
+      const getSalaryForYear = (year: number): number => {
+        switch (year) {
+          case 2025: return playerContract.salary2025 || 0;
+          case 2026: return playerContract.salary2026 || 0;
+          case 2027: return playerContract.salary2027 || 0;
+          case 2028: return playerContract.salary2028 || 0;
+          case 2029: return (playerContract as any).salary2029 || 0;
+          default: return 0;
+        }
+      };
+
+      // Check that extension year(s) don't have existing salary
+      if (getSalaryForYear(extensionYear) > 0) {
+        console.error(`Extension blocked: Player ${playerId} already has salary in ${extensionYear}`);
+        return res.status(400).json({ 
+          error: `Cannot extend - player already has salary for ${extensionYear}` 
+        });
+      }
+      if (extensionType === 2 && getSalaryForYear(extensionYear + 1) > 0) {
+        console.error(`Extension blocked: Player ${playerId} already has salary in ${extensionYear + 1}`);
+        return res.status(400).json({ 
+          error: `Cannot apply 2-year extension - player already has salary for ${extensionYear + 1}` 
+        });
       }
 
       // Create the extension record
@@ -3058,11 +3170,13 @@ export async function registerRoutes(
         season,
         playerId,
         playerName,
-        extensionSalary,
+        extensionSalary: extensionSalary1,
         extensionYear,
+        extensionType,
+        extensionSalary2,
       });
 
-      // Update the player's contract with extension info (reuse playerContract from validation above)
+      // Update the player's contract with extension info
       const salaryUpdates: any = {
         leagueId,
         rosterId,
@@ -3071,20 +3185,30 @@ export async function registerRoutes(
         salary2026: playerContract.salary2026,
         salary2027: playerContract.salary2027,
         salary2028: playerContract.salary2028,
+        salary2029: (playerContract as any).salary2029 || 0,
         fifthYearOption: playerContract.fifthYearOption,
         franchiseTagUsed: playerContract.franchiseTagUsed,
         franchiseTagYear: playerContract.franchiseTagYear,
         originalContractYears: playerContract.originalContractYears,
         extensionApplied: 1,
         extensionYear,
-        extensionSalary,
+        extensionSalary: extensionSalary1,
+        extensionType,
       };
       
-      // Set the extension year salary
-      if (extensionYear === 2025) salaryUpdates.salary2025 = extensionSalary;
-      else if (extensionYear === 2026) salaryUpdates.salary2026 = extensionSalary;
-      else if (extensionYear === 2027) salaryUpdates.salary2027 = extensionSalary;
-      else if (extensionYear === 2028) salaryUpdates.salary2028 = extensionSalary;
+      // Set the extension year salary(s)
+      const setYearSalary = (year: number, salary: number) => {
+        if (year === 2025) salaryUpdates.salary2025 = salary;
+        else if (year === 2026) salaryUpdates.salary2026 = salary;
+        else if (year === 2027) salaryUpdates.salary2027 = salary;
+        else if (year === 2028) salaryUpdates.salary2028 = salary;
+        else if (year === 2029) salaryUpdates.salary2029 = salary;
+      };
+      
+      setYearSalary(extensionYear, extensionSalary1);
+      if (extensionType === 2 && extensionSalary2 !== null) {
+        setYearSalary(extensionYear + 1, extensionSalary2);
+      }
       
       await storage.upsertPlayerContract(salaryUpdates);
 
@@ -3303,6 +3427,7 @@ export async function registerRoutes(
           salary2026: draft.salary2026 || 0,
           salary2027: draft.salary2027 || 0,
           salary2028: draft.salary2028 || 0,
+          salary2029: draft.salary2029 || 0,
           franchiseTagApplied: draft.franchiseTagApplied || 0,
         });
         results.push(result);
@@ -3408,12 +3533,14 @@ export async function registerRoutes(
           const salary2026 = contract.salary2026 || 0;
           const salary2027 = contract.salary2027 || 0;
           const salary2028 = contract.salary2028 || 0;
+          const salary2029 = contract.salary2029 || 0;
           
           let originalContractYears = 0;
           if (salary2025 > 0) originalContractYears++;
           if (salary2026 > 0) originalContractYears++;
           if (salary2027 > 0) originalContractYears++;
           if (salary2028 > 0) originalContractYears++;
+          if (salary2029 > 0) originalContractYears++;
           
           await storage.upsertPlayerContract({
             leagueId: request.leagueId,
@@ -3423,6 +3550,7 @@ export async function registerRoutes(
             salary2026,
             salary2027,
             salary2028,
+            salary2029,
             fifthYearOption: contract.fifthYearOption || null,
             franchiseTagUsed: contract.franchiseTagApplied ? 1 : 0,
             franchiseTagYear: contract.franchiseTagApplied ? 2025 : null,

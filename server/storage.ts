@@ -548,6 +548,7 @@ export class DatabaseStorage implements IStorage {
           salary2026: data.salary2026,
           salary2027: data.salary2027,
           salary2028: data.salary2028,
+          salary2029: (data as any).salary2029 ?? existing.salary2029,
           fifthYearOption: data.fifthYearOption,
           isOnIr: data.isOnIr ?? existing.isOnIr,
           franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
@@ -556,6 +557,7 @@ export class DatabaseStorage implements IStorage {
           extensionApplied: data.extensionApplied ?? existing.extensionApplied,
           extensionYear: data.extensionYear ?? existing.extensionYear,
           extensionSalary: data.extensionSalary ?? existing.extensionSalary,
+          extensionType: (data as any).extensionType ?? existing.extensionType,
           updatedAt,
         })
         .where(eq(playerContractsTable.id, existing.id))
@@ -574,6 +576,7 @@ export class DatabaseStorage implements IStorage {
       salary2026: data.salary2026,
       salary2027: data.salary2027,
       salary2028: data.salary2028,
+      salary2029: (data as any).salary2029 ?? 0,
       fifthYearOption: data.fifthYearOption,
       isOnIr: data.isOnIr ?? 0,
       franchiseTagUsed: data.franchiseTagUsed ?? 0,
@@ -582,6 +585,7 @@ export class DatabaseStorage implements IStorage {
       extensionApplied: data.extensionApplied ?? 0,
       extensionYear: data.extensionYear ?? null,
       extensionSalary: data.extensionSalary ?? null,
+      extensionType: (data as any).extensionType ?? null,
       updatedAt,
     }).returning();
 
@@ -743,6 +747,7 @@ export class DatabaseStorage implements IStorage {
           salary2026: data.salary2026,
           salary2027: data.salary2027,
           salary2028: data.salary2028,
+          salary2029: (data as any).salary2029 ?? existing.salary2029,
           franchiseTagApplied: data.franchiseTagApplied,
           updatedAt: now,
         })
@@ -763,6 +768,7 @@ export class DatabaseStorage implements IStorage {
       salary2026: data.salary2026,
       salary2027: data.salary2027,
       salary2028: data.salary2028,
+      salary2029: (data as any).salary2029 ?? 0,
       franchiseTagApplied: data.franchiseTagApplied,
       updatedAt: now,
     }).returning();

@@ -5,7 +5,7 @@ import StandingsTable from "@/components/StandingsTable";
 import PlayoffPredictor from "@/components/PlayoffPredictor";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
@@ -16,11 +16,29 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { ListOrdered, Target } from "lucide-react";
+import { ListOrdered, Target, Trophy, Crown } from "lucide-react";
+
+interface BracketMatchup {
+  round: number;
+  matchupId: number;
+  team1: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
+  team2: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
+  winner: number | null;
+  loser: number | null;
+  team1From?: { w?: number; l?: number };
+  team2From?: { w?: number; l?: number };
+  placement?: number;
+}
+
+interface BracketData {
+  matchups: BracketMatchup[];
+  rounds: number;
+  teams: Record<number, { name: string; initials: string; avatar: string | null }>;
+}
 
 export default function Standings() {
   const { user, league } = useSleeper();
-  const [activeTab, setActiveTab] = useState<"standings" | "predictions">("standings");
+  const [activeTab, setActiveTab] = useState<"standings" | "predictions" | "bracket">("standings");
 
   const { data: standings, isLoading: standingsLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "standings", user?.userId],
@@ -40,6 +58,18 @@ export default function Standings() {
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
       if (!res.ok) throw new Error("Failed to fetch playoff predictions");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  // Fetch playoff bracket
+  const { data: bracketData, isLoading: bracketLoading } = useQuery<BracketData>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "bracket"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/bracket`);
+      if (!res.ok) throw new Error("Failed to fetch playoff bracket");
       return res.json();
     },
     enabled: !!league?.leagueId,
@@ -100,7 +130,7 @@ export default function Standings() {
         </p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "standings" | "predictions")}>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "standings" | "predictions" | "bracket")}>
         <TabsList className="mb-4">
           <TabsTrigger value="standings" className="gap-2" data-testid="tab-standings">
             <ListOrdered className="w-4 h-4" />
@@ -109,6 +139,10 @@ export default function Standings() {
           <TabsTrigger value="predictions" className="gap-2" data-testid="tab-predictions">
             <Target className="w-4 h-4" />
             Playoff Predictor
+          </TabsTrigger>
+          <TabsTrigger value="bracket" className="gap-2" data-testid="tab-bracket">
+            <Trophy className="w-4 h-4" />
+            Playoff Bracket
           </TabsTrigger>
         </TabsList>
 
@@ -265,7 +299,216 @@ export default function Standings() {
         <TabsContent value="predictions" className="mt-0">
           <PlayoffPredictor userId={user.userId} />
         </TabsContent>
+
+        <TabsContent value="bracket" className="mt-0">
+          {bracketLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <div className="text-center space-y-4">
+                <Skeleton className="h-8 w-48 mx-auto" />
+                <Skeleton className="h-64 w-full max-w-4xl mx-auto" />
+              </div>
+            </div>
+          ) : !bracketData || bracketData.matchups.length === 0 ? (
+            <Card>
+              <CardContent className="py-12">
+                <div className="text-center">
+                  <Trophy className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                  <h3 className="font-heading text-lg font-semibold mb-2">No Playoff Bracket Yet</h3>
+                  <p className="text-muted-foreground">
+                    The playoff bracket will appear once the regular season ends and playoffs begin.
+                  </p>
+                </div>
+              </CardContent>
+            </Card>
+          ) : (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="font-heading flex items-center gap-2">
+                    <Trophy className="w-5 h-5 text-primary" />
+                    Playoff Bracket
+                  </CardTitle>
+                  <p className="text-sm text-muted-foreground">Reseeding tournament format</p>
+                </CardHeader>
+                <CardContent>
+                  <div className="overflow-x-auto pb-4">
+                    <div className="flex items-stretch min-w-max">
+                      {Array.from({ length: bracketData.rounds }, (_, i) => i + 1).map((round) => {
+                        const roundMatchups = bracketData.matchups
+                          .filter((m) => m.round === round)
+                          .sort((a, b) => a.matchupId - b.matchupId);
+                        
+                        const roundName = round === bracketData.rounds 
+                          ? "Championship" 
+                          : round === bracketData.rounds - 1 
+                            ? "Semifinals" 
+                            : `Round ${round}`;
+                        
+                        const isLastRound = round === bracketData.rounds;
+                        const matchupHeight = 88;
+                        const matchupGap = round === 1 ? 16 : matchupHeight * Math.pow(2, round - 1) - matchupHeight + 16 * Math.pow(2, round - 1);
+
+                        return (
+                          <div key={round} className="flex items-stretch">
+                            <div className="flex flex-col" style={{ minWidth: 200 }}>
+                              <div className="text-center mb-4 px-2">
+                                <span className="font-heading text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                                  {roundName}
+                                </span>
+                              </div>
+                              <div 
+                                className="flex flex-col justify-around flex-1"
+                                style={{ gap: matchupGap }}
+                              >
+                                {roundMatchups.map((matchup) => {
+                                  const isChampionship = matchup.placement === 1;
+                                  const champion = matchup.winner ? bracketData.teams[matchup.winner] : null;
+                                  
+                                  return (
+                                    <div
+                                      key={matchup.matchupId}
+                                      className="relative"
+                                      data-testid={`bracket-matchup-${round}-${matchup.matchupId}`}
+                                    >
+                                      {isChampionship && champion && (
+                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary">
+                                          <Crown className="w-4 h-4" />
+                                          <span className="font-heading font-bold text-xs whitespace-nowrap">Champion</span>
+                                        </div>
+                                      )}
+                                      <div className={`flex flex-col border rounded-lg overflow-hidden ${isChampionship ? "border-primary border-2 ring-2 ring-primary/20" : "border-border"}`}>
+                                        <BracketTeamRow
+                                          team={matchup.team1}
+                                          seed={matchup.team1?.rosterId}
+                                          isWinner={matchup.winner === matchup.team1?.rosterId}
+                                          isLoser={matchup.loser === matchup.team1?.rosterId}
+                                          fromMatchup={matchup.team1From}
+                                          isTop
+                                        />
+                                        <div className="border-t border-border" />
+                                        <BracketTeamRow
+                                          team={matchup.team2}
+                                          seed={matchup.team2?.rosterId}
+                                          isWinner={matchup.winner === matchup.team2?.rosterId}
+                                          isLoser={matchup.loser === matchup.team2?.rosterId}
+                                          fromMatchup={matchup.team2From}
+                                        />
+                                      </div>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            {!isLastRound && (
+                              <div className="flex flex-col justify-around flex-1 py-8" style={{ width: 32 }}>
+                                {roundMatchups.map((_, idx) => (
+                                  idx % 2 === 0 && (
+                                    <div key={idx} className="flex flex-col items-center" style={{ height: matchupHeight * 2 + matchupGap }}>
+                                      <div className="w-4 border-t-2 border-r-2 border-border rounded-tr-lg flex-1" />
+                                      <div className="w-4 border-b-2 border-r-2 border-border rounded-br-lg flex-1" />
+                                    </div>
+                                  )
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="font-heading text-lg">Legend</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-6">
+                    <div className="flex items-center gap-2 text-sm">
+                      <div className="w-4 h-4 rounded bg-primary" />
+                      <span className="text-muted-foreground">Advanced</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <div className="w-4 h-4 rounded bg-destructive/20 border border-destructive/30" />
+                      <span className="text-muted-foreground">Eliminated</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <div className="w-4 h-4 rounded border border-border bg-card" />
+                      <span className="text-muted-foreground">Pending</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <Crown className="w-4 h-4 text-primary" />
+                      <span className="text-muted-foreground">Champion</span>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </TabsContent>
       </Tabs>
+    </div>
+  );
+}
+
+function BracketTeamRow({
+  team,
+  seed,
+  isWinner,
+  isLoser,
+  fromMatchup,
+  isTop,
+}: {
+  team: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
+  seed?: number;
+  isWinner: boolean;
+  isLoser: boolean;
+  fromMatchup?: { w?: number; l?: number };
+  isTop?: boolean;
+}) {
+  if (!team) {
+    const fromText = fromMatchup?.w 
+      ? `W${fromMatchup.w}` 
+      : fromMatchup?.l 
+        ? `L${fromMatchup.l}` 
+        : "TBD";
+    
+    return (
+      <div className={`flex items-center gap-2 px-3 py-2 bg-muted/30 h-11 ${isTop ? "" : ""}`}>
+        <div className="w-6 h-6 rounded-full bg-muted/50 flex items-center justify-center shrink-0">
+          <span className="text-[10px] text-muted-foreground">?</span>
+        </div>
+        <span className="text-xs text-muted-foreground italic truncate">{fromText}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`flex items-center gap-2 px-3 py-2 h-11 transition-colors ${
+        isWinner
+          ? "bg-primary/15"
+          : isLoser
+            ? "bg-destructive/10 opacity-50"
+            : "bg-card"
+      }`}
+      data-testid={`bracket-team-${team.rosterId}`}
+    >
+      <Avatar className="w-6 h-6 shrink-0">
+        {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+        <AvatarFallback className={`text-[10px] ${isWinner ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+          {team.initials}
+        </AvatarFallback>
+      </Avatar>
+      <span className={`text-xs font-medium truncate flex-1 ${isWinner ? "text-primary font-semibold" : isLoser ? "text-muted-foreground line-through" : ""}`}>
+        {team.name}
+      </span>
+      {isWinner && (
+        <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
+          <span className="text-[10px] font-bold text-primary-foreground">W</span>
+        </div>
+      )}
     </div>
   );
 }

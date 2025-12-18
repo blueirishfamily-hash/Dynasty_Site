@@ -69,6 +69,7 @@ export const playerContractsTable = pgTable("player_contracts", {
   salary2026: integer("salary_2026").notNull().default(0),
   salary2027: integer("salary_2027").notNull().default(0),
   salary2028: integer("salary_2028").notNull().default(0),
+  salary2029: integer("salary_2029").notNull().default(0),
   fifthYearOption: varchar("fifth_year_option", { length: 8 }),
   isOnIr: integer("is_on_ir").notNull().default(0),
   franchiseTagUsed: integer("franchise_tag_used").notNull().default(0),
@@ -77,6 +78,7 @@ export const playerContractsTable = pgTable("player_contracts", {
   extensionApplied: integer("extension_applied").notNull().default(0),
   extensionYear: integer("extension_year"),
   extensionSalary: integer("extension_salary"),
+  extensionType: integer("extension_type"), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 
@@ -90,6 +92,8 @@ export const teamExtensionsTable = pgTable("team_extensions", {
   playerName: varchar("player_name", { length: 128 }).notNull(),
   extensionSalary: integer("extension_salary").notNull(),
   extensionYear: integer("extension_year").notNull(),
+  extensionType: integer("extension_type").notNull().default(1), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
+  extensionSalary2: integer("extension_salary_2"), // Second year salary for 2-year extensions
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -122,6 +126,7 @@ export const deadCapEntriesTable = pgTable("dead_cap_entries", {
   deadCap2026: integer("dead_cap_2026").notNull().default(0),
   deadCap2027: integer("dead_cap_2027").notNull().default(0),
   deadCap2028: integer("dead_cap_2028").notNull().default(0),
+  deadCap2029: integer("dead_cap_2029").notNull().default(0),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -137,6 +142,7 @@ export const savedContractDraftsTable = pgTable("saved_contract_drafts", {
   salary2026: integer("salary_2026").notNull().default(0),
   salary2027: integer("salary_2027").notNull().default(0),
   salary2028: integer("salary_2028").notNull().default(0),
+  salary2029: integer("salary_2029").notNull().default(0),
   franchiseTagApplied: integer("franchise_tag_applied").notNull().default(0),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
