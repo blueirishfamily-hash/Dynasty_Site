@@ -19,7 +19,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { ChevronUp, ChevronDown, Search, Info } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronRight, Search, Info } from "lucide-react";
 
 type Position = "QB" | "RB" | "WR" | "TE" | "K" | "DEF";
 type RosterStatus = "starter" | "bench" | "taxi" | "ir";
@@ -264,5 +264,33 @@ export default function PlayerTable({ players, onPlayerClick }: PlayerTableProps
                         player.positionRank <= 12
                           ? "bg-primary/20 text-primary"
                           : player.positionRank <= 24
-                          ? "b
-...[TRUNCATED]
+                          ? "bg-chart-2/20 text-chart-2"
+                          : ""
+                      }`}
+                    >
+                      {player.position}{player.positionRank}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="w-10">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onPlayerClick?.(player);
+                      }}
+                      data-testid={`button-player-detail-${player.id}`}
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

@@ -284,5 +284,36 @@ export default function TradeCenter({
                   <span>
                     Giving: {selectedUserPlayers.size + selectedUserPicks.size} assets
                   </span>
-       
-...[TRUNCATED]
+                  <span>|</span>
+                  <span>
+                    Receiving: {selectedTheirPlayers.size + selectedTheirPicks.size} assets
+                  </span>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={clearAll}
+                  data-testid="button-reset-trade"
+                >
+                  <X className="w-4 h-4 mr-1" />
+                  Reset
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={handlePropose}
+                  disabled={!selectedTeam}
+                  data-testid="button-propose-trade"
+                >
+                  <Check className="w-4 h-4 mr-1" />
+                  Propose Trade
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

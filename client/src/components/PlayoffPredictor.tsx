@@ -661,4 +661,3 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
     </div>
   );
 }
->>>>>>> origin/replit2

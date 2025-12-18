@@ -264,5 +264,24 @@ export function PlayerDetailModal({ playerId, playerName, week, onClose }: Playe
                     {data.news.map((item, idx) => (
                       <div
                         key={idx}
-                        className="flex
-...[TRUNCATED]
+                        className="flex flex-col gap-1 p-2 bg-muted/30 rounded-md text-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Badge variant="outline" className="text-xs">{item.type}</Badge>
+                          {item.date && <span className="text-muted-foreground">{item.date}</span>}
+                        </div>
+                        <span className="text-muted-foreground line-clamp-2">{item.text}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No recent news available</p>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        ) : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
