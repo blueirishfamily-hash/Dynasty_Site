@@ -133,148 +133,52 @@ export class DatabaseStorage implements IStorage {
     this.sessions.delete(id);
   }
 
-  /**
-   * Get all rule suggestions for a league from rule_suggestions table.
-   * Follows Database Connection Pattern: uses db from ./db, table from @shared/schema.
-   */
   async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
-    try {
-      console.log("[Storage] Querying rule_suggestions table for leagueId:", leagueId);
-      if (!leagueId) {
-        throw new Error("leagueId is required to query rule_suggestions table");
-      }
-      
-      // Database Connection Pattern: Use db from ./db, table from @shared/schema, Drizzle query builders
-      const rows = await db
-        .select()
-        .from(ruleSuggestionsTable)
-        .where(eq(ruleSuggestionsTable.leagueId, leagueId))
-        .orderBy(desc(ruleSuggestionsTable.createdAt));
+    const rows = await db
+      .select()
+      .from(ruleSuggestionsTable)
+      .where(eq(ruleSuggestionsTable.leagueId, leagueId))
+      .orderBy(desc(ruleSuggestionsTable.createdAt));
 
-      console.log("[Storage] Successfully queried rule_suggestions table. Found", rows.length, "rows for leagueId:", leagueId);
-      
-      const suggestions = rows.map(row => {
-        // Validate each row has required fields
-        if (!row.id || !row.title || !row.description) {
-          console.warn("[Storage] Invalid row in rule_suggestions table:", row);
-          return null;
-        }
-        return {
-          id: row.id,
-          leagueId: row.leagueId,
-          authorId: row.authorId,
-          authorName: row.authorName,
-          rosterId: row.rosterId,
-          title: row.title,
-          description: row.description,
-          status: row.status as "pending" | "approved" | "rejected",
-          upvotes: [],
-          downvotes: [],
-          createdAt: row.createdAt,
-        };
-      }).filter((s): s is RuleSuggestion => s !== null);
-      
-      console.log("[Storage] Returning", suggestions.length, "valid rule suggestions from rule_suggestions table");
-      return suggestions;
-    } catch (error: any) {
-      console.error("[Storage] Error querying rule_suggestions table:", error);
-      
-      // Check for PostgreSQL error codes
-      const errorCode = error.code;
-      const errorMessage = error.message || "";
-      
-      // PostgreSQL error code 42P01 = relation does not exist
-      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation")) {
-        throw new Error("rule_suggestions table does not exist in database. Please run 'npm run db:push' to create the required tables.");
-      }
-      
-      // PostgreSQL error code 08003 = connection does not exist, 08006 = connection failure
-      if (errorCode === "08003" || errorCode === "08006" || 
-          errorMessage.includes("connection") || errorMessage.includes("timeout") ||
-          errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOTFOUND")) {
-        throw new Error("Database connection error. Please check DATABASE_URL environment variable.");
-      }
-      
-      // PostgreSQL error code 23505 = unique violation (shouldn't happen here, but good to catch)
-      if (errorCode === "23505") {
-        throw new Error("Duplicate entry detected. This rule suggestion may already exist.");
-      }
-      
-      // Re-throw with more context
-      throw new Error(`Database error: ${errorMessage || "Unknown error occurred"}`);
-    }
+    return rows.map(row => ({
+      id: row.id,
+      leagueId: row.leagueId,
+      authorId: row.authorId,
+      authorName: row.authorName,
+      rosterId: row.rosterId,
+      title: row.title,
+      description: row.description,
+      status: row.status as "pending" | "approved" | "rejected",
+      upvotes: [],
+      downvotes: [],
+      createdAt: row.createdAt,
+    }));
   }
 
-  /**
-   * Create a new rule suggestion in rule_suggestions table.
-   * Follows Database Connection Pattern: uses db from ./db, table from @shared/schema.
-   */
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
-    try {
-      console.log("[Storage] Inserting into rule_suggestions table:", {
-        leagueId: data.leagueId,
-        authorId: data.authorId,
-        title: data.title,
-      });
-      
-      // Database Connection Pattern: Generate ID and timestamp, use db.insert with table from @shared/schema
-      const id = randomUUID();
-      const createdAt = Date.now();
+    const id = randomUUID();
+    const createdAt = Date.now();
 
-      await db.insert(ruleSuggestionsTable).values({
-        id,
-        leagueId: data.leagueId,
-        authorId: data.authorId,
-        authorName: data.authorName,
-        rosterId: data.rosterId,
-        title: data.title,
-        description: data.description,
-        status: "pending",
-        createdAt,
-      });
+    await db.insert(ruleSuggestionsTable).values({
+      id,
+      leagueId: data.leagueId,
+      authorId: data.authorId,
+      authorName: data.authorName,
+      rosterId: data.rosterId,
+      title: data.title,
+      description: data.description,
+      status: "pending",
+      createdAt,
+    });
 
-      console.log("[Storage] Successfully inserted into rule_suggestions table. ID:", id);
-
-      return {
-        id,
-        ...data,
-        status: "pending",
-        upvotes: [],
-        downvotes: [],
-        createdAt,
-      };
-    } catch (error: any) {
-      console.error("[Storage] Error inserting into rule_suggestions table:", error);
-      
-      // Check for PostgreSQL error codes
-      const errorCode = error.code;
-      const errorMessage = error.message || "";
-      
-      // PostgreSQL error code 42P01 = relation does not exist
-      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation")) {
-        throw new Error("rule_suggestions table does not exist in database. Please run 'npm run db:push' to create the required tables.");
-      }
-      
-      // PostgreSQL error code 08003 = connection does not exist, 08006 = connection failure
-      if (errorCode === "08003" || errorCode === "08006" || 
-          errorMessage.includes("connection") || errorMessage.includes("timeout") ||
-          errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOTFOUND")) {
-        throw new Error("Database connection error. Please check DATABASE_URL environment variable.");
-      }
-      
-      // PostgreSQL error code 23505 = unique violation
-      if (errorCode === "23505") {
-        throw new Error("A rule suggestion with this ID already exists.");
-      }
-      
-      // PostgreSQL error code 23502 = not null violation
-      if (errorCode === "23502") {
-        throw new Error("Missing required field. Please ensure all fields are provided.");
-      }
-      
-      // Re-throw with more context
-      throw new Error(`Database error: ${errorMessage || "Unknown error occurred"}`);
-    }
+    return {
+      id,
+      ...data,
+      status: "pending",
+      upvotes: [],
+      downvotes: [],
+      createdAt,
+    };
   }
 
   async getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined> {

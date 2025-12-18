@@ -112,76 +112,14 @@ export default function RuleChanges() {
     COMMISSIONER_USER_IDS.includes(user.userId)
   ));
 
-  // Fetch rule suggestions from rule_suggestions table
-  // Database Connection Pattern: Frontend uses TanStack Query to fetch from API routes
-  // API routes use storage methods, which use db from ./db and tables from @shared/schema
-  const { 
-    data: ruleSuggestions, 
-    isLoading: rulesLoading, 
-    isError: rulesError,
-    error: rulesErrorDetails,
-    refetch: refetchRules 
-  } = useQuery<RuleSuggestionWithVoting[]>({
+  const { data: ruleSuggestions, isLoading: rulesLoading, isError: rulesError, error: rulesErrorDetails, refetch: refetchRules } = useQuery<RuleSuggestionWithVoting[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
-      if (!league?.leagueId) {
-        throw new Error("League ID is required to fetch rule suggestions");
-      }
-      
-      console.log("[RuleChanges] Fetching rule suggestions from rule_suggestions table for league:", league.leagueId);
-      // Database Connection Pattern: Fetch from API route (which uses storage methods)
-      const res = await fetch(`/api/league/${league.leagueId}/rule-suggestions`);
-      
-      if (!res.ok) {
-        const errorText = await res.text();
-        let errorData;
-        try {
-          errorData = JSON.parse(errorText);
-        } catch {
-          errorData = { error: errorText };
-        }
-        console.error("[RuleChanges] API error response from rule_suggestions table:", res.status, errorData);
-        throw new Error(errorData.error || errorData.details || `Failed to fetch rule suggestions: ${res.status}`);
-      }
-      
-      const data = await res.json();
-      // Validate that the response is an array
-      if (!Array.isArray(data)) {
-        console.error("[RuleChanges] API response from rule_suggestions table is not an array:", typeof data, data);
-        throw new Error("Invalid response format: expected array from rule_suggestions table");
-      }
-      
-      // Validate each rule has required fields
-      const validRules = data.filter((rule: any) => {
-        if (!rule || !rule.id || !rule.title || !rule.description) {
-          console.warn("[RuleChanges] Invalid rule from rule_suggestions table:", rule);
-          return false;
-        }
-        return true;
-      });
-      
-      console.log("[RuleChanges] Successfully fetched rule suggestions from rule_suggestions table:", {
-        total: data.length,
-        valid: validRules.length,
-        leagueId: league.leagueId,
-      });
-      return validRules;
+      const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
+      if (!res.ok) throw new Error("Failed to fetch rule suggestions");
+      return res.json();
     },
     enabled: !!league?.leagueId && !!user?.userId,
-    retry: 2,
-    retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
-    refetchOnWindowFocus: true,
-    refetchOnMount: true,
-  });
-
-  // Log query state changes
-  console.log("[RuleChanges] Query state:", {
-    isLoading: rulesLoading,
-    isError: rulesError,
-    hasData: !!ruleSuggestions,
-    dataLength: Array.isArray(ruleSuggestions) ? ruleSuggestions.length : 0,
-    enabled: !!league?.leagueId,
-    leagueId: league?.leagueId,
   });
 
   // Create rule suggestion mutation
@@ -218,27 +156,9 @@ export default function RuleChanges() {
       queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
     },
     onError: (error: Error) => {
-      let errorMessage = error.message;
-      let errorTitle = "Error";
-      
-      // Provide more user-friendly error messages
-      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations") || errorMessage.includes("db:push")) {
-        errorTitle = "Database Setup Required";
-        errorMessage = "The database table may not exist. Please contact the administrator to run 'npm run db:push'.";
-      } else if (errorMessage.includes("connection") || errorMessage.includes("DATABASE_URL")) {
-        errorTitle = "Database Connection Error";
-        errorMessage = "Unable to connect to the database. Please try again later.";
-      } else if (errorMessage.includes("Roster ID") || errorMessage.includes("team")) {
-        errorTitle = "Team Selection Required";
-        errorMessage = "Please select your team before submitting a rule change.";
-      } else if (errorMessage.includes("Missing required")) {
-        errorTitle = "Validation Error";
-        // Keep the original message for validation errors
-      }
-      
       toast({
-        title: errorTitle,
-        description: errorMessage,
+        title: "Error",
+        description: error.message,
         variant: "destructive",
       });
     },

@@ -2742,19 +2742,14 @@ export async function registerRoutes(
   });
 
   // Rule Suggestions API
-  // Database Connection Pattern: Routes use storage methods (never db directly)
   app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      console.log("[API] GET /api/league/:leagueId/rule-suggestions - Fetching from rule_suggestions table for league:", leagueId);
-      
       if (!leagueId) {
         return res.status(400).json({ error: "League ID is required" });
       }
 
-      // Database Connection Pattern: Use storage method (storage uses db internally)
       const suggestions = await storage.getRuleSuggestions(leagueId);
-      console.log("[API] Retrieved", suggestions.length, "rule suggestions from rule_suggestions table for league", leagueId);
       
       // Get voting status for each rule
       const suggestionsWithVoting = await Promise.all(
@@ -2770,81 +2765,41 @@ export async function registerRoutes(
         })
       );
       
-      console.log("[API] Returning", suggestionsWithVoting.length, "rule suggestions with voting status from rule_suggestions table");
-      
-      // Ensure we always return an array
-      if (!Array.isArray(suggestionsWithVoting)) {
-        console.error("[API] suggestionsWithVoting is not an array:", typeof suggestionsWithVoting);
-        return res.json([]);
-      }
-      
       res.json(suggestionsWithVoting);
-    } catch (error: any) {
-      console.error("[API] Error fetching from rule_suggestions table:", error);
-      const errorMessage = error.message || "Failed to fetch rule suggestions";
-      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations")) {
-        return res.status(500).json({ 
-          error: "Database table error. Please ensure rule_suggestions table exists.",
-          details: errorMessage 
-        });
-      }
-      res.status(500).json({ error: errorMessage });
+    } catch (error) {
+      console.error("Error fetching rule suggestions:", error);
+      res.status(500).json({ error: "Failed to fetch rule suggestions" });
     }
   });
 
-  // Database Connection Pattern: Routes use storage methods (never db directly)
   app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
       const { authorId, authorName, rosterId, title, description } = req.body;
       
-      console.log("[API] POST /api/league/:leagueId/rule-suggestions - Creating new rule in rule_suggestions table for league:", leagueId);
-      
-      // Validate leagueId
       if (!leagueId) {
-        console.error("[API] Validation error: League ID is missing");
         return res.status(400).json({ error: "League ID is required" });
       }
-
-      // Validate all required fields are present
       if (!authorId) {
-        console.error("[API] Validation error: authorId is missing");
         return res.status(400).json({ error: "Author ID is required" });
       }
       if (!authorName || authorName.trim() === "") {
-        console.error("[API] Validation error: authorName is missing or empty");
         return res.status(400).json({ error: "Author name is required" });
       }
       if (rosterId === undefined || rosterId === null) {
-        console.error("[API] Validation error: rosterId is missing");
         return res.status(400).json({ error: "Roster ID is required. Please select your team first." });
       }
       if (!title || title.trim() === "") {
-        console.error("[API] Validation error: title is missing or empty");
         return res.status(400).json({ error: "Title is required" });
       }
       if (!description || description.trim() === "") {
-        console.error("[API] Validation error: description is missing or empty");
         return res.status(400).json({ error: "Description is required" });
       }
 
-      // Validate rosterId is a valid number
       const parsedRosterId = parseInt(String(rosterId), 10);
       if (isNaN(parsedRosterId) || parsedRosterId <= 0) {
-        console.error("[API] Validation error: rosterId is not a valid number:", rosterId);
-        return res.status(400).json({ 
-          error: "Invalid roster ID. Please select your team again." 
-        });
+        return res.status(400).json({ error: "Invalid roster ID. Please select your team again." });
       }
-
-      console.log("[API] Validation passed. Creating rule suggestion with:", {
-        leagueId,
-        authorId,
-        authorName,
-        rosterId: parsedRosterId,
-        titleLength: title.trim().length,
-        descriptionLength: description.trim().length,
-      });
 
       const suggestion = await storage.createRuleSuggestion({
         leagueId,
@@ -2855,8 +2810,6 @@ export async function registerRoutes(
         description: description.trim(),
       });
       
-      console.log("[API] Successfully created rule in rule_suggestions table. ID:", suggestion.id);
-      
       // Default voting to enabled for new rules
       await storage.setLeagueSetting(
         leagueId,
@@ -2865,16 +2818,9 @@ export async function registerRoutes(
       );
       
       res.json({ ...suggestion, votingEnabled: true });
-    } catch (error: any) {
-      console.error("[API] Error creating rule in rule_suggestions table:", error);
-      const errorMessage = error.message || "Failed to create rule suggestion";
-      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations")) {
-        return res.status(500).json({ 
-          error: "Database table error. Please ensure rule_suggestions table exists.",
-          details: errorMessage 
-        });
-      }
-      res.status(500).json({ error: errorMessage });
+    } catch (error) {
+      console.error("Error creating rule suggestion:", error);
+      res.status(500).json({ error: "Failed to create rule suggestion" });
     }
   });
 
