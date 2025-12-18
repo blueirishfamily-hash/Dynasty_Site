@@ -871,6 +871,9 @@ function ManageTeamContractsTab({
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
+  const [contractLengthFilter, setContractLengthFilter] = useState<string>("ALL");
+  const [yearsRemainingFilter, setYearsRemainingFilter] = useState<string>("ALL");
+  const [playerTypeFilter, setPlayerTypeFilter] = useState<string>("ALL");
   const [activeView, setActiveView] = useState<"contracts" | "salary-breakdown">("contracts");
   const [openExtensionPopover, setOpenExtensionPopover] = useState<string | null>(null);
   
@@ -1465,6 +1468,20 @@ function ManageTeamContractsTab({
     });
   };
 
+  // Helper function to get contract length from dbContracts
+  const getContractLength = (playerId: string): number => {
+    const contract = dbContracts.find(c => c.playerId === playerId && c.rosterId === userTeam?.rosterId);
+    return contract?.originalContractYears || 0;
+  };
+
+  // Helper function to calculate years remaining on contract
+  const getYearsRemaining = (playerId: string, hypotheticalSalaries: Record<number, number>): number => {
+    const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(year => (hypotheticalSalaries[year] || 0) > 0);
+    if (contractYears.length === 0) return 0;
+    const lastYear = Math.max(...contractYears);
+    return Math.max(0, lastYear - CURRENT_YEAR + 1);
+  };
+
   const rosterPlayers: HypotheticalPlayer[] = userTeam.players
     .filter(id => playerMap[id])
     .map(id => {
@@ -1485,7 +1502,33 @@ function ManageTeamContractsTab({
         isFreeAgent: false,
       };
     })
-    .filter(p => positionFilter === "ALL" || p.position === positionFilter)
+    .filter(p => {
+      // Position filter
+      if (positionFilter !== "ALL" && p.position !== positionFilter) return false;
+      
+      // Contract length filter
+      if (contractLengthFilter !== "ALL") {
+        const contractLength = getContractLength(p.playerId);
+        const filterValue = parseInt(contractLengthFilter);
+        if (contractLength !== filterValue) return false;
+      }
+      
+      // Years remaining filter
+      if (yearsRemainingFilter !== "ALL") {
+        const yearsRemaining = getYearsRemaining(p.playerId, p.hypotheticalSalaries);
+        if (yearsRemainingFilter === "4+") {
+          if (yearsRemaining < 4) return false;
+        } else {
+          const filterValue = parseInt(yearsRemainingFilter);
+          if (yearsRemaining !== filterValue) return false;
+        }
+      }
+      
+      // Player type filter (roster players always pass this)
+      if (playerTypeFilter !== "ALL" && playerTypeFilter !== "Roster Player") return false;
+      
+      return true;
+    })
     .sort((a, b) => {
       const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
       const posA = posOrder.indexOf(a.position);
@@ -1494,7 +1537,24 @@ function ManageTeamContractsTab({
       return a.name.localeCompare(b.name);
     });
 
-  const allHypotheticalPlayers = [...rosterPlayers, ...hypotheticalData.addedFreeAgents];
+  // Apply filters to free agents as well
+  const filteredFreeAgents = hypotheticalData.addedFreeAgents.filter(p => {
+    // Position filter
+    if (positionFilter !== "ALL" && p.position !== positionFilter) return false;
+    
+    // Contract length filter (free agents have no contract length, so only show if filter is "ALL" or "0")
+    if (contractLengthFilter !== "ALL" && contractLengthFilter !== "0") return false;
+    
+    // Years remaining filter (free agents have no years remaining, so only show if filter is "ALL" or "0")
+    if (yearsRemainingFilter !== "ALL" && yearsRemainingFilter !== "0") return false;
+    
+    // Player type filter
+    if (playerTypeFilter !== "ALL" && playerTypeFilter !== "Free Agent") return false;
+    
+    return true;
+  });
+
+  const allHypotheticalPlayers = [...rosterPlayers, ...filteredFreeAgents];
 
   // Auto-save hypothetical changes with debouncing
   useEffect(() => {
@@ -2201,27 +2261,92 @@ function ManageTeamContractsTab({
             })}
           </div>
 
-          <div className="flex items-center gap-4 mb-4">
-            <Label className="text-sm font-medium whitespace-nowrap">
-              Filter by Position:
-            </Label>
-            <Select 
-              value={positionFilter} 
-              onValueChange={setPositionFilter}
-            >
-              <SelectTrigger className="w-[160px]" data-testid="select-position-filter-team">
-                <SelectValue placeholder="All Positions" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="ALL">All Positions</SelectItem>
-                <SelectItem value="QB">QB</SelectItem>
-                <SelectItem value="RB">RB</SelectItem>
-                <SelectItem value="WR">WR</SelectItem>
-                <SelectItem value="TE">TE</SelectItem>
-                <SelectItem value="K">K</SelectItem>
-                <SelectItem value="DEF">DEF</SelectItem>
-              </SelectContent>
-            </Select>
+          <div className="flex items-center gap-4 mb-4 flex-wrap">
+            <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium whitespace-nowrap">
+                Position:
+              </Label>
+              <Select 
+                value={positionFilter} 
+                onValueChange={setPositionFilter}
+              >
+                <SelectTrigger className="w-[140px]" data-testid="select-position-filter-team">
+                  <SelectValue placeholder="All Positions" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Positions</SelectItem>
+                  <SelectItem value="QB">QB</SelectItem>
+                  <SelectItem value="RB">RB</SelectItem>
+                  <SelectItem value="WR">WR</SelectItem>
+                  <SelectItem value="TE">TE</SelectItem>
+                  <SelectItem value="K">K</SelectItem>
+                  <SelectItem value="DEF">DEF</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium whitespace-nowrap">
+                Contract Length:
+              </Label>
+              <Select 
+                value={contractLengthFilter} 
+                onValueChange={setContractLengthFilter}
+              >
+                <SelectTrigger className="w-[140px]" data-testid="select-contract-length-filter">
+                  <SelectValue placeholder="All Lengths" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Lengths</SelectItem>
+                  <SelectItem value="0">No Contract</SelectItem>
+                  <SelectItem value="1">1 Year</SelectItem>
+                  <SelectItem value="2">2 Years</SelectItem>
+                  <SelectItem value="3">3 Years</SelectItem>
+                  <SelectItem value="4">4 Years</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium whitespace-nowrap">
+                Years Remaining:
+              </Label>
+              <Select 
+                value={yearsRemainingFilter} 
+                onValueChange={setYearsRemainingFilter}
+              >
+                <SelectTrigger className="w-[140px]" data-testid="select-years-remaining-filter">
+                  <SelectValue placeholder="All" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All</SelectItem>
+                  <SelectItem value="0">0 Years</SelectItem>
+                  <SelectItem value="1">1 Year</SelectItem>
+                  <SelectItem value="2">2 Years</SelectItem>
+                  <SelectItem value="3">3 Years</SelectItem>
+                  <SelectItem value="4+">4+ Years</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <Label className="text-sm font-medium whitespace-nowrap">
+                Type:
+              </Label>
+              <Select 
+                value={playerTypeFilter} 
+                onValueChange={setPlayerTypeFilter}
+              >
+                <SelectTrigger className="w-[140px]" data-testid="select-player-type-filter">
+                  <SelectValue placeholder="All Types" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="ALL">All Types</SelectItem>
+                  <SelectItem value="Roster Player">Roster Player</SelectItem>
+                  <SelectItem value="Free Agent">Free Agent</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
 
           <ScrollArea className="h-[450px] pr-4">
