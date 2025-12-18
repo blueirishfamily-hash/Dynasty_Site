@@ -215,6 +215,39 @@ export async function registerRoutes(
     }
   });
 
+  // Get draft position for a player from most recent completed rookie draft
+  app.get("/api/league/:leagueId/player/:playerId/draft-position", async (req, res) => {
+    try {
+      const { leagueId, playerId } = req.params;
+      
+      // Get all completed drafts for the league, sorted by season descending
+      const drafts = await getLeagueDrafts(leagueId);
+      const completedDrafts = drafts
+        .filter(d => d.status === "complete" && d.type === "rookie")
+        .sort((a, b) => parseInt(b.season) - parseInt(a.season));
+      
+      // Search through drafts from most recent to oldest
+      for (const draft of completedDrafts) {
+        const picks = await getDraftPicks(draft.draft_id);
+        const playerPick = picks.find(p => p.player_id === playerId);
+        
+        if (playerPick) {
+          return res.json({
+            round: playerPick.round,
+            draftSlot: playerPick.draft_slot,
+            season: draft.season,
+            draftId: draft.draft_id
+          });
+        }
+      }
+      
+      res.json({ round: null, draftSlot: null, season: null, draftId: null });
+    } catch (error) {
+      console.error("Error fetching draft position:", error);
+      res.status(500).json({ error: "Failed to fetch draft position" });
+    }
+  });
+
   // Get NFL state (current week, season)
   app.get("/api/sleeper/nfl-state", async (_req, res) => {
     try {

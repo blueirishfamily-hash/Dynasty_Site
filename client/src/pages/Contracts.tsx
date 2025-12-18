@@ -41,6 +41,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { getRookieSalary, formatDraftPosition } from "@/utils/rookiePayScale";
 
 const COMMISSIONER_USER_IDS = [
   "900186363130503168",
@@ -460,13 +461,18 @@ interface ContractInputTabProps {
 }
 
 function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
-  const { season } = useSleeper();
+  const { season, league } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
   const OPTION_YEAR = CURRENT_YEAR + 4;
   
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
+  
+  // State for rookie draft positions and pay scale application
+  const [rookieDraftPositions, setRookieDraftPositions] = useState<Record<string, { round: number | null; draftSlot: number | null }>>({});
+  const [applyRookiePayScale, setApplyRookiePayScale] = useState<Record<string, boolean>>({});
+  const [manualDraftInputs, setManualDraftInputs] = useState<Record<string, { round: number; draftSlot: number }>>({});
 
   const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
   
@@ -502,9 +508,119 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
       });
   }, [selectedTeam, playerMap, contractData, selectedRosterId, positionFilter]);
 
+  // Identify rookies (yearsExp === 0)
+  const rookiePlayerIds = useMemo(() => {
+    return playerInputs
+      .filter(p => p.yearsExp === 0)
+      .map(p => p.playerId);
+  }, [playerInputs]);
+
+  // Fetch draft positions for all rookies
+  const draftPositionQueries = useQuery({
+    queryKey: ["/api/league", league?.leagueId, "rookie-draft-positions", rookiePlayerIds],
+    queryFn: async () => {
+      if (!league?.leagueId || rookiePlayerIds.length === 0) return {};
+      
+      const positions: Record<string, { round: number | null; draftSlot: number | null; season: string | null; draftId: string | null }> = {};
+      
+      // Fetch draft positions for all rookies in parallel
+      await Promise.all(
+        rookiePlayerIds.map(async (playerId) => {
+          try {
+            const res = await fetch(`/api/league/${league.leagueId}/player/${playerId}/draft-position`);
+            if (res.ok) {
+              const data = await res.json();
+              positions[playerId] = {
+                round: data.round,
+                draftSlot: data.draftSlot,
+                season: data.season,
+                draftId: data.draftId,
+              };
+            }
+          } catch (error) {
+            console.error(`Error fetching draft position for ${playerId}:`, error);
+          }
+        })
+      );
+      
+      return positions;
+    },
+    enabled: !!league?.leagueId && rookiePlayerIds.length > 0,
+  });
+
+  // Update rookie draft positions state when query data is available
+  useEffect(() => {
+    if (draftPositionQueries.data) {
+      const positions: Record<string, { round: number | null; draftSlot: number | null }> = {};
+      Object.entries(draftPositionQueries.data).forEach(([playerId, data]: [string, any]) => {
+        positions[playerId] = {
+          round: data.round,
+          draftSlot: data.draftSlot,
+        };
+      });
+      setRookieDraftPositions(positions);
+    }
+  }, [draftPositionQueries.data]);
+
+  // Auto-apply rookie pay scale when draft position is detected and contract doesn't exist
+  useEffect(() => {
+    if (!draftPositionQueries.data) return;
+
+    Object.entries(draftPositionQueries.data).forEach(([playerId, data]: [string, any]) => {
+      // Only auto-apply if:
+      // 1. Draft position is found (round and draftSlot are not null)
+      // 2. Pay scale hasn't been applied yet
+      // 3. Player doesn't already have a contract with salaries
+      if (data.round && data.draftSlot && !applyRookiePayScale[playerId]) {
+        const existingContract = contractData[selectedRosterId]?.[playerId];
+        const hasExistingSalaries = existingContract?.salaries && 
+          Object.values(existingContract.salaries).some((s: any) => s > 0);
+        
+        // Only auto-apply if no existing contract or contract has no salaries
+        if (!hasExistingSalaries) {
+          const salary = getRookieSalary(data.round, data.draftSlot);
+          
+          // Set 3-year contract
+          onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
+          
+          // Apply salary to all 3 years
+          const currentSalaries = existingContract?.salaries || {};
+          onContractChange(selectedRosterId, playerId, "salaries", {
+            ...currentSalaries,
+            [CURRENT_YEAR]: salary,
+            [CURRENT_YEAR + 1]: salary,
+            [CURRENT_YEAR + 2]: salary,
+          });
+          
+          setApplyRookiePayScale(prev => ({ ...prev, [playerId]: true }));
+        }
+      }
+    });
+  }, [draftPositionQueries.data, selectedRosterId, CURRENT_YEAR, contractData, applyRookiePayScale, onContractChange]);
+
   const handleSalaryChange = (playerId: string, year: number, value: string) => {
     const numValue = parseFloat(value) || 0;
     const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
+    
+    // Warn if modifying rookie pay scale contract
+    if (applyRookiePayScale[playerId] && numValue !== currentSalaries[year]) {
+      const player = playerInputs.find(p => p.playerId === playerId);
+      if (player?.yearsExp === 0) {
+        // Allow the change but remove the rookie pay scale flag if salary is changed
+        // This allows manual override
+        if (numValue !== getRookieSalary(
+          rookieDraftPositions[playerId]?.round || 1,
+          rookieDraftPositions[playerId]?.draftSlot || 1
+        )) {
+          setApplyRookiePayScale(prev => {
+            const updated = { ...prev };
+            delete updated[playerId];
+            return updated;
+          });
+        }
+      }
+    }
+    
     onContractChange(selectedRosterId, playerId, "salaries", {
       ...currentSalaries,
       [year]: numValue
@@ -517,6 +633,42 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
 
   const handleIrToggle = (playerId: string, isOnIr: boolean) => {
     onContractChange(selectedRosterId, playerId, "isOnIr", isOnIr);
+  };
+
+  // Handler to manually apply rookie pay scale
+  const handleApplyRookiePayScale = (playerId: string, round: number, draftSlot: number) => {
+    const salary = getRookieSalary(round, draftSlot);
+    
+    // Set 3-year contract
+    onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
+    
+    // Apply salary to all 3 years
+    const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
+    onContractChange(selectedRosterId, playerId, "salaries", {
+      ...currentSalaries,
+      [CURRENT_YEAR]: salary,
+      [CURRENT_YEAR + 1]: salary,
+      [CURRENT_YEAR + 2]: salary,
+    });
+    
+    setApplyRookiePayScale(prev => ({ ...prev, [playerId]: true }));
+    
+    // Update draft position state
+    setRookieDraftPositions(prev => ({
+      ...prev,
+      [playerId]: { round, draftSlot }
+    }));
+  };
+
+  // Handler to update manual draft input
+  const handleManualDraftInputChange = (playerId: string, field: "round" | "draftSlot", value: number) => {
+    setManualDraftInputs(prev => ({
+      ...prev,
+      [playerId]: {
+        ...(prev[playerId] || { round: 1, draftSlot: 1 }),
+        [field]: value,
+      } as { round: number; draftSlot: number }
+    }));
   };
 
   const totalSalaryByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
@@ -656,17 +808,77 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     return (
                       <TableRow key={player.playerId} data-testid={`row-input-${player.playerId}`}>
                         <TableCell>
-                          <div className="flex items-center gap-2">
-                            <Avatar className="h-9 w-9">
-                              <AvatarImage 
-                                src={`https://sleepercdn.com/content/nfl/players/${player.playerId}.jpg`}
-                                alt={player.name}
-                              />
-                              <AvatarFallback className="text-xs">
-                                {player.name.split(" ").map(n => n[0]).join("")}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span className="font-medium text-sm">{player.name}</span>
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
+                              <Avatar className="h-9 w-9">
+                                <AvatarImage 
+                                  src={`https://sleepercdn.com/content/nfl/players/${player.playerId}.jpg`}
+                                  alt={player.name}
+                                />
+                                <AvatarFallback className="text-xs">
+                                  {player.name.split(" ").map(n => n[0]).join("")}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span className="font-medium text-sm">{player.name}</span>
+                            </div>
+                            {player.yearsExp === 0 && (
+                              <div className="flex items-center gap-2 ml-11">
+                                {rookieDraftPositions[player.playerId]?.round && rookieDraftPositions[player.playerId]?.draftSlot ? (
+                                  <Badge variant="outline" className="text-[10px] bg-blue-500/10 text-blue-600 border-blue-500/30">
+                                    Rookie {formatDraftPosition(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}
+                                    {applyRookiePayScale[player.playerId] && " • Applied"}
+                                  </Badge>
+                                ) : (
+                                  <Popover>
+                                    <PopoverTrigger asChild>
+                                      <Button variant="outline" size="sm" className="h-5 text-[10px] px-2">
+                                        Apply Rookie Pay Scale
+                                      </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent className="w-64">
+                                      <div className="space-y-3">
+                                        <Label className="text-sm font-semibold">Manual Draft Position</Label>
+                                        <div className="grid grid-cols-2 gap-2">
+                                          <div>
+                                            <Label className="text-xs">Round</Label>
+                                            <Input
+                                              type="number"
+                                              min="1"
+                                              max="3"
+                                              value={manualDraftInputs[player.playerId]?.round || 1}
+                                              onChange={(e) => handleManualDraftInputChange(player.playerId, "round", parseInt(e.target.value) || 1)}
+                                              className="h-8"
+                                            />
+                                          </div>
+                                          <div>
+                                            <Label className="text-xs">Pick</Label>
+                                            <Input
+                                              type="number"
+                                              min="1"
+                                              max="12"
+                                              value={manualDraftInputs[player.playerId]?.draftSlot || 1}
+                                              onChange={(e) => handleManualDraftInputChange(player.playerId, "draftSlot", parseInt(e.target.value) || 1)}
+                                              className="h-8"
+                                            />
+                                          </div>
+                                        </div>
+                                        <Button
+                                          size="sm"
+                                          onClick={() => {
+                                            const round = manualDraftInputs[player.playerId]?.round || 1;
+                                            const draftSlot = manualDraftInputs[player.playerId]?.draftSlot || 1;
+                                            handleApplyRookiePayScale(player.playerId, round, draftSlot);
+                                          }}
+                                          className="w-full"
+                                        >
+                                          Apply ${getRookieSalary(manualDraftInputs[player.playerId]?.round || 1, manualDraftInputs[player.playerId]?.draftSlot || 1)}/yr
+                                        </Button>
+                                      </div>
+                                    </PopoverContent>
+                                  </Popover>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="text-center">
@@ -682,7 +894,18 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                         <TableCell className="text-center">
                           <Select
                             value={player.originalContractYears?.toString() || "0"}
-                            onValueChange={(value) => onContractChange(selectedRosterId, player.playerId, "originalContractYears", parseInt(value))}
+                            onValueChange={(value) => {
+                              const newLength = parseInt(value);
+                              // If rookie pay scale is applied and user changes from 3 years, remove the flag
+                              if (applyRookiePayScale[player.playerId] && newLength !== 3 && player.yearsExp === 0) {
+                                setApplyRookiePayScale(prev => {
+                                  const updated = { ...prev };
+                                  delete updated[player.playerId];
+                                  return updated;
+                                });
+                              }
+                              onContractChange(selectedRosterId, player.playerId, "originalContractYears", newLength);
+                            }}
                           >
                             <SelectTrigger className="h-7 w-12 text-center" data-testid={`select-len-${player.playerId}`}>
                               <SelectValue placeholder="-" />
@@ -2769,11 +2992,11 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
 
-  // Contract limits: 2 four-year, 3 three-year, 3 two-year
+  // Contract limits: 3 four-year, 4 three-year, 5 two-year
   const CONTRACT_LIMITS = {
-    4: 2,
-    3: 3,
-    2: 3,
+    4: 3,
+    3: 4,
+    2: 5,
   };
 
   // Calculate existing contract counts by duration
@@ -3161,7 +3384,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Limits: 2 four-year, 3 three-year, 3 two-year contracts per team
+                    Limits: 3 four-year, 4 three-year, 5 two-year contracts per team
                   </p>
                 </div>
 
