@@ -2693,7 +2693,20 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const suggestions = await storage.getRuleSuggestions(req.params.leagueId);
-      res.json(suggestions);
+      // Get voting status for each rule
+      const suggestionsWithVoting = await Promise.all(
+        suggestions.map(async (suggestion) => {
+          const votingEnabled = await storage.getLeagueSetting(
+            req.params.leagueId,
+            `rule_voting_enabled_${suggestion.id}`
+          );
+          return {
+            ...suggestion,
+            votingEnabled: votingEnabled === "true",
+          };
+        })
+      );
+      res.json(suggestionsWithVoting);
     } catch (error) {
       console.error("Error fetching rule suggestions:", error);
       res.status(500).json({ error: "Failed to fetch rule suggestions" });
@@ -2702,18 +2715,25 @@ export async function registerRoutes(
 
   app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
-      const { authorId, authorName, title, description } = req.body;
-      if (!authorId || !authorName || !title || !description) {
+      const { authorId, authorName, rosterId, title, description } = req.body;
+      if (!authorId || !authorName || !rosterId || !title || !description) {
         return res.status(400).json({ error: "Missing required fields" });
       }
       const suggestion = await storage.createRuleSuggestion({
         leagueId: req.params.leagueId,
         authorId,
         authorName,
+        rosterId: parseInt(rosterId),
         title,
         description,
       });
-      res.json(suggestion);
+      // Default voting to enabled for new rules
+      await storage.setLeagueSetting(
+        req.params.leagueId,
+        `rule_voting_enabled_${suggestion.id}`,
+        "true"
+      );
+      res.json({ ...suggestion, votingEnabled: true });
     } catch (error) {
       console.error("Error creating rule suggestion:", error);
       res.status(500).json({ error: "Failed to create rule suggestion" });
@@ -2723,17 +2743,26 @@ export async function registerRoutes(
   // Cast vote on a rule (1 vote per team per rule)
   app.post("/api/rule-suggestions/:id/vote", async (req, res) => {
     try {
-      const { rosterId, voterName, vote } = req.body;
-      if (!rosterId || !voterName || !vote) {
+      const { rosterId, voterName, vote, leagueId } = req.body;
+      if (!rosterId || !voterName || !vote || !leagueId) {
         return res.status(400).json({ error: "Missing required fields" });
       }
       if (vote !== "approve" && vote !== "reject") {
         return res.status(400).json({ error: "Invalid vote type" });
       }
       
+      // Check if voting is enabled for this rule
+      const votingEnabled = await storage.getLeagueSetting(
+        leagueId,
+        `rule_voting_enabled_${req.params.id}`
+      );
+      if (votingEnabled !== "true") {
+        return res.status(403).json({ error: "Voting is disabled for this rule" });
+      }
+      
       const ruleVote = await storage.castRuleVote({
         ruleId: req.params.id,
-        rosterId,
+        rosterId: parseInt(rosterId),
         voterName,
         vote,
       });
@@ -2765,6 +2794,26 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching user vote:", error);
       res.status(500).json({ error: "Failed to fetch user vote" });
+    }
+  });
+
+  // Toggle voting on/off for a rule (commissioner only)
+  app.post("/api/rule-suggestions/:id/toggle-voting", async (req, res) => {
+    try {
+      const { leagueId, enabled } = req.body;
+      if (!leagueId || typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+      
+      await storage.setLeagueSetting(
+        leagueId,
+        `rule_voting_enabled_${req.params.id}`,
+        enabled ? "true" : "false"
+      );
+      res.json({ success: true, votingEnabled: enabled });
+    } catch (error) {
+      console.error("Error toggling voting:", error);
+      res.status(500).json({ error: "Failed to toggle voting" });
     }
   });
 

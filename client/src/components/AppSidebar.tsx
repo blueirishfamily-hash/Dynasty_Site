@@ -25,6 +25,7 @@ import {
   Sparkles,
   Medal,
   FileText,
+  Scale,
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -39,6 +40,7 @@ const baseNavItems = [
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "Trophy Room", url: "/trophies", icon: Medal },
   { title: "League Hub", url: "/hub", icon: MessageSquare },
+  { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Settings", url: "/settings", icon: Settings },

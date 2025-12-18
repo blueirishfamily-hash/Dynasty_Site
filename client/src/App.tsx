@@ -20,6 +20,7 @@ import Metrics from "@/pages/Metrics";
 import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
+import RuleChanges from "@/pages/RuleChanges";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,7 @@ function Router() {
       <Route path="/trades" component={Trades} />
       <Route path="/draft" component={Draft} />
       <Route path="/hub" component={LeagueHub} />
+      <Route path="/rule-changes" component={RuleChanges} />
       <Route path="/standings" component={Standings} />
       <Route path="/metrics" component={Metrics} />
       <Route path="/trophies" component={TrophyRoom} />
