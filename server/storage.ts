@@ -125,13 +125,15 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
+    console.log("[Storage] Querying rule suggestions for leagueId:", leagueId);
     const rows = await db
       .select()
       .from(ruleSuggestionsTable)
       .where(eq(ruleSuggestionsTable.leagueId, leagueId))
       .orderBy(desc(ruleSuggestionsTable.createdAt));
 
-    return rows.map(row => ({
+    console.log("[Storage] Found", rows.length, "rule suggestion rows in database for leagueId:", leagueId);
+    const suggestions = rows.map(row => ({
       id: row.id,
       leagueId: row.leagueId,
       authorId: row.authorId,
@@ -144,6 +146,8 @@ export class DatabaseStorage implements IStorage {
       downvotes: [],
       createdAt: row.createdAt,
     }));
+    console.log("[Storage] Returning", suggestions.length, "rule suggestions");
+    return suggestions;
   }
 
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {

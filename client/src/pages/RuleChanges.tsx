@@ -110,8 +110,13 @@ export default function RuleChanges() {
         throw new Error(`Failed to fetch rule suggestions: ${res.status} ${errorText}`);
       }
       const data = await res.json();
+      // Validate that the response is an array
+      if (!Array.isArray(data)) {
+        console.error("[RuleChanges] API response is not an array:", typeof data, data);
+        throw new Error("Invalid response format: expected array");
+      }
       console.log("[RuleChanges] Rule suggestions fetched successfully:", {
-        count: Array.isArray(data) ? data.length : 0,
+        count: data.length,
         data: data,
         leagueId: league?.leagueId,
       });
@@ -393,6 +398,17 @@ export default function RuleChanges() {
           </Alert>
         )}
 
+        {!rulesLoading && !rulesError && ruleSuggestions !== undefined && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <FileText className="w-4 h-4" />
+            <span>
+              {Array.isArray(ruleSuggestions) 
+                ? `${ruleSuggestions.length} rule${ruleSuggestions.length !== 1 ? 's' : ''} found`
+                : 'Loading rule count...'}
+            </span>
+          </div>
+        )}
+
         {rulesLoading ? (
           <div className="space-y-4">
             {[...Array(3)].map((_, i) => (
@@ -407,34 +423,43 @@ export default function RuleChanges() {
               </Card>
             ))}
           </div>
-        ) : ruleSuggestions && ruleSuggestions.length > 0 ? (
-          <div className="space-y-4">
-            {ruleSuggestions.map((rule) => (
-              <RuleCard
-                key={rule.id}
-                rule={rule}
-                userRosterId={userRosterId}
-                hasSelectedTeam={hasSelectedTeam}
-                isCommissioner={isCommissioner}
-                onVote={(vote) => voteMutation.mutate({ ruleId: rule.id, vote })}
-                onToggleVoting={(enabled) =>
-                  toggleVotingMutation.mutate({ ruleId: rule.id, enabled })
+        ) : !rulesError && Array.isArray(ruleSuggestions) ? (
+          ruleSuggestions.length > 0 ? (
+            <div className="space-y-4">
+              {ruleSuggestions.map((rule) => {
+                // Validate rule has required fields
+                if (!rule || !rule.id || !rule.title) {
+                  console.warn("[RuleChanges] Invalid rule object:", rule);
+                  return null;
                 }
-                leagueId={league.leagueId}
-              />
-            ))}
-          </div>
-        ) : (
-          <Card>
-            <CardContent className="py-12 text-center">
-              <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
-              <p className="text-lg font-medium mb-2">No rule changes yet</p>
-              <p className="text-muted-foreground">
-                Be the first to propose a rule change for the league.
-              </p>
-            </CardContent>
-          </Card>
-        )}
+                return (
+                  <RuleCard
+                    key={rule.id}
+                    rule={rule}
+                    userRosterId={userRosterId}
+                    hasSelectedTeam={hasSelectedTeam}
+                    isCommissioner={isCommissioner}
+                    onVote={(vote) => voteMutation.mutate({ ruleId: rule.id, vote })}
+                    onToggleVoting={(enabled) =>
+                      toggleVotingMutation.mutate({ ruleId: rule.id, enabled })
+                    }
+                    leagueId={league.leagueId}
+                  />
+                );
+              })}
+            </div>
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <FileText className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                <p className="text-lg font-medium mb-2">No rule changes yet</p>
+                <p className="text-muted-foreground">
+                  Be the first to propose a rule change for the league.
+                </p>
+              </CardContent>
+            </Card>
+          )
+        ) : null}
       </div>
     </>
   );

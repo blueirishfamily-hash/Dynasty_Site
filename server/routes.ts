@@ -2692,12 +2692,15 @@ export async function registerRoutes(
   // Rule Suggestions API
   app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
-      const suggestions = await storage.getRuleSuggestions(req.params.leagueId);
+      const leagueId = req.params.leagueId;
+      console.log("[API] Fetching rule suggestions for league:", leagueId);
+      const suggestions = await storage.getRuleSuggestions(leagueId);
+      console.log("[API] Found", suggestions.length, "rule suggestions for league", leagueId);
       // Get voting status for each rule
       const suggestionsWithVoting = await Promise.all(
         suggestions.map(async (suggestion) => {
           const votingEnabled = await storage.getLeagueSetting(
-            req.params.leagueId,
+            leagueId,
             `rule_voting_enabled_${suggestion.id}`
           );
           return {
@@ -2706,6 +2709,7 @@ export async function registerRoutes(
           };
         })
       );
+      console.log("[API] Returning", suggestionsWithVoting.length, "rule suggestions with voting status");
       res.json(suggestionsWithVoting);
     } catch (error) {
       console.error("Error fetching rule suggestions:", error);
