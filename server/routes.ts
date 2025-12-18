@@ -2742,6 +2742,7 @@ export async function registerRoutes(
   });
 
   // Rule Suggestions API
+  // Database Connection Pattern: Routes use storage methods (never db directly)
   app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
@@ -2751,6 +2752,7 @@ export async function registerRoutes(
         return res.status(400).json({ error: "League ID is required" });
       }
 
+      // Database Connection Pattern: Use storage method (storage uses db internally)
       const suggestions = await storage.getRuleSuggestions(leagueId);
       console.log("[API] Retrieved", suggestions.length, "rule suggestions from rule_suggestions table for league", leagueId);
       
@@ -2790,6 +2792,7 @@ export async function registerRoutes(
     }
   });
 
+  // Database Connection Pattern: Routes use storage methods (never db directly)
   app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;

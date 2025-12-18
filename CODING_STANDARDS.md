@@ -319,6 +319,350 @@ async methodName(params: ParamsType): Promise<ReturnType> {
 }
 ```
 
+## Database Connection Pattern (Replit/Neon PostgreSQL)
+
+### Overview
+
+This project uses **Neon Serverless PostgreSQL** with **Drizzle ORM** for database connections. The connection pattern is designed specifically for Replit's serverless environment and must be followed for all database operations.
+
+### 1. Database Connection Setup
+
+**File**: `server/db.ts`
+
+The database connection is established in a single file that exports a shared `db` instance:
+
+```typescript
+import { drizzle } from "drizzle-orm/neon-serverless";
+import { Pool, neonConfig } from "@neondatabase/serverless";
+import ws from "ws";
+
+// Configure WebSocket for Neon compatibility (required for Replit)
+neonConfig.webSocketConstructor = ws;
+
+// Validate DATABASE_URL is set
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL must be set. Did you forget to provision a database?");
+}
+
+// Create connection pool
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Export single db instance for use throughout application
+export const db = drizzle(pool);
+```
+
+**Key Points**:
+- **Single connection file**: All database connections go through `server/db.ts`
+- **Environment variable**: Requires `DATABASE_URL` (automatically provided by Replit when database is provisioned)
+- **Neon Serverless**: Uses `@neondatabase/serverless` package for serverless compatibility
+- **WebSocket configuration**: Required for Neon to work in Replit environment
+- **Connection pooling**: Uses `Pool` for efficient connection management
+- **Single export**: Only one `db` instance is created and exported
+
+### 2. Drizzle Configuration
+
+**File**: `drizzle.config.ts`
+
+Drizzle Kit configuration for schema management and migrations:
+
+```typescript
+import { defineConfig } from "drizzle-kit";
+
+if (!process.env.DATABASE_URL) {
+  throw new Error("DATABASE_URL, ensure the database is provisioned");
+}
+
+export default defineConfig({
+  out: "./migrations",
+  schema: "./shared/schema.ts",
+  dialect: "postgresql",
+  dbCredentials: {
+    url: process.env.DATABASE_URL,
+  },
+});
+```
+
+**Key Points**:
+- Points to `shared/schema.ts` for all table definitions
+- Uses `DATABASE_URL` environment variable
+- PostgreSQL dialect
+- Migrations output to `./migrations` directory
+
+### 3. Schema Definition Pattern
+
+**File**: `shared/schema.ts`
+
+All database tables are defined in a single centralized schema file:
+
+```typescript
+import { z } from "zod";
+import { pgTable, text, integer, bigint, varchar } from "drizzle-orm/pg-core";
+import { createInsertSchema } from "drizzle-zod";
+
+// 1. Table Definition
+export const ruleSuggestionsTable = pgTable("rule_suggestions", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  authorId: varchar("author_id", { length: 64 }).notNull(),
+  authorName: varchar("author_name", { length: 128 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  title: varchar("title", { length: 256 }).notNull(),
+  description: text("description").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// 2. Zod Schema for API Validation
+export const ruleSuggestionSchema = z.object({
+  id: z.string(),
+  leagueId: z.string(),
+  authorId: z.string(),
+  authorName: z.string(),
+  rosterId: z.number(),
+  title: z.string(),
+  description: z.string(),
+  status: z.enum(["pending", "approved", "rejected"]),
+  createdAt: z.number(),
+});
+
+// 3. Insert Schema (omits auto-generated fields)
+export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable)
+  .omit({ id: true, createdAt: true, status: true });
+
+// 4. Type Exports
+export type RuleSuggestion = z.infer<typeof ruleSuggestionSchema>;
+export type InsertRuleSuggestion = z.infer<typeof insertRuleSuggestionDbSchema>;
+```
+
+**Key Points**:
+- **Centralized**: All tables in one file (`shared/schema.ts`)
+- **Drizzle `pgTable`**: Use `pgTable` from `drizzle-orm/pg-core`
+- **Zod validation**: Include Zod schemas for API validation
+- **Field Types**:
+  - Primary keys: `varchar("id", { length: 36 })` with UUID
+  - Foreign keys: Match referenced table types
+  - Timestamps: `bigint("created_at", { mode: "number" })` storing `Date.now()`
+  - Status fields: `varchar("status", { length: 16 })` with enum values
+  - Text fields: `text("description")` for long text, `varchar("name", { length: 128 })` for short text
+  - Numbers: `integer("count")` for whole numbers
+- **Insert schemas**: Use `createInsertSchema().omit(...)` to exclude auto-generated fields
+- **Type exports**: Export both select and insert types
+
+### 4. Storage Layer Pattern
+
+**File**: `server/storage.ts`
+
+All database operations are abstracted through a storage layer:
+
+```typescript
+import { randomUUID } from "crypto";
+import { eq, and, desc, sql } from "drizzle-orm";
+import { db } from "./db";  // Import from single source
+import {
+  ruleSuggestionsTable,  // Import tables from schema
+  // ... other tables
+} from "@shared/schema";
+import type { 
+  RuleSuggestion, 
+  InsertRuleSuggestion,
+  // ... other types
+} from "@shared/schema";
+
+export class DatabaseStorage implements IStorage {
+  // GET operation example
+  async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
+    try {
+      const rows = await db
+        .select()
+        .from(ruleSuggestionsTable)
+        .where(eq(ruleSuggestionsTable.leagueId, leagueId))
+        .orderBy(desc(ruleSuggestionsTable.createdAt));
+
+      return rows.map(row => ({
+        id: row.id,
+        leagueId: row.leagueId,
+        // ... map all fields
+        createdAt: row.createdAt,
+      }));
+    } catch (error: any) {
+      // Handle PostgreSQL error codes
+      const errorCode = error.code;
+      if (errorCode === "42P01") {
+        throw new Error("Table does not exist. Please run 'npm run db:push'.");
+      }
+      if (errorCode === "08003" || errorCode === "08006") {
+        throw new Error("Database connection error. Check DATABASE_URL.");
+      }
+      throw error;
+    }
+  }
+
+  // CREATE operation example
+  async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
+    try {
+      const id = randomUUID();
+      const createdAt = Date.now();
+
+      await db.insert(ruleSuggestionsTable).values({
+        id,
+        ...data,
+        status: "pending",
+        createdAt,
+      });
+
+      return {
+        id,
+        ...data,
+        status: "pending",
+        createdAt,
+      };
+    } catch (error: any) {
+      // Error handling with PostgreSQL codes
+      // ...
+    }
+  }
+
+  // UPDATE operation example
+  async updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined> {
+    const [updated] = await db
+      .update(ruleSuggestionsTable)
+      .set(data)
+      .where(eq(ruleSuggestionsTable.id, id))
+      .returning();
+
+    return updated ? { ...updated } : undefined;
+  }
+
+  // DELETE operation example
+  async deleteRuleSuggestion(id: string): Promise<void> {
+    await db
+      .delete(ruleSuggestionsTable)
+      .where(eq(ruleSuggestionsTable.id, id));
+  }
+}
+
+// Export singleton instance
+export const storage = new DatabaseStorage();
+```
+
+**Key Points**:
+- **Import `db` from `./db`**: Never create new database connections
+- **Import tables from `@shared/schema`**: Use centralized table definitions
+- **Use Drizzle query builders**: `eq`, `and`, `desc`, `sql`, etc.
+- **Error handling**: Check PostgreSQL error codes (42P01 = table missing, 08003/08006 = connection error)
+- **Singleton pattern**: Export single `storage` instance
+- **Type safety**: Use types from `@shared/schema`
+
+### 5. Usage in Routes
+
+**File**: `server/routes.ts`
+
+Routes import and use the storage layer (never import `db` directly):
+
+```typescript
+import { storage } from "./storage";  // Import storage, not db
+
+export async function registerRoutes(httpServer: Server, app: Express) {
+  // GET endpoint example
+  app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const suggestions = await storage.getRuleSuggestions(leagueId);
+      res.json(suggestions);
+    } catch (error: any) {
+      console.error("[API] Error:", error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
+  // POST endpoint example
+  app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
+    try {
+      const { authorId, authorName, rosterId, title, description } = req.body;
+      const suggestion = await storage.createRuleSuggestion({
+        leagueId: req.params.leagueId,
+        authorId,
+        authorName,
+        rosterId,
+        title,
+        description,
+      });
+      res.json(suggestion);
+    } catch (error: any) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+}
+```
+
+**Key Points**:
+- **Import `storage`**: Never import `db` directly in routes
+- **Use storage methods**: All database operations go through storage layer
+- **Error handling**: Catch and return user-friendly error messages
+- **Type safety**: Use types from `@shared/schema` for request/response validation
+
+### 6. Environment Requirements
+
+**Replit Setup**:
+1. **Provision Database**: Create a PostgreSQL database in Replit (automatically sets `DATABASE_URL`)
+2. **Environment Variable**: `DATABASE_URL` is automatically set by Replit when database is provisioned
+3. **No manual configuration needed**: Replit handles connection string automatically
+
+**Migration Process**:
+1. **Define tables** in `shared/schema.ts`
+2. **Run migration**: `npm run db:push` to sync schema to database
+3. **Never manually create tables**: Always use `db:push` command
+
+**Verification**:
+- Check `DATABASE_URL` is set: `process.env.DATABASE_URL`
+- Run `npm run db:push` after schema changes
+- Use Database Viewer (`/admin/database`) to verify tables exist
+
+### 7. Error Handling Pattern
+
+**PostgreSQL Error Codes**:
+- **42P01**: Table does not exist → "Run 'npm run db:push' to create tables"
+- **08003/08006**: Connection error → "Check DATABASE_URL environment variable"
+- **23505**: Unique violation → "Duplicate entry detected"
+- **23502**: Not null violation → "Missing required field"
+
+**Example Error Handling**:
+```typescript
+try {
+  await db.insert(table).values(data);
+} catch (error: any) {
+  const errorCode = error.code;
+  const errorMessage = error.message || "";
+  
+  if (errorCode === "42P01" || errorMessage.includes("does not exist")) {
+    throw new Error("Table does not exist. Please run 'npm run db:push'.");
+  }
+  if (errorCode === "08003" || errorCode === "08006") {
+    throw new Error("Database connection error. Check DATABASE_URL.");
+  }
+  throw new Error(`Database error: ${errorMessage}`);
+}
+```
+
+### 8. Best Practices
+
+**DO**:
+- ✅ Always use the exported `db` instance from `server/db.ts`
+- ✅ Always use storage methods (never query `db` directly from routes)
+- ✅ Always define tables in `shared/schema.ts` (never inline)
+- ✅ Always use Drizzle query builders (`eq`, `and`, `desc`, etc.)
+- ✅ Always handle PostgreSQL error codes with actionable messages
+- ✅ Always run `npm run db:push` after schema changes
+- ✅ Always import tables from `@shared/schema`
+
+**DON'T**:
+- ❌ Never create new database connections
+- ❌ Never import `db` directly in routes (use `storage` instead)
+- ❌ Never define tables inline (always use `shared/schema.ts`)
+- ❌ Never use raw SQL when Drizzle query builders are available
+- ❌ Never manually create tables in the database
+- ❌ Never skip error handling for database operations
+
 ## Database Schema Patterns
 
 ### Table Definition

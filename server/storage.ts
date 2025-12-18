@@ -133,6 +133,10 @@ export class DatabaseStorage implements IStorage {
     this.sessions.delete(id);
   }
 
+  /**
+   * Get all rule suggestions for a league from rule_suggestions table.
+   * Follows Database Connection Pattern: uses db from ./db, table from @shared/schema.
+   */
   async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
     try {
       console.log("[Storage] Querying rule_suggestions table for leagueId:", leagueId);
@@ -140,6 +144,7 @@ export class DatabaseStorage implements IStorage {
         throw new Error("leagueId is required to query rule_suggestions table");
       }
       
+      // Database Connection Pattern: Use db from ./db, table from @shared/schema, Drizzle query builders
       const rows = await db
         .select()
         .from(ruleSuggestionsTable)
@@ -200,6 +205,10 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
+  /**
+   * Create a new rule suggestion in rule_suggestions table.
+   * Follows Database Connection Pattern: uses db from ./db, table from @shared/schema.
+   */
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
     try {
       console.log("[Storage] Inserting into rule_suggestions table:", {
@@ -208,6 +217,7 @@ export class DatabaseStorage implements IStorage {
         title: data.title,
       });
       
+      // Database Connection Pattern: Generate ID and timestamp, use db.insert with table from @shared/schema
       const id = randomUUID();
       const createdAt = Date.now();
 

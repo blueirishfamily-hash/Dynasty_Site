@@ -113,6 +113,8 @@ export default function RuleChanges() {
   ));
 
   // Fetch rule suggestions from rule_suggestions table
+  // Database Connection Pattern: Frontend uses TanStack Query to fetch from API routes
+  // API routes use storage methods, which use db from ./db and tables from @shared/schema
   const { 
     data: ruleSuggestions, 
     isLoading: rulesLoading, 
@@ -127,6 +129,7 @@ export default function RuleChanges() {
       }
       
       console.log("[RuleChanges] Fetching rule suggestions from rule_suggestions table for league:", league.leagueId);
+      // Database Connection Pattern: Fetch from API route (which uses storage methods)
       const res = await fetch(`/api/league/${league.leagueId}/rule-suggestions`);
       
       if (!res.ok) {
