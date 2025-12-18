@@ -421,7 +421,7 @@ export default function DatabaseViewer() {
                 </div>
               </CardContent>
             </Card>
-          </Card>
+          </TabsContent>
         )}
       </Tabs>
     </div>

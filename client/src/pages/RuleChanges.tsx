@@ -169,16 +169,6 @@ export default function RuleChanges() {
     retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
     refetchOnWindowFocus: true,
     refetchOnMount: true,
-    onError: (error: any) => {
-      console.error("[RuleChanges] Error fetching from rule_suggestions table:", error);
-      console.error("[RuleChanges] Error details:", error.message, error.stack);
-    },
-    onSuccess: (data) => {
-      console.log("[RuleChanges] Successfully connected to rule_suggestions table. Retrieved:", {
-        count: Array.isArray(data) ? data.length : 0,
-        leagueId: league?.leagueId,
-      });
-    },
   });
 
   // Log query state changes
@@ -597,6 +587,7 @@ export default function RuleChanges() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+        </div>
         </div>
 
         {!hasSelectedTeam && (
