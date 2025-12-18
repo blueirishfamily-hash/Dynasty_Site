@@ -2693,9 +2693,15 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      console.log("[API] Fetching rule suggestions for league:", leagueId);
+      console.log("[API] GET /api/league/:leagueId/rule-suggestions - Fetching from rule_suggestions table for league:", leagueId);
+      
+      if (!leagueId) {
+        return res.status(400).json({ error: "League ID is required" });
+      }
+
       const suggestions = await storage.getRuleSuggestions(leagueId);
-      console.log("[API] Found", suggestions.length, "rule suggestions for league", leagueId);
+      console.log("[API] Retrieved", suggestions.length, "rule suggestions from rule_suggestions table for league", leagueId);
+      
       // Get voting status for each rule
       const suggestionsWithVoting = await Promise.all(
         suggestions.map(async (suggestion) => {
@@ -2709,43 +2715,73 @@ export async function registerRoutes(
           };
         })
       );
-      console.log("[API] Returning", suggestionsWithVoting.length, "rule suggestions with voting status");
+      
+      console.log("[API] Returning", suggestionsWithVoting.length, "rule suggestions with voting status from rule_suggestions table");
+      
       // Ensure we always return an array
       if (!Array.isArray(suggestionsWithVoting)) {
         console.error("[API] suggestionsWithVoting is not an array:", typeof suggestionsWithVoting);
         return res.json([]);
       }
+      
       res.json(suggestionsWithVoting);
-    } catch (error) {
-      console.error("Error fetching rule suggestions:", error);
-      res.status(500).json({ error: "Failed to fetch rule suggestions" });
+    } catch (error: any) {
+      console.error("[API] Error fetching from rule_suggestions table:", error);
+      const errorMessage = error.message || "Failed to fetch rule suggestions";
+      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations")) {
+        return res.status(500).json({ 
+          error: "Database table error. Please ensure rule_suggestions table exists.",
+          details: errorMessage 
+        });
+      }
+      res.status(500).json({ error: errorMessage });
     }
   });
 
   app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
+      const leagueId = req.params.leagueId;
       const { authorId, authorName, rosterId, title, description } = req.body;
+      
+      console.log("[API] POST /api/league/:leagueId/rule-suggestions - Creating new rule in rule_suggestions table for league:", leagueId);
+      
       if (!authorId || !authorName || !rosterId || !title || !description) {
         return res.status(400).json({ error: "Missing required fields" });
       }
+      
+      if (!leagueId) {
+        return res.status(400).json({ error: "League ID is required" });
+      }
+
       const suggestion = await storage.createRuleSuggestion({
-        leagueId: req.params.leagueId,
+        leagueId,
         authorId,
         authorName,
         rosterId: parseInt(rosterId),
         title,
         description,
       });
+      
+      console.log("[API] Successfully created rule in rule_suggestions table. ID:", suggestion.id);
+      
       // Default voting to enabled for new rules
       await storage.setLeagueSetting(
-        req.params.leagueId,
+        leagueId,
         `rule_voting_enabled_${suggestion.id}`,
         "true"
       );
+      
       res.json({ ...suggestion, votingEnabled: true });
-    } catch (error) {
-      console.error("Error creating rule suggestion:", error);
-      res.status(500).json({ error: "Failed to create rule suggestion" });
+    } catch (error: any) {
+      console.error("[API] Error creating rule in rule_suggestions table:", error);
+      const errorMessage = error.message || "Failed to create rule suggestion";
+      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations")) {
+        return res.status(500).json({ 
+          error: "Database table error. Please ensure rule_suggestions table exists.",
+          details: errorMessage 
+        });
+      }
+      res.status(500).json({ error: errorMessage });
     }
   });
 
@@ -2754,6 +2790,8 @@ export async function registerRoutes(
     try {
       const { leagueId, id } = req.params;
       const { userId, title, description } = req.body;
+      
+      console.log("[API] PUT /api/league/:leagueId/rule-suggestions/:id - Updating rule in rule_suggestions table. ID:", id);
       
       if (!userId) {
         return res.status(400).json({ error: "Missing userId" });
@@ -2765,6 +2803,7 @@ export async function registerRoutes(
       // Get the rule suggestion to check authorization
       const rule = await storage.getRuleSuggestionById(id);
       if (!rule) {
+        console.log("[API] Rule suggestion not found in rule_suggestions table. ID:", id);
         return res.status(404).json({ error: "Rule suggestion not found" });
       }
 
@@ -2792,6 +2831,8 @@ export async function registerRoutes(
         return res.status(500).json({ error: "Failed to update rule suggestion" });
       }
 
+      console.log("[API] Successfully updated rule in rule_suggestions table. ID:", id);
+
       // Get voting status
       const votingEnabled = await storage.getLeagueSetting(
         leagueId,
@@ -2799,9 +2840,16 @@ export async function registerRoutes(
       );
 
       res.json({ ...updated, votingEnabled: votingEnabled === "true" });
-    } catch (error) {
-      console.error("Error updating rule suggestion:", error);
-      res.status(500).json({ error: "Failed to update rule suggestion" });
+    } catch (error: any) {
+      console.error("[API] Error updating rule in rule_suggestions table:", error);
+      const errorMessage = error.message || "Failed to update rule suggestion";
+      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations")) {
+        return res.status(500).json({ 
+          error: "Database table error. Please ensure rule_suggestions table exists.",
+          details: errorMessage 
+        });
+      }
+      res.status(500).json({ error: errorMessage });
     }
   });
 
@@ -2811,6 +2859,8 @@ export async function registerRoutes(
       const { leagueId, id } = req.params;
       const { userId } = req.body;
       
+      console.log("[API] DELETE /api/league/:leagueId/rule-suggestions/:id - Deleting rule from rule_suggestions table. ID:", id);
+      
       if (!userId) {
         return res.status(400).json({ error: "Missing userId" });
       }
@@ -2818,6 +2868,7 @@ export async function registerRoutes(
       // Get the rule suggestion to check authorization
       const rule = await storage.getRuleSuggestionById(id);
       if (!rule) {
+        console.log("[API] Rule suggestion not found in rule_suggestions table. ID:", id);
         return res.status(404).json({ error: "Rule suggestion not found" });
       }
 
@@ -2837,6 +2888,7 @@ export async function registerRoutes(
 
       // Delete the rule suggestion (this will also delete associated votes)
       await storage.deleteRuleSuggestion(id);
+      console.log("[API] Successfully deleted rule from rule_suggestions table. ID:", id);
 
       // Also delete the voting setting if it exists
       try {
@@ -2850,9 +2902,16 @@ export async function registerRoutes(
       }
 
       res.json({ success: true });
-    } catch (error) {
-      console.error("Error deleting rule suggestion:", error);
-      res.status(500).json({ error: "Failed to delete rule suggestion" });
+    } catch (error: any) {
+      console.error("[API] Error deleting rule from rule_suggestions table:", error);
+      const errorMessage = error.message || "Failed to delete rule suggestion";
+      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations")) {
+        return res.status(500).json({ 
+          error: "Database table error. Please ensure rule_suggestions table exists.",
+          details: errorMessage 
+        });
+      }
+      res.status(500).json({ error: errorMessage });
     }
   });
 

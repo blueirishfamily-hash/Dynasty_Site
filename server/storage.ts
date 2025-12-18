@@ -128,111 +128,180 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
-    console.log("[Storage] Querying rule suggestions for leagueId:", leagueId);
-    const rows = await db
-      .select()
-      .from(ruleSuggestionsTable)
-      .where(eq(ruleSuggestionsTable.leagueId, leagueId))
-      .orderBy(desc(ruleSuggestionsTable.createdAt));
+    try {
+      console.log("[Storage] Querying rule_suggestions table for leagueId:", leagueId);
+      if (!leagueId) {
+        throw new Error("leagueId is required to query rule_suggestions table");
+      }
+      
+      const rows = await db
+        .select()
+        .from(ruleSuggestionsTable)
+        .where(eq(ruleSuggestionsTable.leagueId, leagueId))
+        .orderBy(desc(ruleSuggestionsTable.createdAt));
 
-    console.log("[Storage] Found", rows.length, "rule suggestion rows in database for leagueId:", leagueId);
-    const suggestions = rows.map(row => ({
-      id: row.id,
-      leagueId: row.leagueId,
-      authorId: row.authorId,
-      authorName: row.authorName,
-      rosterId: row.rosterId,
-      title: row.title,
-      description: row.description,
-      status: row.status as "pending" | "approved" | "rejected",
-      upvotes: [],
-      downvotes: [],
-      createdAt: row.createdAt,
-    }));
-    console.log("[Storage] Returning", suggestions.length, "rule suggestions");
-    return suggestions;
+      console.log("[Storage] Successfully queried rule_suggestions table. Found", rows.length, "rows for leagueId:", leagueId);
+      
+      const suggestions = rows.map(row => {
+        // Validate each row has required fields
+        if (!row.id || !row.title || !row.description) {
+          console.warn("[Storage] Invalid row in rule_suggestions table:", row);
+          return null;
+        }
+        return {
+          id: row.id,
+          leagueId: row.leagueId,
+          authorId: row.authorId,
+          authorName: row.authorName,
+          rosterId: row.rosterId,
+          title: row.title,
+          description: row.description,
+          status: row.status as "pending" | "approved" | "rejected",
+          upvotes: [],
+          downvotes: [],
+          createdAt: row.createdAt,
+        };
+      }).filter((s): s is RuleSuggestion => s !== null);
+      
+      console.log("[Storage] Returning", suggestions.length, "valid rule suggestions from rule_suggestions table");
+      return suggestions;
+    } catch (error: any) {
+      console.error("[Storage] Error querying rule_suggestions table:", error);
+      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      }
+      if (error.message?.includes("connection") || error.message?.includes("timeout")) {
+        throw new Error("Database connection error. Please check DATABASE_URL.");
+      }
+      throw error;
+    }
   }
 
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
-    const id = randomUUID();
-    const createdAt = Date.now();
+    try {
+      console.log("[Storage] Inserting into rule_suggestions table:", {
+        leagueId: data.leagueId,
+        authorId: data.authorId,
+        title: data.title,
+      });
+      
+      const id = randomUUID();
+      const createdAt = Date.now();
 
-    await db.insert(ruleSuggestionsTable).values({
-      id,
-      leagueId: data.leagueId,
-      authorId: data.authorId,
-      authorName: data.authorName,
-      rosterId: data.rosterId,
-      title: data.title,
-      description: data.description,
-      status: "pending",
-      createdAt,
-    });
+      await db.insert(ruleSuggestionsTable).values({
+        id,
+        leagueId: data.leagueId,
+        authorId: data.authorId,
+        authorName: data.authorName,
+        rosterId: data.rosterId,
+        title: data.title,
+        description: data.description,
+        status: "pending",
+        createdAt,
+      });
 
-    return {
-      id,
-      ...data,
-      status: "pending",
-      upvotes: [],
-      downvotes: [],
-      createdAt,
-    };
+      console.log("[Storage] Successfully inserted into rule_suggestions table. ID:", id);
+
+      return {
+        id,
+        ...data,
+        status: "pending",
+        upvotes: [],
+        downvotes: [],
+        createdAt,
+      };
+    } catch (error: any) {
+      console.error("[Storage] Error inserting into rule_suggestions table:", error);
+      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      }
+      if (error.message?.includes("connection") || error.message?.includes("timeout")) {
+        throw new Error("Database connection error. Please check DATABASE_URL.");
+      }
+      throw error;
+    }
   }
 
   async getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined> {
-    const [row] = await db
-      .select()
-      .from(ruleSuggestionsTable)
-      .where(eq(ruleSuggestionsTable.id, id));
+    try {
+      console.log("[Storage] Querying rule_suggestions table for rule ID:", id);
+      const [row] = await db
+        .select()
+        .from(ruleSuggestionsTable)
+        .where(eq(ruleSuggestionsTable.id, id));
 
-    if (!row) return undefined;
+      if (!row) {
+        console.log("[Storage] Rule suggestion not found in rule_suggestions table for ID:", id);
+        return undefined;
+      }
 
-    return {
-      id: row.id,
-      leagueId: row.leagueId,
-      authorId: row.authorId,
-      authorName: row.authorName,
-      rosterId: row.rosterId,
-      title: row.title,
-      description: row.description,
-      status: row.status as "pending" | "approved" | "rejected",
-      upvotes: [],
-      downvotes: [],
-      createdAt: row.createdAt,
-    };
+      console.log("[Storage] Found rule suggestion in rule_suggestions table:", id);
+      return {
+        id: row.id,
+        leagueId: row.leagueId,
+        authorId: row.authorId,
+        authorName: row.authorName,
+        rosterId: row.rosterId,
+        title: row.title,
+        description: row.description,
+        status: row.status as "pending" | "approved" | "rejected",
+        upvotes: [],
+        downvotes: [],
+        createdAt: row.createdAt,
+      };
+    } catch (error: any) {
+      console.error("[Storage] Error querying rule_suggestions table by ID:", error);
+      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      }
+      throw error;
+    }
   }
 
   async updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined> {
-    const updateData: { title?: string; description?: string } = {};
-    if (data.title !== undefined) updateData.title = data.title;
-    if (data.description !== undefined) updateData.description = data.description;
+    try {
+      console.log("[Storage] Updating rule_suggestions table for rule ID:", id);
+      const updateData: { title?: string; description?: string } = {};
+      if (data.title !== undefined) updateData.title = data.title;
+      if (data.description !== undefined) updateData.description = data.description;
 
-    if (Object.keys(updateData).length === 0) {
-      // No updates to make, just return the existing rule
-      return this.getRuleSuggestionById(id);
+      if (Object.keys(updateData).length === 0) {
+        // No updates to make, just return the existing rule
+        return this.getRuleSuggestionById(id);
+      }
+
+      const [updated] = await db
+        .update(ruleSuggestionsTable)
+        .set(updateData)
+        .where(eq(ruleSuggestionsTable.id, id))
+        .returning();
+
+      if (!updated) {
+        console.log("[Storage] Rule suggestion not found in rule_suggestions table for update. ID:", id);
+        return undefined;
+      }
+
+      console.log("[Storage] Successfully updated rule_suggestions table. ID:", id);
+      return {
+        id: updated.id,
+        leagueId: updated.leagueId,
+        authorId: updated.authorId,
+        authorName: updated.authorName,
+        rosterId: updated.rosterId,
+        title: updated.title,
+        description: updated.description,
+        status: updated.status as "pending" | "approved" | "rejected",
+        upvotes: [],
+        downvotes: [],
+        createdAt: updated.createdAt,
+      };
+    } catch (error: any) {
+      console.error("[Storage] Error updating rule_suggestions table:", error);
+      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      }
+      throw error;
     }
-
-    const [updated] = await db
-      .update(ruleSuggestionsTable)
-      .set(updateData)
-      .where(eq(ruleSuggestionsTable.id, id))
-      .returning();
-
-    if (!updated) return undefined;
-
-    return {
-      id: updated.id,
-      leagueId: updated.leagueId,
-      authorId: updated.authorId,
-      authorName: updated.authorName,
-      rosterId: updated.rosterId,
-      title: updated.title,
-      description: updated.description,
-      status: updated.status as "pending" | "approved" | "rejected",
-      upvotes: [],
-      downvotes: [],
-      createdAt: updated.createdAt,
-    };
   }
 
   async updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined> {
@@ -260,15 +329,27 @@ export class DatabaseStorage implements IStorage {
   }
 
   async deleteRuleSuggestion(id: string): Promise<void> {
-    // First delete all associated votes
-    await db
-      .delete(ruleVotesTable)
-      .where(eq(ruleVotesTable.ruleId, id));
-    
-    // Then delete the rule suggestion
-    await db
-      .delete(ruleSuggestionsTable)
-      .where(eq(ruleSuggestionsTable.id, id));
+    try {
+      console.log("[Storage] Deleting from rule_suggestions table. Rule ID:", id);
+      
+      // First delete all associated votes
+      await db
+        .delete(ruleVotesTable)
+        .where(eq(ruleVotesTable.ruleId, id));
+      
+      // Then delete the rule suggestion
+      await db
+        .delete(ruleSuggestionsTable)
+        .where(eq(ruleSuggestionsTable.id, id));
+      
+      console.log("[Storage] Successfully deleted from rule_suggestions table. Rule ID:", id);
+    } catch (error: any) {
+      console.error("[Storage] Error deleting from rule_suggestions table:", error);
+      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      }
+      throw error;
+    }
   }
 
   async getRuleVotes(ruleId: string): Promise<RuleVote[]> {

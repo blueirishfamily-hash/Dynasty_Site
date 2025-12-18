@@ -110,7 +110,7 @@ export default function RuleChanges() {
     COMMISSIONER_USER_IDS.includes(user.userId)
   ));
 
-  // Fetch rule suggestions
+  // Fetch rule suggestions from rule_suggestions table
   const { 
     data: ruleSuggestions, 
     isLoading: rulesLoading, 
@@ -120,42 +120,56 @@ export default function RuleChanges() {
   } = useQuery<RuleSuggestionWithVoting[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
-      console.log("[RuleChanges] Fetching rule suggestions for league:", league?.leagueId);
-      const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
+      if (!league?.leagueId) {
+        throw new Error("League ID is required to fetch rule suggestions");
+      }
+      
+      console.log("[RuleChanges] Fetching rule suggestions from rule_suggestions table for league:", league.leagueId);
+      const res = await fetch(`/api/league/${league.leagueId}/rule-suggestions`);
+      
       if (!res.ok) {
         const errorText = await res.text();
-        console.error("[RuleChanges] API error response:", res.status, errorText);
-        throw new Error(`Failed to fetch rule suggestions: ${res.status} ${errorText}`);
+        let errorData;
+        try {
+          errorData = JSON.parse(errorText);
+        } catch {
+          errorData = { error: errorText };
+        }
+        console.error("[RuleChanges] API error response from rule_suggestions table:", res.status, errorData);
+        throw new Error(errorData.error || errorData.details || `Failed to fetch rule suggestions: ${res.status}`);
       }
+      
       const data = await res.json();
       // Validate that the response is an array
       if (!Array.isArray(data)) {
-        console.error("[RuleChanges] API response is not an array:", typeof data, data);
-        throw new Error("Invalid response format: expected array");
+        console.error("[RuleChanges] API response from rule_suggestions table is not an array:", typeof data, data);
+        throw new Error("Invalid response format: expected array from rule_suggestions table");
       }
+      
       // Validate each rule has required fields
       const validRules = data.filter((rule: any) => {
         if (!rule || !rule.id || !rule.title || !rule.description) {
-          console.warn("[RuleChanges] Invalid rule in response:", rule);
+          console.warn("[RuleChanges] Invalid rule from rule_suggestions table:", rule);
           return false;
         }
         return true;
       });
-      console.log("[RuleChanges] Rule suggestions fetched successfully:", {
+      
+      console.log("[RuleChanges] Successfully fetched rule suggestions from rule_suggestions table:", {
         total: data.length,
         valid: validRules.length,
-        leagueId: league?.leagueId,
+        leagueId: league.leagueId,
       });
       return validRules;
     },
     enabled: !!league?.leagueId,
-    onError: (error) => {
-      console.error("[RuleChanges] Query error:", error);
+    onError: (error: any) => {
+      console.error("[RuleChanges] Error fetching from rule_suggestions table:", error);
+      console.error("[RuleChanges] Error details:", error.message, error.stack);
     },
     onSuccess: (data) => {
-      console.log("[RuleChanges] Query success:", {
+      console.log("[RuleChanges] Successfully connected to rule_suggestions table. Retrieved:", {
         count: Array.isArray(data) ? data.length : 0,
-        enabled: !!league?.leagueId,
         leagueId: league?.leagueId,
       });
     },
