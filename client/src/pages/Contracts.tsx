@@ -2149,7 +2149,12 @@ function ManageTeamContractsTab({
                           const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
                           const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
                           const thisPlayerHasExtension = extensionStatus?.extension?.playerId === player.playerId;
-                          const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending || deleteExtensionMutation.isPending;
+                          // For commissioners: only disable during mutations
+                          // For non-commissioners: disable if can't apply extension (team used, not eligible, or mutation in progress)
+                          const isApplyingDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending;
+                          const toggleDisabled = isCommissioner 
+                            ? (applyExtensionMutation.isPending || deleteExtensionMutation.isPending)
+                            : isApplyingDisabled;
                           
                           return (
                             <Popover open={openExtensionPopover === player.playerId} onOpenChange={(open) => {
@@ -2161,7 +2166,7 @@ function ManageTeamContractsTab({
                                     <div>
                                       <Switch
                                         checked={thisPlayerHasExtension}
-                                        disabled={extensionDisabled && !isCommissioner}
+                                        disabled={toggleDisabled}
                                         onCheckedChange={(checked) => {
                                           if (checked) {
                                             // Open popover to show extension options when checked
