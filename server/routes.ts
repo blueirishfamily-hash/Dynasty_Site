@@ -2744,6 +2744,113 @@ export async function registerRoutes(
     }
   });
 
+  // Update a rule suggestion (author or commissioner only)
+  app.put("/api/league/:leagueId/rule-suggestions/:id", async (req, res) => {
+    try {
+      const { leagueId, id } = req.params;
+      const { userId, title, description } = req.body;
+      
+      if (!userId) {
+        return res.status(400).json({ error: "Missing userId" });
+      }
+      if (!title && !description) {
+        return res.status(400).json({ error: "Must provide title or description to update" });
+      }
+
+      // Get the rule suggestion to check authorization
+      const rule = await storage.getRuleSuggestionById(id);
+      if (!rule) {
+        return res.status(404).json({ error: "Rule suggestion not found" });
+      }
+
+      if (rule.leagueId !== leagueId) {
+        return res.status(400).json({ error: "Rule suggestion does not belong to this league" });
+      }
+
+      // Check authorization: user must be the author or a commissioner
+      const league = await getLeague(leagueId);
+      const isAuthor = rule.authorId === userId;
+      const isCommissioner = league && (league.owner_id === userId || 
+        ["900186363130503168"].includes(userId));
+      
+      if (!isAuthor && !isCommissioner) {
+        return res.status(403).json({ error: "Unauthorized: You can only edit your own rule suggestions" });
+      }
+
+      // Update the rule suggestion
+      const updateData: { title?: string; description?: string } = {};
+      if (title !== undefined) updateData.title = title;
+      if (description !== undefined) updateData.description = description;
+
+      const updated = await storage.updateRuleSuggestion(id, updateData);
+      if (!updated) {
+        return res.status(500).json({ error: "Failed to update rule suggestion" });
+      }
+
+      // Get voting status
+      const votingEnabled = await storage.getLeagueSetting(
+        leagueId,
+        `rule_voting_enabled_${id}`
+      );
+
+      res.json({ ...updated, votingEnabled: votingEnabled === "true" });
+    } catch (error) {
+      console.error("Error updating rule suggestion:", error);
+      res.status(500).json({ error: "Failed to update rule suggestion" });
+    }
+  });
+
+  // Delete a rule suggestion (author or commissioner only)
+  app.delete("/api/league/:leagueId/rule-suggestions/:id", async (req, res) => {
+    try {
+      const { leagueId, id } = req.params;
+      const { userId } = req.body;
+      
+      if (!userId) {
+        return res.status(400).json({ error: "Missing userId" });
+      }
+
+      // Get the rule suggestion to check authorization
+      const rule = await storage.getRuleSuggestionById(id);
+      if (!rule) {
+        return res.status(404).json({ error: "Rule suggestion not found" });
+      }
+
+      if (rule.leagueId !== leagueId) {
+        return res.status(400).json({ error: "Rule suggestion does not belong to this league" });
+      }
+
+      // Check authorization: user must be the author or a commissioner
+      const league = await getLeague(leagueId);
+      const isAuthor = rule.authorId === userId;
+      const isCommissioner = league && (league.owner_id === userId || 
+        ["900186363130503168"].includes(userId));
+      
+      if (!isAuthor && !isCommissioner) {
+        return res.status(403).json({ error: "Unauthorized: You can only delete your own rule suggestions" });
+      }
+
+      // Delete the rule suggestion (this will also delete associated votes)
+      await storage.deleteRuleSuggestion(id);
+
+      // Also delete the voting setting if it exists
+      try {
+        await storage.setLeagueSetting(
+          leagueId,
+          `rule_voting_enabled_${id}`,
+          ""
+        );
+      } catch (e) {
+        // Ignore errors deleting the setting
+      }
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error deleting rule suggestion:", error);
+      res.status(500).json({ error: "Failed to delete rule suggestion" });
+    }
+  });
+
   // Cast vote on a rule (1 vote per team per rule)
   app.post("/api/rule-suggestions/:id/vote", async (req, res) => {
     try {

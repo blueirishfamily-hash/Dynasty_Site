@@ -18,6 +18,16 @@ import {
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
@@ -35,6 +45,8 @@ import {
   Users,
   Settings,
   AlertCircle,
+  Edit,
+  Trash2,
 } from "lucide-react";
 import type { RuleSuggestion, RuleVote } from "@shared/schema";
 
@@ -70,6 +82,12 @@ export default function RuleChanges() {
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [ruleTitle, setRuleTitle] = useState("");
   const [ruleDescription, setRuleDescription] = useState("");
+  const [editDialogOpen, setEditDialogOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<RuleSuggestionWithVoting | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editDescription, setEditDescription] = useState("");
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null);
 
   // Check if user has selected a team
   const { data: standings } = useQuery<any[]>({
@@ -251,6 +269,78 @@ export default function RuleChanges() {
     },
   });
 
+  // Update rule mutation
+  const updateRuleMutation = useMutation({
+    mutationFn: async ({ ruleId, title, description }: { ruleId: string; title: string; description: string }) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions/${ruleId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user?.userId,
+          title,
+          description,
+        }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to update rule suggestion");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Rule suggestion updated",
+        description: "Your rule change has been updated successfully.",
+      });
+      setEditDialogOpen(false);
+      setEditingRule(null);
+      setEditTitle("");
+      setEditDescription("");
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Delete rule mutation
+  const deleteRuleMutation = useMutation({
+    mutationFn: async (ruleId: string) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions/${ruleId}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user?.userId,
+        }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to delete rule suggestion");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({
+        title: "Rule suggestion deleted",
+        description: "The rule change has been deleted successfully.",
+      });
+      setDeleteDialogOpen(false);
+      setDeletingRuleId(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleSubmitRule = () => {
     if (!ruleTitle.trim() || !ruleDescription.trim()) {
       toast({
@@ -264,6 +354,40 @@ export default function RuleChanges() {
       title: ruleTitle.trim(),
       description: ruleDescription.trim(),
     });
+  };
+
+  const handleEditRule = (rule: RuleSuggestionWithVoting) => {
+    setEditingRule(rule);
+    setEditTitle(rule.title);
+    setEditDescription(rule.description);
+    setEditDialogOpen(true);
+  };
+
+  const handleUpdateRule = () => {
+    if (!editingRule) return;
+    if (!editTitle.trim() || !editDescription.trim()) {
+      toast({
+        title: "Validation Error",
+        description: "Please fill in both title and description.",
+        variant: "destructive",
+      });
+      return;
+    }
+    updateRuleMutation.mutate({
+      ruleId: editingRule.id,
+      title: editTitle.trim(),
+      description: editDescription.trim(),
+    });
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    setDeletingRuleId(ruleId);
+    setDeleteDialogOpen(true);
+  };
+
+  const confirmDeleteRule = () => {
+    if (!deletingRuleId) return;
+    deleteRuleMutation.mutate(deletingRuleId);
   };
 
   if (!league) {
@@ -439,10 +563,13 @@ export default function RuleChanges() {
                     userRosterId={userRosterId}
                     hasSelectedTeam={hasSelectedTeam}
                     isCommissioner={isCommissioner}
+                    userId={user?.userId}
                     onVote={(vote) => voteMutation.mutate({ ruleId: rule.id, vote })}
                     onToggleVoting={(enabled) =>
                       toggleVotingMutation.mutate({ ruleId: rule.id, enabled })
                     }
+                    onEdit={() => handleEditRule(rule)}
+                    onDelete={() => handleDeleteRule(rule.id)}
                     leagueId={league.leagueId}
                   />
                 );
@@ -460,6 +587,70 @@ export default function RuleChanges() {
             </Card>
           )
         ) : null}
+
+        {/* Edit Rule Dialog */}
+        <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Edit Rule Change Proposal</DialogTitle>
+              <DialogDescription>
+                Update the title and description of your rule change proposal.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <Label htmlFor="edit-rule-title">Title</Label>
+                <Input
+                  id="edit-rule-title"
+                  placeholder="e.g., Increase roster size to 20 players"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="edit-rule-description">Description</Label>
+                <Textarea
+                  id="edit-rule-description"
+                  placeholder="Describe the proposed rule change in detail..."
+                  value={editDescription}
+                  onChange={(e) => setEditDescription(e.target.value)}
+                  rows={6}
+                />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={handleUpdateRule} disabled={updateRuleMutation.isPending}>
+                {updateRuleMutation.isPending ? "Updating..." : "Update"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Delete Confirmation Dialog */}
+        <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Rule Suggestion?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This action cannot be undone. This will permanently delete the rule suggestion
+                and all associated votes.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={confirmDeleteRule}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={deleteRuleMutation.isPending}
+              >
+                {deleteRuleMutation.isPending ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
     </>
   );
@@ -470,16 +661,22 @@ function RuleCard({
   userRosterId,
   hasSelectedTeam,
   isCommissioner,
+  userId,
   onVote,
   onToggleVoting,
+  onEdit,
+  onDelete,
   leagueId,
 }: {
   rule: RuleSuggestionWithVoting;
   userRosterId?: number;
   hasSelectedTeam: boolean;
   isCommissioner: boolean;
+  userId?: string;
   onVote: (vote: "approve" | "reject") => void;
   onToggleVoting: (enabled: boolean) => void;
+  onEdit: () => void;
+  onDelete: () => void;
   leagueId: string;
 }) {
   const { toast } = useToast();
@@ -510,6 +707,10 @@ function RuleCard({
   const approveCount = votesData?.approveCount || 0;
   const rejectCount = votesData?.rejectCount || 0;
   const currentUserVote = userVoteData?.vote;
+
+  // Check if user can edit/delete this rule
+  const isAuthor = rule.authorId === userId;
+  const canEditOrDelete = isAuthor || isCommissioner;
 
   const handleVote = (vote: "approve" | "reject") => {
     if (!hasSelectedTeam) {
@@ -566,18 +767,42 @@ function RuleCard({
               </div>
             </div>
           </div>
-          {isCommissioner && (
-            <div className="flex items-center gap-2">
-              <Switch
-                checked={votingEnabled}
-                onCheckedChange={onToggleVoting}
-                id={`voting-toggle-${rule.id}`}
-              />
-              <Label htmlFor={`voting-toggle-${rule.id}`} className="text-sm">
-                Voting {votingEnabled ? "On" : "Off"}
-              </Label>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {canEditOrDelete && (
+              <>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onEdit}
+                  className="h-8 w-8"
+                  title="Edit rule"
+                >
+                  <Edit className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={onDelete}
+                  className="h-8 w-8 text-destructive hover:text-destructive"
+                  title="Delete rule"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </>
+            )}
+            {isCommissioner && (
+              <div className="flex items-center gap-2 ml-2">
+                <Switch
+                  checked={votingEnabled}
+                  onCheckedChange={onToggleVoting}
+                  id={`voting-toggle-${rule.id}`}
+                />
+                <Label htmlFor={`voting-toggle-${rule.id}`} className="text-sm">
+                  Voting {votingEnabled ? "On" : "Off"}
+                </Label>
+              </div>
+            )}
+          </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">

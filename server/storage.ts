@@ -43,8 +43,11 @@ export interface IStorage {
   deleteSession(id: string): Promise<void>;
   
   getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]>;
+  getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined>;
   createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion>;
+  updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined>;
   updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined>;
+  deleteRuleSuggestion(id: string): Promise<void>;
   
   getRuleVotes(ruleId: string): Promise<RuleVote[]>;
   castRuleVote(data: InsertRuleVote): Promise<RuleVote>;
@@ -176,6 +179,62 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined> {
+    const [row] = await db
+      .select()
+      .from(ruleSuggestionsTable)
+      .where(eq(ruleSuggestionsTable.id, id));
+
+    if (!row) return undefined;
+
+    return {
+      id: row.id,
+      leagueId: row.leagueId,
+      authorId: row.authorId,
+      authorName: row.authorName,
+      rosterId: row.rosterId,
+      title: row.title,
+      description: row.description,
+      status: row.status as "pending" | "approved" | "rejected",
+      upvotes: [],
+      downvotes: [],
+      createdAt: row.createdAt,
+    };
+  }
+
+  async updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined> {
+    const updateData: { title?: string; description?: string } = {};
+    if (data.title !== undefined) updateData.title = data.title;
+    if (data.description !== undefined) updateData.description = data.description;
+
+    if (Object.keys(updateData).length === 0) {
+      // No updates to make, just return the existing rule
+      return this.getRuleSuggestionById(id);
+    }
+
+    const [updated] = await db
+      .update(ruleSuggestionsTable)
+      .set(updateData)
+      .where(eq(ruleSuggestionsTable.id, id))
+      .returning();
+
+    if (!updated) return undefined;
+
+    return {
+      id: updated.id,
+      leagueId: updated.leagueId,
+      authorId: updated.authorId,
+      authorName: updated.authorName,
+      rosterId: updated.rosterId,
+      title: updated.title,
+      description: updated.description,
+      status: updated.status as "pending" | "approved" | "rejected",
+      upvotes: [],
+      downvotes: [],
+      createdAt: updated.createdAt,
+    };
+  }
+
   async updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined> {
     const [updated] = await db
       .update(ruleSuggestionsTable)
@@ -198,6 +257,18 @@ export class DatabaseStorage implements IStorage {
       downvotes: [],
       createdAt: updated.createdAt,
     };
+  }
+
+  async deleteRuleSuggestion(id: string): Promise<void> {
+    // First delete all associated votes
+    await db
+      .delete(ruleVotesTable)
+      .where(eq(ruleVotesTable.ruleId, id));
+    
+    // Then delete the rule suggestion
+    await db
+      .delete(ruleSuggestionsTable)
+      .where(eq(ruleSuggestionsTable.id, id));
   }
 
   async getRuleVotes(ruleId: string): Promise<RuleVote[]> {
