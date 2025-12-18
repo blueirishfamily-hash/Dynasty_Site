@@ -51,6 +51,10 @@ import {
 } from "lucide-react";
 import type { RuleSuggestion, AwardNomination, RuleVote, AwardBallot } from "@shared/schema";
 
+interface RuleSuggestionWithVoting extends RuleSuggestion {
+  votingEnabled?: boolean;
+}
+
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
   RB: "bg-primary text-primary-foreground",
@@ -204,7 +208,7 @@ export default function LeagueHub() {
     COMMISSIONER_USER_IDS.includes(user.userId)
   );
 
-  const { data: ruleSuggestions, isLoading: rulesLoading } = useQuery<RuleSuggestion[]>({
+  const { data: ruleSuggestions, isLoading: rulesLoading } = useQuery<RuleSuggestionWithVoting[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
@@ -295,10 +299,14 @@ export default function LeagueHub() {
 
   const createRuleMutation = useMutation({
     mutationFn: async (data: { title: string; description: string }) => {
+      if (!userRosterId) {
+        throw new Error("Please select your team first");
+      }
       return apiRequest("POST", `/api/league/${league?.leagueId}/rule-suggestions`, {
         ...data,
         authorId: user?.userId || "guest",
         authorName: user?.displayName || "Guest",
+        rosterId: userRosterId,
       });
     },
     onSuccess: () => {
@@ -308,8 +316,8 @@ export default function LeagueHub() {
       setRuleDescription("");
       toast({ title: "Rule suggestion submitted!" });
     },
-    onError: () => {
-      toast({ title: "Failed to submit suggestion", variant: "destructive" });
+    onError: (error: Error) => {
+      toast({ title: "Failed to submit suggestion", description: error.message, variant: "destructive" });
     },
   });
 
@@ -319,6 +327,7 @@ export default function LeagueHub() {
         rosterId: userRosterId,
         voterName: userTeamName,
         vote,
+        leagueId: league?.leagueId,
       });
     },
     onSuccess: () => {
@@ -1066,7 +1075,7 @@ function RuleCard({
   formatTimeAgo,
   isLocked,
 }: { 
-  suggestion: RuleSuggestion; 
+  suggestion: RuleSuggestionWithVoting; 
   userRosterId: number | undefined;
   onVote: (vote: "approve" | "reject") => void;
   formatTimeAgo: (timestamp: number) => string;
