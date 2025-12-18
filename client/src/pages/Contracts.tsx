@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -873,6 +873,11 @@ function ManageTeamContractsTab({
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
   const [activeView, setActiveView] = useState<"contracts" | "salary-breakdown">("contracts");
   const [openExtensionPopover, setOpenExtensionPopover] = useState<string | null>(null);
+  
+  // Track if we're currently loading drafts to prevent auto-save during load
+  const isLoadingDraftsRef = useRef(false);
+  // Track if this is the initial mount to prevent auto-save on initial load
+  const isInitialMountRef = useRef(true);
 
   // Query for pending approval requests
   const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
@@ -1010,34 +1015,19 @@ function ManageTeamContractsTab({
     setPrevLeagueContractDataRef(currentContractsJson);
   }, [leagueContractData, userTeam]);
 
-  // Load saved drafts - but DON'T override league contract values
-  // Drafts are now only used as a reference; league contracts are always the source of truth
-  useEffect(() => {
-    if (savedDrafts && savedDrafts.length > 0 && !draftsLoaded) {
-      const taggedPlayers = new Set<string>();
-      let latestUpdatedAt = 0;
-      
-      for (const draft of savedDrafts) {
-        if (draft.franchiseTagApplied === 1) {
-          taggedPlayers.add(draft.playerId);
-        }
-        
-        if (draft.updatedAt > latestUpdatedAt) {
-          latestUpdatedAt = draft.updatedAt;
-        }
-      }
-      
-      // Only load franchise tag info, NOT salary overrides
-      // This ensures league contracts are always displayed
-      setFranchiseTaggedPlayers(taggedPlayers);
-      setLastSavedAt(latestUpdatedAt);
-      setDraftsLoaded(true);
-    }
-  }, [savedDrafts, draftsLoaded]);
-
-  // Save draft mutation
-  const saveDraftMutation = useMutation({
-    mutationFn: async (drafts: Array<{
+  // Helper function to build drafts array from current hypothetical data
+  const buildDraftsArray = (): Array<{
+    playerId: string;
+    playerName: string;
+    playerPosition: string;
+    salary2025: number;
+    salary2026: number;
+    salary2027: number;
+    salary2028: number;
+    salary2029: number;
+    franchiseTagApplied: number;
+  }> => {
+    const drafts: Array<{
       playerId: string;
       playerName: string;
       playerPosition: string;
@@ -1047,26 +1037,97 @@ function ManageTeamContractsTab({
       salary2028: number;
       salary2029: number;
       franchiseTagApplied: number;
-    }>) => {
+    }> = [];
+
+    // Add roster players with their hypothetical salaries
+    for (const player of rosterPlayers) {
+      const salary2025 = player.hypotheticalSalaries[2025] || 0;
+      const salary2026 = player.hypotheticalSalaries[2026] || 0;
+      const salary2027 = player.hypotheticalSalaries[2027] || 0;
+      const salary2028 = player.hypotheticalSalaries[2028] || 0;
+      const salary2029 = player.hypotheticalSalaries[2029] || 0;
+
+      // Include if there's any salary value or overrides
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0 ||
+          hypotheticalData.salaryOverrides[player.playerId]) {
+        drafts.push({
+          playerId: player.playerId,
+          playerName: player.name,
+          playerPosition: player.position,
+          salary2025: Math.round(salary2025 * 10),
+          salary2026: Math.round(salary2026 * 10),
+          salary2027: Math.round(salary2027 * 10),
+          salary2028: Math.round(salary2028 * 10),
+          salary2029: Math.round(salary2029 * 10),
+          franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId) ? 1 : 0,
+        });
+      }
+    }
+
+    // Add free agents with their salaries
+    for (const player of hypotheticalData.addedFreeAgents) {
+      const salary2025 = player.hypotheticalSalaries[2025] || 0;
+      const salary2026 = player.hypotheticalSalaries[2026] || 0;
+      const salary2027 = player.hypotheticalSalaries[2027] || 0;
+      const salary2028 = player.hypotheticalSalaries[2028] || 0;
+      const salary2029 = player.hypotheticalSalaries[2029] || 0;
+
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
+        drafts.push({
+          playerId: player.playerId,
+          playerName: player.name,
+          playerPosition: player.position,
+          salary2025: Math.round(salary2025 * 10),
+          salary2026: Math.round(salary2026 * 10),
+          salary2027: Math.round(salary2027 * 10),
+          salary2028: Math.round(salary2028 * 10),
+          salary2029: Math.round(salary2029 * 10),
+          franchiseTagApplied: 0,
+        });
+      }
+    }
+
+    return drafts;
+  };
+
+  // Save draft mutation
+  const saveDraftMutation = useMutation({
+    mutationFn: async ({ drafts, silent }: { drafts: Array<{
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      salary2025: number;
+      salary2026: number;
+      salary2027: number;
+      salary2028: number;
+      salary2029: number;
+      franchiseTagApplied: number;
+    }>; silent?: boolean }) => {
       return apiRequest("POST", `/api/league/${leagueId}/contract-drafts`, {
         rosterId: userTeam?.rosterId,
         drafts,
       });
     },
-    onSuccess: () => {
+    onSuccess: (_, variables) => {
       setLastSavedAt(Date.now());
-      toast({
-        title: "Draft Saved",
-        description: "Your contract changes have been saved for later.",
-      });
+      // Only show toast for manual saves, not auto-saves
+      if (!variables.silent) {
+        toast({
+          title: "Draft Saved",
+          description: "Your contract changes have been saved for later.",
+        });
+      }
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contract-drafts'] });
     },
-    onError: (error: Error) => {
-      toast({
-        title: "Save Failed",
-        description: error.message || "Failed to save draft.",
-        variant: "destructive",
-      });
+    onError: (error: Error, variables) => {
+      // Only show error toast for manual saves, not auto-saves
+      if (!variables.silent) {
+        toast({
+          title: "Save Failed",
+          description: error.message || "Failed to save draft.",
+          variant: "destructive",
+        });
+      }
     },
   });
 
@@ -1109,6 +1170,104 @@ function ManageTeamContractsTab({
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
+
+  // Load saved drafts and restore salary overrides and free agents
+  useEffect(() => {
+    if (savedDrafts && savedDrafts.length > 0 && !draftsLoaded && userTeam) {
+      isLoadingDraftsRef.current = true;
+      
+      const taggedPlayers = new Set<string>();
+      const salaryOverrides: Record<string, Record<number, number>> = {};
+      const addedFreeAgents: HypotheticalPlayer[] = [];
+      let latestUpdatedAt = 0;
+      
+      const rosterId = userTeam.rosterId.toString();
+      const currentTeamContracts = leagueContractData[rosterId] || {};
+      
+      for (const draft of savedDrafts) {
+        // Track franchise tags
+        if (draft.franchiseTagApplied === 1) {
+          taggedPlayers.add(draft.playerId);
+        }
+        
+        // Track latest update time
+        if (draft.updatedAt > latestUpdatedAt) {
+          latestUpdatedAt = draft.updatedAt;
+        }
+        
+        // Check if player is in roster (roster player) or not (free agent)
+        const isRosterPlayer = allRosterPlayerIdsSet.has(draft.playerId);
+        
+        if (isRosterPlayer) {
+          // This is a roster player - create salary overrides for differences
+          const officialContract = currentTeamContracts[draft.playerId];
+          const draftSalaries = {
+            2025: (draft.salary2025 || 0) / 10,
+            2026: (draft.salary2026 || 0) / 10,
+            2027: (draft.salary2027 || 0) / 10,
+            2028: (draft.salary2028 || 0) / 10,
+            2029: (draft.salary2029 || 0) / 10,
+          };
+          
+          const officialSalaries = officialContract?.salaries || {};
+          const overrides: Record<number, number> = {};
+          
+          // Only create overrides where draft differs from official
+          for (const year of [2025, 2026, 2027, 2028, 2029] as const) {
+            const draftSalary = draftSalaries[year];
+            const officialSalary = officialSalaries[year] || 0;
+            
+            if (draftSalary > 0 && draftSalary !== officialSalary) {
+              overrides[year] = draftSalary;
+            }
+          }
+          
+          if (Object.keys(overrides).length > 0) {
+            salaryOverrides[draft.playerId] = overrides;
+          }
+        } else {
+          // This is a free agent - add to addedFreeAgents array
+          const hypotheticalSalaries: Record<number, number> = {
+            2025: (draft.salary2025 || 0) / 10,
+            2026: (draft.salary2026 || 0) / 10,
+            2027: (draft.salary2027 || 0) / 10,
+            2028: (draft.salary2028 || 0) / 10,
+            2029: (draft.salary2029 || 0) / 10,
+          };
+          
+          // Only add if there are any salaries
+          if (Object.values(hypotheticalSalaries).some(s => s > 0)) {
+            // Try to get player info from playerMap, or use draft data
+            const playerInfo = playerMap[draft.playerId];
+            addedFreeAgents.push({
+              playerId: draft.playerId,
+              name: draft.playerName,
+              position: draft.playerPosition,
+              nflTeam: playerInfo?.team || null,
+              yearsExp: playerInfo?.yearsExp ?? 0,
+              hypotheticalSalaries,
+              isRosterPlayer: false,
+              isFreeAgent: true,
+            });
+          }
+        }
+      }
+      
+      // Restore the loaded data
+      setFranchiseTaggedPlayers(taggedPlayers);
+      setHypotheticalData(prev => ({
+        salaryOverrides: { ...prev.salaryOverrides, ...salaryOverrides },
+        addedFreeAgents: [...prev.addedFreeAgents, ...addedFreeAgents],
+      }));
+      setLastSavedAt(latestUpdatedAt);
+      setDraftsLoaded(true);
+      isLoadingDraftsRef.current = false;
+    } else if (savedDrafts && savedDrafts.length === 0 && !draftsLoaded) {
+      // No saved drafts - mark as loaded
+      setDraftsLoaded(true);
+      isLoadingDraftsRef.current = false;
+    }
+  }, [savedDrafts, draftsLoaded, userTeam, leagueContractData, allRosterPlayerIdsSet, playerMap]);
 
   // Calculate top 5 salaries by position for franchise tag calculation
   const top5SalariesByPosition = useMemo(() => {
@@ -1335,6 +1494,36 @@ function ManageTeamContractsTab({
 
   const allHypotheticalPlayers = [...rosterPlayers, ...hypotheticalData.addedFreeAgents];
 
+  // Auto-save hypothetical changes with debouncing
+  useEffect(() => {
+    // Skip auto-save during initial mount or while loading drafts
+    if (isInitialMountRef.current || isLoadingDraftsRef.current || !draftsLoaded) {
+      if (draftsLoaded) {
+        isInitialMountRef.current = false;
+      }
+      return;
+    }
+
+    // Skip if there are no changes to save
+    const drafts = buildDraftsArray();
+    if (drafts.length === 0) {
+      return;
+    }
+
+    // Debounce: wait 1.5 seconds after user stops making changes
+    const timeoutId = setTimeout(() => {
+      // Only save if mutation is not already pending
+      if (!saveDraftMutation.isPending) {
+        saveDraftMutation.mutate({ drafts, silent: true });
+      }
+    }, 1500);
+
+    // Cleanup timeout on next change
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [hypotheticalData, franchiseTaggedPlayers, draftsLoaded, rosterPlayers]);
+
   const hypotheticalTotalsByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
     const total = allHypotheticalPlayers.reduce((sum, p) => {
       return sum + (p.hypotheticalSalaries[year] || 0);
@@ -1552,66 +1741,7 @@ function ManageTeamContractsTab({
   };
 
   const handleSaveDraft = () => {
-    // Build drafts array with all players that have salary values
-    const drafts: Array<{
-      playerId: string;
-      playerName: string;
-      playerPosition: string;
-      salary2025: number;
-      salary2026: number;
-      salary2027: number;
-      salary2028: number;
-      salary2029: number;
-      franchiseTagApplied: number;
-    }> = [];
-
-    // Add roster players with their hypothetical salaries
-    for (const player of rosterPlayers) {
-      const salary2025 = player.hypotheticalSalaries[2025] || 0;
-      const salary2026 = player.hypotheticalSalaries[2026] || 0;
-      const salary2027 = player.hypotheticalSalaries[2027] || 0;
-      const salary2028 = player.hypotheticalSalaries[2028] || 0;
-      const salary2029 = player.hypotheticalSalaries[2029] || 0;
-
-      // Include if there's any salary value or overrides
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0 ||
-          hypotheticalData.salaryOverrides[player.playerId]) {
-        drafts.push({
-          playerId: player.playerId,
-          playerName: player.name,
-          playerPosition: player.position,
-          salary2025: Math.round(salary2025 * 10),
-          salary2026: Math.round(salary2026 * 10),
-          salary2027: Math.round(salary2027 * 10),
-          salary2028: Math.round(salary2028 * 10),
-          salary2029: Math.round(salary2029 * 10),
-          franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId) ? 1 : 0,
-        });
-      }
-    }
-
-    // Add free agents with their salaries
-    for (const player of hypotheticalData.addedFreeAgents) {
-      const salary2025 = player.hypotheticalSalaries[2025] || 0;
-      const salary2026 = player.hypotheticalSalaries[2026] || 0;
-      const salary2027 = player.hypotheticalSalaries[2027] || 0;
-      const salary2028 = player.hypotheticalSalaries[2028] || 0;
-      const salary2029 = player.hypotheticalSalaries[2029] || 0;
-
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
-        drafts.push({
-          playerId: player.playerId,
-          playerName: player.name,
-          playerPosition: player.position,
-          salary2025: Math.round(salary2025 * 10),
-          salary2026: Math.round(salary2026 * 10),
-          salary2027: Math.round(salary2027 * 10),
-          salary2028: Math.round(salary2028 * 10),
-          salary2029: Math.round(salary2029 * 10),
-          franchiseTagApplied: 0,
-        });
-      }
-    }
+    const drafts = buildDraftsArray();
 
     if (drafts.length === 0) {
       toast({
@@ -1622,7 +1752,7 @@ function ManageTeamContractsTab({
       return;
     }
 
-    saveDraftMutation.mutate(drafts);
+    saveDraftMutation.mutate({ drafts, silent: false });
   };
 
   const hasPendingApproval = pendingApprovalData?.hasPending;
