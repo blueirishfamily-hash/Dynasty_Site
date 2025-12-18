@@ -2689,6 +2689,58 @@ export async function registerRoutes(
     }
   });
 
+  // Rule Suggestions API - Health Check
+  app.get("/api/league/:leagueId/rule-suggestions/health", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      console.log("[API] GET /api/league/:leagueId/rule-suggestions/health - Checking database health for league:", leagueId);
+      
+      if (!leagueId) {
+        return res.status(400).json({ 
+          healthy: false,
+          error: "League ID is required" 
+        });
+      }
+
+      // Test database connection and table existence
+      try {
+        // Try a simple query to check if table exists
+        const testQuery = await storage.getRuleSuggestions(leagueId);
+        return res.json({
+          healthy: true,
+          tableExists: true,
+          connectionStatus: "connected",
+          message: "Database connection and table are healthy"
+        });
+      } catch (dbError: any) {
+        const errorMessage = dbError.message || "Unknown database error";
+        const tableMissing = errorMessage.includes("does not exist") || 
+                            errorMessage.includes("relation") ||
+                            errorMessage.includes("migrations");
+        const connectionError = errorMessage.includes("connection") || 
+                              errorMessage.includes("timeout");
+        
+        return res.status(500).json({
+          healthy: false,
+          tableExists: !tableMissing,
+          connectionStatus: connectionError ? "disconnected" : "connected",
+          error: errorMessage,
+          suggestion: tableMissing 
+            ? "Run 'npm run db:push' to create the required tables."
+            : connectionError
+            ? "Check DATABASE_URL environment variable."
+            : "Check database configuration."
+        });
+      }
+    } catch (error: any) {
+      console.error("[API] Error in health check:", error);
+      return res.status(500).json({
+        healthy: false,
+        error: error.message || "Health check failed"
+      });
+    }
+  });
+
   // Rule Suggestions API
   app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
@@ -2745,21 +2797,59 @@ export async function registerRoutes(
       
       console.log("[API] POST /api/league/:leagueId/rule-suggestions - Creating new rule in rule_suggestions table for league:", leagueId);
       
-      if (!authorId || !authorName || !rosterId || !title || !description) {
-        return res.status(400).json({ error: "Missing required fields" });
-      }
-      
+      // Validate leagueId
       if (!leagueId) {
+        console.error("[API] Validation error: League ID is missing");
         return res.status(400).json({ error: "League ID is required" });
       }
+
+      // Validate all required fields are present
+      if (!authorId) {
+        console.error("[API] Validation error: authorId is missing");
+        return res.status(400).json({ error: "Author ID is required" });
+      }
+      if (!authorName || authorName.trim() === "") {
+        console.error("[API] Validation error: authorName is missing or empty");
+        return res.status(400).json({ error: "Author name is required" });
+      }
+      if (rosterId === undefined || rosterId === null) {
+        console.error("[API] Validation error: rosterId is missing");
+        return res.status(400).json({ error: "Roster ID is required. Please select your team first." });
+      }
+      if (!title || title.trim() === "") {
+        console.error("[API] Validation error: title is missing or empty");
+        return res.status(400).json({ error: "Title is required" });
+      }
+      if (!description || description.trim() === "") {
+        console.error("[API] Validation error: description is missing or empty");
+        return res.status(400).json({ error: "Description is required" });
+      }
+
+      // Validate rosterId is a valid number
+      const parsedRosterId = parseInt(String(rosterId), 10);
+      if (isNaN(parsedRosterId) || parsedRosterId <= 0) {
+        console.error("[API] Validation error: rosterId is not a valid number:", rosterId);
+        return res.status(400).json({ 
+          error: "Invalid roster ID. Please select your team again." 
+        });
+      }
+
+      console.log("[API] Validation passed. Creating rule suggestion with:", {
+        leagueId,
+        authorId,
+        authorName,
+        rosterId: parsedRosterId,
+        titleLength: title.trim().length,
+        descriptionLength: description.trim().length,
+      });
 
       const suggestion = await storage.createRuleSuggestion({
         leagueId,
         authorId,
-        authorName,
-        rosterId: parseInt(rosterId),
-        title,
-        description,
+        authorName: authorName.trim(),
+        rosterId: parsedRosterId,
+        title: title.trim(),
+        description: description.trim(),
       });
       
       console.log("[API] Successfully created rule in rule_suggestions table. ID:", suggestion.id);

@@ -162,7 +162,11 @@ export default function RuleChanges() {
       });
       return validRules;
     },
-    enabled: !!league?.leagueId,
+    enabled: !!league?.leagueId && !!user?.userId,
+    retry: 2,
+    retryDelay: (attemptIndex: number) => Math.min(1000 * 2 ** attemptIndex, 30000),
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
     onError: (error: any) => {
       console.error("[RuleChanges] Error fetching from rule_suggestions table:", error);
       console.error("[RuleChanges] Error details:", error.message, error.stack);
@@ -219,9 +223,27 @@ export default function RuleChanges() {
       queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
     },
     onError: (error: Error) => {
+      let errorMessage = error.message;
+      let errorTitle = "Error";
+      
+      // Provide more user-friendly error messages
+      if (errorMessage.includes("does not exist") || errorMessage.includes("migrations") || errorMessage.includes("db:push")) {
+        errorTitle = "Database Setup Required";
+        errorMessage = "The database table may not exist. Please contact the administrator to run 'npm run db:push'.";
+      } else if (errorMessage.includes("connection") || errorMessage.includes("DATABASE_URL")) {
+        errorTitle = "Database Connection Error";
+        errorMessage = "Unable to connect to the database. Please try again later.";
+      } else if (errorMessage.includes("Roster ID") || errorMessage.includes("team")) {
+        errorTitle = "Team Selection Required";
+        errorMessage = "Please select your team before submitting a rule change.";
+      } else if (errorMessage.includes("Missing required")) {
+        errorTitle = "Validation Error";
+        // Keep the original message for validation errors
+      }
+      
       toast({
-        title: "Error",
-        description: error.message,
+        title: errorTitle,
+        description: errorMessage,
         variant: "destructive",
       });
     },
@@ -364,14 +386,69 @@ export default function RuleChanges() {
   });
 
   const handleSubmitRule = () => {
-    if (!ruleTitle.trim() || !ruleDescription.trim()) {
+    // Validate league ID
+    if (!league?.leagueId) {
       toast({
         title: "Validation Error",
-        description: "Please fill in both title and description.",
+        description: "League ID is missing. Please reconnect to your league.",
         variant: "destructive",
       });
       return;
     }
+
+    // Validate user is logged in
+    if (!user?.userId) {
+      toast({
+        title: "Validation Error",
+        description: "You must be logged in to submit a rule change.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Validate team selection
+    if (!hasSelectedTeam || userRosterId === undefined || userRosterId === null) {
+      toast({
+        title: "Team Selection Required",
+        description: "Please select your team before submitting a rule change.",
+        variant: "destructive",
+      });
+      setShowSetup(true);
+      return;
+    }
+
+    // Validate rosterId is a valid number
+    if (typeof userRosterId !== "number" || isNaN(userRosterId) || userRosterId <= 0) {
+      toast({
+        title: "Invalid Team Selection",
+        description: "Your team selection is invalid. Please select your team again.",
+        variant: "destructive",
+      });
+      setShowSetup(true);
+      return;
+    }
+
+    // Validate title
+    if (!ruleTitle.trim()) {
+      toast({
+        title: "Validation Error",
+        description: "Please provide a title for your rule change proposal.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // Validate description
+    if (!ruleDescription.trim()) {
+      toast({
+        title: "Validation Error",
+        description: "Please provide a description for your rule change proposal.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    // All validations passed, submit the rule
     createRuleMutation.mutate({
       title: ruleTitle.trim(),
       description: ruleDescription.trim(),
@@ -528,17 +605,33 @@ export default function RuleChanges() {
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Error Loading Rule Suggestions</AlertTitle>
             <AlertDescription>
-              {rulesErrorDetails instanceof Error 
-                ? rulesErrorDetails.message 
-                : "Failed to fetch rule suggestions. Please try again."}
-              <div className="mt-2">
-                <Button 
-                  variant="outline" 
-                  size="sm" 
-                  onClick={() => refetchRules()}
-                >
-                  Retry
-                </Button>
+              <div className="space-y-2">
+                <p>
+                  {rulesErrorDetails instanceof Error 
+                    ? rulesErrorDetails.message 
+                    : "Failed to fetch rule suggestions. Please try again."}
+                </p>
+                {rulesErrorDetails instanceof Error && 
+                 (rulesErrorDetails.message.includes("does not exist") || 
+                  rulesErrorDetails.message.includes("migrations") ||
+                  rulesErrorDetails.message.includes("db:push")) && (
+                  <div className="mt-2 p-3 bg-destructive/10 rounded-md">
+                    <p className="text-sm font-medium mb-1">Database Setup Required</p>
+                    <p className="text-sm">
+                      The rule_suggestions table may not exist. Please run <code className="bg-background px-1 rounded">npm run db:push</code> to create the required database tables.
+                    </p>
+                  </div>
+                )}
+                <div className="mt-2">
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => refetchRules()}
+                    disabled={rulesLoading}
+                  >
+                    {rulesLoading ? "Retrying..." : "Retry"}
+                  </Button>
+                </div>
               </div>
             </AlertDescription>
           </Alert>

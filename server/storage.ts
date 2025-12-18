@@ -167,13 +167,30 @@ export class DatabaseStorage implements IStorage {
       return suggestions;
     } catch (error: any) {
       console.error("[Storage] Error querying rule_suggestions table:", error);
-      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
-        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      
+      // Check for PostgreSQL error codes
+      const errorCode = error.code;
+      const errorMessage = error.message || "";
+      
+      // PostgreSQL error code 42P01 = relation does not exist
+      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run 'npm run db:push' to create the required tables.");
       }
-      if (error.message?.includes("connection") || error.message?.includes("timeout")) {
-        throw new Error("Database connection error. Please check DATABASE_URL.");
+      
+      // PostgreSQL error code 08003 = connection does not exist, 08006 = connection failure
+      if (errorCode === "08003" || errorCode === "08006" || 
+          errorMessage.includes("connection") || errorMessage.includes("timeout") ||
+          errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOTFOUND")) {
+        throw new Error("Database connection error. Please check DATABASE_URL environment variable.");
       }
-      throw error;
+      
+      // PostgreSQL error code 23505 = unique violation (shouldn't happen here, but good to catch)
+      if (errorCode === "23505") {
+        throw new Error("Duplicate entry detected. This rule suggestion may already exist.");
+      }
+      
+      // Re-throw with more context
+      throw new Error(`Database error: ${errorMessage || "Unknown error occurred"}`);
     }
   }
 
@@ -212,13 +229,35 @@ export class DatabaseStorage implements IStorage {
       };
     } catch (error: any) {
       console.error("[Storage] Error inserting into rule_suggestions table:", error);
-      if (error.message?.includes("does not exist") || error.message?.includes("relation")) {
-        throw new Error("rule_suggestions table does not exist in database. Please run migrations.");
+      
+      // Check for PostgreSQL error codes
+      const errorCode = error.code;
+      const errorMessage = error.message || "";
+      
+      // PostgreSQL error code 42P01 = relation does not exist
+      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation")) {
+        throw new Error("rule_suggestions table does not exist in database. Please run 'npm run db:push' to create the required tables.");
       }
-      if (error.message?.includes("connection") || error.message?.includes("timeout")) {
-        throw new Error("Database connection error. Please check DATABASE_URL.");
+      
+      // PostgreSQL error code 08003 = connection does not exist, 08006 = connection failure
+      if (errorCode === "08003" || errorCode === "08006" || 
+          errorMessage.includes("connection") || errorMessage.includes("timeout") ||
+          errorMessage.includes("ECONNREFUSED") || errorMessage.includes("ENOTFOUND")) {
+        throw new Error("Database connection error. Please check DATABASE_URL environment variable.");
       }
-      throw error;
+      
+      // PostgreSQL error code 23505 = unique violation
+      if (errorCode === "23505") {
+        throw new Error("A rule suggestion with this ID already exists.");
+      }
+      
+      // PostgreSQL error code 23502 = not null violation
+      if (errorCode === "23502") {
+        throw new Error("Missing required field. Please ensure all fields are provided.");
+      }
+      
+      // Re-throw with more context
+      throw new Error(`Database error: ${errorMessage || "Unknown error occurred"}`);
     }
   }
 
