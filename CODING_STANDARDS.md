@@ -292,25 +292,70 @@ app.post("/api/resource", async (req, res) => {
 - Use Drizzle ORM query builders (`eq`, `and`, `desc`, etc.)
 - Always use transactions for multi-step operations
 
-### Storage Layer Pattern
+### Storage Layer Pattern (Based on Award Implementation)
+
+**Key Principles:**
+- Keep storage methods simple and focused
+- Let API routes handle error handling and validation
+- Use Drizzle query builders for all queries
+- Map database rows directly to return types
+- Use `and()` with multiple `eq()` conditions for filtering
+
+#### GET Method Pattern
 ```typescript
-async methodName(params: ParamsType): Promise<ReturnType> {
-  // 1. Check for existing records if needed
-  const existing = await this.getExistingRecord(params);
+async getResource(leagueId: string, filter1: string, filter2: string): Promise<Resource[]> {
+  const rows = await db
+    .select()
+    .from(resourceTable)
+    .where(and(
+      eq(resourceTable.leagueId, leagueId),
+      eq(resourceTable.filter1, filter1),
+      eq(resourceTable.filter2, filter2)
+    ))
+    .orderBy(desc(resourceTable.createdAt));
+
+  return rows.map(row => ({
+    id: row.id,
+    leagueId: row.leagueId,
+    filter1: row.filter1,
+    filter2: row.filter2,
+    createdAt: row.createdAt,
+  }));
+}
+```
+
+#### CREATE Method Pattern
+```typescript
+async createResource(data: InsertResource): Promise<Resource> {
+  // Check for existing record if needed (prevents duplicates)
+  const [existing] = await db
+    .select()
+    .from(resourceTable)
+    .where(and(
+      eq(resourceTable.leagueId, data.leagueId),
+      eq(resourceTable.uniqueField, data.uniqueField)
+    ));
+
   if (existing) {
-    // Handle existing case
+    // Return existing record
+    return {
+      id: existing.id,
+      ...existing,
+    };
   }
-  
-  // 2. Generate ID with randomUUID()
+
+  // Generate ID and timestamp
   const id = randomUUID();
-  
-  // 3. Create timestamp with Date.now()
   const createdAt = Date.now();
-  
-  // 4. Insert/update via db
-  await db.insert(table).values({ id, ...data, createdAt });
-  
-  // 5. Return formatted result matching schema type
+
+  // Insert new record
+  await db.insert(resourceTable).values({
+    id,
+    ...data,
+    createdAt,
+  });
+
+  // Return formatted result
   return {
     id,
     ...data,
@@ -319,11 +364,89 @@ async methodName(params: ParamsType): Promise<ReturnType> {
 }
 ```
 
+#### UPSERT Method Pattern
+```typescript
+async upsertResource(data: InsertResource): Promise<Resource> {
+  // Check for existing record
+  const existing = await this.getResourceByUniqueKey(data.leagueId, data.uniqueKey);
+
+  if (existing) {
+    // Update existing record
+    const [updated] = await db
+      .update(resourceTable)
+      .set({
+        field1: data.field1,
+        field2: data.field2,
+      })
+      .where(eq(resourceTable.id, existing.id))
+      .returning();
+
+    return {
+      id: updated.id,
+      ...updated,
+    };
+  }
+
+  // Insert new record
+  const id = randomUUID();
+  const createdAt = Date.now();
+
+  await db.insert(resourceTable).values({
+    id,
+    ...data,
+    createdAt,
+  });
+
+  return {
+    id,
+    ...data,
+    createdAt,
+  };
+}
+```
+
+#### GET by Unique Key Pattern
+```typescript
+async getResourceByUniqueKey(leagueId: string, uniqueKey: string): Promise<Resource | undefined> {
+  const [row] = await db
+    .select()
+    .from(resourceTable)
+    .where(and(
+      eq(resourceTable.leagueId, leagueId),
+      eq(resourceTable.uniqueKey, uniqueKey)
+    ));
+
+  if (!row) return undefined;
+
+  return {
+    id: row.id,
+    ...row,
+  };
+}
+```
+
+**Storage Method Best Practices:**
+- ✅ Keep methods simple - no extensive error handling
+- ✅ Use Drizzle query builders (`eq`, `and`, `desc`, `sql`)
+- ✅ Map rows directly to return types
+- ✅ Use `and()` for multiple filter conditions
+- ✅ Return `undefined` for not found (not `null`)
+- ✅ Let API routes handle validation and error messages
+- ❌ Don't add try-catch in storage methods (handle at route level)
+- ❌ Don't add extensive logging (keep it minimal)
+- ❌ Don't validate input (validate at route level)
+
 ## Database Connection Pattern (Replit/Neon PostgreSQL)
 
 ### Overview
 
 This project uses **Neon Serverless PostgreSQL** with **Drizzle ORM** for database connections. The connection pattern is designed specifically for Replit's serverless environment and must be followed for all database operations.
+
+**⚠️ IMPORTANT: This pattern is based on the League Awards implementation** (`award_nominations` and `award_ballots` tables). All new database connections should follow this exact pattern:
+- **Storage methods**: Simple, focused, no extensive error handling
+- **API routes**: Handle validation and errors at route level
+- **Frontend**: Use TanStack Query with proper query keys and enable conditions
+- **Query builders**: Use `and()` with multiple `eq()` conditions for filtering
 
 ### 1. Database Connection Setup
 
@@ -452,92 +575,208 @@ export type InsertRuleSuggestion = z.infer<typeof insertRuleSuggestionDbSchema>;
 
 **File**: `server/storage.ts`
 
-All database operations are abstracted through a storage layer:
+All database operations are abstracted through a storage layer. **Follow the award implementation pattern** - keep storage methods simple and let API routes handle error handling.
 
 ```typescript
 import { randomUUID } from "crypto";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "./db";  // Import from single source
 import {
-  ruleSuggestionsTable,  // Import tables from schema
+  awardNominationsTable,  // Import tables from schema
+  awardBallotsTable,
   // ... other tables
 } from "@shared/schema";
 import type { 
-  RuleSuggestion, 
-  InsertRuleSuggestion,
+  AwardNomination, 
+  InsertAwardNomination,
+  AwardBallot,
+  InsertAwardBallot,
   // ... other types
 } from "@shared/schema";
 
 export class DatabaseStorage implements IStorage {
-  // GET operation example
-  async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
-    try {
-      const rows = await db
-        .select()
-        .from(ruleSuggestionsTable)
-        .where(eq(ruleSuggestionsTable.leagueId, leagueId))
-        .orderBy(desc(ruleSuggestionsTable.createdAt));
+  // GET operation example (based on award nominations)
+  async getAwardNominations(
+    leagueId: string, 
+    season: string, 
+    awardType: "mvp" | "roy" | "gm"
+  ): Promise<AwardNomination[]> {
+    const rows = await db
+      .select()
+      .from(awardNominationsTable)
+      .where(and(
+        eq(awardNominationsTable.leagueId, leagueId),
+        eq(awardNominationsTable.season, season),
+        eq(awardNominationsTable.awardType, awardType)
+      ))
+      .orderBy(desc(awardNominationsTable.createdAt));
 
-      return rows.map(row => ({
-        id: row.id,
-        leagueId: row.leagueId,
-        // ... map all fields
-        createdAt: row.createdAt,
-      }));
-    } catch (error: any) {
-      // Handle PostgreSQL error codes
-      const errorCode = error.code;
-      if (errorCode === "42P01") {
-        throw new Error("Table does not exist. Please run 'npm run db:push'.");
-      }
-      if (errorCode === "08003" || errorCode === "08006") {
-        throw new Error("Database connection error. Check DATABASE_URL.");
-      }
-      throw error;
-    }
+    return rows.map(row => ({
+      id: row.id,
+      leagueId: row.leagueId,
+      season: row.season,
+      awardType: row.awardType as "mvp" | "roy" | "gm",
+      playerId: row.playerId,
+      playerName: row.playerName,
+      playerPosition: row.playerPosition,
+      playerTeam: row.playerTeam,
+      nominatedBy: row.nominatedBy,
+      nominatedByName: row.nominatedByName,
+      nominatedByRosterId: row.nominatedByRosterId,
+      createdAt: row.createdAt,
+    }));
   }
 
-  // CREATE operation example
-  async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
-    try {
-      const id = randomUUID();
-      const createdAt = Date.now();
+  // CREATE operation example (with duplicate check)
+  async createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination> {
+    // Check for existing record to prevent duplicates
+    const [existing] = await db
+      .select()
+      .from(awardNominationsTable)
+      .where(and(
+        eq(awardNominationsTable.leagueId, data.leagueId),
+        eq(awardNominationsTable.season, data.season),
+        eq(awardNominationsTable.awardType, data.awardType),
+        eq(awardNominationsTable.playerId, data.playerId)
+      ));
 
-      await db.insert(ruleSuggestionsTable).values({
-        id,
-        ...data,
-        status: "pending",
-        createdAt,
-      });
+    if (existing) {
+      // Return existing record
+      return {
+        id: existing.id,
+        leagueId: existing.leagueId,
+        season: existing.season,
+        awardType: existing.awardType as "mvp" | "roy" | "gm",
+        playerId: existing.playerId,
+        playerName: existing.playerName,
+        playerPosition: existing.playerPosition,
+        playerTeam: existing.playerTeam,
+        nominatedBy: existing.nominatedBy,
+        nominatedByName: existing.nominatedByName,
+        nominatedByRosterId: existing.nominatedByRosterId,
+        createdAt: existing.createdAt,
+      };
+    }
+
+    // Generate ID and timestamp
+    const id = randomUUID();
+    const createdAt = Date.now();
+
+    // Insert new record
+    await db.insert(awardNominationsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      awardType: data.awardType,
+      playerId: data.playerId,
+      playerName: data.playerName,
+      playerPosition: data.playerPosition,
+      playerTeam: data.playerTeam,
+      nominatedBy: data.nominatedBy,
+      nominatedByName: data.nominatedByName,
+      nominatedByRosterId: data.nominatedByRosterId,
+      createdAt,
+    });
+
+    return {
+      id,
+      ...data,
+      createdAt,
+    };
+  }
+
+  // UPSERT operation example (based on award ballots)
+  async upsertAwardBallot(data: InsertAwardBallot): Promise<AwardBallot> {
+    // Check for existing record
+    const existing = await this.getAwardBallotByRoster(
+      data.leagueId, 
+      data.season, 
+      data.awardType, 
+      data.rosterId
+    );
+
+    if (existing) {
+      // Update existing record
+      const [updated] = await db
+        .update(awardBallotsTable)
+        .set({
+          firstPlaceId: data.firstPlaceId,
+          secondPlaceId: data.secondPlaceId,
+          thirdPlaceId: data.thirdPlaceId,
+          voterName: data.voterName,
+        })
+        .where(eq(awardBallotsTable.id, existing.id))
+        .returning();
 
       return {
-        id,
-        ...data,
-        status: "pending",
-        createdAt,
+        id: updated.id,
+        leagueId: updated.leagueId,
+        season: updated.season,
+        awardType: updated.awardType as "mvp" | "roy" | "gm",
+        rosterId: updated.rosterId,
+        voterName: updated.voterName,
+        firstPlaceId: updated.firstPlaceId,
+        secondPlaceId: updated.secondPlaceId,
+        thirdPlaceId: updated.thirdPlaceId,
+        createdAt: updated.createdAt,
       };
-    } catch (error: any) {
-      // Error handling with PostgreSQL codes
-      // ...
     }
+
+    // Insert new record
+    const id = randomUUID();
+    const createdAt = Date.now();
+
+    await db.insert(awardBallotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      awardType: data.awardType,
+      rosterId: data.rosterId,
+      voterName: data.voterName,
+      firstPlaceId: data.firstPlaceId,
+      secondPlaceId: data.secondPlaceId,
+      thirdPlaceId: data.thirdPlaceId,
+      createdAt,
+    });
+
+    return {
+      id,
+      ...data,
+      createdAt,
+    };
   }
 
-  // UPDATE operation example
-  async updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined> {
-    const [updated] = await db
-      .update(ruleSuggestionsTable)
-      .set(data)
-      .where(eq(ruleSuggestionsTable.id, id))
-      .returning();
+  // GET by unique key example
+  async getAwardBallotByRoster(
+    leagueId: string, 
+    season: string, 
+    awardType: "mvp" | "roy" | "gm", 
+    rosterId: number
+  ): Promise<AwardBallot | undefined> {
+    const [row] = await db
+      .select()
+      .from(awardBallotsTable)
+      .where(and(
+        eq(awardBallotsTable.leagueId, leagueId),
+        eq(awardBallotsTable.season, season),
+        eq(awardBallotsTable.awardType, awardType),
+        eq(awardBallotsTable.rosterId, rosterId)
+      ));
 
-    return updated ? { ...updated } : undefined;
-  }
+    if (!row) return undefined;
 
-  // DELETE operation example
-  async deleteRuleSuggestion(id: string): Promise<void> {
-    await db
-      .delete(ruleSuggestionsTable)
-      .where(eq(ruleSuggestionsTable.id, id));
+    return {
+      id: row.id,
+      leagueId: row.leagueId,
+      season: row.season,
+      awardType: row.awardType as "mvp" | "roy" | "gm",
+      rosterId: row.rosterId,
+      voterName: row.voterName,
+      firstPlaceId: row.firstPlaceId,
+      secondPlaceId: row.secondPlaceId,
+      thirdPlaceId: row.thirdPlaceId,
+      createdAt: row.createdAt,
+    };
   }
 }
 
@@ -545,11 +784,15 @@ export class DatabaseStorage implements IStorage {
 export const storage = new DatabaseStorage();
 ```
 
-**Key Points**:
+**Key Points** (Based on Award Implementation):
 - **Import `db` from `./db`**: Never create new database connections
 - **Import tables from `@shared/schema`**: Use centralized table definitions
-- **Use Drizzle query builders**: `eq`, `and`, `desc`, `sql`, etc.
-- **Error handling**: Check PostgreSQL error codes (42P01 = table missing, 08003/08006 = connection error)
+- **Use Drizzle query builders**: `eq`, `and`, `desc` for filtering and ordering
+- **Keep methods simple**: No extensive error handling in storage methods
+- **Use `and()` for multiple filters**: Combine multiple `eq()` conditions
+- **Map rows directly**: Return types match database row structure
+- **Return `undefined` for not found**: Not `null`
+- **Let routes handle errors**: API routes handle try-catch and error messages
 - **Singleton pattern**: Export single `storage` instance
 - **Type safety**: Use types from `@shared/schema`
 
@@ -557,51 +800,262 @@ export const storage = new DatabaseStorage();
 
 **File**: `server/routes.ts`
 
-Routes import and use the storage layer (never import `db` directly):
+Routes import and use the storage layer (never import `db` directly). **Follow the award implementation pattern** - handle validation and errors at the route level.
 
 ```typescript
 import { storage } from "./storage";  // Import storage, not db
 
 export async function registerRoutes(httpServer: Server, app: Express) {
-  // GET endpoint example
-  app.get("/api/league/:leagueId/rule-suggestions", async (req, res) => {
+  // GET endpoint example (based on award nominations)
+  app.get("/api/league/:leagueId/awards/:season/:awardType", async (req, res) => {
     try {
-      const leagueId = req.params.leagueId;
-      const suggestions = await storage.getRuleSuggestions(leagueId);
-      res.json(suggestions);
-    } catch (error: any) {
-      console.error("[API] Error:", error);
-      res.status(500).json({ error: error.message });
+      const { leagueId, season, awardType } = req.params;
+      
+      // Validate award type
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      
+      // Fetch via storage
+      const nominations = await storage.getAwardNominations(leagueId, season, awardType);
+      res.json(nominations);
+    } catch (error) {
+      console.error("Error fetching award nominations:", error);
+      res.status(500).json({ error: "Failed to fetch award nominations" });
     }
   });
 
-  // POST endpoint example
-  app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
+  // POST endpoint example (with validation)
+  app.post("/api/league/:leagueId/awards/:season/:awardType/nominate", async (req, res) => {
     try {
-      const { authorId, authorName, rosterId, title, description } = req.body;
-      const suggestion = await storage.createRuleSuggestion({
-        leagueId: req.params.leagueId,
-        authorId,
-        authorName,
-        rosterId,
-        title,
-        description,
+      const { leagueId, season, awardType } = req.params;
+      const { playerId, playerName, playerPosition, playerTeam, nominatedBy, nominatedByName, nominatedByRosterId } = req.body;
+      
+      // Validate award type
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      
+      // Validate required fields
+      if (!playerId || !playerName || !nominatedBy || !nominatedByName || !nominatedByRosterId) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Business logic validation (e.g., check limits)
+      const currentCount = await storage.getNominationCountByRoster(leagueId, season, awardType, nominatedByRosterId);
+      if (currentCount >= 3) {
+        return res.status(400).json({ error: "Maximum 3 nominations per team per award" });
+      }
+
+      // Create via storage
+      const nomination = await storage.createAwardNomination({
+        leagueId,
+        season,
+        awardType,
+        playerId,
+        playerName,
+        playerPosition: playerPosition || "",
+        playerTeam: playerTeam || null,
+        nominatedBy,
+        nominatedByName,
+        nominatedByRosterId,
       });
-      res.json(suggestion);
-    } catch (error: any) {
-      res.status(500).json({ error: error.message });
+      
+      res.json(nomination);
+    } catch (error) {
+      console.error("Error creating award nomination:", error);
+      res.status(500).json({ error: "Failed to create award nomination" });
+    }
+  });
+
+  // UPSERT endpoint example (based on award ballots)
+  app.post("/api/league/:leagueId/awards/:season/:awardType/ballot", async (req, res) => {
+    try {
+      const { leagueId, season, awardType } = req.params;
+      const { rosterId, voterName, firstPlaceId, secondPlaceId, thirdPlaceId } = req.body;
+      
+      // Validate award type
+      if (awardType !== "mvp" && awardType !== "roy" && awardType !== "gm") {
+        return res.status(400).json({ error: "Invalid award type" });
+      }
+      
+      // Validate required fields
+      if (!rosterId || !voterName || !firstPlaceId || !secondPlaceId || !thirdPlaceId) {
+        return res.status(400).json({ error: "Missing required fields - must vote for 1st, 2nd, and 3rd place" });
+      }
+
+      // Business logic validation
+      if (firstPlaceId === secondPlaceId || firstPlaceId === thirdPlaceId || secondPlaceId === thirdPlaceId) {
+        return res.status(400).json({ error: "Cannot vote for the same player multiple times" });
+      }
+
+      // Validate picks are valid nominations
+      const nominations = await storage.getAwardNominations(leagueId, season, awardType);
+      const nominationIds = new Set(nominations.map(n => n.id));
+      if (!nominationIds.has(firstPlaceId) || !nominationIds.has(secondPlaceId) || !nominationIds.has(thirdPlaceId)) {
+        return res.status(400).json({ error: "Invalid nomination ID" });
+      }
+
+      // Upsert via storage
+      const ballot = await storage.upsertAwardBallot({
+        leagueId,
+        season,
+        awardType,
+        rosterId,
+        voterName,
+        firstPlaceId,
+        secondPlaceId,
+        thirdPlaceId,
+      });
+      
+      res.json(ballot);
+    } catch (error) {
+      console.error("Error submitting ballot:", error);
+      res.status(500).json({ error: "Failed to submit ballot" });
     }
   });
 }
 ```
 
-**Key Points**:
+**Key Points** (Based on Award Implementation):
 - **Import `storage`**: Never import `db` directly in routes
 - **Use storage methods**: All database operations go through storage layer
-- **Error handling**: Catch and return user-friendly error messages
+- **Validate at route level**: Check parameters, required fields, and business logic
+- **Handle errors at route level**: Try-catch in routes, not storage methods
+- **Return appropriate status codes**: 400 for validation errors, 500 for server errors
 - **Type safety**: Use types from `@shared/schema` for request/response validation
 
-### 6. Environment Requirements
+### 6. Frontend Data Fetching Pattern
+
+**File**: `client/src/pages/YourPage.tsx`
+
+Frontend uses TanStack Query to fetch data from API routes. **Follow the award implementation pattern** - use proper query keys and enable conditions.
+
+```typescript
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { useSleeper } from "@/lib/sleeper-context";
+import { queryClient } from "@/lib/queryClient";
+import type { AwardNomination, AwardBallot } from "@shared/schema";
+
+export default function YourPage() {
+  const { user, league, season } = useSleeper();
+  const { toast } = useToast();
+
+  // GET query example (based on award nominations)
+  const { data: nominations, isLoading } = useQuery<AwardNomination[]>({
+    queryKey: ["/api/league", league?.leagueId, "awards", season, awardType],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/awards/${season}/${awardType}`);
+      if (!res.ok) throw new Error("Failed to fetch award nominations");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!season,  // Only fetch when required params exist
+  });
+
+  // GET by unique key example (based on user ballot)
+  const { data: userBallot } = useQuery<AwardBallot | null>({
+    queryKey: ["/api/league", league?.leagueId, "awards", season, awardType, "ballot", userRosterId],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/awards/${season}/${awardType}/ballot/${userRosterId}`);
+      if (!res.ok) throw new Error("Failed to fetch ballot");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!season && !!userRosterId,
+  });
+
+  // POST mutation example
+  const createNominationMutation = useMutation({
+    mutationFn: async (data: { playerId: string; playerName: string; /* ... */ }) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/awards/${season}/${awardType}/nominate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to create nomination");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      // Invalidate related queries
+      queryClient.invalidateQueries({ 
+        queryKey: ["/api/league", league?.leagueId, "awards", season, awardType] 
+      });
+      toast({ 
+        title: "Nomination submitted!", 
+        description: "Your nomination has been recorded." 
+      });
+    },
+    onError: (error: Error) => {
+      toast({ 
+        title: "Error", 
+        description: error.message, 
+        variant: "destructive" 
+      });
+    },
+  });
+
+  // UPSERT mutation example
+  const submitBallotMutation = useMutation({
+    mutationFn: async (data: { firstPlaceId: string; secondPlaceId: string; thirdPlaceId: string }) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/awards/${season}/${awardType}/ballot`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to submit ballot");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      // Invalidate user ballot query
+      queryClient.invalidateQueries({ 
+        queryKey: ["/api/league", league?.leagueId, "awards", season, awardType, "ballot", userRosterId] 
+      });
+      toast({ 
+        title: "Ballot submitted!", 
+        description: "Your vote has been recorded." 
+      });
+    },
+    onError: (error: Error) => {
+      toast({ 
+        title: "Error", 
+        description: error.message, 
+        variant: "destructive" 
+      });
+    },
+  });
+
+  // Render with loading states
+  if (isLoading) {
+    return <Skeleton className="h-48 w-full" />;
+  }
+
+  return (
+    <div>
+      {nominations?.map(nomination => (
+        <Card key={nomination.id}>
+          {/* Render nomination */}
+        </Card>
+      ))}
+    </div>
+  );
+}
+```
+
+**Key Points** (Based on Award Implementation):
+- **Use TanStack Query**: All data fetching through `useQuery` and `useMutation`
+- **Query keys match URL structure**: `["/api/league", leagueId, "resource", ...params]`
+- **Use `enabled` condition**: Only fetch when required parameters exist
+- **Handle errors in mutations**: Use `onError` callback with toast notifications
+- **Invalidate queries on success**: Update related queries after mutations
+- **Import types from `@shared/schema`**: Type safety for API responses
+- **Loading states**: Use `isLoading` to show skeletons or spinners
+
+### 7. Environment Requirements
 
 **Replit Setup**:
 1. **Provision Database**: Create a PostgreSQL database in Replit (automatically sets `DATABASE_URL`)
