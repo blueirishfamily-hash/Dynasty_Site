@@ -872,6 +872,7 @@ function ManageTeamContractsTab({
   const [draftsLoaded, setDraftsLoaded] = useState(false);
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
   const [activeView, setActiveView] = useState<"contracts" | "salary-breakdown">("contracts");
+  const [openExtensionPopover, setOpenExtensionPopover] = useState<string | null>(null);
 
   // Query for pending approval requests
   const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
@@ -944,6 +945,7 @@ function ManageTeamContractsTab({
       });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
+      setOpenExtensionPopover(null);
     },
     onError: (error: Error) => {
       toast({
@@ -2144,21 +2146,30 @@ function ManageTeamContractsTab({
                         {player.isRosterPlayer && !player.isFreeAgent && (() => {
                           const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
                           const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
-                          const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending;
+                          const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending || deleteExtensionMutation.isPending;
                           
                           return (
-                            <Popover>
+                            <Popover open={openExtensionPopover === player.playerId} onOpenChange={(open) => {
+                              setOpenExtensionPopover(open ? player.playerId : null);
+                            }}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <PopoverTrigger asChild>
                                     <div>
                                       <Switch
                                         checked={teamUsedExtension}
-                                        disabled={!isCommissioner && extensionDisabled}
+                                        disabled={extensionDisabled && !isCommissioner}
                                         onCheckedChange={(checked) => {
-                                          // Only allow unchecking (removing extension) if commissioner
-                                          if (!checked && isCommissioner && teamUsedExtension) {
-                                            deleteExtensionMutation.mutate();
+                                          if (checked) {
+                                            // Open popover to show extension options when checked
+                                            if (extensionEligibility.eligible && !teamUsedExtension) {
+                                              setOpenExtensionPopover(player.playerId);
+                                            }
+                                          } else {
+                                            // Remove extension when unchecked (commissioner only)
+                                            if (isCommissioner && teamUsedExtension) {
+                                              deleteExtensionMutation.mutate();
+                                            }
                                           }
                                         }}
                                         data-testid={`switch-extend-${player.playerId}`}
@@ -2172,7 +2183,7 @@ function ManageTeamContractsTab({
                                     : teamUsedExtension 
                                       ? `Team has already used their ${CURRENT_YEAR} extension`
                                       : extensionEligibility.eligible 
-                                        ? `Extend player (1 per team per season)`
+                                        ? `Click to choose extension type (1 per team per season)`
                                         : extensionEligibility.reason
                                   }
                                 </TooltipContent>
@@ -2189,13 +2200,16 @@ function ManageTeamContractsTab({
                                         size="sm"
                                         variant="outline"
                                         className="w-full justify-between"
-                                        onClick={() => handleApplyExtension(
-                                          player.playerId,
-                                          player.name,
-                                          extensionEligibility.extensionYear,
-                                          extensionEligibility.currentSalaryTenths,
-                                          1
-                                        )}
+                                        onClick={() => {
+                                          handleApplyExtension(
+                                            player.playerId,
+                                            player.name,
+                                            extensionEligibility.extensionYear,
+                                            extensionEligibility.currentSalaryTenths,
+                                            1
+                                          );
+                                          setOpenExtensionPopover(null);
+                                        }}
                                         disabled={applyExtensionMutation.isPending}
                                         data-testid={`button-extend-1yr-${player.playerId}`}
                                       >
@@ -2208,13 +2222,16 @@ function ManageTeamContractsTab({
                                         size="sm"
                                         variant="outline"
                                         className="w-full justify-between"
-                                        onClick={() => handleApplyExtension(
-                                          player.playerId,
-                                          player.name,
-                                          extensionEligibility.extensionYear,
-                                          extensionEligibility.currentSalaryTenths,
-                                          2
-                                        )}
+                                        onClick={() => {
+                                          handleApplyExtension(
+                                            player.playerId,
+                                            player.name,
+                                            extensionEligibility.extensionYear,
+                                            extensionEligibility.currentSalaryTenths,
+                                            2
+                                          );
+                                          setOpenExtensionPopover(null);
+                                        }}
                                         disabled={applyExtensionMutation.isPending}
                                         data-testid={`button-extend-2yr-${player.playerId}`}
                                       >
