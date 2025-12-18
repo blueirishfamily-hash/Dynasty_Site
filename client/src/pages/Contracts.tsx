@@ -944,6 +944,7 @@ function ManageTeamContractsTab({
         description: `The player's contract has been extended for ${extensionTypeText}.`,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId] });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
       setOpenExtensionPopover(null);
     },
@@ -970,6 +971,7 @@ function ManageTeamContractsTab({
         description: "The extension has been removed. The team can now use their extension again for this season.",
       });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId] });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
     },
     onError: (error: Error) => {
@@ -2146,6 +2148,7 @@ function ManageTeamContractsTab({
                         {player.isRosterPlayer && !player.isFreeAgent && (() => {
                           const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
                           const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
+                          const thisPlayerHasExtension = extensionStatus?.extension?.playerId === player.playerId;
                           const extensionDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending || deleteExtensionMutation.isPending;
                           
                           return (
@@ -2157,7 +2160,7 @@ function ManageTeamContractsTab({
                                   <PopoverTrigger asChild>
                                     <div>
                                       <Switch
-                                        checked={teamUsedExtension}
+                                        checked={thisPlayerHasExtension}
                                         disabled={extensionDisabled && !isCommissioner}
                                         onCheckedChange={(checked) => {
                                           if (checked) {
@@ -2166,8 +2169,8 @@ function ManageTeamContractsTab({
                                               setOpenExtensionPopover(player.playerId);
                                             }
                                           } else {
-                                            // Remove extension when unchecked (commissioner only)
-                                            if (isCommissioner && teamUsedExtension) {
+                                            // Remove extension when unchecked (commissioner only, and only if this player has the extension)
+                                            if (isCommissioner && thisPlayerHasExtension) {
                                               deleteExtensionMutation.mutate();
                                             }
                                           }
@@ -2178,8 +2181,8 @@ function ManageTeamContractsTab({
                                   </PopoverTrigger>
                                 </TooltipTrigger>
                                 <TooltipContent>
-                                  {isCommissioner && teamUsedExtension
-                                    ? `Team has used their ${CURRENT_YEAR} extension. Click to remove and allow them to use it again.`
+                                  {isCommissioner && thisPlayerHasExtension
+                                    ? `This player has an extension. Click to remove and allow the team to use their extension again.`
                                     : teamUsedExtension 
                                       ? `Team has already used their ${CURRENT_YEAR} extension`
                                       : extensionEligibility.eligible 
