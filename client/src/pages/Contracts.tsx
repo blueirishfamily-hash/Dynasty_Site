@@ -878,6 +878,8 @@ function ManageTeamContractsTab({
   const isLoadingDraftsRef = useRef(false);
   // Track if this is the initial mount to prevent auto-save on initial load
   const isInitialMountRef = useRef(true);
+  // Track previous drafts state to detect actual changes
+  const previousDraftsRef = useRef<string | null>(null);
 
   // Query for pending approval requests
   const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
@@ -1504,17 +1506,36 @@ function ManageTeamContractsTab({
       return;
     }
 
-    // Skip if there are no changes to save
+    // Build current drafts array
     const drafts = buildDraftsArray();
+    
+    // Skip if there are no drafts to save
     if (drafts.length === 0) {
+      // Clear previous drafts ref if we have no drafts
+      previousDraftsRef.current = null;
+      return;
+    }
+
+    // Serialize current drafts for comparison
+    const currentDraftsString = JSON.stringify(drafts);
+    
+    // Only proceed if drafts have actually changed
+    if (previousDraftsRef.current === currentDraftsString) {
+      // No change detected, skip auto-save
       return;
     }
 
     // Debounce: wait 1.5 seconds after user stops making changes
     const timeoutId = setTimeout(() => {
-      // Only save if mutation is not already pending
-      if (!saveDraftMutation.isPending) {
-        saveDraftMutation.mutate({ drafts, silent: true });
+      // Double-check that drafts haven't changed during debounce period
+      const latestDrafts = buildDraftsArray();
+      const latestDraftsString = JSON.stringify(latestDrafts);
+      
+      // Only save if mutation is not already pending and drafts still match
+      if (!saveDraftMutation.isPending && latestDraftsString === currentDraftsString) {
+        saveDraftMutation.mutate({ drafts: latestDrafts, silent: true });
+        // Update previous drafts ref after saving
+        previousDraftsRef.current = latestDraftsString;
       }
     }, 1500);
 
