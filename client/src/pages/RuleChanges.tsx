@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import {
   Dialog,
   DialogContent,
@@ -33,6 +34,7 @@ import {
   Clock,
   Users,
   Settings,
+  AlertCircle,
 } from "lucide-react";
 import type { RuleSuggestion, RuleVote } from "@shared/schema";
 
@@ -91,14 +93,51 @@ export default function RuleChanges() {
   ));
 
   // Fetch rule suggestions
-  const { data: ruleSuggestions, isLoading: rulesLoading, refetch: refetchRules } = useQuery<RuleSuggestionWithVoting[]>({
+  const { 
+    data: ruleSuggestions, 
+    isLoading: rulesLoading, 
+    isError: rulesError,
+    error: rulesErrorDetails,
+    refetch: refetchRules 
+  } = useQuery<RuleSuggestionWithVoting[]>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
+      console.log("[RuleChanges] Fetching rule suggestions for league:", league?.leagueId);
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
-      if (!res.ok) throw new Error("Failed to fetch rule suggestions");
-      return res.json();
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("[RuleChanges] API error response:", res.status, errorText);
+        throw new Error(`Failed to fetch rule suggestions: ${res.status} ${errorText}`);
+      }
+      const data = await res.json();
+      console.log("[RuleChanges] Rule suggestions fetched successfully:", {
+        count: Array.isArray(data) ? data.length : 0,
+        data: data,
+        leagueId: league?.leagueId,
+      });
+      return data;
     },
     enabled: !!league?.leagueId,
+    onError: (error) => {
+      console.error("[RuleChanges] Query error:", error);
+    },
+    onSuccess: (data) => {
+      console.log("[RuleChanges] Query success:", {
+        count: Array.isArray(data) ? data.length : 0,
+        enabled: !!league?.leagueId,
+        leagueId: league?.leagueId,
+      });
+    },
+  });
+
+  // Log query state changes
+  console.log("[RuleChanges] Query state:", {
+    isLoading: rulesLoading,
+    isError: rulesError,
+    hasData: !!ruleSuggestions,
+    dataLength: Array.isArray(ruleSuggestions) ? ruleSuggestions.length : 0,
+    enabled: !!league?.leagueId,
+    leagueId: league?.leagueId,
   });
 
   // Create rule suggestion mutation
@@ -223,11 +262,25 @@ export default function RuleChanges() {
   };
 
   if (!league) {
+    console.log("[RuleChanges] No league connected");
     return (
       <div className="container mx-auto p-4">
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
             Please connect to a league to view rule changes.
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!league?.leagueId) {
+    console.log("[RuleChanges] League ID is missing");
+    return (
+      <div className="container mx-auto p-4">
+        <Card>
+          <CardContent className="py-8 text-center text-muted-foreground">
+            League ID is missing. Please reconnect to your league.
           </CardContent>
         </Card>
       </div>
@@ -317,6 +370,27 @@ export default function RuleChanges() {
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {rulesError && (
+          <Alert variant="destructive">
+            <AlertCircle className="h-4 w-4" />
+            <AlertTitle>Error Loading Rule Suggestions</AlertTitle>
+            <AlertDescription>
+              {rulesErrorDetails instanceof Error 
+                ? rulesErrorDetails.message 
+                : "Failed to fetch rule suggestions. Please try again."}
+              <div className="mt-2">
+                <Button 
+                  variant="outline" 
+                  size="sm" 
+                  onClick={() => refetchRules()}
+                >
+                  Retry
+                </Button>
+              </div>
+            </AlertDescription>
+          </Alert>
         )}
 
         {rulesLoading ? (
