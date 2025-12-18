@@ -133,12 +133,20 @@ export default function RuleChanges() {
         console.error("[RuleChanges] API response is not an array:", typeof data, data);
         throw new Error("Invalid response format: expected array");
       }
+      // Validate each rule has required fields
+      const validRules = data.filter((rule: any) => {
+        if (!rule || !rule.id || !rule.title || !rule.description) {
+          console.warn("[RuleChanges] Invalid rule in response:", rule);
+          return false;
+        }
+        return true;
+      });
       console.log("[RuleChanges] Rule suggestions fetched successfully:", {
-        count: data.length,
-        data: data,
+        total: data.length,
+        valid: validRules.length,
         leagueId: league?.leagueId,
       });
-      return data;
+      return validRules;
     },
     enabled: !!league?.leagueId,
     onError: (error) => {
@@ -501,7 +509,7 @@ export default function RuleChanges() {
           </Card>
         )}
 
-        {rulesError && (
+        {rulesError && !ruleSuggestions && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Error Loading Rule Suggestions</AlertTitle>
@@ -681,6 +689,12 @@ function RuleCard({
 }) {
   const { toast } = useToast();
 
+  // Validate rule object early
+  if (!rule || !rule.id || !rule.title) {
+    console.error("[RuleCard] Invalid rule object:", rule);
+    return null;
+  }
+
   // Fetch votes for this rule
   const { data: votesData } = useQuery<RuleVoteData>({
     queryKey: ["/api/rule-suggestions", rule.id, "votes"],
@@ -689,6 +703,7 @@ function RuleCard({
       if (!res.ok) throw new Error("Failed to fetch votes");
       return res.json();
     },
+    enabled: !!rule.id,
   });
 
   // Fetch user's vote
@@ -700,7 +715,7 @@ function RuleCard({
       if (!res.ok) throw new Error("Failed to fetch user vote");
       return res.json();
     },
-    enabled: !!userRosterId,
+    enabled: !!userRosterId && !!rule.id,
   });
 
   const votingEnabled = rule.votingEnabled !== false; // Default to true if not set

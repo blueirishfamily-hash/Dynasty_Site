@@ -2710,6 +2710,11 @@ export async function registerRoutes(
         })
       );
       console.log("[API] Returning", suggestionsWithVoting.length, "rule suggestions with voting status");
+      // Ensure we always return an array
+      if (!Array.isArray(suggestionsWithVoting)) {
+        console.error("[API] suggestionsWithVoting is not an array:", typeof suggestionsWithVoting);
+        return res.json([]);
+      }
       res.json(suggestionsWithVoting);
     } catch (error) {
       console.error("Error fetching rule suggestions:", error);
