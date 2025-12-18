@@ -84,6 +84,7 @@ export interface IStorage {
   getTeamExtensions(leagueId: string, season: number): Promise<TeamExtension[]>;
   getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined>;
   createTeamExtension(data: InsertTeamExtension): Promise<TeamExtension>;
+  deleteTeamExtension(leagueId: string, rosterId: number, season: number): Promise<void>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -905,10 +906,22 @@ export class DatabaseStorage implements IStorage {
       playerName: data.playerName,
       extensionSalary: data.extensionSalary,
       extensionYear: data.extensionYear,
+      extensionType: data.extensionType || 1,
+      extensionSalary2: data.extensionSalary2 || null,
       createdAt: now,
     }).returning();
 
     return inserted;
+  }
+
+  async deleteTeamExtension(leagueId: string, rosterId: number, season: number): Promise<void> {
+    await db
+      .delete(teamExtensionsTable)
+      .where(and(
+        eq(teamExtensionsTable.leagueId, leagueId),
+        eq(teamExtensionsTable.rosterId, rosterId),
+        eq(teamExtensionsTable.season, season)
+      ));
   }
 }
 

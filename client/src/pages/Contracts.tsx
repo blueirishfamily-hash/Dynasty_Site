@@ -849,7 +849,13 @@ function ManageTeamContractsTab({
   leagueId
 }: ManageTeamContractsTabProps) {
   const { toast } = useToast();
-  const { season } = useSleeper();
+  const { user, league, season } = useSleeper();
+  
+  // Check if current user is the commissioner
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  ));
   
   // Dynamic year calculation from Sleeper season
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
@@ -943,6 +949,31 @@ function ManageTeamContractsTab({
       toast({
         title: "Extension Failed",
         description: error.message || "Failed to apply extension",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Delete extension mutation (commissioner only - allows team to use extension again)
+  const deleteExtensionMutation = useMutation({
+    mutationFn: async () => {
+      if (!userTeam?.rosterId) {
+        throw new Error("Team not found");
+      }
+      return apiRequest("DELETE", `/api/league/${leagueId}/extensions/${CURRENT_YEAR}/${userTeam.rosterId}`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Extension Removed",
+        description: "The extension has been removed. The team can now use their extension again for this season.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to Remove Extension",
+        description: error.message || "Failed to remove extension",
         variant: "destructive",
       });
     },
@@ -2122,19 +2153,27 @@ function ManageTeamContractsTab({
                                   <PopoverTrigger asChild>
                                     <div>
                                       <Switch
-                                        checked={false}
-                                        disabled={extensionDisabled}
+                                        checked={teamUsedExtension}
+                                        disabled={!isCommissioner && extensionDisabled}
+                                        onCheckedChange={(checked) => {
+                                          // Only allow unchecking (removing extension) if commissioner
+                                          if (!checked && isCommissioner && teamUsedExtension) {
+                                            deleteExtensionMutation.mutate();
+                                          }
+                                        }}
                                         data-testid={`switch-extend-${player.playerId}`}
                                       />
                                     </div>
                                   </PopoverTrigger>
                                 </TooltipTrigger>
                                 <TooltipContent>
-                                  {teamUsedExtension 
-                                    ? `Team has already used their ${CURRENT_YEAR} extension`
-                                    : extensionEligibility.eligible 
-                                      ? `Extend player (1 per team per season)`
-                                      : extensionEligibility.reason
+                                  {isCommissioner && teamUsedExtension
+                                    ? `Team has used their ${CURRENT_YEAR} extension. Click to remove and allow them to use it again.`
+                                    : teamUsedExtension 
+                                      ? `Team has already used their ${CURRENT_YEAR} extension`
+                                      : extensionEligibility.eligible 
+                                        ? `Extend player (1 per team per season)`
+                                        : extensionEligibility.reason
                                   }
                                 </TooltipContent>
                               </Tooltip>

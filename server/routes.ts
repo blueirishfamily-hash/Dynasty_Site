@@ -3268,6 +3268,77 @@ export async function registerRoutes(
     }
   });
 
+  // Delete a team extension (commissioner only - allows team to use extension again)
+  app.delete("/api/league/:leagueId/extensions/:season/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, season, rosterId } = req.params;
+      const seasonNum = parseInt(season);
+      const rosterIdNum = parseInt(rosterId);
+
+      if (isNaN(seasonNum) || isNaN(rosterIdNum)) {
+        return res.status(400).json({ error: "Invalid season or roster ID" });
+      }
+
+      // Get the extension record to find which player it was applied to
+      const extension = await storage.getTeamExtensionByRoster(leagueId, rosterIdNum, seasonNum);
+      
+      if (!extension) {
+        return res.status(404).json({ error: "Extension not found" });
+      }
+
+      // Get the player contract to revert it
+      const contracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = contracts.find(c => c.playerId === extension.playerId && c.rosterId === rosterIdNum);
+      
+      if (playerContract) {
+        // Revert the contract: clear extension year salary(s) and reset flags
+        const salaryUpdates: any = {
+          leagueId,
+          rosterId: rosterIdNum,
+          playerId: extension.playerId,
+          salary2025: playerContract.salary2025,
+          salary2026: playerContract.salary2026,
+          salary2027: playerContract.salary2027,
+          salary2028: playerContract.salary2028,
+          salary2029: (playerContract as any).salary2029 || 0,
+          fifthYearOption: playerContract.fifthYearOption,
+          franchiseTagUsed: playerContract.franchiseTagUsed,
+          franchiseTagYear: playerContract.franchiseTagYear,
+          originalContractYears: playerContract.originalContractYears,
+          extensionApplied: 0,
+          extensionYear: null,
+          extensionSalary: null,
+          extensionType: null,
+        };
+
+        // Clear the extension year salary(s)
+        const clearYearSalary = (year: number) => {
+          if (year === 2025) salaryUpdates.salary2025 = 0;
+          else if (year === 2026) salaryUpdates.salary2026 = 0;
+          else if (year === 2027) salaryUpdates.salary2027 = 0;
+          else if (year === 2028) salaryUpdates.salary2028 = 0;
+          else if (year === 2029) salaryUpdates.salary2029 = 0;
+        };
+
+        clearYearSalary(extension.extensionYear);
+        // For 2-year extensions, also clear the second year
+        if (extension.extensionType === 2) {
+          clearYearSalary(extension.extensionYear + 1);
+        }
+
+        await storage.upsertPlayerContract(salaryUpdates);
+      }
+
+      // Delete the extension record
+      await storage.deleteTeamExtension(leagueId, rosterIdNum, seasonNum);
+
+      res.json({ success: true, message: "Extension removed - team can use extension again" });
+    } catch (error) {
+      console.error("Error deleting extension:", error);
+      res.status(500).json({ error: "Failed to delete extension" });
+    }
+  });
+
   // ==================== PLAYER BIDS ====================
   // Get player bids for a specific team (privacy: only returns bids for the requesting team)
   app.get("/api/league/:leagueId/bids/:rosterId", async (req, res) => {
