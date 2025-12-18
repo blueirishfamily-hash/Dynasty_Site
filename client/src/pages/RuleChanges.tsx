@@ -47,6 +47,8 @@ import {
   AlertCircle,
   Edit,
   Trash2,
+  Database,
+  ExternalLink,
 } from "lucide-react";
 import type { RuleSuggestion, RuleVote } from "@shared/schema";
 
@@ -526,7 +528,23 @@ export default function RuleChanges() {
               Propose and vote on league rule changes
             </p>
           </div>
-          <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
+          <div className="flex items-center gap-2">
+            {isCommissioner && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  // Navigate to database viewer for rule_suggestions table
+                  window.open(`/admin/database?table=rule_suggestions&leagueId=${league?.leagueId}`, '_blank');
+                }}
+                title="View rule_suggestions table in Database Viewer"
+              >
+                <Database className="w-4 h-4 mr-2" />
+                View in Database
+                <ExternalLink className="w-3 h-3 ml-2" />
+              </Button>
+            )}
+            <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
             <DialogTrigger asChild>
               <Button
                 onClick={() => {
@@ -638,13 +656,34 @@ export default function RuleChanges() {
         )}
 
         {!rulesLoading && !rulesError && ruleSuggestions !== undefined && (
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <FileText className="w-4 h-4" />
-            <span>
-              {Array.isArray(ruleSuggestions) 
-                ? `${ruleSuggestions.length} rule${ruleSuggestions.length !== 1 ? 's' : ''} found`
-                : 'Loading rule count...'}
-            </span>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <FileText className="w-4 h-4" />
+              <span>
+                {Array.isArray(ruleSuggestions) 
+                  ? `${ruleSuggestions.length} rule${ruleSuggestions.length !== 1 ? 's' : ''} found`
+                  : 'Loading rule count...'}
+                {isCommissioner && (
+                  <span className="ml-2 text-xs">
+                    (from rule_suggestions table)
+                  </span>
+                )}
+              </span>
+            </div>
+            {isCommissioner && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  // Verify connection by checking database viewer
+                  window.open(`/admin/database?table=rule_suggestions&leagueId=${league?.leagueId}`, '_blank');
+                }}
+                className="text-xs"
+              >
+                <Database className="w-3 h-3 mr-1" />
+                Verify Connection
+              </Button>
+            )}
           </div>
         )}
 

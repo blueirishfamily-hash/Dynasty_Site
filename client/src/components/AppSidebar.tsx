@@ -26,6 +26,7 @@ import {
   Medal,
   FileText,
   Scale,
+  Database,
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -48,6 +49,7 @@ const baseNavItems = [
 
 const commissionerNavItems = [
   { title: "Contracts", url: "/contracts", icon: FileText },
+  { title: "Database Viewer", url: "/admin/database", icon: Database },
 ];
 
 interface DraftPick {

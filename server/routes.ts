@@ -3963,5 +3963,145 @@ export async function registerRoutes(
     }
   });
 
+  // Admin Database Inspection API (Commissioner Only)
+  const COMMISSIONER_USER_IDS = ["900186363130503168"]; // Add commissioner user IDs here
+
+  // Helper function to check if user is commissioner
+  async function isCommissioner(userId: string, leagueId?: string): Promise<boolean> {
+    if (COMMISSIONER_USER_IDS.includes(userId)) {
+      return true;
+    }
+    if (leagueId) {
+      try {
+        const league = await getLeague(leagueId);
+        return league && league.owner_id === userId;
+      } catch {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  // Get list of all database tables with row counts
+  app.get("/api/admin/database/tables", async (req, res) => {
+    try {
+      const userId = req.query.userId as string;
+      if (!userId) {
+        return res.status(401).json({ error: "User ID required" });
+      }
+
+      // Check if user is commissioner (no league required for table list)
+      if (!COMMISSIONER_USER_IDS.includes(userId)) {
+        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
+      }
+
+      const tables = await storage.getTableList();
+      res.json(tables);
+    } catch (error: any) {
+      console.error("[API] Error getting table list:", error);
+      res.status(500).json({ error: error.message || "Failed to get table list" });
+    }
+  });
+
+  // Get table schema
+  app.get("/api/admin/database/tables/:tableName/schema", async (req, res) => {
+    try {
+      const { tableName } = req.params;
+      const userId = req.query.userId as string;
+      
+      if (!userId) {
+        return res.status(401).json({ error: "User ID required" });
+      }
+
+      if (!COMMISSIONER_USER_IDS.includes(userId)) {
+        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
+      }
+
+      const schema = await storage.getTableSchema(tableName);
+      res.json(schema);
+    } catch (error: any) {
+      console.error(`[API] Error getting schema for table ${req.params.tableName}:`, error);
+      res.status(500).json({ error: error.message || "Failed to get table schema" });
+    }
+  });
+
+  // Get table data with pagination and filters
+  app.get("/api/admin/database/tables/:tableName", async (req, res) => {
+    try {
+      const { tableName } = req.params;
+      const userId = req.query.userId as string;
+      const leagueId = req.query.leagueId as string | undefined;
+      const page = parseInt(req.query.page as string || "1", 10);
+      const limit = Math.min(parseInt(req.query.limit as string || "100", 10), 1000); // Max 1000 rows
+      const offset = (page - 1) * limit;
+
+      if (!userId) {
+        return res.status(401).json({ error: "User ID required" });
+      }
+
+      if (!COMMISSIONER_USER_IDS.includes(userId)) {
+        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
+      }
+
+      // Build filters from query params
+      const filters: Record<string, any> = {};
+      if (leagueId) {
+        filters.leagueId = leagueId;
+      }
+      // Add other filter params if provided
+      for (const [key, value] of Object.entries(req.query)) {
+        if (key !== "userId" && key !== "leagueId" && key !== "page" && key !== "limit" && value) {
+          filters[key] = value;
+        }
+      }
+
+      const [data, totalCount] = await Promise.all([
+        storage.getTableData(tableName, limit, offset, Object.keys(filters).length > 0 ? filters : undefined),
+        storage.getTableRowCount(tableName, Object.keys(filters).length > 0 ? filters : undefined),
+      ]);
+
+      res.json({
+        data,
+        pagination: {
+          page,
+          limit,
+          total: totalCount,
+          totalPages: Math.ceil(totalCount / limit),
+        },
+      });
+    } catch (error: any) {
+      console.error(`[API] Error getting data from table ${req.params.tableName}:`, error);
+      res.status(500).json({ error: error.message || "Failed to get table data" });
+    }
+  });
+
+  // Get table row count
+  app.get("/api/admin/database/tables/:tableName/count", async (req, res) => {
+    try {
+      const { tableName } = req.params;
+      const userId = req.query.userId as string;
+      const leagueId = req.query.leagueId as string | undefined;
+
+      if (!userId) {
+        return res.status(401).json({ error: "User ID required" });
+      }
+
+      if (!COMMISSIONER_USER_IDS.includes(userId)) {
+        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
+      }
+
+      const filters: Record<string, any> = {};
+      if (leagueId) {
+        filters.leagueId = leagueId;
+      }
+
+      const count = await storage.getTableRowCount(tableName, Object.keys(filters).length > 0 ? filters : undefined);
+      res.json({ count });
+    } catch (error: any) {
+      console.error(`[API] Error getting row count for table ${req.params.tableName}:`, error);
+      res.status(500).json({ error: error.message || "Failed to get row count" });
+    }
+  });
+
   return httpServer;
 }

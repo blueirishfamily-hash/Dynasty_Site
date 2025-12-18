@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "./db";
 import {
   ruleSuggestionsTable,
@@ -88,6 +88,12 @@ export interface IStorage {
   getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined>;
   createTeamExtension(data: InsertTeamExtension): Promise<TeamExtension>;
   deleteTeamExtension(leagueId: string, rosterId: number, season: number): Promise<void>;
+  
+  // Database inspection methods
+  getTableList(): Promise<Array<{ name: string; rowCount: number }>>;
+  getTableSchema(tableName: string): Promise<Array<{ column: string; type: string; nullable: boolean; default: string | null }>>;
+  getTableData(tableName: string, limit: number, offset: number, filters?: Record<string, any>): Promise<any[]>;
+  getTableRowCount(tableName: string, filters?: Record<string, any>): Promise<number>;
 }
 
 export class DatabaseStorage implements IStorage {
@@ -1117,6 +1123,190 @@ export class DatabaseStorage implements IStorage {
         eq(teamExtensionsTable.rosterId, rosterId),
         eq(teamExtensionsTable.season, season)
       ));
+  }
+
+  // Database inspection methods
+  async getTableList(): Promise<Array<{ name: string; rowCount: number }>> {
+    try {
+      // Get list of tables from information_schema
+      const tables = await db.execute(sql`
+        SELECT table_name 
+        FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_type = 'BASE TABLE'
+        ORDER BY table_name
+      `);
+
+      const tableList = [];
+      for (const row of tables.rows as Array<{ table_name: string }>) {
+        const tableName = row.table_name;
+        try {
+          // Get row count for each table
+          const countResult = await db.execute(sql.raw(`SELECT COUNT(*) as count FROM ${sql.identifier(tableName)}`));
+          const rowCount = parseInt((countResult.rows[0] as { count: string }).count || "0", 10);
+          tableList.push({ name: tableName, rowCount });
+        } catch (error) {
+          // If we can't count rows, still include the table with 0 count
+          console.warn(`[Storage] Could not get row count for table ${tableName}:`, error);
+          tableList.push({ name: tableName, rowCount: 0 });
+        }
+      }
+
+      return tableList;
+    } catch (error: any) {
+      console.error("[Storage] Error getting table list:", error);
+      throw new Error(`Failed to get table list: ${error.message}`);
+    }
+  }
+
+  async getTableSchema(tableName: string): Promise<Array<{ column: string; type: string; nullable: boolean; default: string | null }>> {
+    try {
+      const schema = await db.execute(sql`
+        SELECT 
+          column_name as column,
+          data_type as type,
+          is_nullable = 'YES' as nullable,
+          column_default as default
+        FROM information_schema.columns
+        WHERE table_schema = 'public' 
+        AND table_name = ${tableName}
+        ORDER BY ordinal_position
+      `);
+
+      return (schema.rows as Array<{ column: string; type: string; nullable: boolean; default: string | null }>).map(row => ({
+        column: row.column,
+        type: row.type,
+        nullable: row.nullable,
+        default: row.default,
+      }));
+    } catch (error: any) {
+      console.error(`[Storage] Error getting schema for table ${tableName}:`, error);
+      throw new Error(`Failed to get table schema: ${error.message}`);
+    }
+  }
+
+  async getTableData(tableName: string, limit: number, offset: number, filters?: Record<string, any>): Promise<any[]> {
+    try {
+      // Map table names to their Drizzle table objects
+      const tableMap: Record<string, any> = {
+        rule_suggestions: ruleSuggestionsTable,
+        rule_votes: ruleVotesTable,
+        award_nominations: awardNominationsTable,
+        award_ballots: awardBallotsTable,
+        league_settings: leagueSettingsTable,
+        player_contracts: playerContractsTable,
+        player_bids: playerBidsTable,
+        dead_cap_entries: deadCapEntriesTable,
+        saved_contract_drafts: savedContractDraftsTable,
+        contract_approval_requests: contractApprovalRequestsTable,
+        team_extensions: teamExtensionsTable,
+      };
+
+      const table = tableMap[tableName];
+      if (!table) {
+        throw new Error(`Table ${tableName} not found in table map`);
+      }
+
+      // Build where conditions from filters
+      const conditions = [];
+      if (filters) {
+        for (const [key, value] of Object.entries(filters)) {
+          if (value !== undefined && value !== null && value !== "") {
+            // Map snake_case to camelCase for column names
+            const camelKey = key.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+            const column = (table as any)[camelKey] || (table as any)[key];
+            if (column) {
+              conditions.push(eq(column, value));
+            }
+          }
+        }
+      }
+
+      let query = db.select().from(table);
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+      
+      // Try to order by createdAt, id, or updatedAt (whichever exists)
+      try {
+        const tableObj = table as any;
+        if (tableObj.createdAt) {
+          query = query.orderBy(desc(tableObj.createdAt)) as any;
+        } else if (tableObj.id) {
+          query = query.orderBy(desc(tableObj.id)) as any;
+        } else if (tableObj.updatedAt) {
+          query = query.orderBy(desc(tableObj.updatedAt)) as any;
+        }
+      } catch {
+        // If ordering fails, continue without orderBy
+      }
+      
+      query = query.limit(limit).offset(offset) as any;
+      const results = await query;
+      return results;
+    } catch (error: any) {
+      console.error(`[Storage] Error getting data from table ${tableName}:`, error);
+      throw new Error(`Failed to get table data: ${error.message}`);
+    }
+  }
+
+  async getTableRowCount(tableName: string, filters?: Record<string, any>): Promise<number> {
+    try {
+      // Map table names to their Drizzle table objects
+      const tableMap: Record<string, any> = {
+        rule_suggestions: ruleSuggestionsTable,
+        rule_votes: ruleVotesTable,
+        award_nominations: awardNominationsTable,
+        award_ballots: awardBallotsTable,
+        league_settings: leagueSettingsTable,
+        player_contracts: playerContractsTable,
+        player_bids: playerBidsTable,
+        dead_cap_entries: deadCapEntriesTable,
+        saved_contract_drafts: savedContractDraftsTable,
+        contract_approval_requests: contractApprovalRequestsTable,
+        team_extensions: teamExtensionsTable,
+      };
+
+      const table = tableMap[tableName];
+      if (!table) {
+        throw new Error(`Table ${tableName} not found in table map`);
+      }
+
+      // Build where conditions from filters
+      // Map filter keys (snake_case or camelCase) to Drizzle column objects
+      const columnMap: Record<string, any> = {};
+      for (const key in table) {
+        if (key !== 'getSQL' && typeof table[key] === 'object' && table[key] !== null) {
+          // Store both camelCase and snake_case versions
+          columnMap[key] = table[key];
+          const snakeKey = key.replace(/([A-Z])/g, '_$1').toLowerCase();
+          columnMap[snakeKey] = table[key];
+        }
+      }
+
+      const conditions = [];
+      if (filters) {
+        for (const [key, value] of Object.entries(filters)) {
+          if (value !== undefined && value !== null && value !== "") {
+            const column = columnMap[key];
+            if (column) {
+              conditions.push(eq(column, value));
+            }
+          }
+        }
+      }
+
+      let query = db.select({ count: sql<number>`count(*)` }).from(table);
+      if (conditions.length > 0) {
+        query = query.where(and(...conditions)) as any;
+      }
+
+      const result = await query;
+      return result[0]?.count || 0;
+    } catch (error: any) {
+      console.error(`[Storage] Error getting row count for table ${tableName}:`, error);
+      throw new Error(`Failed to get table row count: ${error.message}`);
+    }
   }
 }
 

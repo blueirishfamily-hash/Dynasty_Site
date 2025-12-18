@@ -21,6 +21,7 @@ import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
 import RuleChanges from "@/pages/RuleChanges";
+import DatabaseViewer from "@/pages/DatabaseViewer";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -51,6 +52,7 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
+      <Route path="/admin/database" component={DatabaseViewer} />
       <Route component={NotFound} />
     </Switch>
   );
