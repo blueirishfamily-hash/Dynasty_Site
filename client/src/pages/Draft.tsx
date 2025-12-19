@@ -166,22 +166,45 @@ export default function Draft() {
     enabled: !!league?.leagueId,
   });
 
-  // Auto-select 2024 draft when drafts load
+  // Auto-select 2024 rookie draft when drafts load or Historical tab is selected
   useEffect(() => {
-    if (drafts && drafts.length > 0 && !selectedDraftId) {
-      const draft2024 = drafts.find(d => d.season === "2024" && d.status === "complete");
-      if (draft2024) {
-        setSelectedDraftId(draft2024.draftId);
-      } else {
-        const latestCompleted = drafts
-          .filter(d => d.status === "complete")
+    if (drafts && drafts.length > 0) {
+      // When Historical tab is active, prioritize 2024 rookie draft
+      if (activeTab === "historical") {
+        const draft2024Rookie = drafts.find(
+          d => d.season === "2024" && d.status === "complete" && d.type === "rookie"
+        );
+        if (draft2024Rookie) {
+          setSelectedDraftId(draft2024Rookie.draftId);
+          return;
+        }
+        
+        // Fall back to latest completed rookie draft
+        const latestRookieDraft = drafts
+          .filter(d => d.status === "complete" && d.type === "rookie")
           .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
-        if (latestCompleted) {
-          setSelectedDraftId(latestCompleted.draftId);
+        if (latestRookieDraft) {
+          setSelectedDraftId(latestRookieDraft.draftId);
+          return;
+        }
+      }
+      
+      // For other tabs or if no rookie draft found, use existing logic
+      if (!selectedDraftId) {
+        const draft2024 = drafts.find(d => d.season === "2024" && d.status === "complete");
+        if (draft2024) {
+          setSelectedDraftId(draft2024.draftId);
+        } else {
+          const latestCompleted = drafts
+            .filter(d => d.status === "complete")
+            .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
+          if (latestCompleted) {
+            setSelectedDraftId(latestCompleted.draftId);
+          }
         }
       }
     }
-  }, [drafts, selectedDraftId]);
+  }, [drafts, selectedDraftId, activeTab]);
 
   const userTeamStanding = standings?.find((s: any) => s.isUser);
   const userRosterId = userTeamStanding?.rosterId;
@@ -241,8 +264,9 @@ export default function Draft() {
       return a.pick - b.pick;
     });
 
+  // Filter for completed rookie drafts only (for historical tab)
   const completedDrafts = (drafts || [])
-    .filter(d => d.status === "complete")
+    .filter(d => d.status === "complete" && d.type === "rookie")
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
 
   // Calculate draft odds using Monte Carlo simulation
