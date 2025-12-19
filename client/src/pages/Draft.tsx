@@ -166,37 +166,51 @@ export default function Draft() {
     enabled: !!league?.leagueId,
   });
 
-  // Auto-select 2024 rookie draft when drafts load or Historical tab is selected
+  // Debug logging to see what drafts are being returned from API
+  useEffect(() => {
+    if (drafts) {
+      console.log("All drafts from API:", drafts);
+      console.log("Draft statuses:", drafts.map((d: any) => ({ season: d.season, type: d.type, status: d.status })));
+      const rookieDrafts = drafts.filter((d: any) => d.type === "rookie");
+      console.log("Rookie drafts:", rookieDrafts.map((d: any) => ({ season: d.season, status: d.status })));
+    }
+  }, [drafts]);
+
+  // Helper function to check if draft is complete
+  const isDraftComplete = (status: string) => {
+    return status === "complete" || 
+           status === "completed" || 
+           status === "finished" ||
+           status === "closed";
+  };
+
+  // Auto-select most recent rookie draft when drafts load or Historical tab is selected
   useEffect(() => {
     if (drafts && drafts.length > 0) {
-      // When Historical tab is active, prioritize 2024 rookie draft
+      // When Historical tab is active, prioritize most recent completed rookie draft
       if (activeTab === "historical") {
-        const draft2024Rookie = drafts.find(
-          d => d.season === "2024" && d.status === "complete" && d.type === "rookie"
-        );
-        if (draft2024Rookie) {
-          setSelectedDraftId(draft2024Rookie.draftId);
-          return;
-        }
+        // Get all completed rookie drafts
+        const completedRookieDrafts = drafts
+          .filter(d => {
+            return isDraftComplete(d.status) && d.type === "rookie";
+          })
+          .sort((a, b) => parseInt(b.season) - parseInt(a.season));
         
-        // Fall back to latest completed rookie draft
-        const latestRookieDraft = drafts
-          .filter(d => d.status === "complete" && d.type === "rookie")
-          .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
-        if (latestRookieDraft) {
-          setSelectedDraftId(latestRookieDraft.draftId);
+        // Select most recent (first in sorted array)
+        if (completedRookieDrafts.length > 0) {
+          setSelectedDraftId(completedRookieDrafts[0].draftId);
           return;
         }
       }
       
       // For other tabs or if no rookie draft found, use existing logic
       if (!selectedDraftId) {
-        const draft2024 = drafts.find(d => d.season === "2024" && d.status === "complete");
+        const draft2024 = drafts.find(d => d.season === "2024" && isDraftComplete(d.status));
         if (draft2024) {
           setSelectedDraftId(draft2024.draftId);
         } else {
           const latestCompleted = drafts
-            .filter(d => d.status === "complete")
+            .filter(d => isDraftComplete(d.status))
             .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
           if (latestCompleted) {
             setSelectedDraftId(latestCompleted.draftId);
@@ -265,8 +279,9 @@ export default function Draft() {
     });
 
   // Filter for completed rookie drafts only (for historical tab)
+  // Check multiple status values to handle different Sleeper API responses
   const completedDrafts = (drafts || [])
-    .filter(d => d.status === "complete" && d.type === "rookie")
+    .filter(d => isDraftComplete(d.status) && d.type === "rookie")
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
 
   // Calculate draft odds using Monte Carlo simulation
@@ -792,9 +807,15 @@ export default function Draft() {
                   )}
                 </>
               ) : (
-                <p className="text-center text-muted-foreground py-8">
-                  No historical drafts found
-                </p>
+                <div className="text-center text-muted-foreground py-8">
+                  <p>No historical rookie drafts found.</p>
+                  {drafts && drafts.length > 0 && (
+                    <p className="text-xs mt-2">
+                      Found {drafts.length} total drafts. 
+                      Rookie drafts: {drafts.filter((d: any) => d.type === "rookie").length}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
           ) : (
