@@ -476,6 +476,19 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   const [rookieDraftPositions, setRookieDraftPositions] = useState<Record<string, { round: number | null; draftSlot: number | null }>>({});
   const [applyRookiePayScale, setApplyRookiePayScale] = useState<Record<string, boolean>>({});
   const [manualDraftInputs, setManualDraftInputs] = useState<Record<string, { round: number; draftSlot: number }>>({});
+  const [showRookiePayScalePopover, setShowRookiePayScalePopover] = useState<string | null>(null);
+  
+  // State for auto-save debouncing
+  const contractLengthSaveTimeoutRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
+  
+  // Cleanup timeouts on unmount
+  useEffect(() => {
+    return () => {
+      Object.values(contractLengthSaveTimeoutRef.current).forEach(timeout => {
+        clearTimeout(timeout);
+      });
+    };
+  }, []);
 
   // Draft state for auto-save functionality
   interface SavedDraft {
@@ -668,34 +681,105 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     onContractChange(selectedRosterId, playerId, "isOnIr", isOnIr);
   };
 
-  // Handler to designate player as rookie (commissioner only)
-  const handleDesignateRookie = (playerId: string) => {
-    // Set as rookie contract: 3 years + rookie flag
-    onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
-    onContractChange(selectedRosterId, playerId, "isRookieContract", true);
-    
-    // Always apply rookie pay scale for 3 years
-    const draftPos = rookieDraftPositions[playerId];
-    let salary: number;
-    
-    if (draftPos?.round && draftPos?.draftSlot) {
-      // Use draft position salary if available
-      salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
+  // Handler for rookie toggle
+  const handleRookieToggle = (playerId: string, checked: boolean) => {
+    if (checked) {
+      // Toggle ON: Set as rookie contract
+      onContractChange(selectedRosterId, playerId, "isRookieContract", true);
+      onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
+      // Trigger auto-save
+      triggerContractLengthAutoSave(playerId);
     } else {
-      // Use default salary: $2 for rookies (3rd round default), $4 as fallback
-      const player = playerInputs.find(p => p.playerId === playerId);
-      salary = (player?.yearsExp === 0) ? 2 : 4;
+      // Toggle OFF: Clear rookie flag, reset contract length, clear salaries
+      onContractChange(selectedRosterId, playerId, "isRookieContract", false);
+      onContractChange(selectedRosterId, playerId, "originalContractYears", 0);
+      
+      // Clear all salaries
+      const allYears = [...CONTRACT_YEARS, OPTION_YEAR];
+      const clearedSalaries: Record<number, number> = {};
+      for (const year of allYears) {
+        clearedSalaries[year] = 0;
+      }
+      onContractChange(selectedRosterId, playerId, "salaries", clearedSalaries);
+      
+      // Clear rookie pay scale flag
+      setApplyRookiePayScale(prev => {
+        const updated = { ...prev };
+        delete updated[playerId];
+        return updated;
+      });
+      
+      // Trigger auto-save
+      triggerContractLengthAutoSave(playerId);
+    }
+  };
+
+  // Handler for contract length dropdown change
+  const handleContractLengthChange = (playerId: string, value: string) => {
+    if (value === "R") {
+      // Rookie selected: Set rookie flag and length to 3
+      onContractChange(selectedRosterId, playerId, "isRookieContract", true);
+      onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
+    } else if (value === "0") {
+      // No contract: Set to 0 and clear rookie flag
+      onContractChange(selectedRosterId, playerId, "originalContractYears", 0);
+      onContractChange(selectedRosterId, playerId, "isRookieContract", false);
+    } else {
+      // Regular contract length: Set length and clear rookie flag
+      const length = parseInt(value);
+      onContractChange(selectedRosterId, playerId, "originalContractYears", length);
+      onContractChange(selectedRosterId, playerId, "isRookieContract", false);
     }
     
-    // Apply salary to all 3 years
-    const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
-    onContractChange(selectedRosterId, playerId, "salaries", {
-      ...currentSalaries,
-      [CURRENT_YEAR]: salary,
-      [CURRENT_YEAR + 1]: salary,
-      [CURRENT_YEAR + 2]: salary,
-    });
-    setApplyRookiePayScale(prev => ({ ...prev, [playerId]: true }));
+    // Trigger auto-save
+    triggerContractLengthAutoSave(playerId);
+  };
+
+  // Auto-save mutation for contract length
+  const saveContractLengthMutation = useMutation({
+    mutationFn: async (data: { rosterId: number; playerId: string; originalContractYears: number | null; isRookieContract: number }) => {
+      if (!league?.leagueId) {
+        throw new Error("League ID is required");
+      }
+      return apiRequest("POST", `/api/league/${league.leagueId}/contracts`, [{
+        rosterId: data.rosterId,
+        playerId: data.playerId,
+        salary2025: 0,
+        salary2026: 0,
+        salary2027: 0,
+        salary2028: 0,
+        salary2029: 0,
+        fifthYearOption: null,
+        isOnIr: 0,
+        originalContractYears: data.originalContractYears ?? 0,
+        isRookieContract: data.isRookieContract,
+      }]);
+    },
+  });
+
+  // Trigger auto-save with debounce
+  const triggerContractLengthAutoSave = (playerId: string) => {
+    const contract = contractData[selectedRosterId]?.[playerId];
+    if (!contract || !league?.leagueId) return;
+
+    // Clear existing timeout for this player
+    if (contractLengthSaveTimeoutRef.current[playerId]) {
+      clearTimeout(contractLengthSaveTimeoutRef.current[playerId]);
+    }
+
+    // Set new timeout
+    contractLengthSaveTimeoutRef.current[playerId] = setTimeout(() => {
+      const currentContract = contractData[selectedRosterId]?.[playerId];
+      if (currentContract) {
+        saveContractLengthMutation.mutate({
+          rosterId: parseInt(selectedRosterId),
+          playerId,
+          originalContractYears: currentContract.originalContractYears ?? 0,
+          isRookieContract: currentContract.isRookieContract ? 1 : 0,
+        });
+      }
+      delete contractLengthSaveTimeoutRef.current[playerId];
+    }, 2000);
   };
 
   // Handler to edit remaining years (commissioner only)
@@ -1214,27 +1298,125 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           </span>
                         </TableCell>
                         <TableCell className="text-center">
-                          <div className="flex items-center gap-1 justify-center">
-                            <span className="text-sm font-medium tabular-nums">
-                              {player.isRookieContract ? "R" : (player.originalContractYears?.toString() || "-")}
-                            </span>
-                            {isCommissioner && !player.isRookieContract && (
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-7 w-7 p-0"
-                                    onClick={() => handleDesignateRookie(player.playerId)}
-                                    data-testid={`button-designate-rookie-${player.playerId}`}
-                                  >
-                                    <Star className="h-3 w-3" />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  <p>Designate as Rookie (3-year contract with rookie pay scale)</p>
-                                </TooltipContent>
-                              </Tooltip>
+                          <div className="flex items-center gap-2 justify-center">
+                            {isCommissioner ? (
+                              <>
+                                <Select
+                                  value={player.isRookieContract ? "R" : (player.originalContractYears?.toString() || "0")}
+                                  onValueChange={(value) => handleContractLengthChange(player.playerId, value)}
+                                  disabled={!isCommissioner}
+                                >
+                                  <SelectTrigger className="h-7 w-12 text-center" data-testid={`select-len-${player.playerId}`}>
+                                    <SelectValue placeholder="-" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="0">-</SelectItem>
+                                    <SelectItem value="1">1</SelectItem>
+                                    <SelectItem value="2">2</SelectItem>
+                                    <SelectItem value="3">3</SelectItem>
+                                    <SelectItem value="4">4</SelectItem>
+                                    <SelectItem value="R">R</SelectItem>
+                                  </SelectContent>
+                                </Select>
+                                <div className="flex items-center gap-1">
+                                  <Switch
+                                    checked={player.isRookieContract || false}
+                                    onCheckedChange={(checked) => handleRookieToggle(player.playerId, checked)}
+                                    data-testid={`switch-rookie-${player.playerId}`}
+                                  />
+                                  <Label className="text-xs">Rookie</Label>
+                                </div>
+                                {player.isRookieContract && (
+                                  <Popover open={showRookiePayScalePopover === player.playerId} onOpenChange={(open) => setShowRookiePayScalePopover(open ? player.playerId : null)}>
+                                    <PopoverTrigger asChild>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 text-xs"
+                                        onClick={() => setShowRookiePayScalePopover(player.playerId)}
+                                        data-testid={`button-apply-pay-scale-${player.playerId}`}
+                                      >
+                                        Apply Pay Scale
+                                      </Button>
+                                    </PopoverTrigger>
+                                    <PopoverContent className="w-80" align="end">
+                                      <div className="space-y-3">
+                                        <div className="text-sm font-medium">Apply Rookie Pay Scale</div>
+                                        {rookieDraftPositions[player.playerId]?.round && rookieDraftPositions[player.playerId]?.draftSlot ? (
+                                          <div className="space-y-2">
+                                            <div className="text-xs text-muted-foreground">
+                                              Draft Position: {formatDraftPosition(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}
+                                            </div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Salary: ${getRookieSalary(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}M/year
+                                            </div>
+                                            <Button
+                                              size="sm"
+                                              className="w-full"
+                                              onClick={() => {
+                                                handleApplyRookiePayScale(
+                                                  player.playerId,
+                                                  rookieDraftPositions[player.playerId].round!,
+                                                  rookieDraftPositions[player.playerId].draftSlot!
+                                                );
+                                                setShowRookiePayScalePopover(null);
+                                              }}
+                                            >
+                                              Apply ${getRookieSalary(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}/yr
+                                            </Button>
+                                          </div>
+                                        ) : (
+                                          <div className="space-y-2">
+                                            <div className="text-xs text-muted-foreground">
+                                              Draft position not found. Enter manually:
+                                            </div>
+                                            <div className="flex gap-2">
+                                              <div className="flex-1">
+                                                <Label className="text-xs">Round</Label>
+                                                <Input
+                                                  type="number"
+                                                  min="1"
+                                                  max="7"
+                                                  value={manualDraftInputs[player.playerId]?.round || 1}
+                                                  onChange={(e) => handleManualDraftInputChange(player.playerId, "round", parseInt(e.target.value) || 1)}
+                                                  className="h-8"
+                                                />
+                                              </div>
+                                              <div className="flex-1">
+                                                <Label className="text-xs">Pick</Label>
+                                                <Input
+                                                  type="number"
+                                                  min="1"
+                                                  max="12"
+                                                  value={manualDraftInputs[player.playerId]?.draftSlot || 1}
+                                                  onChange={(e) => handleManualDraftInputChange(player.playerId, "draftSlot", parseInt(e.target.value) || 1)}
+                                                  className="h-8"
+                                                />
+                                              </div>
+                                            </div>
+                                            <Button
+                                              size="sm"
+                                              className="w-full"
+                                              onClick={() => {
+                                                const round = manualDraftInputs[player.playerId]?.round || 1;
+                                                const draftSlot = manualDraftInputs[player.playerId]?.draftSlot || 1;
+                                                handleApplyRookiePayScale(player.playerId, round, draftSlot);
+                                                setShowRookiePayScalePopover(null);
+                                              }}
+                                            >
+                                              Apply ${getRookieSalary(manualDraftInputs[player.playerId]?.round || 1, manualDraftInputs[player.playerId]?.draftSlot || 1)}/yr
+                                            </Button>
+                                          </div>
+                                        )}
+                                      </div>
+                                    </PopoverContent>
+                                  </Popover>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-sm font-medium tabular-nums">
+                                {player.isRookieContract ? "R" : (player.originalContractYears?.toString() || "-")}
+                              </span>
                             )}
                           </div>
                         </TableCell>
@@ -4972,27 +5154,21 @@ export default function Contracts() {
         const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
         const salary2029 = Math.round((contract.salaries[2029] || 0) * 10);
         
-        // Determine originalContractYears: use provided value, existing DB value, or default to 0 (backend will default to 1)
-        let originalContractYears = 0;
+        // Determine originalContractYears: allow 0, null, or 1-4 values
+        let originalContractYears: number | null = null;
         const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
         
-        // Check if contract has a valid originalContractYears (1-4)
-        const hasValidContractYears = typeof contract.originalContractYears === 'number' && 
-                                      contract.originalContractYears >= 1 && 
-                                      contract.originalContractYears <= 4;
-        
-        if (hasValidContractYears) {
-          // Use the explicitly set value
+        // Use provided value if it's a valid number (0-4), otherwise use existing or default to 0
+        if (typeof contract.originalContractYears === 'number' && 
+            contract.originalContractYears >= 0 && 
+            contract.originalContractYears <= 4) {
+          // Use the explicitly set value (including 0)
           originalContractYears = contract.originalContractYears;
         } else if (existingContract) {
-          // Existing contract - use DB value if valid, otherwise default to 0 (backend will handle)
-          if (existingContract.originalContractYears && existingContract.originalContractYears >= 1) {
-            originalContractYears = existingContract.originalContractYears;
-          } else {
-            originalContractYears = 0; // Allow 0, backend will default to 1
-          }
+          // Existing contract - use DB value (including 0)
+          originalContractYears = existingContract.originalContractYears ?? 0;
         } else {
-          // New contract - allow 0/null, backend will default to 1
+          // New contract - allow 0/null
           originalContractYears = contract.originalContractYears ?? 0;
         }
         
