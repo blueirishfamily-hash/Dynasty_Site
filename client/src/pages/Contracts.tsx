@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo, useRef, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -803,7 +803,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   }, {} as Record<number, number>);
 
   // Helper function to build drafts array from current contract data for a specific team
-  const buildDraftsArray = (rosterId: string): Array<{
+  const buildDraftsArray = useCallback((rosterId: string): Array<{
     playerId: string;
     playerName: string;
     playerPosition: string;
@@ -861,7 +861,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     }
 
     return drafts;
-  };
+  }, [contractData, teams, playerMap, CURRENT_YEAR, OPTION_YEAR]);
 
   // Save draft mutation
   const saveDraftMutation = useMutation({
@@ -968,7 +968,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     return () => {
       clearTimeout(timeoutId);
     };
-  }, [contractData, selectedRosterId, hasChanges, league?.leagueId, buildDraftsArray, saveDraftMutation]);
+  }, [contractData, selectedRosterId, hasChanges, league?.leagueId, buildDraftsArray]);
 
   // Load saved drafts when component mounts or selected team changes
   useEffect(() => {
@@ -5030,109 +5030,65 @@ export default function Contracts() {
     if (!league?.leagueId) return;
 
     const contractsToSave: any[] = [];
-    const contractsToDelete: Array<{rosterId: number, playerId: string}> = [];
-    const invalidContracts: string[] = []; // Track players with invalid contract length
     
     for (const rosterId of Object.keys(contractData)) {
       const teamContracts = contractData[rosterId];
       for (const playerId of Object.keys(teamContracts)) {
         const contract = teamContracts[playerId];
-        const hasSalary = Object.values(contract.salaries).some(s => s > 0);
         
-        // Calculate salaries
+        // Calculate salaries (allow zero values)
         const salary2025 = Math.round((contract.salaries[2025] || 0) * 10);
         const salary2026 = Math.round((contract.salaries[2026] || 0) * 10);
         const salary2027 = Math.round((contract.salaries[2027] || 0) * 10);
         const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
         const salary2029 = Math.round((contract.salaries[2029] || 0) * 10);
         
-        if (hasSalary || contract.isOnIr) {
-          // Determine originalContractYears: use commissioner-set value if valid,
-          // otherwise preserve existing DB value, or default to 1 for existing contracts
-          let originalContractYears = 0;
-          const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
-          
-          // Check if contract has a valid originalContractYears (1-4)
-          const hasValidContractYears = typeof contract.originalContractYears === 'number' && 
-                                        contract.originalContractYears >= 1 && 
-                                        contract.originalContractYears <= 4;
-          
-          if (hasValidContractYears) {
-            // Use the explicitly set value
-            originalContractYears = contract.originalContractYears;
-          } else if (existingContract) {
-            // Existing contract - always allow save
-            // Use DB value if valid, otherwise default to 1
-            if (existingContract.originalContractYears && existingContract.originalContractYears >= 1) {
-              originalContractYears = existingContract.originalContractYears;
-            } else {
-              originalContractYears = 1; // Default for existing contracts
-            }
+        // Determine originalContractYears: use provided value, existing DB value, or default to 0 (backend will default to 1)
+        let originalContractYears = 0;
+        const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
+        
+        // Check if contract has a valid originalContractYears (1-4)
+        const hasValidContractYears = typeof contract.originalContractYears === 'number' && 
+                                      contract.originalContractYears >= 1 && 
+                                      contract.originalContractYears <= 4;
+        
+        if (hasValidContractYears) {
+          // Use the explicitly set value
+          originalContractYears = contract.originalContractYears;
+        } else if (existingContract) {
+          // Existing contract - use DB value if valid, otherwise default to 0 (backend will handle)
+          if (existingContract.originalContractYears && existingContract.originalContractYears >= 1) {
+            originalContractYears = existingContract.originalContractYears;
           } else {
-            // New contract without valid length - block it
-            invalidContracts.push(playerId);
-            continue; // Skip this contract, don't save it
+            originalContractYears = 0; // Allow 0, backend will default to 1
           }
-          
-          contractsToSave.push({
-            rosterId: parseInt(rosterId),
-            playerId,
-            salary2025,
-            salary2026,
-            salary2027,
-            salary2028,
-            salary2029,
-            fifthYearOption: contract.fifthYearOption,
-            isOnIr: contract.isOnIr ? 1 : 0,
-            originalContractYears,
-            isRookieContract: contract.isRookieContract ? 1 : 0,
-          });
         } else {
-          // All salaries are 0 and not on IR - check if this player had a contract before
-          const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
-          if (existingContract) {
-            // Player had a contract, now all zeros - mark for deletion
-            contractsToDelete.push({
-              rosterId: parseInt(rosterId),
-              playerId,
-            });
-          }
+          // New contract - allow 0/null, backend will default to 1
+          originalContractYears = contract.originalContractYears ?? 0;
         }
+        
+        // Save all contracts regardless of salary values or contract length
+        contractsToSave.push({
+          rosterId: parseInt(rosterId),
+          playerId,
+          salary2025,
+          salary2026,
+          salary2027,
+          salary2028,
+          salary2029,
+          fifthYearOption: contract.fifthYearOption,
+          isOnIr: contract.isOnIr ? 1 : 0,
+          originalContractYears,
+          isRookieContract: contract.isRookieContract ? 1 : 0,
+        });
       }
     }
 
-    // Show validation error if any new contracts are missing contract length
-    if (invalidContracts.length > 0) {
-      toast({
-        title: "Missing Contract Length",
-        description: `${invalidContracts.length} player(s) have salaries but no contract length set. Please set a contract length (1-4 years) for all new contracts.`,
-        variant: "destructive",
-      });
-      // Still continue to save valid contracts and delete cleared ones
-    }
-
-    // Delete contracts that were cleared (set to all zeros)
-    for (const { rosterId, playerId } of contractsToDelete) {
-      try {
-        await apiRequest("DELETE", `/api/league/${league.leagueId}/contracts/${rosterId}/${playerId}`);
-      } catch (error) {
-        console.error(`Failed to delete contract for player ${playerId}:`, error);
-      }
-    }
-
-    // Save/update contracts with non-zero values
+    // Save all contracts (including those with zero/null values)
     if (contractsToSave.length > 0) {
       saveContractsMutation.mutate(contractsToSave);
-    } else if (contractsToDelete.length > 0) {
-      // If we only deleted contracts (no saves), still refresh and show success
-      queryClient.invalidateQueries({ queryKey: ["/api/league", league.leagueId, "contracts"] });
-      toast({
-        title: "Contracts Updated",
-        description: `${contractsToDelete.length} contract(s) cleared successfully.`,
-      });
-      setHasChanges(false);
-    } else if (invalidContracts.length === 0) {
-      // No contracts to save, delete, or invalid - nothing changed
+    } else {
+      // No contracts to save - nothing changed
       toast({
         title: "No Changes",
         description: "No contract changes to save.",
