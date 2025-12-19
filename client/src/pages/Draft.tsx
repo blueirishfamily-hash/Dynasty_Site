@@ -168,12 +168,48 @@ export default function Draft() {
 
 
   // Helper function to check if draft is complete
+  // Handles multiple status value variations from Sleeper API
   const isDraftComplete = (status: string) => {
-    return status === "complete" || 
-           status === "completed" || 
-           status === "finished" ||
-           status === "closed";
+    if (!status) return false;
+    const normalizedStatus = status.toLowerCase().trim();
+    return normalizedStatus === "complete" || 
+           normalizedStatus === "completed" || 
+           normalizedStatus === "finished" ||
+           normalizedStatus === "closed" ||
+           normalizedStatus === "done" ||
+           normalizedStatus === "ended";
   };
+
+  // Temporary debugging to identify 2024 draft issue
+  useEffect(() => {
+    if (drafts && drafts.length > 0) {
+      console.log("=== DRAFT DEBUGGING ===");
+      console.log("All drafts from API:", drafts);
+      console.log("Draft statuses:", drafts.map((d: any) => ({ 
+        season: d.season, 
+        type: d.type, 
+        status: d.status,
+        draftId: d.draftId 
+      })));
+      
+      const draft2024 = drafts.find((d: any) => d.season === "2024");
+      if (draft2024) {
+        console.log("2024 draft found:", draft2024);
+        console.log("2024 draft status:", draft2024.status);
+        console.log("Is 2024 draft complete?", isDraftComplete(draft2024.status));
+      } else {
+        console.log("2024 draft NOT found in drafts array");
+      }
+      
+      const completedDrafts = drafts.filter((d: any) => isDraftComplete(d.status));
+      console.log("Completed drafts:", completedDrafts.map((d: any) => ({ 
+        season: d.season, 
+        type: d.type, 
+        status: d.status 
+      })));
+      console.log("=== END DEBUGGING ===");
+    }
+  }, [drafts]);
 
   // Auto-select most recent completed draft when drafts load or Historical tab is selected
   useEffect(() => {
