@@ -4800,7 +4800,7 @@ export default function Contracts() {
         
         if (hasSalary || contract.isOnIr) {
           // Determine originalContractYears: use commissioner-set value if valid,
-          // otherwise preserve existing DB value
+          // otherwise preserve existing DB value, or default to 1 for existing contracts
           let originalContractYears = 0;
           const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
           
@@ -4810,6 +4810,10 @@ export default function Contracts() {
           } else if (existingContract?.originalContractYears && existingContract.originalContractYears >= 1) {
             // Preserve existing DB value
             originalContractYears = existingContract.originalContractYears;
+          } else if (existingContract) {
+            // Existing contract but originalContractYears not set properly - default to 1 to allow save
+            // This allows saving salary updates for existing contracts even if originalContractYears is missing
+            originalContractYears = 1;
           } else {
             // New contract without valid length - this is invalid
             // Track this player for validation error
