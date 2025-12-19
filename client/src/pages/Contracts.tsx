@@ -463,6 +463,7 @@ interface ContractInputTabProps {
 }
 
 function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isCommissioner = false }: ContractInputTabProps) {
+  const { toast } = useToast();
   const { season, league, user } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
@@ -475,6 +476,35 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   const [rookieDraftPositions, setRookieDraftPositions] = useState<Record<string, { round: number | null; draftSlot: number | null }>>({});
   const [applyRookiePayScale, setApplyRookiePayScale] = useState<Record<string, boolean>>({});
   const [manualDraftInputs, setManualDraftInputs] = useState<Record<string, { round: number; draftSlot: number }>>({});
+
+  // Draft state for auto-save functionality
+  interface SavedDraft {
+    id: string;
+    playerId: string;
+    playerName: string;
+    playerPosition: string;
+    salary2025: number;
+    salary2026: number;
+    salary2027: number;
+    salary2028: number;
+    salary2029: number;
+    franchiseTagApplied: number;
+    updatedAt: number;
+  }
+  
+  const [lastSavedAtByTeam, setLastSavedAtByTeam] = useState<Record<string, number | null>>({});
+  const [draftsLoadedByTeam, setDraftsLoadedByTeam] = useState<Record<string, boolean>>({});
+  
+  // Refs for auto-save prevention
+  const isInitialMountRef = useRef(true);
+  const isLoadingDraftsRef = useRef(false);
+  const previousDraftsRef = useRef<string | null>(null);
+  
+  // Query for saved contract drafts for the currently selected team
+  const { data: savedDrafts } = useQuery<SavedDraft[]>({
+    queryKey: ['/api/league', league?.leagueId, 'contract-drafts', selectedRosterId],
+    enabled: !!league?.leagueId && !!selectedRosterId,
+  });
 
   const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
   
@@ -674,7 +704,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     
     // Check if this is a rookie contract - if so, preserve the "R" designation
     const currentContract = contractData[selectedRosterId]?.[playerId];
-    const isRookieContract = currentContract?.isRookieContract === true || currentContract?.isRookieContract === 1;
+    const isRookieContract = currentContract?.isRookieContract === true || (currentContract?.isRookieContract as any) === 1;
     
     const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
     const updatedSalaries: Record<number, number> = {};
@@ -771,6 +801,224 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     }, 0);
     return { ...acc, [year]: total };
   }, {} as Record<number, number>);
+
+  // Helper function to build drafts array from current contract data for a specific team
+  const buildDraftsArray = (rosterId: string): Array<{
+    playerId: string;
+    playerName: string;
+    playerPosition: string;
+    salary2025: number;
+    salary2026: number;
+    salary2027: number;
+    salary2028: number;
+    salary2029: number;
+    franchiseTagApplied: number;
+  }> => {
+    const drafts: Array<{
+      playerId: string;
+      playerName: string;
+      playerPosition: string;
+      salary2025: number;
+      salary2026: number;
+      salary2027: number;
+      salary2028: number;
+      salary2029: number;
+      franchiseTagApplied: number;
+    }> = [];
+
+    const teamContracts = contractData[rosterId] || {};
+    const team = teams.find(t => t.rosterId.toString() === rosterId);
+    
+    if (!team) return drafts;
+
+    // Build drafts from contractData for the selected team
+    for (const playerId of Object.keys(teamContracts)) {
+      const contract = teamContracts[playerId];
+      const player = playerMap[playerId];
+      
+      if (!player) continue;
+
+      const salary2025 = (contract.salaries?.[CURRENT_YEAR] || 0) * 10;
+      const salary2026 = (contract.salaries?.[CURRENT_YEAR + 1] || 0) * 10;
+      const salary2027 = (contract.salaries?.[CURRENT_YEAR + 2] || 0) * 10;
+      const salary2028 = (contract.salaries?.[CURRENT_YEAR + 3] || 0) * 10;
+      const salary2029 = (contract.salaries?.[OPTION_YEAR] || 0) * 10;
+
+      // Include if there's any salary value
+      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
+        drafts.push({
+          playerId,
+          playerName: player.name || "Unknown",
+          playerPosition: player.position || "NA",
+          salary2025: Math.round(salary2025),
+          salary2026: Math.round(salary2026),
+          salary2027: Math.round(salary2027),
+          salary2028: Math.round(salary2028),
+          salary2029: Math.round(salary2029),
+          franchiseTagApplied: 0, // ContractInputTab doesn't have franchise tag functionality
+        });
+      }
+    }
+
+    return drafts;
+  };
+
+  // Save draft mutation
+  const saveDraftMutation = useMutation({
+    mutationFn: async ({ drafts, rosterId, silent }: { 
+      drafts: Array<{
+        playerId: string;
+        playerName: string;
+        playerPosition: string;
+        salary2025: number;
+        salary2026: number;
+        salary2027: number;
+        salary2028: number;
+        salary2029: number;
+        franchiseTagApplied: number;
+      }>; 
+      rosterId: string;
+      silent?: boolean;
+    }) => {
+      if (!league?.leagueId) {
+        throw new Error("League ID is required");
+      }
+      return apiRequest("POST", `/api/league/${league.leagueId}/contract-drafts`, {
+        rosterId: parseInt(rosterId),
+        drafts,
+      });
+    },
+    onSuccess: (_, variables) => {
+      setLastSavedAtByTeam(prev => ({
+        ...prev,
+        [variables.rosterId]: Date.now(),
+      }));
+      // Only show toast for manual saves, not auto-saves
+      if (!variables.silent) {
+        toast({
+          title: "Draft Saved",
+          description: "Your contract changes have been saved for later.",
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['/api/league', league?.leagueId, 'contract-drafts'] });
+    },
+    onError: (error: Error, variables) => {
+      // Only show error toast for manual saves, not auto-saves
+      if (!variables.silent) {
+        toast({
+          title: "Save Failed",
+          description: error.message || "Failed to save draft.",
+          variant: "destructive",
+        });
+      }
+    },
+  });
+
+  // Auto-save logic with debouncing
+  useEffect(() => {
+    // Skip auto-save on initial mount
+    if (isInitialMountRef.current) {
+      isInitialMountRef.current = false;
+      return;
+    }
+
+    // Skip if loading drafts
+    if (isLoadingDraftsRef.current) {
+      return;
+    }
+
+    // Skip if no changes
+    if (!hasChanges) {
+      return;
+    }
+
+    // Skip if no league or selected team
+    if (!league?.leagueId || !selectedRosterId) {
+      return;
+    }
+
+    // Build current drafts array
+    const currentDrafts = buildDraftsArray(selectedRosterId);
+    const currentDraftsJson = JSON.stringify(currentDrafts);
+
+    // Skip if drafts haven't changed
+    if (previousDraftsRef.current === currentDraftsJson) {
+      return;
+    }
+
+    // Update previous drafts ref
+    previousDraftsRef.current = currentDraftsJson;
+
+    // Debounce: wait 2 seconds before auto-saving
+    const timeoutId = setTimeout(() => {
+      // Double-check that drafts still match (user might have made more changes)
+      const latestDrafts = buildDraftsArray(selectedRosterId);
+      const latestDraftsJson = JSON.stringify(latestDrafts);
+      
+      if (latestDraftsJson === currentDraftsJson && latestDrafts.length > 0) {
+        saveDraftMutation.mutate({ 
+          drafts: latestDrafts, 
+          rosterId: selectedRosterId, 
+          silent: true 
+        });
+      }
+    }, 2000);
+
+    // Cleanup timeout on unmount or when dependencies change
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [contractData, selectedRosterId, hasChanges, league?.leagueId, buildDraftsArray, saveDraftMutation]);
+
+  // Load saved drafts when component mounts or selected team changes
+  useEffect(() => {
+    if (!savedDrafts || !selectedRosterId || !league?.leagueId) {
+      return;
+    }
+
+    // Skip if drafts have already been loaded for this team
+    if (draftsLoadedByTeam[selectedRosterId]) {
+      return;
+    }
+
+    isLoadingDraftsRef.current = true;
+
+    // Restore contract data from saved drafts
+    for (const draft of savedDrafts) {
+      const playerId = draft.playerId;
+      
+      // Restore salaries (convert from tenths to millions)
+      const salaries: Record<number, number> = {
+        [CURRENT_YEAR]: (draft.salary2025 || 0) / 10,
+        [CURRENT_YEAR + 1]: (draft.salary2026 || 0) / 10,
+        [CURRENT_YEAR + 2]: (draft.salary2027 || 0) / 10,
+        [CURRENT_YEAR + 3]: (draft.salary2028 || 0) / 10,
+        [OPTION_YEAR]: (draft.salary2029 || 0) / 10,
+      };
+
+      // Only restore if there are any salaries
+      if (Object.values(salaries).some(s => s > 0)) {
+        onContractChange(selectedRosterId, playerId, "salaries", salaries);
+      }
+    }
+
+    // Mark drafts as loaded for this team
+    setDraftsLoadedByTeam(prev => ({
+      ...prev,
+      [selectedRosterId]: true,
+    }));
+
+    // Track latest update time
+    if (savedDrafts.length > 0) {
+      const latestUpdatedAt = Math.max(...savedDrafts.map(d => d.updatedAt));
+      setLastSavedAtByTeam(prev => ({
+        ...prev,
+        [selectedRosterId]: latestUpdatedAt,
+      }));
+    }
+
+    isLoadingDraftsRef.current = false;
+  }, [savedDrafts, selectedRosterId, league?.leagueId, CURRENT_YEAR, OPTION_YEAR, onContractChange, draftsLoadedByTeam]);
 
   return (
     <div className="space-y-6">
