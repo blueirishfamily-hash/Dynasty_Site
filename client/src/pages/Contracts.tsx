@@ -68,6 +68,7 @@ interface PlayerContractData {
   fifthYearOption: "accepted" | "declined" | null;
   isOnIr: boolean;
   originalContractYears: number;
+  isRookieContract?: boolean;
 }
 
 type ContractDataStore = Record<string, Record<string, PlayerContractData>>;
@@ -455,7 +456,7 @@ interface ContractInputTabProps {
   teams: TeamCapData[];
   playerMap: PlayerMap;
   contractData: ContractDataStore;
-  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears", value: any) => void;
+  onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears" | "isRookieContract", value: any) => void;
   onSave: () => void;
   hasChanges: boolean;
 }
@@ -496,6 +497,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           fifthYearOption: contract?.fifthYearOption ?? null,
           isOnIr: contract?.isOnIr ?? false,
           originalContractYears: contract?.originalContractYears ?? 0,
+          isRookieContract: contract?.isRookieContract ?? false,
         };
       })
       .filter(p => positionFilter === "ALL" || p.position === positionFilter)
@@ -893,18 +895,25 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                         </TableCell>
                         <TableCell className="text-center">
                           <Select
-                            value={player.originalContractYears?.toString() || "0"}
+                            value={player.isRookieContract ? "R" : (player.originalContractYears?.toString() || "0")}
                             onValueChange={(value) => {
-                              const newLength = parseInt(value);
-                              // If rookie pay scale is applied and user changes from 3 years, remove the flag
-                              if (applyRookiePayScale[player.playerId] && newLength !== 3 && player.yearsExp === 0) {
-                                setApplyRookiePayScale(prev => {
-                                  const updated = { ...prev };
-                                  delete updated[player.playerId];
-                                  return updated;
-                                });
+                              if (value === "R") {
+                                // Set as rookie contract: 3 years + rookie flag
+                                onContractChange(selectedRosterId, player.playerId, "originalContractYears", 3);
+                                onContractChange(selectedRosterId, player.playerId, "isRookieContract", true);
+                              } else {
+                                const newLength = parseInt(value);
+                                // If rookie pay scale is applied and user changes from 3 years, remove the flag
+                                if (applyRookiePayScale[player.playerId] && newLength !== 3 && player.yearsExp === 0) {
+                                  setApplyRookiePayScale(prev => {
+                                    const updated = { ...prev };
+                                    delete updated[player.playerId];
+                                    return updated;
+                                  });
+                                }
+                                onContractChange(selectedRosterId, player.playerId, "originalContractYears", newLength);
+                                onContractChange(selectedRosterId, player.playerId, "isRookieContract", false);
                               }
-                              onContractChange(selectedRosterId, player.playerId, "originalContractYears", newLength);
                             }}
                           >
                             <SelectTrigger className="h-7 w-12 text-center" data-testid={`select-len-${player.playerId}`}>
@@ -916,6 +925,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                               <SelectItem value="2">2</SelectItem>
                               <SelectItem value="3">3</SelectItem>
                               <SelectItem value="4">4</SelectItem>
+                              <SelectItem value="R">R</SelectItem>
                             </SelectContent>
                           </Select>
                         </TableCell>
@@ -1692,9 +1702,11 @@ function ManageTeamContractsTab({
   };
 
   // Helper function to get contract length from dbContracts
-  const getContractLength = (playerId: string): number => {
+  const getContractLength = (playerId: string): number | "R" => {
     const contract = dbContracts.find(c => c.playerId === playerId && c.rosterId === userTeam?.rosterId);
-    return contract?.originalContractYears || 0;
+    if (!contract) return 0;
+    if (contract.isRookieContract === 1) return "R";
+    return contract.originalContractYears || 0;
   };
 
   // Helper function to calculate years remaining on contract
@@ -1732,8 +1744,12 @@ function ManageTeamContractsTab({
       // Contract length filter
       if (contractLengthFilter !== "ALL") {
         const contractLength = getContractLength(p.playerId);
-        const filterValue = parseInt(contractLengthFilter);
-        if (contractLength !== filterValue) return false;
+        if (contractLengthFilter === "R") {
+          if (contractLength !== "R") return false;
+        } else {
+          const filterValue = parseInt(contractLengthFilter);
+          if (contractLength !== filterValue) return false;
+        }
       }
       
       // Years remaining filter
@@ -2526,6 +2542,7 @@ function ManageTeamContractsTab({
                   <SelectItem value="2">2 Years</SelectItem>
                   <SelectItem value="3">3 Years</SelectItem>
                   <SelectItem value="4">4 Years</SelectItem>
+                  <SelectItem value="R">Rookie (R)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -2635,9 +2652,10 @@ function ManageTeamContractsTab({
                           const rosterId = userTeam?.rosterId?.toString() || "";
                           const leaguePlayerData = leagueContractData[rosterId]?.[player.playerId];
                           const contractLength = leaguePlayerData?.originalContractYears || 0;
+                          const isRookie = leaguePlayerData?.isRookieContract || false;
                           return (
                             <span className="text-sm tabular-nums font-medium">
-                              {contractLength > 0 ? contractLength : "-"}
+                              {isRookie ? "R" : (contractLength > 0 ? contractLength : "-")}
                             </span>
                           );
                         })()}
@@ -2984,7 +3002,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   const [selectedPlayer, setSelectedPlayer] = useState<SleeperPlayerData | null>(null);
   const [bidAmount, setBidAmount] = useState("");
   const [maxBid, setMaxBid] = useState("");
-  const [contractYears, setContractYears] = useState("1");
+  const [contractYears, setContractYears] = useState<string>("1");
   const [notes, setNotes] = useState("");
   const [editingBid, setEditingBid] = useState<PlayerBid | null>(null);
 
@@ -2992,20 +3010,27 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
 
-  // Contract limits: 3 four-year, 4 three-year, 5 two-year
-  const CONTRACT_LIMITS = {
+  // Contract limits: 3 four-year, 4 three-year, 12 rookie, 5 two-year
+  const CONTRACT_LIMITS: Record<number | "R", number> = {
     4: 3,
     3: 4,
+    "R": 12,
     2: 5,
   };
 
   // Calculate existing contract counts by duration
   const existingContractCounts = useMemo(() => {
-    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
+    const counts: Record<number | "R", number> = { 4: 0, 3: 0, "R": 0, 2: 0, 1: 0 };
     
     for (const playerId of Object.keys(teamContracts)) {
       const contract = teamContracts[playerId];
       if (!contract?.salaries) continue;
+      
+      // Check if this is a rookie contract
+      if (contract.isRookieContract) {
+        counts["R"]++;
+        continue; // Don't count rookie contracts as 3-year contracts
+      }
       
       const salary2025 = contract.salaries[2025] || 0;
       const salary2026 = contract.salaries[2026] || 0;
@@ -3020,7 +3045,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       if (salary2028 > 0) yearsWithSalary++;
       
       if (yearsWithSalary >= 1 && yearsWithSalary <= 4) {
-        counts[yearsWithSalary]++;
+        counts[yearsWithSalary as keyof typeof counts]++;
       }
     }
     
@@ -3126,6 +3151,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   const handleSubmitBid = () => {
     if (!selectedPlayer || !bidAmount) return;
 
+    const isRookieBid = contractYears === "R";
     const bidData = {
       playerId: selectedPlayer.id,
       playerName: selectedPlayer.name,
@@ -3133,7 +3159,8 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       playerTeam: selectedPlayer.team || null,
       bidAmount: parseFloat(bidAmount),
       maxBid: maxBid ? parseFloat(maxBid) : null,
-      contractYears: parseInt(contractYears),
+      contractYears: isRookieBid ? 3 : parseInt(contractYears),
+      isRookieContract: isRookieBid ? 1 : 0,
       notes: notes || null,
     };
 
@@ -3154,7 +3181,9 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     });
     setBidAmount(bid.bidAmount.toString());
     setMaxBid(bid.maxBid?.toString() || "");
-    setContractYears(bid.contractYears.toString());
+    // Check if this is a rookie bid (contractYears = 3 and isRookieContract flag)
+    const isRookieBid = bid.contractYears === 3 && (bid as any).isRookieContract === 1;
+    setContractYears(isRookieBid ? "R" : bid.contractYears.toString());
     setNotes(bid.notes || "");
   };
 
@@ -3165,12 +3194,21 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
 
   const activeBids = bids.filter(b => b.status === "active");
 
-  // Count active bids by contract years
+  // Count active bids by contract years (including rookie contracts)
+  // Note: Rookie bids are stored as contractYears = 3 with a special marker
+  // For now, we'll use contractYears = 3 and check if it's a rookie bid
+  // TODO: Add isRookieContract field to PlayerBid interface and database
   const bidContractCounts = useMemo(() => {
-    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
+    const counts: Record<number | "R", number> = { 4: 0, 3: 0, "R": 0, 2: 0, 1: 0 };
     for (const bid of activeBids) {
-      if (bid.contractYears >= 1 && bid.contractYears <= 4) {
-        counts[bid.contractYears]++;
+      // Check if this is a rookie bid (contractYears = 3 and marked as rookie)
+      // For now, we'll need to add isRookieContract to the bid interface
+      // For this implementation, we'll assume contractYears = 3 with a special check
+      // This will be updated when we add isRookieContract to bids
+      if (bid.contractYears === 3 && (bid as any).isRookieContract) {
+        counts["R"]++;
+      } else if (bid.contractYears >= 1 && bid.contractYears <= 4) {
+        counts[bid.contractYears as keyof typeof counts]++;
       }
     }
     return counts;
@@ -3181,21 +3219,25 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     return {
       4: Math.max(0, CONTRACT_LIMITS[4] - existingContractCounts[4] - bidContractCounts[4]),
       3: Math.max(0, CONTRACT_LIMITS[3] - existingContractCounts[3] - bidContractCounts[3]),
+      "R": Math.max(0, CONTRACT_LIMITS["R"] - existingContractCounts["R"] - bidContractCounts["R"]),
       2: Math.max(0, CONTRACT_LIMITS[2] - existingContractCounts[2] - bidContractCounts[2]),
     };
   }, [existingContractCounts, bidContractCounts]);
 
   // Check if selected contract years would exceed limit
-  const isContractYearDisabled = (years: number): boolean => {
+  const isContractYearDisabled = (years: number | "R"): boolean => {
     if (years === 1) return false; // No limit on 1-year contracts
-    const limit = CONTRACT_LIMITS[years as 2 | 3 | 4];
+    const limit = CONTRACT_LIMITS[years];
     if (!limit) return false;
     
     const existing = existingContractCounts[years] || 0;
     const bidsCount = bidContractCounts[years] || 0;
     
     // If editing, don't count the current bid being edited
-    const adjustedBidsCount = editingBid && editingBid.contractYears === years 
+    const adjustedBidsCount = editingBid && (
+      (years === "R" && editingBid.contractYears === 3 && (editingBid as any).isRookieContract) ||
+      (years !== "R" && editingBid.contractYears === years)
+    )
       ? bidsCount - 1 
       : bidsCount;
     
@@ -3242,7 +3284,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
           <CardTitle className="text-sm font-medium">Contract Limits (Existing + Pending Bids)</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-3 gap-4 text-center">
+          <div className="grid grid-cols-4 gap-4 text-center">
             <div>
               <div className={`text-lg font-bold ${remainingSlots[4] === 0 ? 'text-destructive' : 'text-foreground'}`}>
                 {existingContractCounts[4] + bidContractCounts[4]}/{CONTRACT_LIMITS[4]}
@@ -3254,6 +3296,12 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                 {existingContractCounts[3] + bidContractCounts[3]}/{CONTRACT_LIMITS[3]}
               </div>
               <p className="text-xs text-muted-foreground">3-Year Contracts</p>
+            </div>
+            <div>
+              <div className={`text-lg font-bold ${remainingSlots["R"] === 0 ? 'text-destructive' : 'text-foreground'}`}>
+                {existingContractCounts["R"] + bidContractCounts["R"]}/{CONTRACT_LIMITS["R"]}
+              </div>
+              <p className="text-xs text-muted-foreground">Rookie (R) Contracts</p>
             </div>
             <div>
               <div className={`text-lg font-bold ${remainingSlots[2] === 0 ? 'text-destructive' : 'text-foreground'}`}>
@@ -3381,10 +3429,13 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                       <SelectItem value="4" disabled={isContractYearDisabled(4)}>
                         4 Years ({remainingSlots[4]}/{CONTRACT_LIMITS[4]} remaining)
                       </SelectItem>
+                      <SelectItem value="R" disabled={isContractYearDisabled("R")}>
+                        Rookie (R) ({remainingSlots["R"]}/{CONTRACT_LIMITS["R"]} remaining)
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Limits: 3 four-year, 4 three-year, 5 two-year contracts per team
+                    Limits: 3 four-year, 4 three-year, 12 rookie, 5 two-year contracts per team
                   </p>
                 </div>
 
@@ -4526,7 +4577,7 @@ export default function Contracts() {
   const handleContractChange = (
     rosterId: string, 
     playerId: string, 
-    field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears", 
+    field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears" | "isRookieContract", 
     value: any
   ) => {
     setContractData(prev => {
@@ -4535,7 +4586,8 @@ export default function Contracts() {
         salaries: {},
         fifthYearOption: null,
         isOnIr: false,
-        originalContractYears: 0
+        originalContractYears: 0,
+        isRookieContract: false
       };
       
       return {

@@ -3300,6 +3300,7 @@ export async function registerRoutes(
           franchiseTagUsed: contract.franchiseTagUsed,
           franchiseTagYear: contract.franchiseTagYear,
           originalContractYears: contract.originalContractYears,
+          isRookieContract: contract.isRookieContract || 0,
           extensionApplied: contract.extensionApplied,
           extensionYear: contract.extensionYear,
           extensionSalary: contract.extensionSalary,
@@ -3603,7 +3604,7 @@ export async function registerRoutes(
   app.post("/api/league/:leagueId/bids", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { rosterId, playerId, playerName, playerPosition, playerTeam, bidAmount, maxBid, contractYears, notes } = req.body;
+      const { rosterId, playerId, playerName, playerPosition, playerTeam, bidAmount, maxBid, contractYears, isRookieContract, notes } = req.body;
       
       if (!rosterId || !playerId || !playerName || !bidAmount) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -3619,8 +3620,9 @@ export async function registerRoutes(
         bidAmount,
         maxBid: maxBid || null,
         contractYears: contractYears || 1,
+        isRookieContract: isRookieContract || 0,
         notes: notes || null,
-      });
+      } as any);
 
       res.json(bid);
     } catch (error) {
