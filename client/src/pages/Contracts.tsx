@@ -459,10 +459,11 @@ interface ContractInputTabProps {
   onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears" | "isRookieContract", value: any) => void;
   onSave: () => void;
   hasChanges: boolean;
+  isCommissioner?: boolean;
 }
 
-function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges }: ContractInputTabProps) {
-  const { season, league } = useSleeper();
+function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isCommissioner = false }: ContractInputTabProps) {
+  const { season, league, user } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
   const OPTION_YEAR = CURRENT_YEAR + 4;
@@ -635,6 +636,76 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
 
   const handleIrToggle = (playerId: string, isOnIr: boolean) => {
     onContractChange(selectedRosterId, playerId, "isOnIr", isOnIr);
+  };
+
+  // Handler to designate player as rookie (commissioner only)
+  const handleDesignateRookie = (playerId: string) => {
+    // Set as rookie contract: 3 years + rookie flag
+    onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
+    onContractChange(selectedRosterId, playerId, "isRookieContract", true);
+    
+    // If player has draft position, optionally apply rookie pay scale
+    const draftPos = rookieDraftPositions[playerId];
+    if (draftPos?.round && draftPos?.draftSlot) {
+      const salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
+      const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
+      onContractChange(selectedRosterId, playerId, "salaries", {
+        ...currentSalaries,
+        [CURRENT_YEAR]: salary,
+        [CURRENT_YEAR + 1]: salary,
+        [CURRENT_YEAR + 2]: salary,
+      });
+      setApplyRookiePayScale(prev => ({ ...prev, [playerId]: true }));
+    }
+  };
+
+  // Handler to edit remaining years (commissioner only)
+  const handleRemainingYearsChange = (playerId: string, newRemainingYears: number) => {
+    if (newRemainingYears < 0 || newRemainingYears > 5) return;
+    
+    const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
+    const updatedSalaries: Record<number, number> = {};
+    
+    // If 0, clear all salaries
+    if (newRemainingYears === 0) {
+      const allYears = [...CONTRACT_YEARS, OPTION_YEAR];
+      for (const year of allYears) {
+        updatedSalaries[year] = 0;
+      }
+      onContractChange(selectedRosterId, playerId, "salaries", updatedSalaries);
+      onContractChange(selectedRosterId, playerId, "originalContractYears", 0);
+      return;
+    }
+    
+    // Calculate which years should have salaries
+    const allYears = [...CONTRACT_YEARS, OPTION_YEAR];
+    const lastYearWithSalary = CURRENT_YEAR + newRemainingYears - 1;
+    
+    // Copy existing salaries up to the new end year, or use last year's salary
+    let lastSalary = 0;
+    for (const year of allYears) {
+      if (year <= lastYearWithSalary) {
+        // Use existing salary if available, otherwise use last known salary
+        updatedSalaries[year] = currentSalaries[year] || lastSalary;
+        if (updatedSalaries[year] > 0) {
+          lastSalary = updatedSalaries[year];
+        }
+      } else {
+        // Set future years to 0
+        updatedSalaries[year] = 0;
+      }
+    }
+    
+    // Update salaries
+    onContractChange(selectedRosterId, playerId, "salaries", updatedSalaries);
+    
+    // Update contract length if needed
+    if (newRemainingYears <= 4) {
+      onContractChange(selectedRosterId, playerId, "originalContractYears", newRemainingYears);
+    } else {
+      // 5 years means 4-year contract with option year
+      onContractChange(selectedRosterId, playerId, "originalContractYears", 4);
+    }
   };
 
   // Handler to manually apply rookie pay scale
@@ -894,46 +965,88 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           </span>
                         </TableCell>
                         <TableCell className="text-center">
-                          <Select
-                            value={player.isRookieContract ? "R" : (player.originalContractYears?.toString() || "0")}
-                            onValueChange={(value) => {
-                              if (value === "R") {
-                                // Set as rookie contract: 3 years + rookie flag
-                                onContractChange(selectedRosterId, player.playerId, "originalContractYears", 3);
-                                onContractChange(selectedRosterId, player.playerId, "isRookieContract", true);
-                              } else {
-                                const newLength = parseInt(value);
-                                // If rookie pay scale is applied and user changes from 3 years, remove the flag
-                                if (applyRookiePayScale[player.playerId] && newLength !== 3 && player.yearsExp === 0) {
-                                  setApplyRookiePayScale(prev => {
-                                    const updated = { ...prev };
-                                    delete updated[player.playerId];
-                                    return updated;
-                                  });
+                          <div className="flex items-center gap-1 justify-center">
+                            <Select
+                              value={player.isRookieContract ? "R" : (player.originalContractYears?.toString() || "0")}
+                              onValueChange={(value) => {
+                                if (value === "R") {
+                                  // Set as rookie contract: 3 years + rookie flag
+                                  onContractChange(selectedRosterId, player.playerId, "originalContractYears", 3);
+                                  onContractChange(selectedRosterId, player.playerId, "isRookieContract", true);
+                                } else {
+                                  const newLength = parseInt(value);
+                                  // If rookie pay scale is applied and user changes from 3 years, remove the flag
+                                  if (applyRookiePayScale[player.playerId] && newLength !== 3 && player.yearsExp === 0) {
+                                    setApplyRookiePayScale(prev => {
+                                      const updated = { ...prev };
+                                      delete updated[player.playerId];
+                                      return updated;
+                                    });
+                                  }
+                                  onContractChange(selectedRosterId, player.playerId, "originalContractYears", newLength);
+                                  onContractChange(selectedRosterId, player.playerId, "isRookieContract", false);
                                 }
-                                onContractChange(selectedRosterId, player.playerId, "originalContractYears", newLength);
-                                onContractChange(selectedRosterId, player.playerId, "isRookieContract", false);
-                              }
-                            }}
-                          >
-                            <SelectTrigger className="h-7 w-12 text-center" data-testid={`select-len-${player.playerId}`}>
-                              <SelectValue placeholder="-" />
-                            </SelectTrigger>
-                            <SelectContent>
-                              <SelectItem value="0">-</SelectItem>
-                              <SelectItem value="1">1</SelectItem>
-                              <SelectItem value="2">2</SelectItem>
-                              <SelectItem value="3">3</SelectItem>
-                              <SelectItem value="4">4</SelectItem>
-                              <SelectItem value="R">R</SelectItem>
-                            </SelectContent>
-                          </Select>
+                              }}
+                            >
+                              <SelectTrigger className="h-7 w-12 text-center" data-testid={`select-len-${player.playerId}`}>
+                                <SelectValue placeholder="-" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="0">-</SelectItem>
+                                <SelectItem value="1">1</SelectItem>
+                                <SelectItem value="2">2</SelectItem>
+                                <SelectItem value="3">3</SelectItem>
+                                <SelectItem value="4">4</SelectItem>
+                                <SelectItem value="R">R</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            {isCommissioner && !player.isRookieContract && (
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 w-7 p-0"
+                                    onClick={() => handleDesignateRookie(player.playerId)}
+                                    data-testid={`button-designate-rookie-${player.playerId}`}
+                                  >
+                                    <Star className="h-3 w-3" />
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <p>Designate as Rookie (3-year contract)</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            )}
+                          </div>
                         </TableCell>
                         <TableCell className="text-center">
                           {(() => {
                             const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.salaries[y] || 0) > 0);
                             const lastYear = contractYears.length > 0 ? Math.max(...contractYears) : 0;
                             const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + 1 : 0;
+                            
+                            if (isCommissioner) {
+                              return (
+                                <Input
+                                  type="number"
+                                  min="0"
+                                  max="5"
+                                  step="1"
+                                  className="h-7 w-12 text-center tabular-nums text-sm"
+                                  value={remainingYears || ""}
+                                  onChange={(e) => {
+                                    const newValue = parseInt(e.target.value) || 0;
+                                    if (newValue >= 0 && newValue <= 5) {
+                                      handleRemainingYearsChange(player.playerId, newValue);
+                                    }
+                                  }}
+                                  placeholder="-"
+                                  data-testid={`input-remaining-years-${player.playerId}`}
+                                />
+                              );
+                            }
+                            
                             return (
                               <span className="text-sm tabular-nums font-medium">
                                 {remainingYears > 0 ? remainingYears : "-"}
@@ -5064,6 +5177,7 @@ export default function Contracts() {
                 onContractChange={handleContractChange}
                 onSave={handleSave}
                 hasChanges={hasChanges}
+                isCommissioner={isCommissioner}
               />
             )}
           </TabsContent>
