@@ -3026,8 +3026,8 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       const contract = teamContracts[playerId];
       if (!contract?.salaries) continue;
       
-      // Check if this is a rookie contract
-      if (contract.isRookieContract) {
+      // Check if this is a rookie contract (handle both boolean and number types)
+      if (contract.isRookieContract === true || contract.isRookieContract === 1) {
         counts["R"]++;
         continue; // Don't count rookie contracts as 3-year contracts
       }
@@ -3205,8 +3205,10 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       // For now, we'll need to add isRookieContract to the bid interface
       // For this implementation, we'll assume contractYears = 3 with a special check
       // This will be updated when we add isRookieContract to bids
-      if (bid.contractYears === 3 && (bid as any).isRookieContract) {
+      // Check if this is a rookie bid (contractYears = 3 and isRookieContract = 1)
+      if (bid.contractYears === 3 && (bid as any).isRookieContract === 1) {
         counts["R"]++;
+        continue; // Don't count rookie bids as 3-year bids
       } else if (bid.contractYears >= 1 && bid.contractYears <= 4) {
         counts[bid.contractYears as keyof typeof counts]++;
       }
@@ -3841,6 +3843,7 @@ interface DbPlayerContract {
   franchiseTagUsed: number;
   franchiseTagYear: number | null;
   originalContractYears: number;
+  isRookieContract: number;
   extensionApplied: number;
   extensionYear: number | null;
   extensionSalary: number | null;
@@ -4438,6 +4441,7 @@ export default function Contracts() {
           fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
           isOnIr: contract.isOnIr === 1,
           originalContractYears: contract.originalContractYears || 0,
+          isRookieContract: contract.isRookieContract === 1,
         };
       }
       setContractData(contractStore);
@@ -4677,6 +4681,7 @@ export default function Contracts() {
             fifthYearOption: contract.fifthYearOption,
             isOnIr: contract.isOnIr ? 1 : 0,
             originalContractYears,
+            isRookieContract: contract.isRookieContract ? 1 : 0,
           });
         } else {
           // All salaries are 0 and not on IR - check if this player had a contract before
