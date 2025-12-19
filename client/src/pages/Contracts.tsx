@@ -644,24 +644,37 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
     onContractChange(selectedRosterId, playerId, "isRookieContract", true);
     
-    // If player has draft position, optionally apply rookie pay scale
+    // Always apply rookie pay scale for 3 years
     const draftPos = rookieDraftPositions[playerId];
+    let salary: number;
+    
     if (draftPos?.round && draftPos?.draftSlot) {
-      const salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
-      const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
-      onContractChange(selectedRosterId, playerId, "salaries", {
-        ...currentSalaries,
-        [CURRENT_YEAR]: salary,
-        [CURRENT_YEAR + 1]: salary,
-        [CURRENT_YEAR + 2]: salary,
-      });
-      setApplyRookiePayScale(prev => ({ ...prev, [playerId]: true }));
+      // Use draft position salary if available
+      salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
+    } else {
+      // Use default salary: $2 for rookies (3rd round default), $4 as fallback
+      const player = playerInputs.find(p => p.playerId === playerId);
+      salary = (player?.yearsExp === 0) ? 2 : 4;
     }
+    
+    // Apply salary to all 3 years
+    const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
+    onContractChange(selectedRosterId, playerId, "salaries", {
+      ...currentSalaries,
+      [CURRENT_YEAR]: salary,
+      [CURRENT_YEAR + 1]: salary,
+      [CURRENT_YEAR + 2]: salary,
+    });
+    setApplyRookiePayScale(prev => ({ ...prev, [playerId]: true }));
   };
 
   // Handler to edit remaining years (commissioner only)
   const handleRemainingYearsChange = (playerId: string, newRemainingYears: number) => {
     if (newRemainingYears < 0 || newRemainingYears > 5) return;
+    
+    // Check if this is a rookie contract - if so, preserve the "R" designation
+    const currentContract = contractData[selectedRosterId]?.[playerId];
+    const isRookieContract = currentContract?.isRookieContract === true || currentContract?.isRookieContract === 1;
     
     const currentSalaries = contractData[selectedRosterId]?.[playerId]?.salaries || {};
     const updatedSalaries: Record<number, number> = {};
@@ -673,7 +686,10 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         updatedSalaries[year] = 0;
       }
       onContractChange(selectedRosterId, playerId, "salaries", updatedSalaries);
-      onContractChange(selectedRosterId, playerId, "originalContractYears", 0);
+      // Only update originalContractYears if not a rookie contract
+      if (!isRookieContract) {
+        onContractChange(selectedRosterId, playerId, "originalContractYears", 0);
+      }
       return;
     }
     
@@ -699,12 +715,15 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     // Update salaries
     onContractChange(selectedRosterId, playerId, "salaries", updatedSalaries);
     
-    // Update contract length if needed
-    if (newRemainingYears <= 4) {
-      onContractChange(selectedRosterId, playerId, "originalContractYears", newRemainingYears);
-    } else {
-      // 5 years means 4-year contract with option year
-      onContractChange(selectedRosterId, playerId, "originalContractYears", 4);
+    // Only update contract length if NOT a rookie contract
+    // Rookie contracts must remain as "R" (originalContractYears = 3, isRookieContract = true)
+    if (!isRookieContract) {
+      if (newRemainingYears <= 4) {
+        onContractChange(selectedRosterId, playerId, "originalContractYears", newRemainingYears);
+      } else {
+        // 5 years means 4-year contract with option year
+        onContractChange(selectedRosterId, playerId, "originalContractYears", 4);
+      }
     }
   };
 
@@ -973,6 +992,28 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                   // Set as rookie contract: 3 years + rookie flag
                                   onContractChange(selectedRosterId, player.playerId, "originalContractYears", 3);
                                   onContractChange(selectedRosterId, player.playerId, "isRookieContract", true);
+                                  
+                                  // Always apply rookie pay scale for 3 years
+                                  const draftPos = rookieDraftPositions[player.playerId];
+                                  let salary: number;
+                                  
+                                  if (draftPos?.round && draftPos?.draftSlot) {
+                                    // Use draft position salary if available
+                                    salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
+                                  } else {
+                                    // Use default salary: $2 for rookies (3rd round default), $4 as fallback
+                                    salary = (player.yearsExp === 0) ? 2 : 4;
+                                  }
+                                  
+                                  // Apply salary to all 3 years
+                                  const currentSalaries = contractData[selectedRosterId]?.[player.playerId]?.salaries || {};
+                                  onContractChange(selectedRosterId, player.playerId, "salaries", {
+                                    ...currentSalaries,
+                                    [CURRENT_YEAR]: salary,
+                                    [CURRENT_YEAR + 1]: salary,
+                                    [CURRENT_YEAR + 2]: salary,
+                                  });
+                                  setApplyRookiePayScale(prev => ({ ...prev, [player.playerId]: true }));
                                 } else {
                                   const newLength = parseInt(value);
                                   // If rookie pay scale is applied and user changes from 3 years, remove the flag
@@ -3132,12 +3173,13 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   };
 
   // Calculate existing contract counts by duration
+  // Use originalContractYears and isRookieContract flag to determine buckets
   const existingContractCounts = useMemo(() => {
     const counts: Record<number | "R", number> = { 4: 0, 3: 0, "R": 0, 2: 0, 1: 0 };
     
     for (const playerId of Object.keys(teamContracts)) {
       const contract = teamContracts[playerId];
-      if (!contract?.salaries) continue;
+      if (!contract) continue;
       
       // Check if this is a rookie contract (handle both boolean and number types)
       if (contract.isRookieContract === true || contract.isRookieContract === 1) {
@@ -3145,20 +3187,10 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
         continue; // Don't count rookie contracts as 3-year contracts
       }
       
-      const salary2025 = contract.salaries[2025] || 0;
-      const salary2026 = contract.salaries[2026] || 0;
-      const salary2027 = contract.salaries[2027] || 0;
-      const salary2028 = contract.salaries[2028] || 0;
-      
-      // Count years with non-zero salary
-      let yearsWithSalary = 0;
-      if (salary2025 > 0) yearsWithSalary++;
-      if (salary2026 > 0) yearsWithSalary++;
-      if (salary2027 > 0) yearsWithSalary++;
-      if (salary2028 > 0) yearsWithSalary++;
-      
-      if (yearsWithSalary >= 1 && yearsWithSalary <= 4) {
-        counts[yearsWithSalary as keyof typeof counts]++;
+      // Use originalContractYears to determine bucket
+      const contractLength = contract.originalContractYears || 0;
+      if (contractLength >= 1 && contractLength <= 4) {
+        counts[contractLength as keyof typeof counts]++;
       }
     }
     
