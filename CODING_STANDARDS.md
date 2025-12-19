@@ -1322,6 +1322,526 @@ Example:
 - Never expose sensitive data in error messages
 - Validate team ownership before allowing actions
 
+## Sleeper API Connection Pattern
+
+### Overview
+
+This project integrates with the Sleeper Fantasy Football API to fetch league data, rosters, drafts, and player information. All Sleeper API connections follow a consistent pattern to ensure maintainability, type safety, and proper error handling.
+
+**⚠️ IMPORTANT: All Sleeper API connections must follow this pattern** - use the centralized `fetchFromSleeper` function, define TypeScript interfaces, expose via Express routes, and consume via TanStack Query on the frontend.
+
+### 1. Base Setup
+
+**File**: `server/sleeper.ts`
+
+The Sleeper API integration is centralized in a single file that provides:
+- Base URL constant
+- Core fetch function with error handling
+- TypeScript interfaces for all API responses
+- Caching strategy for frequently accessed data
+
+```typescript
+// Base URL constant
+const SLEEPER_BASE_URL = "https://api.sleeper.app/v1";
+
+// Core fetch function - handles all API calls
+async function fetchFromSleeper<T>(endpoint: string): Promise<T> {
+  const response = await fetch(`${SLEEPER_BASE_URL}${endpoint}`);
+  if (!response.ok) {
+    throw new Error(`Sleeper API error: ${response.status} ${response.statusText}`);
+  }
+  return response.json();
+}
+```
+
+**Key Points**:
+- **Single base URL**: All endpoints use `https://api.sleeper.app/v1`
+- **Generic fetch function**: `fetchFromSleeper<T>` provides type safety
+- **Error handling**: Throws errors with status codes for route-level handling
+- **No authentication required**: Sleeper API is public (no API keys needed)
+
+### 2. Function Creation Pattern
+
+**File**: `server/sleeper.ts`
+
+All Sleeper API functions follow a consistent pattern:
+
+```typescript
+// 1. Define TypeScript interface for response
+export interface SleeperResource {
+  resource_id: string;
+  name: string;
+  // ... other fields
+}
+
+// 2. Create async function with typed return
+export async function getResource(params: string): Promise<SleeperResource> {
+  return fetchFromSleeper<SleeperResource>(`/endpoint/${params}`);
+}
+
+// 3. For arrays, use array type
+export async function getResources(leagueId: string): Promise<SleeperResource[]> {
+  return fetchFromSleeper<SleeperResource[]>(`/league/${leagueId}/resources`);
+}
+
+// 4. For optional/nullable responses, handle in function
+export async function getOptionalResource(username: string): Promise<SleeperResource | null> {
+  try {
+    return await fetchFromSleeper<SleeperResource>(`/user/${username}`);
+  } catch {
+    return null; // Return null on error instead of throwing
+  }
+}
+```
+
+**Function Naming Conventions**:
+- **GET operations**: `get{Resource}` (e.g., `getLeague`, `getDraftPicks`)
+- **Collections**: Plural form (e.g., `getLeagueDrafts`, `getLeagueRosters`)
+- **Specific resources**: Include identifier (e.g., `getDraft(draftId)`, `getSleeperUser(username)`)
+
+**Caching Pattern** (for frequently accessed data):
+```typescript
+let resourceCache: Record<string, SleeperResource> | null = null;
+let resourceCacheTime: number = 0;
+const RESOURCE_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+
+export async function getCachedResource(): Promise<Record<string, SleeperResource>> {
+  const now = Date.now();
+  if (resourceCache && now - resourceCacheTime < RESOURCE_CACHE_DURATION) {
+    return resourceCache;
+  }
+  
+  resourceCache = await fetchFromSleeper<Record<string, SleeperResource>>(`/resource`);
+  resourceCacheTime = now;
+  return resourceCache;
+}
+```
+
+**Key Points**:
+- **Type safety**: Always define TypeScript interfaces for API responses
+- **Consistent naming**: Use `get{Resource}` pattern
+- **Error handling**: Let errors bubble up to route level (except for optional resources)
+- **Caching**: Use module-level variables for frequently accessed, rarely-changing data (e.g., player data)
+
+### 3. Route Integration Pattern
+
+**File**: `server/routes.ts`
+
+Sleeper API functions are exposed via Express routes with consistent error handling:
+
+```typescript
+import {
+  getLeague,
+  getLeagueDrafts,
+  getDraftPicks,
+  type SleeperDraft,
+  type SleeperDraftPick,
+} from "./sleeper";
+
+// Simple GET endpoint pattern
+app.get("/api/sleeper/league/:leagueId", async (req, res) => {
+  try {
+    const league = await getLeague(req.params.leagueId);
+    // Transform Sleeper API response to frontend format
+    res.json({
+      leagueId: league.league_id,
+      name: league.name,
+      season: league.season,
+      // ... map other fields
+    });
+  } catch (error) {
+    console.error("Error fetching league:", error);
+    res.status(500).json({ error: "Failed to fetch league" });
+  }
+});
+
+// GET endpoint with data transformation
+app.get("/api/sleeper/league/:leagueId/drafts", async (req, res) => {
+  try {
+    const drafts = await getLeagueDrafts(req.params.leagueId);
+    // Transform array of Sleeper API responses
+    res.json(drafts.map(draft => ({
+      draftId: draft.draft_id,
+      leagueId: draft.league_id,
+      season: draft.season,
+      status: draft.status,
+      type: draft.type,
+      // ... map other fields
+    })));
+  } catch (error) {
+    console.error("Error fetching league drafts:", error);
+    res.status(500).json({ error: "Failed to fetch league drafts" });
+  }
+});
+
+// GET endpoint with multiple API calls
+app.get("/api/sleeper/draft/:draftId/picks", async (req, res) => {
+  try {
+    const [draft, picks] = await Promise.all([
+      getDraft(req.params.draftId),
+      getDraftPicks(req.params.draftId),
+    ]);
+
+    // Fetch additional data if needed
+    const [users, rosters] = await Promise.all([
+      getLeagueUsers(draft.league_id),
+      getLeagueRosters(draft.league_id),
+    ]);
+
+    // Transform and combine data
+    res.json(picks.map(pick => ({
+      round: pick.round,
+      playerId: pick.player_id,
+      // ... map other fields with additional context
+    })));
+  } catch (error) {
+    console.error("Error fetching draft picks:", error);
+    res.status(500).json({ error: "Failed to fetch draft picks" });
+  }
+});
+
+// GET endpoint with query parameters
+app.get("/api/sleeper/user/:userId/leagues", async (req, res) => {
+  try {
+    const season = req.query.season as string || new Date().getFullYear().toString();
+    const leagues = await getUserLeagues(req.params.userId, season);
+    res.json(leagues.map(league => ({ /* transform */ })));
+  } catch (error) {
+    console.error("Error fetching leagues:", error);
+    res.status(500).json({ error: "Failed to fetch leagues" });
+  }
+});
+
+// GET endpoint with 404 handling
+app.get("/api/sleeper/user/:username", async (req, res) => {
+  try {
+    const user = await getSleeperUser(req.params.username);
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+    res.json({
+      userId: user.user_id,
+      username: user.username,
+      // ... transform
+    });
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ error: "Failed to fetch user" });
+  }
+});
+```
+
+**Route Naming Conventions**:
+- **Base path**: `/api/sleeper/`
+- **Resources**: `/api/sleeper/{resource}/:id` (e.g., `/api/sleeper/league/:leagueId`)
+- **Nested resources**: `/api/sleeper/{resource}/:id/{subresource}` (e.g., `/api/sleeper/league/:leagueId/drafts`)
+- **Actions**: Use descriptive paths (e.g., `/api/sleeper/league/:leagueId/standings`)
+
+**Key Points**:
+- **Always wrap in try-catch**: Handle errors at route level
+- **Transform responses**: Convert Sleeper API snake_case to frontend camelCase
+- **Use Promise.all**: For parallel API calls
+- **Status codes**: 404 for not found, 500 for server errors
+- **Error logging**: Use `console.error` with descriptive messages
+- **Response format**: Always return JSON with `{ error: "message" }` for errors
+
+### 4. Frontend Integration Pattern
+
+**File**: `client/src/pages/YourPage.tsx`
+
+Frontend uses TanStack Query to fetch data from Sleeper API routes:
+
+```typescript
+import { useQuery } from "@tanstack/react-query";
+import { useSleeper } from "@/lib/sleeper-context";
+
+export default function YourPage() {
+  const { user, league, season } = useSleeper();
+
+  // Basic query pattern
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "resource"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/resource`);
+      if (!res.ok) throw new Error("Failed to fetch resource");
+      return res.json();
+    },
+    enabled: !!league?.leagueId, // Only fetch when league is available
+  });
+
+  // Query with query parameters
+  const { data: standings } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "standings", user?.userId],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/sleeper/league/${league?.leagueId}/standings?userId=${user?.userId}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch standings");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!user?.userId,
+  });
+
+  // Query with staleTime for infrequently changing data
+  const { data: predictions } = useQuery({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
+      if (!res.ok) throw new Error("Failed to fetch predictions");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+    staleTime: 5 * 60 * 1000, // Consider data fresh for 5 minutes
+  });
+
+  // Loading state
+  if (isLoading) {
+    return <Skeleton className="h-48 w-full" />;
+  }
+
+  // Error state
+  if (isError) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription>{error?.message || "Failed to load data"}</AlertDescription>
+      </Alert>
+    );
+  }
+
+  // Render data
+  return (
+    <div>
+      {data?.map(item => (
+        <Card key={item.id}>
+          {/* Render item */}
+        </Card>
+      ))}
+    </div>
+  );
+}
+```
+
+**Query Key Pattern**:
+- **Match URL structure**: `["/api/sleeper/league", leagueId, "resource"]`
+- **Include all parameters**: Add query params to key (e.g., `userId`, `season`)
+- **Consistent structure**: Use same key pattern across related queries
+
+**Key Points**:
+- **Use `enabled` condition**: Prevent queries when required data is missing
+- **Error handling**: Check `isError` and display user-friendly messages
+- **Loading states**: Show skeletons or spinners during loading
+- **Query keys**: Match URL structure for easy invalidation
+- **StaleTime**: Set for data that doesn't change frequently (e.g., historical data)
+
+### 5. Common Sleeper API Endpoints
+
+**League Endpoints**:
+- `GET /league/{league_id}` - Get league details
+- `GET /league/{league_id}/rosters` - Get all rosters
+- `GET /league/{league_id}/users` - Get league users
+- `GET /league/{league_id}/matchups/{week}` - Get week matchups
+- `GET /league/{league_id}/transactions/{week}` - Get week transactions
+- `GET /league/{league_id}/drafts` - Get all drafts
+- `GET /league/{league_id}/traded_picks` - Get traded draft picks
+- `GET /league/{league_id}/winners_bracket` - Get playoff bracket
+
+**Draft Endpoints**:
+- `GET /draft/{draft_id}` - Get draft details
+- `GET /draft/{draft_id}/picks` - Get all draft picks
+
+**User Endpoints**:
+- `GET /user/{username}` - Get user by username
+- `GET /user/{user_id}/leagues/nfl/{season}` - Get user's leagues
+
+**Player Endpoints**:
+- `GET /players/nfl` - Get all NFL players (cached)
+- `GET /stats/nfl/regular/{season}/{week}` - Get player stats
+- `GET /projections/nfl/regular/{season}/{week}` - Get player projections
+
+**State Endpoints**:
+- `GET /state/nfl` - Get NFL state (current week, season)
+
+**Status Value Variations**:
+Sleeper API may return different status values for the same state. Always handle multiple variations:
+```typescript
+// Draft status variations
+const isDraftComplete = (status: string) => {
+  return status === "complete" || 
+         status === "completed" || 
+         status === "finished" ||
+         status === "closed";
+};
+
+// Use helper function when filtering
+const completedDrafts = drafts.filter(d => isDraftComplete(d.status));
+```
+
+### 6. Error Handling Best Practices
+
+**Sleeper API Errors**:
+- **404 Not Found**: Resource doesn't exist (e.g., invalid league ID)
+- **500 Server Error**: Sleeper API is down or experiencing issues
+- **Network Errors**: Connection timeout or network failure
+
+**Error Handling in Functions** (`server/sleeper.ts`):
+```typescript
+// For required resources - let error bubble up
+export async function getLeague(leagueId: string): Promise<SleeperLeague> {
+  return fetchFromSleeper<SleeperLeague>(`/league/${leagueId}`);
+  // Errors will be thrown and caught by route
+}
+
+// For optional resources - return null on error
+export async function getSleeperUser(username: string): Promise<SleeperUser | null> {
+  try {
+    return await fetchFromSleeper<SleeperUser>(`/user/${username}`);
+  } catch {
+    return null; // Return null instead of throwing
+  }
+}
+```
+
+**Error Handling in Routes** (`server/routes.ts`):
+```typescript
+app.get("/api/sleeper/league/:leagueId", async (req, res) => {
+  try {
+    const league = await getLeague(req.params.leagueId);
+    res.json(/* transform */);
+  } catch (error: any) {
+    console.error("Error fetching league:", error);
+    
+    // Check for specific error types
+    if (error.message?.includes("404") || error.message?.includes("Not Found")) {
+      return res.status(404).json({ error: "League not found" });
+    }
+    
+    // Generic error response
+    res.status(500).json({ error: "Failed to fetch league" });
+  }
+});
+```
+
+**Error Handling in Frontend**:
+```typescript
+const { data, isError, error } = useQuery({
+  queryKey: ["/api/sleeper/league", leagueId, "resource"],
+  queryFn: async () => {
+    const res = await fetch(`/api/sleeper/league/${leagueId}/resource`);
+    if (!res.ok) {
+      const errorData = await res.json().catch(() => ({}));
+      throw new Error(errorData.error || `Failed to fetch: ${res.status}`);
+    }
+    return res.json();
+  },
+  retry: 2, // Retry failed requests up to 2 times
+  retryDelay: 1000, // Wait 1 second between retries
+});
+
+// Display error in UI
+if (isError) {
+  return (
+    <Alert variant="destructive">
+      <AlertTitle>Error</AlertTitle>
+      <AlertDescription>
+        {error?.message || "Failed to load data. Please try again later."}
+      </AlertDescription>
+    </Alert>
+  );
+}
+```
+
+**Key Points**:
+- **Route-level handling**: Always wrap Sleeper API calls in try-catch
+- **User-friendly messages**: Don't expose internal error details
+- **Status codes**: Use appropriate HTTP status codes (404, 500)
+- **Retry logic**: Consider retry for transient network errors
+- **Logging**: Log errors with `console.error` for debugging
+
+### 7. Type Definitions
+
+**File**: `server/sleeper.ts`
+
+All Sleeper API response types are defined in `server/sleeper.ts`:
+
+```typescript
+// Use snake_case to match Sleeper API response
+export interface SleeperLeague {
+  league_id: string;
+  name: string;
+  season: string;
+  status: string;
+  total_rosters: number;
+  roster_positions: string[];
+  owner_id: string;
+  settings: {
+    playoff_teams?: number;
+    waiver_budget?: number;
+    [key: string]: unknown; // For additional fields
+  };
+}
+
+// Use descriptive names with "Sleeper" prefix
+export interface SleeperDraft {
+  draft_id: string;
+  league_id: string;
+  season: string;
+  status: string;
+  type: string;
+  settings: {
+    rounds: number;
+    [key: string]: unknown;
+  };
+}
+
+// Export types for use in routes
+export type { SleeperLeague, SleeperDraft, /* ... */ };
+```
+
+**Naming Conventions**:
+- **Prefix**: All interfaces prefixed with `Sleeper` (e.g., `SleeperLeague`, `SleeperDraftPick`)
+- **Snake_case**: Match Sleeper API response format (e.g., `league_id`, `draft_id`)
+- **Optional fields**: Use `?` for optional fields (e.g., `avatar: string | null`)
+- **Index signatures**: Use `[key: string]: unknown` for dynamic fields in settings objects
+
+**Type Usage in Routes**:
+```typescript
+import type { SleeperLeague, SleeperDraft } from "./sleeper";
+
+// Use types for function parameters and return values
+app.get("/api/sleeper/league/:leagueId", async (req, res) => {
+  const league: SleeperLeague = await getLeague(req.params.leagueId);
+  // Transform to frontend format
+});
+```
+
+**Key Points**:
+- **Centralized types**: All Sleeper API types in `server/sleeper.ts`
+- **Match API format**: Use snake_case to match Sleeper API responses
+- **Export types**: Export types for use in routes and other modules
+- **Type safety**: Use TypeScript interfaces for all API responses
+
+### 8. Best Practices Summary
+
+**DO**:
+- ✅ Always use `fetchFromSleeper<T>` for all Sleeper API calls
+- ✅ Define TypeScript interfaces for all API responses
+- ✅ Transform snake_case to camelCase in routes
+- ✅ Wrap all route handlers in try-catch
+- ✅ Use `enabled` condition in frontend queries
+- ✅ Handle multiple status value variations
+- ✅ Cache frequently accessed, rarely-changing data (e.g., player data)
+- ✅ Use `Promise.all` for parallel API calls
+- ✅ Return user-friendly error messages
+
+**DON'T**:
+- ❌ Never call Sleeper API directly from frontend (always use backend routes)
+- ❌ Never expose Sleeper API errors directly to users
+- ❌ Never skip error handling in routes
+- ❌ Don't assume status values are consistent (handle variations)
+- ❌ Don't cache data that changes frequently
+- ❌ Don't make unnecessary sequential API calls (use `Promise.all`)
+
 ## Documentation
 
 - Add JSDoc comments for complex functions

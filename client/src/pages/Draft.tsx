@@ -166,15 +166,6 @@ export default function Draft() {
     enabled: !!league?.leagueId,
   });
 
-  // Debug logging to see what drafts are being returned from API
-  useEffect(() => {
-    if (drafts) {
-      console.log("All drafts from API:", drafts);
-      console.log("Draft statuses:", drafts.map((d: any) => ({ season: d.season, type: d.type, status: d.status })));
-      const rookieDrafts = drafts.filter((d: any) => d.type === "rookie");
-      console.log("Rookie drafts:", rookieDrafts.map((d: any) => ({ season: d.season, status: d.status })));
-    }
-  }, [drafts]);
 
   // Helper function to check if draft is complete
   const isDraftComplete = (status: string) => {
@@ -184,26 +175,24 @@ export default function Draft() {
            status === "closed";
   };
 
-  // Auto-select most recent rookie draft when drafts load or Historical tab is selected
+  // Auto-select most recent completed draft when drafts load or Historical tab is selected
   useEffect(() => {
     if (drafts && drafts.length > 0) {
-      // When Historical tab is active, prioritize most recent completed rookie draft
+      // When Historical tab is active, prioritize most recent completed draft
       if (activeTab === "historical") {
-        // Get all completed rookie drafts
-        const completedRookieDrafts = drafts
-          .filter(d => {
-            return isDraftComplete(d.status) && d.type === "rookie";
-          })
+        // Get all completed drafts
+        const allCompletedDrafts = drafts
+          .filter(d => isDraftComplete(d.status))
           .sort((a, b) => parseInt(b.season) - parseInt(a.season));
         
         // Select most recent (first in sorted array)
-        if (completedRookieDrafts.length > 0) {
-          setSelectedDraftId(completedRookieDrafts[0].draftId);
+        if (allCompletedDrafts.length > 0) {
+          setSelectedDraftId(allCompletedDrafts[0].draftId);
           return;
         }
       }
       
-      // For other tabs or if no rookie draft found, use existing logic
+      // For other tabs or if no completed draft found, use existing logic
       if (!selectedDraftId) {
         const draft2024 = drafts.find(d => d.season === "2024" && isDraftComplete(d.status));
         if (draft2024) {
@@ -278,10 +267,10 @@ export default function Draft() {
       return a.pick - b.pick;
     });
 
-  // Filter for completed rookie drafts only (for historical tab)
+  // Filter for completed drafts (for historical tab)
   // Check multiple status values to handle different Sleeper API responses
   const completedDrafts = (drafts || [])
-    .filter(d => isDraftComplete(d.status) && d.type === "rookie")
+    .filter(d => isDraftComplete(d.status))
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
 
   // Calculate draft odds using Monte Carlo simulation
@@ -808,11 +797,11 @@ export default function Draft() {
                 </>
               ) : (
                 <div className="text-center text-muted-foreground py-8">
-                  <p>No historical rookie drafts found.</p>
+                  <p>No historical drafts found.</p>
                   {drafts && drafts.length > 0 && (
                     <p className="text-xs mt-2">
                       Found {drafts.length} total drafts. 
-                      Rookie drafts: {drafts.filter((d: any) => d.type === "rookie").length}
+                      Completed drafts: {drafts.filter((d: any) => isDraftComplete(d.status)).length}
                     </p>
                   )}
                 </div>
