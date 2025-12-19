@@ -4796,6 +4796,7 @@ export default function Contracts() {
         const salary2026 = Math.round((contract.salaries[2026] || 0) * 10);
         const salary2027 = Math.round((contract.salaries[2027] || 0) * 10);
         const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
+        const salary2029 = Math.round((contract.salaries[2029] || 0) * 10);
         
         if (hasSalary || contract.isOnIr) {
           // Determine originalContractYears: use commissioner-set value if valid,
@@ -4823,6 +4824,7 @@ export default function Contracts() {
             salary2026,
             salary2027,
             salary2028,
+            salary2029,
             fifthYearOption: contract.fifthYearOption,
             isOnIr: contract.isOnIr ? 1 : 0,
             originalContractYears,
