@@ -4804,19 +4804,24 @@ export default function Contracts() {
           let originalContractYears = 0;
           const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
           
-          if (contract.originalContractYears >= 1 && contract.originalContractYears <= 4) {
-            // Commissioner explicitly set a valid value
+          // Check if contract has a valid originalContractYears (1-4)
+          const hasValidContractYears = typeof contract.originalContractYears === 'number' && 
+                                        contract.originalContractYears >= 1 && 
+                                        contract.originalContractYears <= 4;
+          
+          if (hasValidContractYears) {
+            // Use the explicitly set value
             originalContractYears = contract.originalContractYears;
-          } else if (existingContract?.originalContractYears && existingContract.originalContractYears >= 1) {
-            // Preserve existing DB value
-            originalContractYears = existingContract.originalContractYears;
           } else if (existingContract) {
-            // Existing contract but originalContractYears not set properly - default to 1 to allow save
-            // This allows saving salary updates for existing contracts even if originalContractYears is missing
-            originalContractYears = 1;
+            // Existing contract - always allow save
+            // Use DB value if valid, otherwise default to 1
+            if (existingContract.originalContractYears && existingContract.originalContractYears >= 1) {
+              originalContractYears = existingContract.originalContractYears;
+            } else {
+              originalContractYears = 1; // Default for existing contracts
+            }
           } else {
-            // New contract without valid length - this is invalid
-            // Track this player for validation error
+            // New contract without valid length - block it
             invalidContracts.push(playerId);
             continue; // Skip this contract, don't save it
           }
