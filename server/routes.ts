@@ -3262,6 +3262,49 @@ export async function registerRoutes(
     }
   });
 
+  // Get dead cap enabled setting
+  app.get("/api/league/:leagueId/settings/dead-cap-enabled", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const value = await storage.getLeagueSetting(leagueId, "dead_cap_enabled");
+      // Default to "true" if setting doesn't exist (backward compatibility)
+      res.json({ enabled: value === "true" || value === undefined || value === null });
+    } catch (error) {
+      console.error("Error fetching dead cap enabled setting:", error);
+      res.status(500).json({ error: "Failed to fetch dead cap enabled setting" });
+    }
+  });
+
+  // Set dead cap enabled setting (commissioner only)
+  app.put("/api/league/:leagueId/settings/dead-cap-enabled", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const userId = req.query.userId as string;
+      const { enabled } = req.body;
+      
+      if (!userId) {
+        return res.status(400).json({ error: "User ID is required" });
+      }
+      
+      if (typeof enabled !== "boolean") {
+        return res.status(400).json({ error: "Enabled must be a boolean" });
+      }
+
+      // Check if user is commissioner
+      const isComm = await isCommissioner(userId, leagueId);
+      
+      if (!isComm) {
+        return res.status(403).json({ error: "Unauthorized: Only commissioners can change this setting" });
+      }
+      
+      const setting = await storage.setLeagueSetting(leagueId, "dead_cap_enabled", enabled ? "true" : "false");
+      res.json({ enabled: setting.settingValue === "true" });
+    } catch (error) {
+      console.error("Error setting dead cap enabled setting:", error);
+      res.status(500).json({ error: "Failed to set dead cap enabled setting" });
+    }
+  });
+
   // Get all player contracts for a league
   app.get("/api/league/:leagueId/contracts", async (req, res) => {
     try {

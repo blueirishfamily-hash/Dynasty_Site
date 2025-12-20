@@ -460,14 +460,22 @@ interface ContractInputTabProps {
   onSave: () => void;
   hasChanges: boolean;
   isCommissioner?: boolean;
+  deadCapEnabled?: boolean;
+  onDeadCapToggle?: (enabled: boolean) => void;
 }
 
-function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isCommissioner = false }: ContractInputTabProps) {
+function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isCommissioner = false, deadCapEnabled = true, onDeadCapToggle }: ContractInputTabProps) {
   const { toast } = useToast();
   const { season, league, user } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
   const OPTION_YEAR = CURRENT_YEAR + 4;
+  
+  const handleDeadCapToggle = (checked: boolean) => {
+    if (onDeadCapToggle) {
+      onDeadCapToggle(checked);
+    }
+  };
   
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
   const [positionFilter, setPositionFilter] = useState<string>("ALL");
@@ -1123,6 +1131,17 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
             </SelectContent>
           </Select>
 
+          {isCommissioner && (
+            <div className="flex items-center gap-2 ml-4">
+              <Switch
+                checked={deadCapEnabled}
+                onCheckedChange={(checked) => handleDeadCapToggle(checked)}
+                data-testid="switch-dead-cap-enabled"
+              />
+              <Label className="text-sm font-medium whitespace-nowrap">Dead Cap Enabled</Label>
+            </div>
+          )}
+
           <Label className="text-sm font-medium whitespace-nowrap ml-4">
             Position:
           </Label>
@@ -1476,8 +1495,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           // Current year = 100% dead cap; future years based on years remaining
                           // Years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
                           const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
-                          const deadCapPercent = year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0);
-                          const deadCapValue = salaryValue * deadCapPercent;
+                          const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
+                          const deadCapValue = deadCapEnabled ? (salaryValue * deadCapPercent) : 0;
                           const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
                           const isVetOnlyYear = year === OPTION_YEAR;
                           const canEditYear = !isVetOnlyYear || !isRookie;
@@ -1515,7 +1534,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                         />
                                         <span className="text-xs text-muted-foreground">M</span>
                                       </div>
-                                      {salaryValue > 0 && deadCapPercent > 0 && (
+                                      {deadCapEnabled && salaryValue > 0 && deadCapPercent > 0 && (
                                         <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
                                           DC: ${Math.ceil(deadCapValue)}M ({Math.round(deadCapPercent * 100)}%)
                                         </span>
@@ -1583,6 +1602,7 @@ interface ManageTeamContractsTabProps {
   rosterPlayerIds: string[];
   dbContracts: DbPlayerContract[];
   leagueId: string;
+  deadCapEnabled?: boolean;
 }
 
 function ManageTeamContractsTab({ 
@@ -1592,7 +1612,8 @@ function ManageTeamContractsTab({
   allPlayers,
   rosterPlayerIds,
   dbContracts,
-  leagueId
+  leagueId,
+  deadCapEnabled = true
 }: ManageTeamContractsTabProps) {
   const { toast } = useToast();
   const { user, league, season } = useSleeper();
@@ -3205,8 +3226,8 @@ function ManageTeamContractsTab({
                         // Current year = 100% dead cap; future years based on years remaining
                         // Years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
                         const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
-                        const deadCapPercent = year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0);
-                        const deadCapValue = currentValue * deadCapPercent;
+                        const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
+                        const deadCapValue = deadCapEnabled ? (currentValue * deadCapPercent) : 0;
 
                         return (
                           <TableCell key={year} className="text-center">
@@ -3231,7 +3252,7 @@ function ManageTeamContractsTab({
                                 />
                                 <span className="text-xs text-muted-foreground">M</span>
                               </div>
-                              {currentValue > 0 && deadCapPercent > 0 && (
+                              {deadCapEnabled && currentValue > 0 && deadCapPercent > 0 && (
                                 <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
                                   DC: ${Math.ceil(deadCapValue)}M ({Math.round(deadCapPercent * 100)}%)
                                 </span>
@@ -4248,7 +4269,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
               </TableHeader>
               <TableBody>
                 {expiringPlayers.map((player) => {
-                  const deadCap = Math.ceil(player.currentSalary * 0.5);
+                  const deadCap = deadCapEnabled ? Math.ceil(player.currentSalary * 0.5) : 0;
                   
                   return (
                     <TableRow key={`${player.rosterId}-${player.playerId}`} data-testid={`row-expiring-${player.playerId}`}>
@@ -4287,8 +4308,8 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
-                        <span className="text-sm tabular-nums" style={{ color: COLORS.deadCap }}>
-                          ${deadCap}M
+                        <span className="text-sm tabular-nums" style={{ color: deadCapEnabled ? COLORS.deadCap : "inherit" }}>
+                          ${deadCap.toFixed(1)}M
                         </span>
                       </TableCell>
                       <TableCell>
@@ -4927,6 +4948,53 @@ export default function Contracts() {
     enabled: !!league?.leagueId,
   });
 
+  // Fetch dead cap enabled setting
+  const { data: deadCapEnabledData, refetch: refetchDeadCapEnabled } = useQuery<{ enabled: boolean }>({
+    queryKey: ["/api/league", league?.leagueId, "settings", "dead-cap-enabled"],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/settings/dead-cap-enabled`);
+      if (!res.ok) throw new Error("Failed to fetch dead cap enabled setting");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
+  const deadCapEnabled = deadCapEnabledData?.enabled ?? true; // Default to true for backward compatibility
+
+  // Mutation to update dead cap enabled setting
+  const updateDeadCapEnabledMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/settings/dead-cap-enabled?userId=${user?.userId}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to update dead cap enabled setting");
+      }
+      return res.json();
+    },
+    onSuccess: (_, enabled) => {
+      refetchDeadCapEnabled();
+      toast({
+        title: "Setting Updated",
+        description: `Dead cap feature ${enabled ? "enabled" : "disabled"}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Update Failed",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeadCapToggle = (enabled: boolean) => {
+    updateDeadCapEnabledMutation.mutate(enabled);
+  };
+
   useEffect(() => {
     if (dbContracts && dbContracts.length > 0) {
       const contractStore: ContractDataStore = {};
@@ -4998,14 +5066,14 @@ export default function Contracts() {
 
   const teamDeadCapMap = useMemo(() => {
     const map = new Map<number, number>();
-    if (!deadCapEntries) return map;
+    if (!deadCapEnabled || !deadCapEntries) return map;
     
     for (const entry of deadCapEntries) {
       const currentDeadCap = map.get(entry.rosterId) || 0;
       map.set(entry.rosterId, currentDeadCap + (entry.deadCap2025 / 10));
     }
     return map;
-  }, [deadCapEntries]);
+  }, [deadCapEntries, deadCapEnabled]);
 
   const orphanedContracts = useMemo(() => {
     if (!dbContracts || !rosters || !leagueUsers || !playerMap) return [];
@@ -5347,6 +5415,7 @@ export default function Contracts() {
               rosterPlayerIds={allRosterPlayerIds}
               dbContracts={dbContracts || []}
               leagueId={league?.leagueId || ""}
+              deadCapEnabled={deadCapEnabled}
             />
           )}
         </TabsContent>
@@ -5383,8 +5452,8 @@ export default function Contracts() {
                       {orphanedContracts.map((orphan) => {
                         const totalRemaining = (orphan.contract.salary2025 + orphan.contract.salary2026 + 
                                                 orphan.contract.salary2027 + orphan.contract.salary2028) / 10;
-                        const deadCapY1 = orphan.contract.salary2025 * 0.4 / 10;
-                        const deadCapY2 = (orphan.contract.salary2025 * 0.3 + orphan.contract.salary2026 * 0.4) / 10;
+                        const deadCapY1 = deadCapEnabled ? (orphan.contract.salary2025 * 0.4 / 10) : 0;
+                        const deadCapY2 = deadCapEnabled ? ((orphan.contract.salary2025 * 0.3 + orphan.contract.salary2026 * 0.4) / 10) : 0;
                         
                         return (
                           <div 
@@ -5458,7 +5527,7 @@ export default function Contracts() {
               </Card>
             )}
 
-            {deadCapEntries && deadCapEntries.length > 0 && (
+            {deadCapEnabled && deadCapEntries && deadCapEntries.length > 0 && (
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="font-heading flex items-center gap-2" style={{ color: COLORS.deadCap }}>
@@ -5530,6 +5599,8 @@ export default function Contracts() {
                 onSave={handleSave}
                 hasChanges={hasChanges}
                 isCommissioner={isCommissioner}
+                deadCapEnabled={deadCapEnabled}
+                onDeadCapToggle={handleDeadCapToggle}
               />
             )}
           </TabsContent>
