@@ -1,5 +1,5 @@
 run = "pip install -r requirements.txt && python main.py"
-modules = ["nodejs-20"]
+modules = ["nodejs-20", "postgresql-16"]
 
 [nix]
 channel = "stable-24_05"

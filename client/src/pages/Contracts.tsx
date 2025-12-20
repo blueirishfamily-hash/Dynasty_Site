@@ -3561,10 +3561,10 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       const contract = teamContracts[playerId];
       if (!contract) continue;
       
-      // Check if this is a rookie contract (handle both boolean and number types)
-      if (contract.isRookieContract === true || contract.isRookieContract === 1) {
+      // Check if this is a rookie contract - counts as "R" regardless of length
+      if (contract.isRookieContract) {
         counts["R"]++;
-        continue; // Don't count rookie contracts as 3-year contracts
+        continue; // Rookie contracts always count towards the Rookie bucket, not the regular length buckets
       }
       
       // Use originalContractYears to determine bucket
