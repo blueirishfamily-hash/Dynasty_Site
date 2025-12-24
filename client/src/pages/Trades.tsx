@@ -6,7 +6,11 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 
 export default function Trades() {
-  const { user, league } = useSleeper();
+  const { user, league, season } = useSleeper();
+  
+  // Calculate the next 4 years of draft picks
+  const nextDraftYear = parseInt(season || "2024") + 1;
+  const maxDraftYear = nextDraftYear + 3; // Show 4 years total
 
   const { data: trades, isLoading: tradesLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "trades"],
@@ -62,6 +66,16 @@ export default function Trades() {
     enabled: !!league?.leagueId,
   });
 
+  const { data: contracts } = useQuery({
+    queryKey: ["/api/league", league?.leagueId, "contracts"],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/contracts`);
+      if (!res.ok) throw new Error("Failed to fetch contracts");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
   if (!league || !user) {
     return (
       <div className="p-6">
@@ -90,7 +104,13 @@ export default function Trades() {
       team: p.team || "FA",
     })),
     draftPicks: (draftPicks || [])
-      .filter((p: any) => p.currentOwnerId === userRosterId)
+      .filter((p: any) => {
+        const pickYear = parseInt(p.season);
+        return p.currentOwnerId === userRosterId && 
+          pickYear >= nextDraftYear && 
+          pickYear <= maxDraftYear &&
+          p.round <= 3;
+      })
       .map((p: any) => ({
         id: p.id,
         year: parseInt(p.season),
@@ -118,8 +138,13 @@ export default function Trades() {
           team: p.team || "FA",
         })),
         draftPicks: (draftPicks || [])
-          .filter((p: any) => p.currentOwnerId === team.rosterId)
-          .slice(0, 6)
+          .filter((p: any) => {
+            const pickYear = parseInt(p.season);
+            return p.currentOwnerId === team.rosterId && 
+              pickYear >= nextDraftYear && 
+              pickYear <= maxDraftYear &&
+              p.round <= 3;
+          })
           .map((p: any) => ({
             id: p.id,
             year: parseInt(p.season),
@@ -144,7 +169,7 @@ export default function Trades() {
       </div>
 
       {userTeam ? (
-        <TradeCenter userTeam={userTeam} leagueTeams={leagueTeams} />
+        <TradeCenter userTeam={userTeam} leagueTeams={leagueTeams} contracts={contracts || []} />
       ) : (
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">

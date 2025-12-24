@@ -154,20 +154,41 @@ export async function registerRoutes(
     }
   });
 
-  // Get league drafts
+  // Get league drafts (including historical drafts from previous seasons)
   app.get("/api/sleeper/league/:leagueId/drafts", async (req, res) => {
     try {
-      const drafts = await getLeagueDrafts(req.params.leagueId);
-      res.json(drafts.map(draft => ({
-        draftId: draft.draft_id,
-        leagueId: draft.league_id,
-        season: draft.season,
-        status: draft.status,
-        type: draft.type,
-        rounds: draft.settings.rounds,
-        startTime: draft.start_time,
-        created: draft.created,
-      })));
+      const allDrafts: any[] = [];
+      
+      // Traverse the previous_league_id chain to get all historical drafts
+      let checkLeagueId: string | null = req.params.leagueId;
+      while (checkLeagueId) {
+        try {
+          const drafts = await getLeagueDrafts(checkLeagueId);
+          allDrafts.push(...drafts);
+          
+          // Get previous league ID
+          const leagueInfo = await getLeague(checkLeagueId);
+          checkLeagueId = (leagueInfo as any).previous_league_id || null;
+        } catch {
+          break;
+        }
+      }
+      
+      // Sort by season descending and return
+      const sortedDrafts = allDrafts
+        .sort((a, b) => parseInt(b.season) - parseInt(a.season))
+        .map(draft => ({
+          draftId: draft.draft_id,
+          leagueId: draft.league_id,
+          season: draft.season,
+          status: draft.status,
+          type: draft.type,
+          rounds: draft.settings.rounds,
+          startTime: draft.start_time,
+          created: draft.created,
+        }));
+      
+      res.json(sortedDrafts);
     } catch (error) {
       console.error("Error fetching league drafts:", error);
       res.status(500).json({ error: "Failed to fetch league drafts" });
@@ -1252,10 +1273,10 @@ export async function registerRoutes(
         rosterOwnerMap.set(r.roster_id, teamName);
       });
 
-      // Build complete draft pick ownership for next few years
+      // Build complete draft pick ownership for next 4 years (rounds 1-3 only)
       const currentYear = new Date().getFullYear();
-      const years = [currentYear, currentYear + 1, currentYear + 2];
-      const rounds = [1, 2, 3, 4];
+      const years = [currentYear + 1, currentYear + 2, currentYear + 3, currentYear + 4];
+      const rounds = [1, 2, 3];
       
       const allPicks: DraftPick[] = [];
       
@@ -2262,6 +2283,224 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error calculating heat check:", error);
       res.status(500).json({ error: "Failed to calculate heat check" });
+    }
+  });
+
+  // Power Rankings - All-Play record and weekly scoring rankings
+  app.get("/api/sleeper/league/:leagueId/power-rankings", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      
+      console.log(`[Power Rankings] Starting for league: ${leagueId}`);
+      
+      const [rosters, users, nflState, league] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getNFLState(),
+        getLeague(leagueId),
+      ]);
+
+      console.log(`[Power Rankings] League ID: ${leagueId}`);
+      console.log(`[Power Rankings] League season: ${league.season}`);
+      console.log(`[Power Rankings] NFL State: week ${nflState.week}, season ${nflState.season}`);
+      console.log(`[Power Rankings] Previous league ID: ${(league as any).previous_league_id || 'none'}`);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      // Get league season
+      let leagueSeason = league.season;
+      const currentWeek = nflState.week;
+      
+      // Determine which league ID to use for matchups
+      // If current league has no matchup data, use previous league (for dynasty leagues that rolled over)
+      let matchupLeagueId = leagueId;
+      
+      // Test if current league has matchup data
+      const testMatchup = await getLeagueMatchups(leagueId, 1).catch((err) => {
+        console.error(`[Power Rankings] Error fetching week 1 matchups:`, err.message);
+        return [];
+      });
+      console.log(`[Power Rankings] Week 1 test matchup count: ${testMatchup.length}`);
+      if (testMatchup.length > 0) {
+        console.log(`[Power Rankings] Week 1 first matchup points:`, testMatchup[0].points);
+        console.log(`[Power Rankings] Week 1 sample matchup:`, JSON.stringify(testMatchup[0]));
+      }
+      
+      const hasCurrentSeasonData = testMatchup.length > 0 && testMatchup.some(m => m.points !== undefined && m.points > 0);
+      console.log(`[Power Rankings] Has current season data: ${hasCurrentSeasonData}`);
+      
+      if (!hasCurrentSeasonData && (league as any).previous_league_id) {
+        // Use previous league for matchup data
+        matchupLeagueId = (league as any).previous_league_id;
+        console.log(`[Power Rankings] Switching to previous league: ${matchupLeagueId}`);
+        // Update season to reflect previous season
+        try {
+          const prevLeague = await getLeague(matchupLeagueId);
+          leagueSeason = prevLeague.season;
+          console.log(`[Power Rankings] Previous league season: ${leagueSeason}`);
+        } catch (err: any) {
+          console.error(`[Power Rankings] Error fetching previous league:`, err.message);
+          // Keep current season if we can't fetch previous
+        }
+      }
+      
+      console.log(`[Power Rankings] Using matchupLeagueId: ${matchupLeagueId}`);
+      
+      // Fetch all 18 weeks of the season to find which have data
+      const matchupPromises = [];
+      for (let week = 1; week <= 18; week++) {
+        matchupPromises.push(
+          getLeagueMatchups(matchupLeagueId, week)
+            .then(matchups => ({ week, matchups }))
+            .catch((err) => {
+              console.error(`[Power Rankings] Error fetching week ${week} matchups:`, err.message);
+              return { week, matchups: [] };
+            })
+        );
+      }
+      const allMatchups = await Promise.all(matchupPromises);
+      
+      console.log(`[Power Rankings] Fetched ${allMatchups.length} weeks of matchups`);
+      
+      // Log each week's matchup data
+      allMatchups.forEach(({ week, matchups }) => {
+        const hasScores = matchups.some(m => m.points !== undefined && m.points > 0);
+        console.log(`[Power Rankings] Week ${week}: ${matchups.length} entries, hasScores: ${hasScores}`);
+      });
+      
+      // Filter to only weeks that have actual scored matchups (points > 0)
+      const weeklyMatchups = allMatchups.filter(({ matchups }) => 
+        matchups.length > 0 && matchups.some(m => m.points !== undefined && m.points > 0)
+      );
+      
+      const completedWeeks = weeklyMatchups.length;
+      console.log(`[Power Rankings] Weeks with scores: ${completedWeeks}`);
+
+      if (completedWeeks === 0) {
+        console.log(`[Power Rankings] No completed weeks, returning empty response`);
+        return res.json({ 
+          teams: [], 
+          currentWeek, 
+          completedWeeks: 0,
+          season: leagueSeason,
+          message: "No completed weeks yet" 
+        });
+      }
+
+      // Build team info map
+      const teamInfoMap = new Map<number, { 
+        name: string; 
+        ownerId: string; 
+        initials: string; 
+        avatar: string | null;
+        wins: number;
+        losses: number;
+      }>();
+      rosters.forEach(roster => {
+        const user = userMap.get(roster.owner_id);
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        teamInfoMap.set(roster.roster_id, {
+          name,
+          ownerId: roster.owner_id,
+          initials: getTeamInitials(name),
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+          wins: roster.settings?.wins || 0,
+          losses: roster.settings?.losses || 0,
+        });
+      });
+
+      // Initialize power ranking data for each team
+      interface PowerRankingData {
+        rosterId: number;
+        name: string;
+        ownerId: string;
+        initials: string;
+        avatar: string | null;
+        allPlayWins: number;
+        allPlayLosses: number;
+        allPlayWinPct: number;
+        actualWins: number;
+        actualLosses: number;
+        weeklyRankings: { week: number; rank: number; points: number }[];
+      }
+
+      const powerRankingMap = new Map<number, PowerRankingData>();
+      rosters.forEach(roster => {
+        const info = teamInfoMap.get(roster.roster_id)!;
+        powerRankingMap.set(roster.roster_id, {
+          rosterId: roster.roster_id,
+          name: info.name,
+          ownerId: info.ownerId,
+          initials: info.initials,
+          avatar: info.avatar,
+          allPlayWins: 0,
+          allPlayLosses: 0,
+          allPlayWinPct: 0,
+          actualWins: info.wins,
+          actualLosses: info.losses,
+          weeklyRankings: [],
+        });
+      });
+
+      const numTeams = rosters.length;
+
+      // Process each week
+      weeklyMatchups.forEach(({ week, matchups }) => {
+        if (matchups.length === 0) return;
+
+        // Get all teams' points for this week
+        const weekScores: { rosterId: number; points: number }[] = matchups
+          .filter(m => m.points !== undefined && m.points !== null)
+          .map(m => ({
+            rosterId: m.roster_id,
+            points: m.points || 0,
+          }));
+
+        if (weekScores.length === 0) return;
+
+        // Sort by points descending to determine rankings
+        weekScores.sort((a, b) => b.points - a.points);
+
+        // Assign ranks and calculate all-play record
+        weekScores.forEach((team, index) => {
+          const rank = index + 1;
+          const allPlayWins = numTeams - rank; // Teams you beat
+          const allPlayLosses = rank - 1; // Teams that beat you
+
+          const teamData = powerRankingMap.get(team.rosterId);
+          if (teamData) {
+            teamData.allPlayWins += allPlayWins;
+            teamData.allPlayLosses += allPlayLosses;
+            teamData.weeklyRankings.push({
+              week,
+              rank,
+              points: team.points,
+            });
+          }
+        });
+      });
+
+      // Calculate win percentages and convert to array
+      const teams = Array.from(powerRankingMap.values())
+        .map(team => {
+          const totalGames = team.allPlayWins + team.allPlayLosses;
+          team.allPlayWinPct = totalGames > 0 
+            ? Math.round((team.allPlayWins / totalGames) * 1000) / 10 
+            : 0;
+          return team;
+        })
+        .sort((a, b) => b.allPlayWinPct - a.allPlayWinPct);
+
+      res.json({
+        teams,
+        currentWeek,
+        completedWeeks,
+        season: leagueSeason,
+      });
+    } catch (error) {
+      console.error("Error calculating power rankings:", error);
+      res.status(500).json({ error: "Failed to calculate power rankings" });
     }
   });
 

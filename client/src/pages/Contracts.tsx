@@ -4112,6 +4112,7 @@ interface ExpiringContractsTabProps {
   playerMap: PlayerMap;
   contractData: ContractDataStore;
   leagueUsers: any[];
+  deadCapEnabled?: boolean;
 }
 
 interface ExpiringPlayer {
@@ -4127,7 +4128,7 @@ interface ExpiringPlayer {
   rosterId: number;
 }
 
-function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: ExpiringContractsTabProps) {
+function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, deadCapEnabled = true }: ExpiringContractsTabProps) {
   const { season } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   
@@ -5401,6 +5402,7 @@ export default function Contracts() {
               playerMap={playerMap}
               contractData={contractData}
               leagueUsers={leagueUsers || []}
+              deadCapEnabled={deadCapEnabled}
             />
           )}
         </TabsContent>

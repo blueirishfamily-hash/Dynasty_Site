@@ -27,6 +27,7 @@ import {
   FileText,
   Scale,
   Database,
+  Award,
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -40,6 +41,7 @@ const baseNavItems = [
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "Trophy Room", url: "/trophies", icon: Medal },
+  { title: "Awards", url: "/awards", icon: Award },
   { title: "League Hub", url: "/hub", icon: MessageSquare },
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
@@ -141,7 +143,7 @@ export default function AppSidebar({
                   className={`text-xs ${getRoundColor(pick.round)}`}
                   data-testid={`badge-pick-${pick.year}-${pick.round}`}
                 >
-                  {pick.year} {pick.round === 1 ? "1st" : pick.round === 2 ? "2nd" : `${pick.round}rd`}
+                  {pick.year} {pick.round === 1 ? "1st" : pick.round === 2 ? "2nd" : pick.round === 3 ? "3rd" : `${pick.round}th`}
                   {pick.originalOwner && ` (via ${pick.originalOwner})`}
                 </Badge>
               ))

@@ -22,6 +22,7 @@ import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
 import RuleChanges from "@/pages/RuleChanges";
 import DatabaseViewer from "@/pages/DatabaseViewer";
+import Awards from "@/pages/Awards";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,7 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
+      <Route path="/awards" component={Awards} />
       <Route path="/admin/database" component={DatabaseViewer} />
       <Route component={NotFound} />
     </Switch>
@@ -89,12 +91,15 @@ function AppContent() {
   const userRosterId = userTeam?.rosterId;
   const currentYear = parseInt(season) + 1;
 
+  // Show next 4 years of draft picks (rounds 1-3 only)
   const userDraftPicks = (draftPicks || [])
-    .filter((p: any) => 
-      p.currentOwnerId === userRosterId && 
-      (p.season === currentYear.toString() || p.season === (currentYear + 1).toString())
-    )
-    .slice(0, 8)
+    .filter((p: any) => {
+      const pickYear = parseInt(p.season);
+      return p.currentOwnerId === userRosterId && 
+        pickYear >= currentYear && 
+        pickYear <= currentYear + 3 &&
+        p.round <= 3;
+    })
     .map((p: any) => ({
       year: parseInt(p.season),
       round: p.round,

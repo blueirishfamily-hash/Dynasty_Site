@@ -30,7 +30,9 @@ import {
   Flame,
   Snowflake,
   ThermometerSun,
+  Crown,
 } from "lucide-react";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { useState } from "react";
 
 interface WeeklyLuck {
@@ -81,6 +83,28 @@ interface HeatCheckResponse {
   teams: HeatCheckTeam[];
   currentWeek: number;
   recentWeeksCount: number;
+  message?: string;
+}
+
+interface PowerRankingTeam {
+  rosterId: number;
+  name: string;
+  ownerId: string;
+  initials: string;
+  avatar: string | null;
+  allPlayWins: number;
+  allPlayLosses: number;
+  allPlayWinPct: number;
+  actualWins: number;
+  actualLosses: number;
+  weeklyRankings: { week: number; rank: number; points: number }[];
+}
+
+interface PowerRankingsResponse {
+  teams: PowerRankingTeam[];
+  currentWeek: number;
+  completedWeeks: number;
+  season?: string;
   message?: string;
 }
 
@@ -340,6 +364,16 @@ export default function Metrics() {
     enabled: !!league?.leagueId,
   });
 
+  const { data: powerData, isLoading: powerLoading } = useQuery<PowerRankingsResponse>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "power-rankings"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/power-rankings`);
+      if (!res.ok) throw new Error("Failed to fetch power rankings");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
   const toggleExpanded = (rosterId: number) => {
     setExpandedTeam(expandedTeam === rosterId ? null : rosterId);
   };
@@ -374,6 +408,10 @@ export default function Metrics() {
           <TabsTrigger value="heat" data-testid="tab-heat-check">
             <ThermometerSun className="w-4 h-4 mr-2" />
             Heat Check
+          </TabsTrigger>
+          <TabsTrigger value="power" data-testid="tab-power-rankings">
+            <Crown className="w-4 h-4 mr-2" />
+            Power Rankings
           </TabsTrigger>
         </TabsList>
 
@@ -789,6 +827,409 @@ export default function Metrics() {
               )}
             </CardContent>
           </Card>
+        </TabsContent>
+
+        <TabsContent value="power" className="space-y-6">
+          {/* Power Rankings Summary */}
+          {powerLoading ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              {[1, 2, 3].map(i => (
+                <Card key={i}>
+                  <CardHeader className="pb-2">
+                    <Skeleton className="h-4 w-24" />
+                  </CardHeader>
+                  <CardContent>
+                    <Skeleton className="h-8 w-full" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-3">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription className="flex items-center gap-1">
+                    <Crown className="w-3.5 h-3.5 text-yellow-500" />
+                    Best All-Play Record
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {powerData?.teams?.[0] ? (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-8 h-8">
+                          {powerData.teams[0].avatar && <AvatarImage src={powerData.teams[0].avatar} alt={powerData.teams[0].name} />}
+                          <AvatarFallback className="text-xs bg-yellow-500 text-white">
+                            {powerData.teams[0].initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium">{powerData.teams[0].name}</span>
+                      </div>
+                      <Badge className="bg-yellow-500/20 text-yellow-600 border-yellow-500/30">
+                        {powerData.teams[0].allPlayWins}-{powerData.teams[0].allPlayLosses}
+                      </Badge>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No data</span>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription className="flex items-center gap-1">
+                    <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+                    Worst All-Play Record
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {powerData?.teams?.[powerData.teams.length - 1] ? (
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-8 h-8">
+                          {powerData.teams[powerData.teams.length - 1].avatar && (
+                            <AvatarImage src={powerData.teams[powerData.teams.length - 1].avatar} alt={powerData.teams[powerData.teams.length - 1].name} />
+                          )}
+                          <AvatarFallback className="text-xs bg-red-500 text-white">
+                            {powerData.teams[powerData.teams.length - 1].initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="font-medium">{powerData.teams[powerData.teams.length - 1].name}</span>
+                      </div>
+                      <Badge className="bg-red-500/20 text-red-500 border-red-500/30">
+                        {powerData.teams[powerData.teams.length - 1].allPlayWins}-{powerData.teams[powerData.teams.length - 1].allPlayLosses}
+                      </Badge>
+                    </div>
+                  ) : (
+                    <span className="text-muted-foreground">No data</span>
+                  )}
+                </CardContent>
+              </Card>
+
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardDescription className="flex items-center gap-1">
+                    <Sparkles className="w-3.5 h-3.5 text-primary" />
+                    Your All-Play Record
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  {(() => {
+                    const userTeam = powerData?.teams?.find(t => t.ownerId === user?.userId);
+                    return userTeam ? (
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Avatar className="w-8 h-8">
+                            {userTeam.avatar && <AvatarImage src={userTeam.avatar} alt={userTeam.name} />}
+                            <AvatarFallback className="text-xs bg-primary text-primary-foreground">
+                              {userTeam.initials}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="font-medium">{userTeam.name}</span>
+                        </div>
+                        <Badge variant="outline">
+                          {userTeam.allPlayWins}-{userTeam.allPlayLosses}
+                        </Badge>
+                      </div>
+                    ) : (
+                      <span className="text-muted-foreground">No data</span>
+                    );
+                  })()}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+
+          {/* Explanation Card */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Info className="w-4 h-4" />
+                How Power Rankings Work
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm text-muted-foreground space-y-2">
+              <p>
+                <strong>All-Play Record:</strong> Your hypothetical record if you played every team every week.
+              </p>
+              <ul className="list-disc list-inside space-y-1 ml-2">
+                <li>
+                  If you scored the highest in week 1, you'd beat all 11 opponents (11-0 for that week)
+                </li>
+                <li>
+                  If you scored the lowest, you'd lose to everyone (0-11 for that week)
+                </li>
+                <li>
+                  This removes schedule luck and shows true team strength
+                </li>
+              </ul>
+              <p className="pt-2">
+                <strong>Weekly Rankings:</strong> Your scoring rank (1 = highest) compared to all teams each week.
+              </p>
+            </CardContent>
+          </Card>
+
+          {/* All-Play Standings */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-heading text-lg flex items-center gap-2">
+                <Crown className="w-5 h-5 text-yellow-500" />
+                All-Play Standings
+              </CardTitle>
+              <CardDescription>
+                {powerData?.completedWeeks 
+                  ? `${powerData.season || ""} Season - ${powerData.completedWeeks} completed week${powerData.completedWeeks !== 1 ? "s" : ""}`
+                  : "Calculating all-play records"
+                }
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {powerLoading ? (
+                <div className="space-y-2">
+                  {[1, 2, 3, 4, 5, 6].map(i => (
+                    <Skeleton key={i} className="h-14 w-full" />
+                  ))}
+                </div>
+              ) : powerData?.teams && powerData.teams.length > 0 ? (
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="w-10 text-center">#</TableHead>
+                      <TableHead>Team</TableHead>
+                      <TableHead className="text-center">All-Play Record</TableHead>
+                      <TableHead className="text-center">Win %</TableHead>
+                      <TableHead className="text-center">Actual Record</TableHead>
+                      <TableHead className="text-center">
+                        <Tooltip>
+                          <TooltipTrigger className="flex items-center gap-1 mx-auto">
+                            Diff
+                            <Info className="w-3 h-3" />
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Difference between all-play wins and actual wins</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {powerData.teams.map((team, idx) => {
+                      const isUser = team.ownerId === user?.userId;
+                      const numTeams = powerData.teams.length;
+                      const expectedWinsPerWeek = (numTeams - 1) / 2;
+                      const totalExpectedWins = expectedWinsPerWeek * powerData.completedWeeks;
+                      const allPlayDiff = team.allPlayWins - Math.round(totalExpectedWins);
+                      const recordDiff = team.allPlayWins - (team.actualWins * (numTeams - 1));
+                      
+                      return (
+                        <TableRow 
+                          key={team.rosterId}
+                          className={isUser ? "bg-primary/5" : ""}
+                          data-testid={`row-power-${team.rosterId}`}
+                        >
+                          <TableCell className="font-medium text-center w-10">
+                            {idx + 1}
+                          </TableCell>
+                          <TableCell>
+                            <div className="flex items-center gap-3">
+                              <Avatar className="w-8 h-8">
+                                {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+                                <AvatarFallback 
+                                  className={`text-xs ${isUser ? "bg-primary text-primary-foreground" : "bg-muted"}`}
+                                >
+                                  {team.initials}
+                                </AvatarFallback>
+                              </Avatar>
+                              <p className={`font-medium ${isUser ? "text-primary" : ""}`}>
+                                {team.name}
+                              </p>
+                            </div>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <span className="font-bold">{team.allPlayWins}-{team.allPlayLosses}</span>
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Badge 
+                              className={
+                                team.allPlayWinPct >= 60 
+                                  ? "bg-emerald-500/20 text-emerald-500 border-emerald-500/30"
+                                  : team.allPlayWinPct <= 40
+                                    ? "bg-red-500/20 text-red-500 border-red-500/30"
+                                    : "bg-muted text-muted-foreground"
+                              }
+                            >
+                              {team.allPlayWinPct.toFixed(1)}%
+                            </Badge>
+                          </TableCell>
+                          <TableCell className="text-center text-muted-foreground">
+                            {team.actualWins}-{team.actualLosses}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            {(() => {
+                              const diff = team.allPlayWins / (powerData.completedWeeks || 1) - (numTeams - 1) / 2;
+                              const scaledDiff = Math.round(diff * 10) / 10;
+                              return (
+                                <span className={
+                                  scaledDiff > 0 ? "text-emerald-500" : 
+                                  scaledDiff < 0 ? "text-red-500" : 
+                                  "text-muted-foreground"
+                                }>
+                                  {scaledDiff > 0 ? "+" : ""}{scaledDiff.toFixed(1)}/wk
+                                </span>
+                              );
+                            })()}
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                  </TableBody>
+                </Table>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <Crown className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No power rankings data available yet.</p>
+                  <p className="text-sm">Check back after the first week is complete.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Weekly Scoring Rankings Matrix */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="font-heading text-lg flex items-center gap-2">
+                <TrendingUp className="w-5 h-5 text-primary" />
+                Weekly Scoring Rankings
+              </CardTitle>
+              <CardDescription>
+                {powerData?.season ? `${powerData.season} Season - ` : ""}Each team's scoring rank (1 = highest scorer) by week
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {powerLoading ? (
+                <Skeleton className="h-64 w-full" />
+              ) : powerData?.teams && powerData.teams.length > 0 && powerData.completedWeeks > 0 ? (
+                <ScrollArea className="w-full">
+                  <div className="min-w-max">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="sticky left-0 bg-background z-10 min-w-[150px]">Team</TableHead>
+                          {Array.from({ length: powerData.completedWeeks }, (_, i) => (
+                            <TableHead key={i + 1} className="text-center w-12 px-2">
+                              W{i + 1}
+                            </TableHead>
+                          ))}
+                          <TableHead className="text-center px-3">Avg</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {powerData.teams.map((team) => {
+                          const isUser = team.ownerId === user?.userId;
+                          const avgRank = team.weeklyRankings.length > 0
+                            ? team.weeklyRankings.reduce((sum, wr) => sum + wr.rank, 0) / team.weeklyRankings.length
+                            : 0;
+                          
+                          const getRankColor = (rank: number, total: number) => {
+                            const percentile = (rank - 1) / (total - 1);
+                            if (percentile <= 0.25) return "bg-emerald-500 text-white";
+                            if (percentile <= 0.5) return "bg-yellow-500 text-yellow-900 dark:text-yellow-100";
+                            if (percentile <= 0.75) return "bg-orange-500 text-orange-900 dark:text-orange-100";
+                            return "bg-red-500 text-white";
+                          };
+                          
+                          return (
+                            <TableRow 
+                              key={team.rosterId}
+                              className={isUser ? "bg-primary/5" : ""}
+                            >
+                              <TableCell className="sticky left-0 bg-background z-10">
+                                <div className="flex items-center gap-2">
+                                  <Avatar className="w-6 h-6">
+                                    {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+                                    <AvatarFallback 
+                                      className={`text-[10px] ${isUser ? "bg-primary text-primary-foreground" : "bg-muted"}`}
+                                    >
+                                      {team.initials}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                  <span className={`text-sm font-medium truncate max-w-[120px] ${isUser ? "text-primary" : ""}`}>
+                                    {team.name}
+                                  </span>
+                                </div>
+                              </TableCell>
+                              {Array.from({ length: powerData.completedWeeks }, (_, i) => {
+                                const weekRanking = team.weeklyRankings.find(wr => wr.week === i + 1);
+                                const rank = weekRanking?.rank || "-";
+                                const numTeams = powerData.teams.length;
+                                
+                                return (
+                                  <TableCell key={i + 1} className="text-center p-1">
+                                    {weekRanking ? (
+                                      <Tooltip>
+                                        <TooltipTrigger asChild>
+                                          <div 
+                                            className={`w-8 h-8 mx-auto rounded flex items-center justify-center text-xs font-bold cursor-help ${getRankColor(weekRanking.rank, numTeams)}`}
+                                          >
+                                            {rank}
+                                          </div>
+                                        </TooltipTrigger>
+                                        <TooltipContent>
+                                          <p className="font-medium">Week {i + 1}</p>
+                                          <p className="text-xs">{weekRanking.points.toFixed(1)} pts</p>
+                                          <p className="text-xs text-muted-foreground">Rank #{weekRanking.rank} of {numTeams}</p>
+                                        </TooltipContent>
+                                      </Tooltip>
+                                    ) : (
+                                      <div className="w-8 h-8 mx-auto rounded bg-muted flex items-center justify-center text-xs text-muted-foreground">
+                                        -
+                                      </div>
+                                    )}
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell className="text-center">
+                                <Badge variant="outline" className="font-mono">
+                                  {avgRank.toFixed(1)}
+                                </Badge>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  <ScrollBar orientation="horizontal" />
+                </ScrollArea>
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <TrendingUp className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                  <p>No weekly ranking data available yet.</p>
+                  <p className="text-sm">Check back after the first week is complete.</p>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Legend */}
+          <div className="flex items-center justify-center gap-6 text-xs text-muted-foreground">
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded bg-emerald-500" />
+              <span>Top 25%</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded bg-emerald-500/30" />
+              <span>25-50%</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded bg-red-500/30" />
+              <span>50-75%</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="w-4 h-4 rounded bg-red-500" />
+              <span>Bottom 25%</span>
+            </div>
+          </div>
         </TabsContent>
       </Tabs>
     </div>
