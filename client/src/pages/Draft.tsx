@@ -113,6 +113,8 @@ export default function Draft() {
   const { user, league, season } = useSleeper();
   const [activeTab, setActiveTab] = useState<"future" | "historical" | "odds">("future");
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
+  const [userSelectedDraft, setUserSelectedDraft] = useState(false);
+  const [show2023RookiesOnly, setShow2023RookiesOnly] = useState(false);
 
   const { data: draftPicks, isLoading: picksLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "draft-picks"],
@@ -211,39 +213,25 @@ export default function Draft() {
     }
   }, [drafts]);
 
-  // Auto-select most recent completed draft when drafts load or Historical tab is selected
+  // Auto-select most recent completed draft ONLY on initial load
+  // Don't override user's manual selection
   useEffect(() => {
-    if (drafts && drafts.length > 0) {
-      // When Historical tab is active, prioritize most recent completed draft
-      if (activeTab === "historical") {
-        // Get all completed drafts
-        const allCompletedDrafts = drafts
-          .filter(d => isDraftComplete(d.status))
-          .sort((a, b) => parseInt(b.season) - parseInt(a.season));
-        
-        // Select most recent (first in sorted array)
-        if (allCompletedDrafts.length > 0) {
-          setSelectedDraftId(allCompletedDrafts[0].draftId);
-          return;
-        }
-      }
-      
-      // For other tabs or if no completed draft found, use existing logic
-      if (!selectedDraftId) {
-        const draft2024 = drafts.find(d => d.season === "2024" && isDraftComplete(d.status));
-        if (draft2024) {
-          setSelectedDraftId(draft2024.draftId);
-        } else {
-          const latestCompleted = drafts
-            .filter(d => isDraftComplete(d.status))
-            .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
-          if (latestCompleted) {
-            setSelectedDraftId(latestCompleted.draftId);
-          }
-        }
+    if (drafts && drafts.length > 0 && !selectedDraftId && !userSelectedDraft) {
+      const latestCompleted = drafts
+        .filter(d => isDraftComplete(d.status))
+        .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
+      if (latestCompleted) {
+        setSelectedDraftId(latestCompleted.draftId);
       }
     }
-  }, [drafts, selectedDraftId, activeTab]);
+  }, [drafts, selectedDraftId, userSelectedDraft]);
+
+  // Reset user selection flag when switching away from historical tab
+  useEffect(() => {
+    if (activeTab !== "historical") {
+      setUserSelectedDraft(false);
+    }
+  }, [activeTab]);
 
   const userTeamStanding = standings?.find((s: any) => s.isUser);
   const userRosterId = userTeamStanding?.rosterId;
@@ -308,6 +296,15 @@ export default function Draft() {
   const completedDrafts = (drafts || [])
     .filter(d => isDraftComplete(d.status))
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
+
+  // Check if selected draft is from 2023
+  const selectedDraft = completedDrafts.find(d => d.draftId === selectedDraftId);
+  const is2023Draft = selectedDraft?.season === "2023";
+
+  // Filter for 2023 rookies (first 36 picks) if toggle is enabled
+  const filteredHistoricalPicks = show2023RookiesOnly && is2023Draft
+    ? formattedHistoricalPicks.filter(p => p.round <= 3 && p.pick <= 36)
+    : formattedHistoricalPicks;
 
   // Calculate draft odds using Monte Carlo simulation
   // Non-playoff teams get picks 1-5 based on max points (lowest = pick 1)
@@ -782,7 +779,10 @@ export default function Draft() {
                         key={draft.draftId}
                         variant={selectedDraftId === draft.draftId ? "default" : "outline"}
                         size="sm"
-                        onClick={() => setSelectedDraftId(draft.draftId)}
+                        onClick={() => {
+                          setSelectedDraftId(draft.draftId);
+                          setUserSelectedDraft(true);
+                        }}
                         data-testid={`draft-button-${draft.season}`}
                       >
                         <Calendar className="w-4 h-4 mr-1.5" />
@@ -798,8 +798,22 @@ export default function Draft() {
                           <Skeleton key={i} className="h-20 w-full" />
                         ))}
                       </div>
-                    ) : formattedHistoricalPicks.length > 0 ? (
+                    ) : filteredHistoricalPicks.length > 0 ? (
                       <>
+                        {is2023Draft && (
+                          <div className="flex items-center gap-2 mb-4 p-3 bg-muted/50 rounded-lg">
+                            <input
+                              type="checkbox"
+                              id="show2023Rookies"
+                              checked={show2023RookiesOnly}
+                              onChange={(e) => setShow2023RookiesOnly(e.target.checked)}
+                              className="w-4 h-4 rounded border-gray-300"
+                            />
+                            <label htmlFor="show2023Rookies" className="text-sm font-medium cursor-pointer">
+                              Show only first 36 rookie selections (2023 rookies)
+                            </label>
+                          </div>
+                        )}
                         <div className="flex items-center gap-4 mb-2 text-xs text-muted-foreground">
                           <div className="flex items-center gap-1.5">
                             <Badge className={`text-[10px] px-1.5 ${positionColors.QB}`}>QB</Badge>
@@ -818,7 +832,7 @@ export default function Draft() {
                             <span>Tight End</span>
                           </div>
                         </div>
-                        {renderDraftGrid(formattedHistoricalPicks, true)}
+                        {renderDraftGrid(filteredHistoricalPicks, true)}
                       </>
                     ) : (
                       <p className="text-center text-muted-foreground py-8">

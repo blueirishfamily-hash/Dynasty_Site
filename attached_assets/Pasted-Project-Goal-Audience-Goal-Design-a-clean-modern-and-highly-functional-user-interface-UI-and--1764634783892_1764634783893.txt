@@ -61,4 +61,10 @@ Data Visualization: Use charts, graphs, and heatmaps effectively.
 
 Example: On the League Standings page, use a small line graph next to each team showing their win/loss trend over the last five weeks, based on Sleeper Matchups data.
 
+<<<<<<< HEAD
 Dynasty Specific UX: Incorporate player Age and Position Rank (based on Sleeper-provided stats) as primary data points, perhaps using color coding for quick assessment.
+
+
+=======
+Dynasty Specific UX: Incorporate player Age and Position Rank (based on Sleeper-provided stats) as primary data points, perhaps using color coding for quick assessment.
+>>>>>>> origin/replit2

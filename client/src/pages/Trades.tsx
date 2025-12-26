@@ -8,9 +8,9 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 export default function Trades() {
   const { user, league, season } = useSleeper();
   
-  // Calculate the next 4 years of draft picks
+  // Calculate the next 3 years of draft picks
   const nextDraftYear = parseInt(season || "2024") + 1;
-  const maxDraftYear = nextDraftYear + 3; // Show 4 years total
+  const maxDraftYear = nextDraftYear + 2; // Show 3 years total
 
   const { data: trades, isLoading: tradesLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "trades"],

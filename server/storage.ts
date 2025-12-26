@@ -69,6 +69,8 @@ export interface IStorage {
   deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void>;
   
   getPlayerBidsByRoster(leagueId: string, rosterId: number): Promise<PlayerBid[]>;
+  getPlayerBidsByPlayer(leagueId: string, playerId: string): Promise<PlayerBid[]>;
+  getAllPlayerBids(leagueId: string): Promise<PlayerBid[]>;
   createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid>;
   updatePlayerBid(id: string, rosterId: number, updates: Partial<InsertPlayerBid>): Promise<PlayerBid | undefined>;
   deletePlayerBid(id: string, rosterId: number): Promise<void>;
@@ -731,6 +733,29 @@ export class DatabaseStorage implements IStorage {
         eq(playerBidsTable.leagueId, leagueId),
         eq(playerBidsTable.rosterId, rosterId)
       ))
+      .orderBy(desc(playerBidsTable.createdAt));
+
+    return rows;
+  }
+
+  async getPlayerBidsByPlayer(leagueId: string, playerId: string): Promise<PlayerBid[]> {
+    const rows = await db
+      .select()
+      .from(playerBidsTable)
+      .where(and(
+        eq(playerBidsTable.leagueId, leagueId),
+        eq(playerBidsTable.playerId, playerId)
+      ))
+      .orderBy(desc(playerBidsTable.createdAt));
+
+    return rows;
+  }
+
+  async getAllPlayerBids(leagueId: string): Promise<PlayerBid[]> {
+    const rows = await db
+      .select()
+      .from(playerBidsTable)
+      .where(eq(playerBidsTable.leagueId, leagueId))
       .orderBy(desc(playerBidsTable.createdAt));
 
     return rows;

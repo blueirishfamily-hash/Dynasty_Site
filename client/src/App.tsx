@@ -91,13 +91,13 @@ function AppContent() {
   const userRosterId = userTeam?.rosterId;
   const currentYear = parseInt(season) + 1;
 
-  // Show next 4 years of draft picks (rounds 1-3 only)
+  // Show next 3 years of draft picks (rounds 1-3 only)
   const userDraftPicks = (draftPicks || [])
     .filter((p: any) => {
       const pickYear = parseInt(p.season);
       return p.currentOwnerId === userRosterId && 
         pickYear >= currentYear && 
-        pickYear <= currentYear + 3 &&
+        pickYear <= currentYear + 2 &&
         p.round <= 3;
     })
     .map((p: any) => ({

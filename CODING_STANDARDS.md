@@ -1842,6 +1842,234 @@ app.get("/api/sleeper/league/:leagueId", async (req, res) => {
 - ❌ Don't cache data that changes frequently
 - ❌ Don't make unnecessary sequential API calls (use `Promise.all`)
 
+## League Settings Toggle Pattern
+
+This pattern documents how to implement commissioner-controlled feature toggles that affect league-wide behavior (e.g., dead cap feature). Follow this pattern for all future league setting toggles.
+
+### Overview
+
+League settings toggles allow commissioners to enable/disable features for the entire league. Settings are stored in the `league_settings` table and accessed via dedicated API endpoints.
+
+### Implementation Steps
+
+#### 1. Backend API Endpoints (`server/routes.ts`)
+
+**GET Endpoint** (fetch current setting):
+```typescript
+// Specific route MUST come BEFORE generic /settings/:settingKey route
+app.get("/api/league/:leagueId/settings/your-setting-key", async (req, res) => {
+  try {
+    const { leagueId } = req.params;
+    const value = await storage.getLeagueSetting(leagueId, "your_setting_key");
+    // Default value for backward compatibility if setting doesn't exist
+    res.json({ enabled: value === "true" }); // or { value: value ?? "default" }
+  } catch (error) {
+    console.error("Error fetching setting:", error);
+    res.status(500).json({ error: "Failed to fetch setting" });
+  }
+});
+```
+
+**PUT Endpoint** (update setting - commissioner only):
+```typescript
+// Specific route MUST come BEFORE generic /settings/:settingKey route
+app.put("/api/league/:leagueId/settings/your-setting-key", async (req, res) => {
+  try {
+    const { leagueId } = req.params;
+    const userId = req.query.userId as string;
+    const { enabled } = req.body; // or { value } depending on setting type
+    
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+    
+    if (typeof enabled !== "boolean") {
+      return res.status(400).json({ error: "Enabled must be a boolean" });
+    }
+
+    // Check if user is commissioner
+    const isComm = await isCommissioner(userId, leagueId);
+    
+    if (!isComm) {
+      return res.status(403).json({ error: "Unauthorized: Only commissioners can change this setting" });
+    }
+    
+    const setting = await storage.setLeagueSetting(leagueId, "your_setting_key", enabled ? "true" : "false");
+    res.json({ enabled: setting.settingValue === "true" });
+  } catch (error) {
+    console.error("Error setting setting:", error);
+    res.status(500).json({ error: "Failed to set setting" });
+  }
+});
+```
+
+**Important**: Specific routes (e.g., `/settings/dead-cap-enabled`) must be defined BEFORE generic routes (e.g., `/settings/:settingKey`) to ensure proper route matching.
+
+#### 2. Storage Layer (`server/storage.ts`)
+
+The storage layer already provides `getLeagueSetting` and `setLeagueSetting` methods that use the `league_settings` table. No additional storage methods needed.
+
+```typescript
+// Already implemented in DatabaseStorage class:
+async getLeagueSetting(leagueId: string, settingKey: string): Promise<string | undefined>
+async setLeagueSetting(leagueId: string, settingKey: string, settingValue: string): Promise<LeagueSetting>
+```
+
+#### 3. Frontend Query (`client/src/pages/YourPage.tsx`)
+
+**Fetch Setting**:
+```typescript
+const { data: settingData, refetch: refetchSetting } = useQuery<{ enabled: boolean }>({
+  queryKey: ["/api/league", league?.leagueId, "settings", "your-setting-key"],
+  queryFn: async () => {
+    const res = await fetch(`/api/league/${league?.leagueId}/settings/your-setting-key`);
+    if (!res.ok) throw new Error("Failed to fetch setting");
+    return res.json();
+  },
+  enabled: !!league?.leagueId,
+});
+
+// Extract value with backward compatibility default
+const settingEnabled = settingData?.enabled ?? true; // Default to true (or false) for backward compatibility
+```
+
+#### 4. Frontend Mutation (`client/src/pages/YourPage.tsx`)
+
+**Update Setting**:
+```typescript
+const updateSettingMutation = useMutation({
+  mutationFn: async (enabled: boolean) => {
+    const res = await fetch(`/api/league/${league?.leagueId}/settings/your-setting-key?userId=${user?.userId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) {
+      const error = await res.json();
+      throw new Error(error.error || "Failed to update setting");
+    }
+    return res.json();
+  },
+  onSuccess: (_, enabled) => {
+    refetchSetting(); // Refetch to update UI
+    toast({
+      title: "Setting Updated",
+      description: `Feature ${enabled ? "enabled" : "disabled"}.`,
+    });
+  },
+  onError: (error: Error) => {
+    toast({
+      title: "Update Failed",
+      description: error.message,
+      variant: "destructive",
+    });
+  },
+});
+
+const handleSettingToggle = (enabled: boolean) => {
+  updateSettingMutation.mutate(enabled);
+};
+```
+
+#### 5. UI Component (Commissioner-Only Toggle)
+
+**In Main Component or Child Component**:
+```typescript
+interface YourComponentProps {
+  // ... other props
+  settingEnabled: boolean;
+  onSettingToggle: (enabled: boolean) => void;
+}
+
+function YourComponent({ settingEnabled, onSettingToggle, isCommissioner = false }: YourComponentProps) {
+  return (
+    <div>
+      {isCommissioner && (
+        <div className="flex items-center gap-2">
+          <Switch
+            checked={settingEnabled}
+            onCheckedChange={(checked) => onSettingToggle(checked)}
+            data-testid="switch-your-setting"
+          />
+          <Label className="text-sm font-medium">Your Setting Label</Label>
+        </div>
+      )}
+      {/* Rest of component */}
+    </div>
+  );
+}
+```
+
+#### 6. Conditional Logic Based on Setting
+
+**Throughout Component**:
+```typescript
+// Example: Conditional calculation
+const calculatedValue = settingEnabled ? actualValue : 0; // or default value
+
+// Example: Conditional display
+{settingEnabled && (
+  <div>
+    {/* Feature-specific UI */}
+  </div>
+)}
+
+// Example: Conditional in useMemo
+const memoizedValue = useMemo(() => {
+  if (!settingEnabled) return defaultValue; // or empty map/array
+  // Calculate based on setting
+  return calculatedValue;
+}, [dependencies, settingEnabled]);
+```
+
+#### 7. Props Passing Pattern
+
+**Main Component**:
+```typescript
+export default function YourPage() {
+  // ... fetch setting (step 3)
+  // ... mutation (step 4)
+  
+  return (
+    <YourComponent
+      // ... other props
+      settingEnabled={settingEnabled}
+      onSettingToggle={handleSettingToggle}
+      isCommissioner={isCommissioner}
+    />
+  );
+}
+```
+
+### Key Points
+
+**DO**:
+- ✅ Always provide backward compatibility defaults (e.g., `?? true` or `?? false`)
+- ✅ Use specific API routes (e.g., `/settings/dead-cap-enabled`) before generic routes
+- ✅ Check commissioner status on backend (never trust frontend-only checks)
+- ✅ Pass `userId` as query parameter for PUT requests
+- ✅ Refetch setting after successful mutation
+- ✅ Show toast notifications for success/error
+- ✅ Use conditional logic throughout component based on setting
+- ✅ Hide feature-specific UI when setting is disabled
+- ✅ Set calculated values to 0 or default when setting is disabled
+
+**DON'T**:
+- ❌ Never rely on frontend-only commissioner checks
+- ❌ Never skip backward compatibility defaults
+- ❌ Never forget to refetch after mutation
+- ❌ Don't place specific routes after generic routes
+- ❌ Don't expose setting logic to non-commissioners in UI
+
+### Example: Dead Cap Toggle
+
+See `client/src/pages/Contracts.tsx` and `server/routes.ts` for the complete dead cap toggle implementation:
+- **Setting Key**: `dead_cap_enabled`
+- **API Routes**: `/api/league/:leagueId/settings/dead-cap-enabled` (GET, PUT)
+- **Default**: `true` (backward compatibility)
+- **UI Location**: `ContractInputTab` component (commissioner-only)
+- **Conditional Logic**: Dead cap calculations return 0 or empty map when disabled
+
 ## Documentation
 
 - Add JSDoc comments for complex functions
