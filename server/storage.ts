@@ -69,7 +69,6 @@ export interface IStorage {
   deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void>;
   
   getPlayerBidsByRoster(leagueId: string, rosterId: number): Promise<PlayerBid[]>;
-  getPlayerBidsByPlayer(leagueId: string, playerId: string): Promise<PlayerBid[]>;
   getAllPlayerBids(leagueId: string): Promise<PlayerBid[]>;
   createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid>;
   updatePlayerBid(id: string, rosterId: number, updates: Partial<InsertPlayerBid>): Promise<PlayerBid | undefined>;
@@ -738,30 +737,20 @@ export class DatabaseStorage implements IStorage {
     return rows;
   }
 
-  async getPlayerBidsByPlayer(leagueId: string, playerId: string): Promise<PlayerBid[]> {
-    const rows = await db
-      .select()
-      .from(playerBidsTable)
-      .where(and(
-        eq(playerBidsTable.leagueId, leagueId),
-        eq(playerBidsTable.playerId, playerId)
-      ))
-      .orderBy(desc(playerBidsTable.createdAt));
-
-    return rows;
-  }
-
   async getAllPlayerBids(leagueId: string): Promise<PlayerBid[]> {
+    console.log(`[Storage] getAllPlayerBids: Fetching all bids from playerBidsTable for league ${leagueId}`);
     const rows = await db
       .select()
       .from(playerBidsTable)
       .where(eq(playerBidsTable.leagueId, leagueId))
       .orderBy(desc(playerBidsTable.createdAt));
-
+    
+    console.log(`[Storage] getAllPlayerBids: Found ${rows.length} bids from playerBidsTable (same table used by createPlayerBid)`);
     return rows;
   }
 
   async createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid> {
+    console.log(`[Storage] createPlayerBid: Inserting bid into playerBidsTable for league ${data.leagueId}, player ${data.playerId}`);
     const id = randomUUID();
     const now = Date.now();
 
@@ -783,6 +772,7 @@ export class DatabaseStorage implements IStorage {
       updatedAt: now,
     }).returning();
 
+    console.log(`[Storage] createPlayerBid: Successfully inserted bid into playerBidsTable (same table used by getAllPlayerBids)`);
     return inserted;
   }
 

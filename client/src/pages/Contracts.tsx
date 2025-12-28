@@ -41,7 +41,6 @@ import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { getRookieSalary, formatDraftPosition } from "@/utils/rookiePayScale";
 
 const COMMISSIONER_USER_IDS = [
@@ -2126,7 +2125,7 @@ function ManageTeamContractsTab({
     const salary2028 = (contract.salary2028 || 0) / 10;
     const salary2029 = ((contract as any).salary2029 || 0) / 10;
 
-    // Find last contract year - player must be in their last or second-to-last year
+    // Find last contract year - player must be in their final year
     let lastYearWithSalary = 0;
     let currentSalary = 0;
     
@@ -2137,49 +2136,24 @@ function ManageTeamContractsTab({
     else if (salary2026 > 0) { lastYearWithSalary = 2026; currentSalary = salary2026; }
     else if (salary2025 > 0) { lastYearWithSalary = 2025; currentSalary = salary2025; }
 
-    if (lastYearWithSalary === 0) {
-      return { ...defaultResult, reason: "No contract found" };
+    // Cannot extend if already at 2029 (max year in schema)
+    if (lastYearWithSalary === 2029) {
+      return { ...defaultResult, reason: "Cannot extend - 2029 is the maximum contract year" };
     }
 
-    // Calculate which year of the contract the player is currently in
-    // Contract years are: CURRENT_YEAR, CURRENT_YEAR+1, CURRENT_YEAR+2, CURRENT_YEAR+3
-    // If lastYearWithSalary is CURRENT_YEAR, player is in their last year
-    // If lastYearWithSalary is CURRENT_YEAR+1, player is in their second-to-last year
-    // If lastYearWithSalary is CURRENT_YEAR+2, player is in their third-to-last year (not eligible)
-    // If lastYearWithSalary is CURRENT_YEAR+3, player is in their fourth-to-last year (not eligible)
-    
-    const yearsFromCurrent = lastYearWithSalary - CURRENT_YEAR;
-    
-    // Player must be in their last year (yearsFromCurrent === 0) or second-to-last year (yearsFromCurrent === 1)
-    if (yearsFromCurrent !== 0 && yearsFromCurrent !== 1) {
-      return { ...defaultResult, reason: "Player is not in the last or second-to-last year of their contract" };
+    // Must be in last year of contract (current year is the only remaining year)
+    if (lastYearWithSalary !== CURRENT_YEAR) {
+      return { ...defaultResult, reason: "Player is not in the final year of their contract" };
     }
 
-    // Cannot extend if already at max displayed year (CURRENT_YEAR + 3) and trying to extend beyond
-    const maxDisplayYear = CURRENT_YEAR + 3;
-    if (lastYearWithSalary >= maxDisplayYear && yearsFromCurrent === 0) {
-      // If in last year and already at max, can still extend to CURRENT_YEAR + 4 (not displayed)
-      // This is allowed
-    }
-
-    // Calculate extension year and salary options based on which year player is in
-    let extensionYear: number;
-    if (yearsFromCurrent === 0) {
-      // If in last year (CURRENT_YEAR), extend to CURRENT_YEAR + 1 (or +2 for 2-year extension)
-      extensionYear = CURRENT_YEAR + 1;
-    } else {
-      // If in second-to-last year (CURRENT_YEAR + 1), extend to CURRENT_YEAR + 2 (or +3 for 2-year extension)
-      extensionYear = CURRENT_YEAR + 2;
-    }
-    
+    // Calculate extension year and salary options
+    const extensionYear = lastYearWithSalary + 1;
     const oneYearSalary = Math.ceil(currentSalary * 1.2); // 1.2x rounded up
     const twoYearSalary = Math.ceil(currentSalary * 1.5); // 1.5x rounded up
     
-    // Check if we can do 1-year or 2-year extension
-    // For 1-year: extension year must be <= CURRENT_YEAR + 3 (max displayed) or CURRENT_YEAR + 4 (backend allows)
-    // For 2-year: extension year + 1 must be <= CURRENT_YEAR + 4
-    const canDo1Year = extensionYear <= CURRENT_YEAR + 4;
-    const canDo2Year = extensionYear + 1 <= CURRENT_YEAR + 4;
+    // Check if we can do 1-year or 2-year extension (max year is 2029)
+    const canDo1Year = extensionYear <= 2029;
+    const canDo2Year = extensionYear + 1 <= 2029;
 
     return {
       eligible: canDo1Year,
@@ -2271,7 +2245,7 @@ function ManageTeamContractsTab({
 
   // Helper function to calculate years remaining on contract
   const getYearsRemaining = (playerId: string, hypotheticalSalaries: Record<number, number>): number => {
-    const contractYears = CONTRACT_YEARS.filter(year => (hypotheticalSalaries[year] || 0) > 0);
+    const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(year => (hypotheticalSalaries[year] || 0) > 0);
     if (contractYears.length === 0) return 0;
     const lastYear = Math.max(...contractYears);
     return Math.max(0, lastYear - CURRENT_YEAR + 1);
@@ -2282,7 +2256,7 @@ function ManageTeamContractsTab({
     .map(id => {
       const player = playerMap[id];
       const hypotheticalSalaries: Record<number, number> = {};
-      CONTRACT_YEARS.forEach(year => {
+      [...CONTRACT_YEARS, OPTION_YEAR].forEach(year => {
         hypotheticalSalaries[year] = getEffectiveSalary(id, year);
       });
 
@@ -2404,14 +2378,14 @@ function ManageTeamContractsTab({
     };
   }, [hypotheticalData, franchiseTaggedPlayers, draftsLoaded, rosterPlayers]);
 
-  const hypotheticalTotalsByYear = CONTRACT_YEARS.reduce((acc, year) => {
+  const hypotheticalTotalsByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
     const total = allHypotheticalPlayers.reduce((sum, p) => {
       return sum + (p.hypotheticalSalaries[year] || 0);
     }, 0);
     return { ...acc, [year]: total };
   }, {} as Record<number, number>);
 
-  const leagueTotalsByYear = CONTRACT_YEARS.reduce((acc, year) => {
+  const leagueTotalsByYear = [...CONTRACT_YEARS, OPTION_YEAR].reduce((acc, year) => {
     const total = rosterPlayers.reduce((sum, p) => {
       return sum + getLeagueSalary(p.playerId, year);
     }, 0);
@@ -2434,7 +2408,7 @@ function ManageTeamContractsTab({
 
   const handleAddFreeAgent = (player: SleeperPlayerData) => {
     const hypotheticalSalaries: Record<number, number> = {};
-    CONTRACT_YEARS.forEach(year => {
+    [...CONTRACT_YEARS, OPTION_YEAR].forEach(year => {
       hypotheticalSalaries[year] = 0;
     });
 
@@ -2742,7 +2716,7 @@ function ManageTeamContractsTab({
               </p>
               
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {CONTRACT_YEARS.map((year, idx) => {
+                {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => {
                   // Calculate approved and unapproved totals by position
                   const positionApproved: Record<string, number> = {};
                   const positionUnapproved: Record<string, number> = {};
@@ -3030,8 +3004,8 @@ function ManageTeamContractsTab({
             </div>
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
-            {CONTRACT_YEARS.map((year, idx) => {
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-6">
+            {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => {
               const leagueTotal = leagueTotalsByYear[year] || 0;
               const hypotheticalTotal = hypotheticalTotalsByYear[year] || 0;
               const difference = hypotheticalTotal - leagueTotal;
@@ -3041,7 +3015,7 @@ function ManageTeamContractsTab({
                 <Card key={year} className="p-3">
                   <div className="text-center">
                     <div className="text-xs text-muted-foreground mb-1">
-                      {year}
+                      {idx === 4 ? `${year} (Ext)` : year}
                     </div>
                     <div className="font-bold" style={{ color: isOverCap ? COLORS.deadCap : COLORS.salaries }}>
                       ${hypotheticalTotal.toFixed(1)}M
@@ -3159,9 +3133,9 @@ function ManageTeamContractsTab({
                   <TableHead className="text-center w-[55px]">Len</TableHead>
                   <TableHead className="text-center w-[55px]">Rem</TableHead>
                   <TableHead className="text-center w-[50px]">Type</TableHead>
-                  {CONTRACT_YEARS.map((year) => (
+                  {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
                     <TableHead key={year} className="text-center w-[100px]">
-                      {year}
+                      {idx === 4 ? `${year} (Ext)` : year}
                     </TableHead>
                   ))}
                   <TableHead className="text-center w-[80px]">Total</TableHead>
@@ -3222,7 +3196,7 @@ function ManageTeamContractsTab({
                       </TableCell>
                       <TableCell className="text-center">
                         {(() => {
-                          const contractYears = CONTRACT_YEARS.filter(y => (player.hypotheticalSalaries[y] || 0) > 0);
+                          const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.hypotheticalSalaries[y] || 0) > 0);
                           const lastYear = contractYears.length > 0 ? Math.max(...contractYears) : 0;
                           const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + 1 : 0;
                           return (
@@ -3240,12 +3214,12 @@ function ManageTeamContractsTab({
                           {player.isFreeAgent ? "FA+" : isModified ? "Mod" : "Roster"}
                         </Badge>
                       </TableCell>
-                      {CONTRACT_YEARS.map((year, yearIndex) => {
+                      {[...CONTRACT_YEARS, OPTION_YEAR].map((year, yearIndex) => {
                         const leagueSalary = player.isRosterPlayer ? getLeagueSalary(player.playerId, year) : 0;
                         const currentValue = player.hypotheticalSalaries[year] || 0;
                         const isDifferent = player.isRosterPlayer && currentValue !== leagueSalary;
                         // Find contract end year (last year with salary > 0)
-                        const contractEndYear = CONTRACT_YEARS
+                        const contractEndYear = [...CONTRACT_YEARS, OPTION_YEAR]
                           .filter(y => (player.hypotheticalSalaries[y] || 0) > 0)
                           .pop() || year;
                         const yearsRemaining = contractEndYear - year + 1;
@@ -3295,7 +3269,7 @@ function ManageTeamContractsTab({
                       <TableCell className="text-center">
                         {(() => {
                           // Total = only completed seasons (years before current year)
-                          const totalValue = CONTRACT_YEARS
+                          const totalValue = [...CONTRACT_YEARS, OPTION_YEAR]
                             .filter(year => year < CURRENT_YEAR)
                             .reduce((sum, year) => sum + (player.hypotheticalSalaries[year] || 0), 0);
                           return totalValue > 0 ? (
@@ -3306,7 +3280,7 @@ function ManageTeamContractsTab({
                       <TableCell className="text-center">
                         {(() => {
                           // Remaining = current + future years
-                          const remainingValue = CONTRACT_YEARS
+                          const remainingValue = [...CONTRACT_YEARS, OPTION_YEAR]
                             .filter(year => year >= CURRENT_YEAR)
                             .reduce((sum, year) => sum + (player.hypotheticalSalaries[year] || 0), 0);
                           return remainingValue > 0 ? (
@@ -3535,6 +3509,7 @@ interface PlayerBiddingTabProps {
   allPlayers: SleeperPlayerData[];
   rosterPlayerIds: string[];
   teamContracts: Record<string, PlayerContractData>;
+  teamCapData: TeamCapData[];
 }
 
 interface PlayerBid {
@@ -3554,10 +3529,23 @@ interface PlayerBid {
   updatedAt: number;
 }
 
-function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts }: PlayerBiddingTabProps) {
-  const { user, league } = useSleeper();
+function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts, teamCapData }: PlayerBiddingTabProps) {
+  const { league, user } = useSleeper();
   const leagueId = league?.leagueId;
   const { toast } = useToast();
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  ));
+
+  // Create mapping from rosterId to teamName for displaying bidding results
+  const rosterIdToTeamName = useMemo(() => {
+    const map = new Map<number, string>();
+    teamCapData.forEach(team => {
+      map.set(team.rosterId, team.teamName);
+    });
+    return map;
+  }, [teamCapData]);
   const [freeAgentSearch, setFreeAgentSearch] = useState("");
   const [selectedPlayer, setSelectedPlayer] = useState<SleeperPlayerData | null>(null);
   const [bidAmount, setBidAmount] = useState("");
@@ -3565,12 +3553,6 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   const [contractYears, setContractYears] = useState<string>("1");
   const [notes, setNotes] = useState("");
   const [editingBid, setEditingBid] = useState<PlayerBid | null>(null);
-
-  // Check if current user is the commissioner
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
 
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
@@ -3649,37 +3631,6 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     enabled: !!leagueId && !!userTeam && isBiddingOpen,
   });
 
-  // Mutation to update bidding status
-  const updateBiddingStatusMutation = useMutation({
-    mutationFn: async (isOpen: boolean) => {
-      const res = await apiRequest("POST", `/api/league/${leagueId}/bidding-status`, { isOpen });
-      return res.json();
-    },
-    onSuccess: (_, isOpen) => {
-      toast({ title: `Bidding ${isOpen ? "opened" : "closed"} successfully` });
-      
-      // Optimistically update the bidding status immediately so isBiddingOpen updates
-      queryClient.setQueryData(
-        ['/api/league', leagueId, 'bidding-status'],
-        { isOpen }
-      );
-      
-      // Invalidate queries to ensure they refetch with the new status
-      queryClient.invalidateQueries({ 
-        queryKey: ['/api/league', leagueId, 'bidding-status'] 
-      });
-      
-      // Invalidate all bids query so it refetches when the component re-renders with new isBiddingOpen
-      queryClient.invalidateQueries({ 
-        queryKey: ['/api/league', leagueId, 'bids', 'all'] 
-      });
-    },
-    onError: (error: any) => {
-      console.error("Error updating bidding status:", error);
-      toast({ title: "Failed to update bidding status", variant: "destructive", description: error?.message || "An error occurred" });
-    },
-  });
-
   const createBidMutation = useMutation({
     mutationFn: async (data: {
       playerId: string;
@@ -3740,6 +3691,36 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     },
   });
 
+  const updateBiddingStatusMutation = useMutation({
+    mutationFn: async (isOpen: boolean) => {
+      const res = await apiRequest("POST", `/api/league/${leagueId}/bidding-status`, { isOpen });
+      return res.json();
+    },
+    onSuccess: (_, isOpen) => {
+      toast({ title: `Bidding ${isOpen ? "opened" : "closed"} successfully` });
+      
+      // Optimistically update the bidding status immediately so isBiddingOpen updates
+      queryClient.setQueryData(
+        ['/api/league', leagueId, 'bidding-status'],
+        { isOpen }
+      );
+      
+      // Invalidate queries to ensure they refetch with the new status
+      queryClient.invalidateQueries({ 
+        queryKey: ['/api/league', leagueId, 'bidding-status'] 
+      });
+      
+      // Invalidate all bids query so it refetches when the component re-renders with new isBiddingOpen
+      queryClient.invalidateQueries({ 
+        queryKey: ['/api/league', leagueId, 'bids', 'all'] 
+      });
+    },
+    onError: (error: any) => {
+      console.error("Error updating bidding status:", error);
+      toast({ title: "Failed to update bidding status", variant: "destructive", description: error?.message || "An error occurred" });
+    },
+  });
+
   const resetForm = () => {
     setSelectedPlayer(null);
     setBidAmount("");
@@ -3768,11 +3749,6 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
 
   const handleSubmitBid = () => {
     if (!selectedPlayer || !bidAmount) return;
-
-    if (!isBiddingOpen) {
-      toast({ title: "Bidding is currently closed", variant: "destructive" });
-      return;
-    }
 
     const isRookieBid = contractYears === "R";
     const bidData = {
@@ -3869,34 +3845,8 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     return (existing + adjustedBidsCount) >= limit;
   };
 
-  // Get all rosters for displaying team names in results
-  const { data: rosters } = useQuery({
-    queryKey: ["/api/sleeper/league", leagueId, "rosters"],
-    enabled: !!leagueId && !isBiddingOpen,
-  });
-
-  const { data: leagueUsers } = useQuery({
-    queryKey: ["/api/sleeper/league", leagueId, "users"],
-    enabled: !!leagueId && !isBiddingOpen,
-  });
-
-  // Create roster name map
-  const rosterNameMap = useMemo(() => {
-    const map = new Map<number, string>();
-    if (rosters && leagueUsers) {
-      rosters.forEach((roster: any) => {
-        const user = leagueUsers.find((u: any) => u.user_id === roster.owner_id);
-        if (user) {
-          map.set(roster.roster_id, user.display_name || user.username || `Team ${roster.roster_id}`);
-        }
-      });
-    }
-    return map;
-  }, [rosters, leagueUsers]);
-
   return (
     <div className="space-y-6">
-      {/* Bidding Status Toggle (Commissioner Only) */}
       {isCommissioner && (
         <Card>
           <CardContent className="pt-6">
@@ -4299,55 +4249,37 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {Object.entries(allBidsByPlayer).map(([playerId, playerBids]) => {
-                      if (playerBids.length === 0) return null;
-                      
-                      const sortedBids = [...playerBids].sort((a, b) => {
+                    {Object.entries(allBidsByPlayer).map(([playerId, bids]) => {
+                      const sortedBids = [...bids].sort((a, b) => {
                         const totalA = a.bidAmount * a.contractYears;
                         const totalB = b.bidAmount * b.contractYears;
-                        return totalB - totalA;
+                        // Primary sort: total value (descending)
+                        if (totalA !== totalB) {
+                          return totalB - totalA;
+                        }
+                        // Tiebreaker: per-year value (descending) - higher per-year wins
+                        return b.bidAmount - a.bidAmount;
                       });
-
-                      const winner = sortedBids[0];
-                      const second = sortedBids[1];
-                      const third = sortedBids[2];
-
+                      const winningBid = sortedBids[0];
+                      const secondBid = sortedBids[1];
+                      const thirdBid = sortedBids[2];
                       const player = allPlayers.find(p => p.id === playerId);
-                      const winnerTeamName = rosterNameMap.get(winner.rosterId) || `Team ${winner.rosterId}`;
-                      const secondTeamName = second ? (rosterNameMap.get(second.rosterId) || `Team ${second.rosterId}`) : null;
-                      const thirdTeamName = third ? (rosterNameMap.get(third.rosterId) || `Team ${third.rosterId}`) : null;
-
+                      
                       return (
                         <TableRow key={playerId}>
-                          <TableCell className="font-medium">
-                            {player?.name || winner.playerName}
+                          <TableCell className="font-medium">{winningBid.playerName}</TableCell>
+                          <TableCell>{winningBid.playerPosition}</TableCell>
+                          <TableCell>
+                            {winningBid.rosterId ? (rosterIdToTeamName.get(winningBid.rosterId) || `Team ${winningBid.rosterId}`) : "N/A"}
                           </TableCell>
                           <TableCell>
-                            <Badge className={positionColors[player?.position || winner.playerPosition] || "bg-gray-500"}>
-                              {player?.position || winner.playerPosition}
-                            </Badge>
-                          </TableCell>
-                          <TableCell>{winnerTeamName}</TableCell>
-                          <TableCell>
-                            ${winner.bidAmount}M/yr × {winner.contractYears}yr = ${(winner.bidAmount * winner.contractYears).toFixed(1)}M
+                            ${winningBid.bidAmount}M × {winningBid.contractYears}yr = ${(winningBid.bidAmount * winningBid.contractYears).toFixed(1)}M
                           </TableCell>
                           <TableCell>
-                            {second ? (
-                              <span className="text-muted-foreground">
-                                {secondTeamName}: ${second.bidAmount}M/yr × {second.contractYears}yr = ${(second.bidAmount * second.contractYears).toFixed(1)}M
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
+                            {secondBid ? `$${secondBid.bidAmount}M × ${secondBid.contractYears}yr = $${(secondBid.bidAmount * secondBid.contractYears).toFixed(1)}M` : "—"}
                           </TableCell>
                           <TableCell>
-                            {third ? (
-                              <span className="text-muted-foreground">
-                                {thirdTeamName}: ${third.bidAmount}M/yr × {third.contractYears}yr = ${(third.bidAmount * third.contractYears).toFixed(1)}M
-                              </span>
-                            ) : (
-                              <span className="text-muted-foreground">-</span>
-                            )}
+                            {thirdBid ? `$${thirdBid.bidAmount}M × ${thirdBid.contractYears}yr = $${(thirdBid.bidAmount * thirdBid.contractYears).toFixed(1)}M` : "—"}
                           </TableCell>
                         </TableRow>
                       );
@@ -4725,7 +4657,6 @@ interface ExpiringContractsTabProps {
   playerMap: PlayerMap;
   contractData: ContractDataStore;
   leagueUsers: any[];
-  deadCapEnabled?: boolean;
 }
 
 interface ExpiringPlayer {
@@ -4741,7 +4672,7 @@ interface ExpiringPlayer {
   rosterId: number;
 }
 
-function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, deadCapEnabled = true }: ExpiringContractsTabProps) {
+function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: ExpiringContractsTabProps) {
   const { season } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   
@@ -5043,261 +4974,6 @@ interface ApprovalContractData {
   salary2028: number;
   salary2029: number;
   franchiseTagApplied?: number;
-}
-
-function AssignContractsByQuartile({ 
-  leagueId, 
-  onSuccess 
-}: { 
-  leagueId: string; 
-  onSuccess: () => void;
-}) {
-  const { toast } = useToast();
-  const { season } = useSleeper();
-  const currentYear = parseInt(season || "2025");
-  const nextYear = currentYear + 1;
-
-  const assignContractsMutation = useMutation({
-    mutationFn: async () => {
-      console.log("[Assign Contracts] Starting contract assignment, leagueId:", leagueId);
-      
-      if (!leagueId) {
-        throw new Error("League ID is required");
-      }
-      
-      try {
-        const res = await fetch(`/api/league/${leagueId}/assign-contracts-by-quartile`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-        
-        console.log("[Assign Contracts] Response status:", res.status, res.statusText);
-        console.log("[Assign Contracts] Response headers:", Object.fromEntries(res.headers.entries()));
-        
-        // Clone the response so we can read it multiple times if needed
-        const responseClone = res.clone();
-        const contentType = res.headers.get("content-type") || "";
-        
-        let data;
-        let errorText = "";
-        
-        // Try to parse as JSON first
-        if (contentType.includes("application/json")) {
-          try {
-            data = await res.json();
-            console.log("[Assign Contracts] Parsed JSON response:", data);
-          } catch (jsonError: any) {
-            console.error("[Assign Contracts] JSON parse error:", jsonError);
-            // If JSON parsing fails, try to get text from clone
-            try {
-              errorText = await responseClone.text();
-              console.error("[Assign Contracts] Response text:", errorText);
-            } catch (textError) {
-              console.error("[Assign Contracts] Could not read response as text:", textError);
-            }
-            throw new Error(`Server returned invalid JSON: ${errorText.substring(0, 200) || jsonError.message}`);
-          }
-        } else {
-          // Not JSON, get text
-          errorText = await res.text();
-          console.error("[Assign Contracts] Non-JSON response:", errorText);
-          throw new Error(`Server returned non-JSON response: ${errorText.substring(0, 200)}`);
-        }
-        
-        if (!res.ok) {
-          const errorMessage = data?.message || data?.error || `Failed to assign contracts (${res.status})`;
-          console.error("[Assign Contracts] Server error:", errorMessage, data);
-          throw new Error(errorMessage);
-        }
-        
-        return data;
-      } catch (error: any) {
-        console.error("[Assign Contracts] Fetch error:", error);
-        // Re-throw with more context
-        if (error instanceof TypeError && error.message.includes("fetch")) {
-          throw new Error("Network error: Could not connect to server. Please check your connection.");
-        }
-        throw error;
-      }
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Contracts Assigned Successfully",
-        description: data.message || `Assigned ${data.assigned} contracts for ${currentYear} and ${nextYear}.`,
-      });
-      onSuccess();
-    },
-    onError: (error: Error) => {
-      console.error("Error assigning contracts:", error);
-      toast({
-        title: "Error Assigning Contracts",
-        description: error.message || "An unexpected error occurred. Please check the console for details.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium">
-            This will assign 2-year contracts ({currentYear} and {nextYear}) to all eligible players.
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            Only players with 3+ years of NFL experience will receive contracts.
-          </p>
-        </div>
-        <Button
-          onClick={() => assignContractsMutation.mutate()}
-          disabled={assignContractsMutation.isPending || !leagueId}
-          variant="default"
-        >
-          {assignContractsMutation.isPending ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Assigning...
-            </>
-          ) : (
-            <>
-              <Calculator className="w-4 h-4 mr-2" />
-              Assign Contracts
-            </>
-          )}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function AssignRookieContracts({ 
-  leagueId, 
-  onSuccess 
-}: { 
-  leagueId: string; 
-  onSuccess: () => void;
-}) {
-  const { toast } = useToast();
-
-  const assignRookieContractsMutation = useMutation({
-    mutationFn: async () => {
-      console.log("[Assign Rookie Contracts] Starting rookie contract assignment, leagueId:", leagueId);
-      
-      if (!leagueId) {
-        throw new Error("League ID is required");
-      }
-      
-      try {
-        const res = await fetch(`/api/league/${leagueId}/assign-rookie-contracts`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-        });
-        
-        console.log("[Assign Rookie Contracts] Response status:", res.status, res.statusText);
-        console.log("[Assign Rookie Contracts] Response headers:", Object.fromEntries(res.headers.entries()));
-        
-        // Clone the response so we can read it multiple times if needed
-        const responseClone = res.clone();
-        const contentType = res.headers.get("content-type") || "";
-        
-        let data;
-        let errorText = "";
-        
-        // Try to parse as JSON first
-        if (contentType.includes("application/json")) {
-          try {
-            data = await res.json();
-            console.log("[Assign Rookie Contracts] Parsed JSON response:", data);
-          } catch (jsonError: any) {
-            console.error("[Assign Rookie Contracts] JSON parse error:", jsonError);
-            // If JSON parsing fails, try to get text from clone
-            try {
-              errorText = await responseClone.text();
-              console.error("[Assign Rookie Contracts] Response text:", errorText);
-            } catch (textError) {
-              console.error("[Assign Rookie Contracts] Could not read response as text:", textError);
-            }
-            throw new Error(`Server returned invalid JSON: ${errorText.substring(0, 200) || jsonError.message}`);
-          }
-        } else {
-          // Not JSON, get text
-          errorText = await res.text();
-          console.error("[Assign Rookie Contracts] Non-JSON response:", errorText);
-          throw new Error(`Server returned non-JSON response: ${errorText.substring(0, 200)}`);
-        }
-        
-        if (!res.ok) {
-          const errorMessage = data?.message || data?.error || `Failed to assign rookie contracts (${res.status})`;
-          console.error("[Assign Rookie Contracts] Server error:", errorMessage, data);
-          throw new Error(errorMessage);
-        }
-        
-        return data;
-      } catch (error: any) {
-        console.error("[Assign Rookie Contracts] Fetch error:", error);
-        // Re-throw with more context
-        if (error instanceof TypeError && error.message.includes("fetch")) {
-          throw new Error("Network error: Could not connect to server. Please check your connection.");
-        }
-        throw error;
-      }
-    },
-    onSuccess: (data) => {
-      toast({
-        title: "Rookie Contracts Assigned Successfully",
-        description: data.message || `Assigned ${data.assigned} rookie contracts from 2024 and 2025 drafts.`,
-      });
-      onSuccess();
-    },
-    onError: (error: Error) => {
-      console.error("Error assigning rookie contracts:", error);
-      toast({
-        title: "Error Assigning Rookie Contracts",
-        description: error.message || "An unexpected error occurred. Please check the console for details.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-sm font-medium">
-            This will assign rookie contracts to players from the 2024 and 2025 drafts.
-          </p>
-          <p className="text-xs text-muted-foreground mt-1">
-            • 2025 draftees: 3-year contracts (2025, 2026, 2027)
-            <br />
-            • 2024 draftees: 2 remaining years (2025, 2026)
-            <br />
-            • Players with existing contracts will be skipped.
-          </p>
-        </div>
-        <Button
-          onClick={() => assignRookieContractsMutation.mutate()}
-          disabled={assignRookieContractsMutation.isPending || !leagueId}
-          variant="default"
-        >
-          {assignRookieContractsMutation.isPending ? (
-            <>
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Assigning...
-            </>
-          ) : (
-            <>
-              <Calculator className="w-4 h-4 mr-2" />
-              Assign Rookie Contracts
-            </>
-          )}
-        </Button>
-      </div>
-    </div>
-  );
 }
 
 interface ContractApprovalsTabProps {
@@ -5774,8 +5450,6 @@ export default function Contracts() {
   const [activeTab, setActiveTab] = useState("overview");
   const [contractData, setContractData] = useState<ContractDataStore>({});
   const [hasChanges, setHasChanges] = useState(false);
-  const [isQuartileOpen, setIsQuartileOpen] = useState(false);
-  const [isRookieOpen, setIsRookieOpen] = useState(false);
 
   // Memoized year constants from Sleeper season - used consistently across all components
   const yearConstants = useMemo(() => {
@@ -6276,7 +5950,6 @@ export default function Contracts() {
               playerMap={playerMap}
               contractData={contractData}
               leagueUsers={leagueUsers || []}
-              deadCapEnabled={deadCapEnabled}
             />
           )}
         </TabsContent>
@@ -6303,6 +5976,7 @@ export default function Contracts() {
               allPlayers={playersArray}
               rosterPlayerIds={allRosterPlayerIds}
               teamContracts={contractData[userTeam.rosterId.toString()] || {}}
+              teamCapData={teamCapData}
             />
           )}
         </TabsContent>
@@ -6313,7 +5987,7 @@ export default function Contracts() {
           )}
         </TabsContent>
 
-        {isCommissioner && (
+          {isCommissioner && (
           <>
           <TabsContent value="manage-league" className="mt-6 space-y-6">
             {orphanedContracts.length > 0 && (
@@ -6471,92 +6145,6 @@ export default function Contracts() {
                 </CardContent>
               </Card>
             )}
-
-            <Card>
-              <Collapsible open={isQuartileOpen} onOpenChange={setIsQuartileOpen}>
-                <CardHeader>
-                  <CollapsibleTrigger className="flex items-center justify-between w-full text-left">
-                    <CardTitle className="font-heading flex items-center gap-2">
-                      <Calculator className="w-5 h-5" />
-                      Assign Contracts by Quartile Rankings
-                    </CardTitle>
-                    {isQuartileOpen ? (
-                      <ChevronUp className="h-4 w-4 shrink-0" />
-                    ) : (
-                      <ChevronDown className="h-4 w-4 shrink-0" />
-                    )}
-                  </CollapsibleTrigger>
-                </CardHeader>
-                <CollapsibleContent>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground mb-4">
-                      Automatically assign 2-year contracts to all players with 3+ years of NFL experience based on their quartile rankings:
-                      <br />
-                      • Q1 (Top Quartile): $16M/year
-                      <br />
-                      • Q2: $12M/year
-                      <br />
-                      • Q3: $8M/year
-                      <br />
-                      • Q4 (Bottom Quartile): $4M/year
-                    </p>
-                    <AssignContractsByQuartile 
-                      leagueId={league?.leagueId || ""}
-                      onSuccess={() => {
-                        refetchContracts();
-                      }}
-                    />
-                  </CardContent>
-                </CollapsibleContent>
-              </Collapsible>
-            </Card>
-
-            <Card>
-              <Collapsible open={isRookieOpen} onOpenChange={setIsRookieOpen}>
-                <CardHeader>
-                  <CollapsibleTrigger className="flex items-center justify-between w-full text-left">
-                    <CardTitle className="font-heading flex items-center gap-2">
-                      <Calculator className="w-5 h-5" />
-                      Assign Rookie Contracts
-                    </CardTitle>
-                    {isRookieOpen ? (
-                      <ChevronUp className="h-4 w-4 shrink-0" />
-                    ) : (
-                      <ChevronDown className="h-4 w-4 shrink-0" />
-                    )}
-                  </CollapsibleTrigger>
-                </CardHeader>
-                <CollapsibleContent>
-                  <CardContent>
-                    <p className="text-sm text-muted-foreground mb-4">
-                      Automatically apply rookie pay scales to players from the 2024 and 2025 drafts.
-                      <br />
-                      <br />
-                      <strong>Rookie Pay Scale:</strong>
-                      <br />
-                      • Round 1: $12 (1.01), $11 (1.02-1.03), $9 (1.04-1.06), $7 (1.07-1.09), $6 (1.10-1.12)
-                      <br />
-                      • Round 2: $4 (all picks)
-                      <br />
-                      • Round 3: $2 (all picks)
-                      <br />
-                      <br />
-                      <strong>Contract Years:</strong>
-                      <br />
-                      • 2025 draftees: 3-year contracts (2025, 2026, 2027)
-                      <br />
-                      • 2024 draftees: 2 remaining years (2025, 2026)
-                    </p>
-                    <AssignRookieContracts 
-                      leagueId={league?.leagueId || ""}
-                      onSuccess={() => {
-                        refetchContracts();
-                      }}
-                    />
-                  </CardContent>
-                </CollapsibleContent>
-              </Collapsible>
-            </Card>
 
             {Object.keys(playerMap).length > 0 && (
               <ContractInputTab 
