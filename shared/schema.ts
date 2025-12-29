@@ -80,7 +80,9 @@ export const playerContractsTable = pgTable("player_contracts", {
   extensionApplied: integer("extension_applied").notNull().default(0),
   extensionYear: integer("extension_year"),
   extensionSalary: integer("extension_salary"),
-  extensionType: integer("extension_type"), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
+  extensionType: integer("extension_type"), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x, 3 = 3-year at 1.8x, 4 = 4-year at 2x
+  hasBeenExtended: integer("has_been_extended").notNull().default(0), // Tracks if player has been extended on this roster (resets when player moves teams)
+  hasBeenFranchiseTagged: integer("has_been_franchise_tagged").notNull().default(0), // Tracks if player has been franchise tagged on this roster (resets when player moves teams)
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
 

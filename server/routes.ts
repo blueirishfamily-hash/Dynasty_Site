@@ -2830,6 +2830,224 @@ export async function registerRoutes(
     }
   });
 
+  // Power Rankings - All-Play record and weekly scoring rankings
+  app.get("/api/sleeper/league/:leagueId/power-rankings", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      
+      console.log(`[Power Rankings] Starting for league: ${leagueId}`);
+      
+      const [rosters, users, nflState, league] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getNFLState(),
+        getLeague(leagueId),
+      ]);
+
+      console.log(`[Power Rankings] League ID: ${leagueId}`);
+      console.log(`[Power Rankings] League season: ${league.season}`);
+      console.log(`[Power Rankings] NFL State: week ${nflState.week}, season ${nflState.season}`);
+      console.log(`[Power Rankings] Previous league ID: ${(league as any).previous_league_id || 'none'}`);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      // Get league season
+      let leagueSeason = league.season;
+      const currentWeek = nflState.week;
+      
+      // Determine which league ID to use for matchups
+      // If current league has no matchup data, use previous league (for dynasty leagues that rolled over)
+      let matchupLeagueId = leagueId;
+      
+      // Test if current league has matchup data
+      const testMatchup = await getLeagueMatchups(leagueId, 1).catch((err) => {
+        console.error(`[Power Rankings] Error fetching week 1 matchups:`, err.message);
+        return [];
+      });
+      console.log(`[Power Rankings] Week 1 test matchup count: ${testMatchup.length}`);
+      if (testMatchup.length > 0) {
+        console.log(`[Power Rankings] Week 1 first matchup points:`, testMatchup[0].points);
+        console.log(`[Power Rankings] Week 1 sample matchup:`, JSON.stringify(testMatchup[0]));
+      }
+      
+      const hasCurrentSeasonData = testMatchup.length > 0 && testMatchup.some(m => m.points !== undefined && m.points > 0);
+      console.log(`[Power Rankings] Has current season data: ${hasCurrentSeasonData}`);
+      
+      if (!hasCurrentSeasonData && (league as any).previous_league_id) {
+        // Use previous league for matchup data
+        matchupLeagueId = (league as any).previous_league_id;
+        console.log(`[Power Rankings] Switching to previous league: ${matchupLeagueId}`);
+        // Update season to reflect previous season
+        try {
+          const prevLeague = await getLeague(matchupLeagueId);
+          leagueSeason = prevLeague.season;
+          console.log(`[Power Rankings] Previous league season: ${leagueSeason}`);
+        } catch (err: any) {
+          console.error(`[Power Rankings] Error fetching previous league:`, err.message);
+          // Keep current season if we can't fetch previous
+        }
+      }
+      
+      console.log(`[Power Rankings] Using matchupLeagueId: ${matchupLeagueId}`);
+      
+      // Fetch all 18 weeks of the season to find which have data
+      const matchupPromises = [];
+      for (let week = 1; week <= 18; week++) {
+        matchupPromises.push(
+          getLeagueMatchups(matchupLeagueId, week)
+            .then(matchups => ({ week, matchups }))
+            .catch((err) => {
+              console.error(`[Power Rankings] Error fetching week ${week} matchups:`, err.message);
+              return { week, matchups: [] };
+            })
+        );
+      }
+      const allMatchups = await Promise.all(matchupPromises);
+      
+      console.log(`[Power Rankings] Fetched ${allMatchups.length} weeks of matchups`);
+      
+      // Log each week's matchup data
+      allMatchups.forEach(({ week, matchups }) => {
+        const hasScores = matchups.some(m => m.points !== undefined && m.points > 0);
+        console.log(`[Power Rankings] Week ${week}: ${matchups.length} entries, hasScores: ${hasScores}`);
+      });
+      
+      // Filter to only weeks that have actual scored matchups (points > 0)
+      const weeklyMatchups = allMatchups.filter(({ matchups }) => 
+        matchups.length > 0 && matchups.some(m => m.points !== undefined && m.points > 0)
+      );
+      
+      const completedWeeks = weeklyMatchups.length;
+      console.log(`[Power Rankings] Weeks with scores: ${completedWeeks}`);
+
+      if (completedWeeks === 0) {
+        console.log(`[Power Rankings] No completed weeks, returning empty response`);
+        return res.json({ 
+          teams: [], 
+          currentWeek, 
+          completedWeeks: 0,
+          season: leagueSeason,
+          message: "No completed weeks yet" 
+        });
+      }
+
+      // Build team info map
+      const teamInfoMap = new Map<number, { 
+        name: string; 
+        ownerId: string; 
+        initials: string; 
+        avatar: string | null;
+        wins: number;
+        losses: number;
+      }>();
+      rosters.forEach(roster => {
+        const user = userMap.get(roster.owner_id);
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+        teamInfoMap.set(roster.roster_id, {
+          name,
+          ownerId: roster.owner_id,
+          initials: getTeamInitials(name),
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+          wins: roster.settings?.wins || 0,
+          losses: roster.settings?.losses || 0,
+        });
+      });
+
+      // Initialize power ranking data for each team
+      interface PowerRankingData {
+        rosterId: number;
+        name: string;
+        ownerId: string;
+        initials: string;
+        avatar: string | null;
+        allPlayWins: number;
+        allPlayLosses: number;
+        allPlayWinPct: number;
+        actualWins: number;
+        actualLosses: number;
+        weeklyRankings: { week: number; rank: number; points: number }[];
+      }
+
+      const powerRankingMap = new Map<number, PowerRankingData>();
+      rosters.forEach(roster => {
+        const info = teamInfoMap.get(roster.roster_id)!;
+        powerRankingMap.set(roster.roster_id, {
+          rosterId: roster.roster_id,
+          name: info.name,
+          ownerId: info.ownerId,
+          initials: info.initials,
+          avatar: info.avatar,
+          allPlayWins: 0,
+          allPlayLosses: 0,
+          allPlayWinPct: 0,
+          actualWins: info.wins,
+          actualLosses: info.losses,
+          weeklyRankings: [],
+        });
+      });
+
+      const numTeams = rosters.length;
+
+      // Process each week
+      weeklyMatchups.forEach(({ week, matchups }) => {
+        if (matchups.length === 0) return;
+
+        // Get all teams' points for this week
+        const weekScores: { rosterId: number; points: number }[] = matchups
+          .filter(m => m.points !== undefined && m.points !== null)
+          .map(m => ({
+            rosterId: m.roster_id,
+            points: m.points || 0,
+          }));
+
+        if (weekScores.length === 0) return;
+
+        // Sort by points descending to determine rankings
+        weekScores.sort((a, b) => b.points - a.points);
+
+        // Assign ranks and calculate all-play record
+        weekScores.forEach((team, index) => {
+          const rank = index + 1;
+          const allPlayWins = numTeams - rank; // Teams you beat
+          const allPlayLosses = rank - 1; // Teams that beat you
+
+          const teamData = powerRankingMap.get(team.rosterId);
+          if (teamData) {
+            teamData.allPlayWins += allPlayWins;
+            teamData.allPlayLosses += allPlayLosses;
+            teamData.weeklyRankings.push({
+              week,
+              rank,
+              points: team.points,
+            });
+          }
+        });
+      });
+
+      // Calculate win percentages and convert to array
+      const teams = Array.from(powerRankingMap.values())
+        .map(team => {
+          const totalGames = team.allPlayWins + team.allPlayLosses;
+          team.allPlayWinPct = totalGames > 0 
+            ? Math.round((team.allPlayWins / totalGames) * 1000) / 10 
+            : 0;
+          return team;
+        })
+        .sort((a, b) => b.allPlayWinPct - a.allPlayWinPct);
+
+      res.json({
+        teams,
+        currentWeek,
+        completedWeeks,
+        season: leagueSeason,
+      });
+    } catch (error) {
+      console.error("Error calculating power rankings:", error);
+      res.status(500).json({ error: "Failed to calculate power rankings" });
+    }
+  });
+
   // Trophy Room - Get historical champions, highest scorers, and award winners
   app.get("/api/sleeper/league/:leagueId/trophies", async (req, res) => {
     try {
@@ -3897,8 +4115,59 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Contracts must be an array" });
       }
 
+      // Get all existing contracts once to avoid repeated queries
+      const existingContracts = await storage.getPlayerContracts(leagueId);
+      
       const results = [];
       for (const contract of contracts) {
+        // Check if this is a new roster (player moved teams) - if so, reset tracking flags
+        const existingContractForPlayer = existingContracts.find(
+          c => c.playerId === contract.playerId && c.leagueId === leagueId
+        );
+        
+        // If player is moving to a new roster, reset both tracking flags
+        const isNewRoster = existingContractForPlayer && existingContractForPlayer.rosterId !== contract.rosterId;
+        
+        // Check if franchise tag is being applied
+        const isApplyingFranchiseTag = contract.franchiseTagUsed === 1;
+        
+        // If applying franchise tag, check if player has been franchise tagged before on this roster
+        if (isApplyingFranchiseTag && !isNewRoster) {
+          const currentContract = existingContracts.find(
+            c => c.playerId === contract.playerId && c.rosterId === contract.rosterId
+          );
+          if (currentContract && (currentContract as any).hasBeenFranchiseTagged === 1) {
+            return res.status(400).json({ 
+              error: `Player has already been franchise tagged on this team. Must be extended or go to free agency first.`,
+              playerId: contract.playerId
+            });
+          }
+        }
+        
+        // Determine tracking flag values
+        let hasBeenExtended: number | undefined;
+        let hasBeenFranchiseTagged: number | undefined;
+        
+        if (isNewRoster) {
+          // Player moved teams - reset both flags
+          hasBeenExtended = 0;
+          hasBeenFranchiseTagged = 0;
+        } else {
+          // Same roster - preserve existing values unless explicitly setting
+          const currentContract = existingContracts.find(
+            c => c.playerId === contract.playerId && c.rosterId === contract.rosterId
+          );
+          if (isApplyingFranchiseTag) {
+            // Setting franchise tag - mark as tagged
+            hasBeenFranchiseTagged = 1;
+            hasBeenExtended = (currentContract as any)?.hasBeenExtended ?? 0;
+          } else {
+            // Not setting franchise tag - preserve existing values
+            hasBeenExtended = (currentContract as any)?.hasBeenExtended ?? 0;
+            hasBeenFranchiseTagged = (currentContract as any)?.hasBeenFranchiseTagged ?? 0;
+          }
+        }
+        
         const result = await storage.upsertPlayerContract({
           leagueId,
           rosterId: contract.rosterId,
@@ -3917,7 +4186,9 @@ export async function registerRoutes(
           extensionApplied: contract.extensionApplied,
           extensionYear: contract.extensionYear,
           extensionSalary: contract.extensionSalary,
-        });
+          hasBeenExtended,
+          hasBeenFranchiseTagged,
+        } as any);
         results.push(result);
       }
       
@@ -3970,14 +4241,15 @@ export async function registerRoutes(
   });
 
   // Apply an extension to a player
-  // Extension types: 1 = 1-year at 1.2x salary, 2 = 2-year at 1.5x salary (both rounded up)
+  // Extension types: 1 = 1-year at 1.2x, 2 = 2-year at 1.5x, 3 = 3-year at 1.8x, 4 = 4-year at 2.0x (all rounded up)
+  // For rookie contracts (isRookieContract = 1), extensions must use quartile-based pricing instead of multipliers
   app.post("/api/league/:leagueId/extensions", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { rosterId, playerId, playerName, currentSalary, extensionType, extensionYear } = req.body;
+      const { rosterId, playerId, playerName, currentSalary, extensionType, extensionYear, isQuartileBased, quartileSalary } = req.body;
       let { season } = req.body;
       
-      if (!rosterId || !season || !playerId || !playerName || !currentSalary || !extensionType || !extensionYear) {
+      if (!rosterId || !season || !playerId || !playerName || !extensionType || !extensionYear) {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
@@ -3987,9 +4259,9 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid season year" });
       }
 
-      // Validate extension type (1 = 1-year, 2 = 2-year)
-      if (extensionType !== 1 && extensionType !== 2) {
-        return res.status(400).json({ error: "Extension type must be 1 (1-year) or 2 (2-year)" });
+      // Validate extension type (1 = 1-year, 2 = 2-year, 3 = 3-year, 4 = 4-year)
+      if (![1, 2, 3, 4].includes(extensionType)) {
+        return res.status(400).json({ error: "Extension type must be 1 (1-year), 2 (2-year), 3 (3-year), or 4 (4-year)" });
       }
 
       // Check if team already used their extension this season
@@ -4006,22 +4278,78 @@ export async function registerRoutes(
         });
       }
 
+      // Validate player contract exists and check if it's a rookie contract
+      const contracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = contracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      
+      if (!playerContract) {
+        return res.status(400).json({ error: "Player contract not found" });
+      }
+
+      // Check if extension already applied
+      if (playerContract.extensionApplied === 1) {
+        return res.status(400).json({ error: "Extension already applied to this player" });
+      }
+
+      // Check if player has been extended before on this roster
+      if ((playerContract as any).hasBeenExtended === 1) {
+        return res.status(400).json({ 
+          error: "Player has already been extended on this team. Must go to free agency or be franchise tagged first." 
+        });
+      }
+
+      const isRookieContract = playerContract.isRookieContract === 1;
+
+      // If rookie contract, must use quartile-based pricing
+      if (isRookieContract && !isQuartileBased) {
+        return res.status(400).json({ error: "Rookie contracts require quartile-based extension pricing" });
+      }
+
+      // If not rookie contract, must use multiplier-based pricing
+      if (!isRookieContract && isQuartileBased) {
+        return res.status(400).json({ error: "Non-rookie contracts cannot use quartile-based pricing" });
+      }
+
       // Calculate extension salaries based on type
-      // currentSalary is already in tenths (e.g., 230 = $23.0M)
-      // For 1-year: 1.2x rounded up to nearest whole number
-      // For 2-year: 1.5x rounded up to nearest whole number
-      const currentSalaryInMillions = currentSalary / 10;
       let extensionSalary1: number;
       let extensionSalary2: number | null = null;
-      
-      if (extensionType === 1) {
-        // 1-year extension at 1.2x, rounded up to nearest whole number (then multiply by 10 for storage)
-        extensionSalary1 = Math.ceil(currentSalaryInMillions * 1.2) * 10;
+      let extensionSalary3: number | null = null;
+      let extensionSalary4: number | null = null;
+
+      if (isQuartileBased && quartileSalary) {
+        // Quartile-based extension (for rookie contracts)
+        // quartileSalary is already in tenths (e.g., 160 = $16.0M)
+        extensionSalary1 = quartileSalary;
+        if (extensionType >= 2) extensionSalary2 = quartileSalary;
+        if (extensionType >= 3) extensionSalary3 = quartileSalary;
+        if (extensionType >= 4) extensionSalary4 = quartileSalary;
       } else {
-        // 2-year extension at 1.5x, rounded up to nearest whole number (then multiply by 10 for storage)
-        const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.5) * 10;
-        extensionSalary1 = salaryPerYear;
-        extensionSalary2 = salaryPerYear;
+        // Multiplier-based extension (for non-rookie contracts)
+        // currentSalary is already in tenths (e.g., 230 = $23.0M)
+        const currentSalaryInMillions = currentSalary / 10;
+        
+        if (extensionType === 1) {
+          // 1-year extension at 1.2x, rounded up to nearest whole number (then multiply by 10 for storage)
+          extensionSalary1 = Math.ceil(currentSalaryInMillions * 1.2) * 10;
+        } else if (extensionType === 2) {
+          // 2-year extension at 1.5x, rounded up to nearest whole number (then multiply by 10 for storage)
+          const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.5) * 10;
+          extensionSalary1 = salaryPerYear;
+          extensionSalary2 = salaryPerYear;
+        } else if (extensionType === 3) {
+          // 3-year extension at 1.8x, rounded up to nearest whole number (then multiply by 10 for storage)
+          const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.8) * 10;
+          extensionSalary1 = salaryPerYear;
+          extensionSalary2 = salaryPerYear;
+          extensionSalary3 = salaryPerYear;
+        } else if (extensionType === 4) {
+          // 4-year extension at 2.0x, rounded up to nearest whole number (then multiply by 10 for storage)
+          const salaryPerYear = Math.ceil(currentSalaryInMillions * 2.0) * 10;
+          extensionSalary1 = salaryPerYear;
+          extensionSalary2 = salaryPerYear;
+          extensionSalary3 = salaryPerYear;
+          extensionSalary4 = salaryPerYear;
+        }
       }
 
       // Validate extension year(s) are within supported range (current season to season+4)
@@ -4059,21 +4387,28 @@ export async function registerRoutes(
         }
       };
 
-      // Check that extension year(s) don't have existing salary
-      if (getSalaryForYear(extensionYear) > 0) {
-        console.error(`Extension blocked: Player ${playerId} already has salary in ${extensionYear}`);
-        return res.status(400).json({ 
-          error: `Cannot extend - player already has salary for ${extensionYear}` 
-        });
-      }
-      if (extensionType === 2 && getSalaryForYear(extensionYear + 1) > 0) {
-        console.error(`Extension blocked: Player ${playerId} already has salary in ${extensionYear + 1}`);
-        return res.status(400).json({ 
-          error: `Cannot apply 2-year extension - player already has salary for ${extensionYear + 1}` 
-        });
+      // Check that all extension year(s) don't have existing salary
+      const extensionYears = [extensionYear];
+      if (extensionType >= 2) extensionYears.push(extensionYear + 1);
+      if (extensionType >= 3) extensionYears.push(extensionYear + 2);
+      if (extensionType >= 4) extensionYears.push(extensionYear + 3);
+
+      for (const year of extensionYears) {
+        if (getSalaryForYear(year) > 0) {
+          console.error(`Extension blocked: Player ${playerId} already has salary in ${year}`);
+          return res.status(400).json({ 
+            error: `Cannot extend - player already has salary for ${year}` 
+          });
+        }
+        if (year > 2029) {
+          return res.status(400).json({ 
+            error: `Cannot extend - year ${year} exceeds maximum contract year (2029)` 
+          });
+        }
       }
 
       // Create the extension record
+      // Note: extensionSalary2 is used for 2-year extensions, but for 3-year and 4-year we store all salaries in the contract
       const extension = await storage.createTeamExtension({
         leagueId,
         rosterId,
@@ -4083,7 +4418,7 @@ export async function registerRoutes(
         extensionSalary: extensionSalary1,
         extensionYear,
         extensionType,
-        extensionSalary2,
+        extensionSalary2: extensionType >= 2 ? extensionSalary2 : null,
       });
 
       // Update the player's contract with extension info
@@ -4104,9 +4439,11 @@ export async function registerRoutes(
         extensionYear,
         extensionSalary: extensionSalary1,
         extensionType,
+        hasBeenExtended: 1, // Mark that player has been extended on this roster
+        hasBeenFranchiseTagged: (playerContract as any).hasBeenFranchiseTagged ?? 0, // Preserve existing value
       };
       
-      // Set the extension year salary(s)
+      // Set the extension year salary(s) for all extension years
       const setYearSalary = (year: number, salary: number) => {
         if (year === 2025) salaryUpdates.salary2025 = salary;
         else if (year === 2026) salaryUpdates.salary2026 = salary;
@@ -4115,9 +4452,16 @@ export async function registerRoutes(
         else if (year === 2029) salaryUpdates.salary2029 = salary;
       };
       
+      // Set salaries for all extension years
       setYearSalary(extensionYear, extensionSalary1);
-      if (extensionType === 2 && extensionSalary2 !== null) {
+      if (extensionType >= 2 && extensionSalary2 !== null) {
         setYearSalary(extensionYear + 1, extensionSalary2);
+      }
+      if (extensionType >= 3 && extensionSalary3 !== null) {
+        setYearSalary(extensionYear + 2, extensionSalary3);
+      }
+      if (extensionType >= 4 && extensionSalary4 !== null) {
+        setYearSalary(extensionYear + 3, extensionSalary4);
       }
       
       await storage.upsertPlayerContract(salaryUpdates);
@@ -4170,6 +4514,8 @@ export async function registerRoutes(
           extensionYear: null,
           extensionSalary: null,
           extensionType: null,
+          hasBeenExtended: (playerContract as any).hasBeenExtended ?? 0, // Preserve - player has still been extended before
+          hasBeenFranchiseTagged: (playerContract as any).hasBeenFranchiseTagged ?? 0, // Preserve existing value
         };
 
         // Clear the extension year salary(s)

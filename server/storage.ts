@@ -661,6 +661,9 @@ export class DatabaseStorage implements IStorage {
     const updatedAt = Date.now();
 
     if (existing) {
+      // If rosterId changed, this is a player moving teams - reset tracking flags
+      const isNewRoster = existing.rosterId !== data.rosterId;
+      
       const [updated] = await db
         .update(playerContractsTable)
         .set({
@@ -679,6 +682,8 @@ export class DatabaseStorage implements IStorage {
           extensionYear: data.extensionYear ?? existing.extensionYear,
           extensionSalary: data.extensionSalary ?? existing.extensionSalary,
           extensionType: (data as any).extensionType ?? existing.extensionType,
+          hasBeenExtended: isNewRoster ? 0 : ((data as any).hasBeenExtended !== undefined ? (data as any).hasBeenExtended : existing.hasBeenExtended ?? 0),
+          hasBeenFranchiseTagged: isNewRoster ? 0 : ((data as any).hasBeenFranchiseTagged !== undefined ? (data as any).hasBeenFranchiseTagged : existing.hasBeenFranchiseTagged ?? 0),
           updatedAt,
         })
         .where(eq(playerContractsTable.id, existing.id))
@@ -686,6 +691,11 @@ export class DatabaseStorage implements IStorage {
 
       return updated;
     }
+
+    // If this is a new contract (new roster), reset tracking flags
+    // Otherwise, use provided values or default to 0
+    const hasBeenExtended = (data as any).hasBeenExtended !== undefined ? (data as any).hasBeenExtended : 0;
+    const hasBeenFranchiseTagged = (data as any).hasBeenFranchiseTagged !== undefined ? (data as any).hasBeenFranchiseTagged : 0;
 
     const id = randomUUID();
     const [inserted] = await db.insert(playerContractsTable).values({
@@ -708,6 +718,8 @@ export class DatabaseStorage implements IStorage {
       extensionYear: data.extensionYear ?? null,
       extensionSalary: data.extensionSalary ?? null,
       extensionType: (data as any).extensionType ?? null,
+      hasBeenExtended,
+      hasBeenFranchiseTagged,
       updatedAt,
     }).returning();
 
