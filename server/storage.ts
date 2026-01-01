@@ -650,13 +650,13 @@ export class DatabaseStorage implements IStorage {
 
   async upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract> {
     const [existing] = await db
-      .select()
-      .from(playerContractsTable)
-      .where(and(
-        eq(playerContractsTable.leagueId, data.leagueId),
-        eq(playerContractsTable.rosterId, data.rosterId),
-        eq(playerContractsTable.playerId, data.playerId)
-      ));
+        .select()
+        .from(playerContractsTable)
+        .where(and(
+          eq(playerContractsTable.leagueId, data.leagueId),
+          eq(playerContractsTable.rosterId, data.rosterId),
+          eq(playerContractsTable.playerId, data.playerId)
+        ));
 
     const updatedAt = Date.now();
 
@@ -1025,15 +1025,21 @@ export class DatabaseStorage implements IStorage {
     return rows;
   }
 
-  async getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined> {
+  async getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number, extensionType?: number): Promise<TeamExtension | undefined> {
+    const conditions = [
+      eq(teamExtensionsTable.leagueId, leagueId),
+      eq(teamExtensionsTable.rosterId, rosterId),
+      eq(teamExtensionsTable.season, season)
+    ];
+    
+    if (extensionType !== undefined) {
+      conditions.push(eq(teamExtensionsTable.extensionType, extensionType));
+    }
+    
     const [row] = await db
       .select()
       .from(teamExtensionsTable)
-      .where(and(
-        eq(teamExtensionsTable.leagueId, leagueId),
-        eq(teamExtensionsTable.rosterId, rosterId),
-        eq(teamExtensionsTable.season, season)
-      ));
+      .where(and(...conditions));
 
     return row;
   }

@@ -1,6 +1,8 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { createHash } from "crypto";
+import os from "os";
 import {
   getSleeperUser,
   getUserLeagues,
@@ -1245,23 +1247,54 @@ export async function registerRoutes(
     if (points.length === 0) {
       return { min: 0, q1: 0, median: 0, q3: 0, max: 0 };
     }
-    const sorted = [...points].sort((a, b) => a - b);
+    
+    // Filter out invalid values (NaN, undefined, null)
+    const validPoints = points.filter(p => typeof p === 'number' && !isNaN(p) && isFinite(p));
+    
+    if (validPoints.length === 0) {
+      return { min: 0, q1: 0, median: 0, q3: 0, max: 0 };
+    }
+    
+    const sorted = [...validPoints].sort((a, b) => a - b);
     const n = sorted.length;
-    const q1Index = Math.floor(n * 0.25);
-    const medianIndex = Math.floor(n * 0.5);
-    const q3Index = Math.floor(n * 0.75);
+    
+    // Handle edge case where all values are the same
+    if (sorted[0] === sorted[n - 1]) {
+      const value = sorted[0];
+      return { min: value, q1: value, median: value, q3: value, max: value };
+    }
+    
+    const q1Index = Math.max(0, Math.floor(n * 0.25));
+    const medianIndex = Math.max(0, Math.floor(n * 0.5));
+    const q3Index = Math.max(0, Math.floor(n * 0.75));
     
     return {
       min: sorted[0],
-      q1: sorted[q1Index],
-      median: sorted[medianIndex],
-      q3: sorted[q3Index],
+      q1: sorted[q1Index] || sorted[0],
+      median: sorted[medianIndex] || sorted[0],
+      q3: sorted[q3Index] || sorted[n - 1],
       max: sorted[n - 1]
     };
   }
 
   // Helper function to get quartile for a player
   function getQuartile(points: number, q1: number, median: number, q3: number): 1 | 2 | 3 | 4 {
+    // Validate inputs
+    if (typeof points !== 'number' || isNaN(points) || !isFinite(points)) {
+      console.warn(`[Assign Contracts] Invalid points value: ${points}, defaulting to quartile 4`);
+      return 4;
+    }
+    if (typeof q1 !== 'number' || isNaN(q1) || typeof median !== 'number' || isNaN(median) || typeof q3 !== 'number' || isNaN(q3)) {
+      console.warn(`[Assign Contracts] Invalid quartile values: q1=${q1}, median=${median}, q3=${q3}, defaulting to quartile 4`);
+      return 4;
+    }
+    
+    // Handle edge case where all quartiles are the same
+    if (q1 === median && median === q3) {
+      // All players have same points, assign to quartile 2 (middle)
+      return 2;
+    }
+    
     if (points >= q3) return 1; // Top quartile
     if (points >= median) return 2;
     if (points >= q1) return 3;
@@ -1349,16 +1382,9 @@ export async function registerRoutes(
           const pos = player.position;
           if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos)) return;
           
-          // Only include players with 3+ years of NFL experience
-          // Exclude rookies (0 years), players with 1-2 years, and players with undefined/null years_exp
-          // Handle both number and string types for years_exp
-          const yearsExp = typeof player.years_exp === 'string' ? parseInt(player.years_exp, 10) : player.years_exp;
-          if (yearsExp === undefined || yearsExp === null || isNaN(yearsExp) || yearsExp < 3) {
-            // Debug logging for excluded players (log all excluded players to verify filter is working)
-            const playerName = player.full_name || `${player.first_name} ${player.last_name}`;
-            console.log(`[Player Rankings] Excluding ${playerName} (${pos}): years_exp=${player.years_exp} (parsed: ${yearsExp})`);
-            return;
-          }
+          // Include ALL players (including rookies) for quartile calculations
+          // Rookies need quartile assignments for extension purposes
+          // Only exclude players with 0 points
           
           // Get total points for the season from our aggregated map
           const totalPoints = playerTotalPoints.get(pid) || 0;
@@ -1487,9 +1513,33 @@ export async function registerRoutes(
   }
 
   app.post("/api/league/:leagueId/assign-contracts-by-quartile", async (req, res) => {
+    const startTime = Date.now();
+    const deviceId = os.hostname() || "unknown";
+    const timestamp = new Date().toISOString();
+    
+    // Declare variables at function scope for error handler access
+    let leagueId: string | undefined;
+    let currentYear: number | undefined;
+    let contractsToAssign: Array<{rosterId: number; playerId: string; salary: number; quartile: number}> = [];
+    
+    // Environment and Version Logging
+    console.log(`[Assign Contracts] ========== DIAGNOSTIC START ==========`);
+    console.log(`[Assign Contracts] Device ID: ${deviceId}`);
+    console.log(`[Assign Contracts] Timestamp: ${timestamp}`);
+    console.log(`[Assign Contracts] Timezone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`);
+    console.log(`[Assign Contracts] Node.js Version: ${process.version}`);
+    console.log(`[Assign Contracts] Platform: ${os.platform()} ${os.arch()}`);
+    console.log(`[Assign Contracts] NODE_ENV: ${process.env.NODE_ENV || 'not set'}`);
+    
+    // Hash DATABASE_URL for security (don't log full URL)
+    const dbUrlHash = process.env.DATABASE_URL 
+      ? createHash('md5').update(process.env.DATABASE_URL).digest('hex').substring(0, 8)
+      : 'not set';
+    console.log(`[Assign Contracts] DATABASE_URL hash: ${dbUrlHash}`);
+    
     console.log(`[Assign Contracts] Request received for league: ${req.params.leagueId}`);
     try {
-      const { leagueId } = req.params;
+      leagueId = req.params.leagueId;
       
       if (!leagueId) {
         return res.status(400).json({
@@ -1500,7 +1550,7 @@ export async function registerRoutes(
       }
       
       console.log(`[Assign Contracts] Fetching data for league ${leagueId}...`);
-      const [rosters, players, nflState, league] = await Promise.all([
+      const [rosters, players, nflState, league, users] = await Promise.all([
         getLeagueRosters(leagueId).catch(err => {
           console.error(`[Assign Contracts] Error fetching rosters:`, err);
           throw new Error(`Failed to fetch rosters: ${err.message}`);
@@ -1517,9 +1567,33 @@ export async function registerRoutes(
           console.error(`[Assign Contracts] Error fetching league:`, err);
           throw new Error(`Failed to fetch league: ${err.message}`);
         }),
+        getLeagueUsers(leagueId).catch(err => {
+          console.error(`[Assign Contracts] Error fetching users:`, err);
+          return []; // Allow empty array for users
+        }),
       ]);
       
-      console.log(`[Assign Contracts] Data fetched - rosters: ${rosters?.length || 0}, players: ${Object.keys(players || {}).length}, league: ${league?.league_id || 'none'}`);
+      console.log(`[Assign Contracts] Data fetched - rosters: ${rosters?.length || 0}, players: ${Object.keys(players || {}).length}, league: ${league?.league_id || 'none'}, users: ${users?.length || 0}`);
+      
+      // Data Source Logging
+      console.log(`[Assign Contracts] --- DATA SOURCE DETAILS ---`);
+      console.log(`[Assign Contracts] League: id=${league?.league_id}, season=${league?.season}, name=${league?.name || 'N/A'}, total_rosters=${league?.total_rosters || 'N/A'}`);
+      console.log(`[Assign Contracts] NFL State: season=${nflState?.season || 'N/A'}, week=${nflState?.week || 'N/A'}, state=${nflState?.season_type || 'N/A'}`);
+      console.log(`[Assign Contracts] Rosters: count=${rosters?.length || 0}, roster_ids=[${rosters?.slice(0, 5).map((r: any) => r.roster_id).join(', ')}${rosters && rosters.length > 5 ? '...' : ''}]`);
+      console.log(`[Assign Contracts] Players: total=${Object.keys(players || {}).length}, sample_ids=[${Object.keys(players || {}).slice(0, 5).join(', ')}${Object.keys(players || {}).length > 5 ? '...' : ''}]`);
+      console.log(`[Assign Contracts] Users: count=${users?.length || 0}, user_ids=[${users?.slice(0, 5).map((u: any) => u.user_id).join(', ')}${users && users.length > 5 ? '...' : ''}]`);
+      
+      // Build rosterId to teamName mapping for logging
+      const rosterToTeamMap = new Map<number, string>();
+      if (users && rosters) {
+        const userMap = new Map<string, any>();
+        users.forEach((u: any) => userMap.set(u.user_id, u));
+        rosters.forEach((roster: any) => {
+          const user = userMap.get(roster.owner_id);
+          const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
+          rosterToTeamMap.set(roster.roster_id, teamName);
+        });
+      }
 
       if (!league) {
         return res.status(400).json({
@@ -1536,28 +1610,45 @@ export async function registerRoutes(
       }
 
       const season = league.season || nflState?.season || "2025";
-      const currentYear = parseInt(season);
+      // Handle both string and number seasons, ensure valid year
+      const seasonNum = typeof season === 'string' ? parseInt(season, 10) : season;
+      const currentYear = (!isNaN(seasonNum) && seasonNum > 2000 && seasonNum < 2100) ? seasonNum : new Date().getFullYear();
       const nextYear = currentYear + 1;
       const currentWeek = nflState?.week || 18;
       
+      // Year Calculation Logging
+      console.log(`[Assign Contracts] --- YEAR CALCULATION ---`);
+      console.log(`[Assign Contracts] Raw season value: ${season} (type: ${typeof season})`);
+      console.log(`[Assign Contracts] Parsed season number: ${seasonNum}`);
+      console.log(`[Assign Contracts] Current year: ${currentYear}, Next year: ${nextYear}`);
+      console.log(`[Assign Contracts] Current week: ${currentWeek}`);
       console.log(`[Assign Contracts] Processing contracts for season ${season}, current year: ${currentYear}, next year: ${nextYear}`);
       
       // Get player stats (reuse logic from player rankings)
       let playerTotalPoints: Map<string, number> = new Map();
       
+      // Stats Retrieval Logging
+      console.log(`[Assign Contracts] --- STATS RETRIEVAL ---`);
+      console.log(`[Assign Contracts] Attempting to fetch stats for season: ${season}`);
+      
       try {
         const seasonStats = await getPlayerStats(season);
         if (seasonStats && Object.keys(seasonStats).length > 0) {
+          console.log(`[Assign Contracts] Stats source: SEASON TOTALS`);
+          console.log(`[Assign Contracts] Loaded season stats for ${Object.keys(seasonStats).length} players`);
           Object.entries(seasonStats).forEach(([playerId, stats]) => {
             const points = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
             if (points > 0) {
               playerTotalPoints.set(playerId, points);
             }
           });
+          console.log(`[Assign Contracts] Total players with stats: ${playerTotalPoints.size}`);
         } else {
           throw new Error("Season stats returned empty, will sum weekly stats");
         }
       } catch (err) {
+        console.log(`[Assign Contracts] Stats source: WEEKLY AGGREGATION`);
+        console.log(`[Assign Contracts] Season stats unavailable, fetching weekly stats for weeks 1-${currentWeek}`);
         const weeklyStatsPromises = [];
         for (let week = 1; week <= currentWeek; week++) {
           weeklyStatsPromises.push(
@@ -1574,6 +1665,24 @@ export async function registerRoutes(
             }
           });
         });
+        console.log(`[Assign Contracts] Total players with stats (from weekly): ${playerTotalPoints.size}`);
+      }
+      
+      // Stats Distribution Logging
+      if (playerTotalPoints.size > 0) {
+        const pointsArray = Array.from(playerTotalPoints.values());
+        const minPoints = Math.min(...pointsArray);
+        const maxPoints = Math.max(...pointsArray);
+        const avgPoints = pointsArray.reduce((a, b) => a + b, 0) / pointsArray.length;
+        const zeroPointsCount = Array.from(rosters || []).flatMap(r => r.players || []).filter(pid => !playerTotalPoints.has(pid) || playerTotalPoints.get(pid) === 0).length;
+        
+        console.log(`[Assign Contracts] Stats distribution: min=${minPoints.toFixed(1)}, max=${maxPoints.toFixed(1)}, avg=${avgPoints.toFixed(1)}, zero_points=${zeroPointsCount}`);
+        
+        // Sample of player stats
+        const sampleStats = Array.from(playerTotalPoints.entries()).slice(0, 10);
+        console.log(`[Assign Contracts] Sample player stats: ${sampleStats.map(([pid, pts]) => `${pid.substring(0, 8)}=${pts.toFixed(1)}`).join(', ')}`);
+      } else {
+        console.warn(`[Assign Contracts] WARNING: No player stats found!`);
       }
 
       // Build player to rosterId mapping
@@ -1593,22 +1702,76 @@ export async function registerRoutes(
         rosterId: number;
       }>> = {};
 
+      // Track filtering statistics
+      const filterStats = {
+        totalPlayers: 0,
+        missingPlayerData: 0,
+        wrongPosition: 0,
+        insufficientExperience: 0,
+        zeroPoints: 0,
+        included: 0,
+        byTeam: new Map<string, { total: number; included: number; filtered: { reason: string; count: number }[] }>(),
+      };
+
       rosters.forEach(roster => {
+        const teamName = rosterToTeamMap.get(roster.roster_id) || `Team ${roster.roster_id}`;
+        if (!filterStats.byTeam.has(teamName)) {
+          filterStats.byTeam.set(teamName, { total: 0, included: 0, filtered: [] });
+        }
+        const teamStats = filterStats.byTeam.get(teamName)!;
+        
         (roster.players || []).forEach(pid => {
+          filterStats.totalPlayers++;
+          teamStats.total++;
+          
           const player = players[pid];
-          if (!player) return;
+          if (!player) {
+            filterStats.missingPlayerData++;
+            return;
+          }
           
           const pos = player.position;
-          if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos)) return;
+          if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos)) {
+            filterStats.wrongPosition++;
+            return;
+          }
           
           // Only include players with 3+ years of NFL experience
           const yearsExp = typeof player.years_exp === 'string' ? parseInt(player.years_exp, 10) : player.years_exp;
           if (yearsExp === undefined || yearsExp === null || isNaN(yearsExp) || yearsExp < 3) {
+            filterStats.insufficientExperience++;
+            const reason = `Experience: ${yearsExp} (need 3+)`;
+            const existingReason = teamStats.filtered.find(r => r.reason === reason);
+            if (existingReason) {
+              existingReason.count++;
+            } else {
+              teamStats.filtered.push({ reason, count: 1 });
+            }
             return;
           }
           
           const totalPoints = playerTotalPoints.get(pid) || 0;
-          if (totalPoints === 0) return;
+          if (totalPoints === 0) {
+            filterStats.zeroPoints++;
+            const reason = "Zero fantasy points";
+            const existingReason = teamStats.filtered.find(r => r.reason === reason);
+            if (existingReason) {
+              existingReason.count++;
+            } else {
+              teamStats.filtered.push({ reason, count: 1 });
+            }
+            // Log first few zero-point players per team for debugging
+            const zeroPointReason = teamStats.filtered.find(r => r.reason === reason);
+            if (zeroPointReason && zeroPointReason.count <= 3) {
+              const playerName = player.full_name || `${player.first_name} ${player.last_name}`;
+              console.log(`[Assign Contracts] ${teamName}: ${playerName} (${pos}, ${yearsExp} yrs) excluded - zero points`);
+            }
+            return;
+          }
+          
+          // Player passed all filters
+          filterStats.included++;
+          teamStats.included++;
           
           if (!positionPlayers[pos]) {
             positionPlayers[pos] = [];
@@ -1624,49 +1787,107 @@ export async function registerRoutes(
         });
       });
 
+      // Log filtering statistics
+      console.log(`[Assign Contracts] Player filtering summary:`);
+      console.log(`  Total players processed: ${filterStats.totalPlayers}`);
+      console.log(`  Missing player data: ${filterStats.missingPlayerData}`);
+      console.log(`  Wrong position: ${filterStats.wrongPosition}`);
+      console.log(`  Insufficient experience (<3 yrs): ${filterStats.insufficientExperience}`);
+      console.log(`  Zero fantasy points: ${filterStats.zeroPoints}`);
+      console.log(`  Included for contract assignment: ${filterStats.included}`);
+      
+      console.log(`[Assign Contracts] Breakdown by team:`);
+      filterStats.byTeam.forEach((stats, teamName) => {
+        console.log(`  ${teamName}: ${stats.included} included, ${stats.total - stats.included} filtered out of ${stats.total} total`);
+        if (stats.filtered.length > 0 && stats.included === 0) {
+          console.log(`    Filter reasons: ${stats.filtered.map(f => `${f.reason} (${f.count})`).join(", ")}`);
+        }
+      });
+
       // Calculate quartiles for each position and assign contracts
-      const contractsToAssign: Array<{
-        rosterId: number;
-        playerId: string;
-        salary: number;
-        quartile: number;
-      }> = [];
+      contractsToAssign = []; // Reset array
 
       Object.entries(positionPlayers).forEach(([position, playerList]) => {
-        if (playerList.length === 0) return;
+        if (!playerList || playerList.length === 0) {
+          console.log(`[Assign Contracts] Skipping ${position} - no players`);
+          return;
+        }
         
-        const sortedPlayers = [...playerList].sort((a, b) => b.totalPoints - a.totalPoints);
-        const points = sortedPlayers.map(p => p.totalPoints);
+        // Validate player data
+        const validPlayers = playerList.filter(p => 
+          p && 
+          typeof p.totalPoints === 'number' && 
+          !isNaN(p.totalPoints) && 
+          isFinite(p.totalPoints) &&
+          p.playerId &&
+          typeof p.rosterId === 'number'
+        );
         
-        if (points.length === 0) return;
+        if (validPlayers.length === 0) {
+          console.warn(`[Assign Contracts] ${position} has no valid players after filtering`);
+          return;
+        }
         
-        const quartiles = calculateQuartiles(points);
-        console.log(`[Assign Contracts] ${position} quartiles:`, quartiles);
+        const sortedPlayers = [...validPlayers].sort((a, b) => b.totalPoints - a.totalPoints);
+        const points = sortedPlayers.map(p => p.totalPoints).filter(p => typeof p === 'number' && !isNaN(p) && isFinite(p));
         
-        sortedPlayers.forEach(player => {
-          const quartile = getQuartile(player.totalPoints, quartiles.q1, quartiles.median, quartiles.q3);
-          // Q1 = $16, Q2 = $12, Q3 = $8, Q4 = $4 (stored as 160, 120, 80, 40)
-          // Note: getQuartile returns 1 for top quartile (highest points), 4 for bottom quartile
-          const salaryMap: Record<1 | 2 | 3 | 4, number> = {
-            1: 160, // $16 - Top quartile
-            2: 120, // $12 - Second quartile
-            3: 80,  // $8 - Third quartile
-            4: 40,  // $4 - Bottom quartile
-          };
-          const salary = salaryMap[quartile];
+        if (points.length === 0) {
+          console.warn(`[Assign Contracts] ${position} has no valid points after filtering`);
+          return;
+        }
+        
+        try {
+          const quartiles = calculateQuartiles(points);
           
-          if (!salary) {
-            console.warn(`[Assign Contracts] Invalid quartile ${quartile} for player ${player.playerId} (${player.name})`);
+          // Validate quartile values
+          if (isNaN(quartiles.q1) || isNaN(quartiles.median) || isNaN(quartiles.q3)) {
+            console.error(`[Assign Contracts] Invalid quartile values for ${position}:`, quartiles);
             return;
           }
           
-          contractsToAssign.push({
-            rosterId: player.rosterId,
-            playerId: player.playerId,
-            salary,
-            quartile,
+          console.log(`[Assign Contracts] ${position} quartiles:`, quartiles);
+          console.log(`[Assign Contracts] ${position} processing: ${sortedPlayers.length} players, points range [${Math.min(...points).toFixed(1)}, ${Math.max(...points).toFixed(1)}]`);
+          
+          sortedPlayers.forEach(player => {
+            try {
+              const quartile = getQuartile(player.totalPoints, quartiles.q1, quartiles.median, quartiles.q3);
+              
+              // Validate quartile is 1-4
+              if (quartile < 1 || quartile > 4 || !Number.isInteger(quartile)) {
+                console.warn(`[Assign Contracts] Invalid quartile ${quartile} for player ${player.playerId} (${player.name})`);
+                return;
+              }
+              
+              // Q1 = $16, Q2 = $12, Q3 = $8, Q4 = $4 (stored as 160, 120, 80, 40)
+              // Note: getQuartile returns 1 for top quartile (highest points), 4 for bottom quartile
+              const salaryMap: Record<1 | 2 | 3 | 4, number> = {
+                1: 160, // $16 - Top quartile
+                2: 120, // $12 - Second quartile
+                3: 80,  // $8 - Third quartile
+                4: 40,  // $4 - Bottom quartile
+              };
+              const salary = salaryMap[quartile];
+              
+              if (typeof salary !== 'number' || isNaN(salary)) {
+                console.warn(`[Assign Contracts] Invalid salary for quartile ${quartile} for player ${player.playerId} (${player.name})`);
+                return;
+              }
+              
+              contractsToAssign.push({
+                rosterId: Number(player.rosterId),
+                playerId: String(player.playerId),
+                salary: Number(salary),
+                quartile: Number(quartile) as 1 | 2 | 3 | 4,
+              });
+            } catch (playerError: any) {
+              console.error(`[Assign Contracts] Error processing player ${player.playerId} (${player.name}):`, playerError);
+              // Continue with other players
+            }
           });
-        });
+        } catch (quartileError: any) {
+          console.error(`[Assign Contracts] Error calculating quartiles for ${position}:`, quartileError);
+          // Continue with other positions
+        }
       });
 
       console.log(`[Assign Contracts] Assigning ${contractsToAssign.length} contracts based on quartile rankings`);
@@ -1697,15 +1918,66 @@ export async function registerRoutes(
 
       // Validate years are in range
       if (!yearMap[currentYear] || !yearMap[nextYear]) {
+        const errorMsg = `Years ${currentYear} and ${nextYear} are outside the supported range (2025-2029).`;
+        console.error(`[Assign Contracts] ${errorMsg}`);
         return res.status(400).json({
+          success: false,
           error: "Invalid year range",
-          message: `Years ${currentYear} and ${nextYear} are outside the supported range (2025-2029).`,
+          message: errorMsg,
+          currentYear,
+          nextYear,
+        });
+      }
+      
+      // Additional validation: ensure years are valid numbers
+      if (isNaN(currentYear) || isNaN(nextYear) || !isFinite(currentYear) || !isFinite(nextYear)) {
+        const errorMsg = `Invalid year values: currentYear=${currentYear}, nextYear=${nextYear}`;
+        console.error(`[Assign Contracts] ${errorMsg}`);
+        return res.status(400).json({
+          success: false,
+          error: "Invalid year values",
+          message: errorMsg,
         });
       }
 
+      // Database State Logging
+      console.log(`[Assign Contracts] --- DATABASE STATE ---`);
+      const existingContracts = await storage.getPlayerContracts(leagueId);
+      console.log(`[Assign Contracts] Existing contracts: total=${existingContracts.length}`);
+      
+      // Count contracts by rosterId
+      const contractsByRoster = new Map<number, number>();
+      let rookieContractCount = 0;
+      existingContracts.forEach(contract => {
+        const count = contractsByRoster.get(contract.rosterId) || 0;
+        contractsByRoster.set(contract.rosterId, count + 1);
+        if (contract.isRookieContract === 1) {
+          rookieContractCount++;
+        }
+      });
+      
+      console.log(`[Assign Contracts] Contracts by roster: ${Array.from(contractsByRoster.entries()).map(([rid, count]) => `roster_${rid}=${count}`).join(', ')}`);
+      console.log(`[Assign Contracts] Rookie contracts: ${rookieContractCount}`);
+      
+      // Sample existing contracts
+      if (existingContracts.length > 0) {
+        const sample = existingContracts.slice(0, 5);
+        console.log(`[Assign Contracts] Sample existing contracts: ${sample.map(c => `roster_${c.rosterId}/player_${c.playerId.substring(0, 8)}/rookie=${c.isRookieContract}`).join(', ')}`);
+      }
+      
       for (const contract of contractsToAssign) {
+        let contractData: any = null;
         try {
-          const contractData: any = {
+          // Double-check: exclude players with rookie contract designation
+          const existingContract = existingContracts.find(
+            c => c.playerId === contract.playerId && c.rosterId === contract.rosterId
+          );
+          if (existingContract && existingContract.isRookieContract === 1) {
+            console.log(`[Assign Contracts] Skipping player ${contract.playerId} - has rookie contract designation`);
+            continue;
+          }
+          
+          contractData = {
             leagueId,
             rosterId: contract.rosterId,
             playerId: contract.playerId,
@@ -1746,11 +2018,45 @@ export async function registerRoutes(
         }
       }
 
+      // Contract Assignment Results Logging
+      console.log(`[Assign Contracts] --- CONTRACT ASSIGNMENT RESULTS ---`);
       console.log(`[Assign Contracts] Successfully assigned ${results.length} contracts`);
+      console.log(`[Assign Contracts] Contracts to assign: ${contractsToAssign.length}, Successfully assigned: ${results.length}, Failed: ${contractsToAssign.length - results.length}`);
       
       if (results.length < contractsToAssign.length) {
         console.warn(`[Assign Contracts] Only assigned ${results.length} out of ${contractsToAssign.length} contracts. Some may have failed.`);
       }
+      
+      // Count by quartile
+      const byQuartile = new Map<number, number>();
+      results.forEach(r => {
+        const count = byQuartile.get(r.quartile) || 0;
+        byQuartile.set(r.quartile, count + 1);
+      });
+      console.log(`[Assign Contracts] Contracts by quartile: Q1=${byQuartile.get(1) || 0}, Q2=${byQuartile.get(2) || 0}, Q3=${byQuartile.get(3) || 0}, Q4=${byQuartile.get(4) || 0}`);
+      
+      // Count by roster
+      const byRoster = new Map<number, number>();
+      results.forEach(r => {
+        const count = byRoster.get(r.rosterId) || 0;
+        byRoster.set(r.rosterId, count + 1);
+      });
+      console.log(`[Assign Contracts] Contracts by roster: ${Array.from(byRoster.entries()).map(([rid, count]) => `roster_${rid}=${count}`).join(', ')}`);
+      
+      // Final Summary
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+      console.log(`[Assign Contracts] --- FINAL SUMMARY ---`);
+      console.log(`[Assign Contracts] Device: ${deviceId}`);
+      console.log(`[Assign Contracts] Duration: ${duration}ms`);
+      console.log(`[Assign Contracts] League: ${leagueId}, Season: ${season}`);
+      console.log(`[Assign Contracts] Years: ${currentYear}-${nextYear}`);
+      console.log(`[Assign Contracts] Players processed: ${filterStats.totalPlayers}`);
+      console.log(`[Assign Contracts] Players included: ${filterStats.included}`);
+      console.log(`[Assign Contracts] Contracts assigned: ${results.length}/${contractsToAssign.length}`);
+      console.log(`[Assign Contracts] Stats source: ${playerTotalPoints.size > 0 ? 'available' : 'missing'}`);
+      console.log(`[Assign Contracts] Existing contracts: ${existingContracts.length}`);
+      console.log(`[Assign Contracts] ========== DIAGNOSTIC END ==========`);
       
       // Ensure all data is serializable (convert to plain objects/numbers)
       const responseData = {
@@ -1771,10 +2077,32 @@ export async function registerRoutes(
       console.log(`[Assign Contracts] Sending success response with ${results.length} contracts`);
       res.json(responseData);
     } catch (error: any) {
-      console.error("[Assign Contracts] Error assigning contracts by quartile:", error);
-      console.error("[Assign Contracts] Error stack:", error?.stack);
-      console.error("[Assign Contracts] Error name:", error?.name);
-      console.error("[Assign Contracts] Error message:", error?.message);
+      const endTime = Date.now();
+      const duration = endTime - startTime;
+      
+      // Enhanced Error Context Logging
+      console.error(`[Assign Contracts] ========== ERROR DIAGNOSTIC ==========`);
+      console.error(`[Assign Contracts] Device: ${deviceId}`);
+      console.error(`[Assign Contracts] Timestamp: ${new Date().toISOString()}`);
+      console.error(`[Assign Contracts] Duration before error: ${duration}ms`);
+      console.error(`[Assign Contracts] Error name: ${error?.name || 'Unknown'}`);
+      console.error(`[Assign Contracts] Error message: ${error?.message || String(error) || 'Unknown error'}`);
+      console.error(`[Assign Contracts] Error stack:`, error?.stack);
+      
+      // Log error context if available
+      if (error?.leagueId) console.error(`[Assign Contracts] Error context - leagueId: ${error.leagueId}`);
+      if (error?.currentYear) console.error(`[Assign Contracts] Error context - currentYear: ${error.currentYear}`);
+      if (error?.contractsToAssign) console.error(`[Assign Contracts] Error context - contractsToAssign count: ${error.contractsToAssign.length}`);
+      
+      // Log state at error time
+      try {
+        const contractsCount = contractsToAssign ? contractsToAssign.length : 'not initialized';
+        console.error(`[Assign Contracts] State at error: leagueId=${leagueId || 'not set'}, currentYear=${currentYear || 'not set'}, contractsToAssign=${contractsCount}`);
+      } catch (stateError) {
+        console.error(`[Assign Contracts] Could not log state: ${stateError}`);
+      }
+      
+      console.error(`[Assign Contracts] ======================================`);
       
       // Ensure we always return valid JSON
       try {
@@ -1783,6 +2111,8 @@ export async function registerRoutes(
           error: "Failed to assign contracts",
           message: error?.message || String(error) || "Unknown error",
           details: process.env.NODE_ENV === "development" ? error?.stack : undefined,
+          deviceId,
+          timestamp: new Date().toISOString(),
         };
         console.log("[Assign Contracts] Sending error response:", errorResponse);
         res.status(500).json(errorResponse);
@@ -4224,16 +4554,27 @@ export async function registerRoutes(
     }
   });
 
-  // Check if team has used their extension for a season
+  // Check if team has used their extensions for a season (returns usage by type)
   app.get("/api/league/:leagueId/extensions/:season/:rosterId", async (req, res) => {
     try {
       const { leagueId, season, rosterId } = req.params;
-      const extension = await storage.getTeamExtensionByRoster(
-        leagueId, 
-        parseInt(rosterId), 
-        parseInt(season)
-      );
-      res.json({ hasUsedExtension: !!extension, extension: extension || null });
+      const allExtensions = await storage.getTeamExtensions(leagueId, parseInt(season));
+      const teamExtensions = allExtensions.filter(e => e.rosterId === parseInt(rosterId));
+      
+      // Check which extension types have been used
+      const hasUsed1Year = teamExtensions.some(e => e.extensionType === 1);
+      const hasUsed2Year = teamExtensions.some(e => e.extensionType === 2);
+      const hasUsed3Year = teamExtensions.some(e => e.extensionType === 3);
+      const hasUsed4Year = teamExtensions.some(e => e.extensionType === 4);
+      
+      res.json({ 
+        hasUsedExtension: teamExtensions.length > 0, // Legacy field for backwards compatibility
+        hasUsed1Year,
+        hasUsed2Year,
+        hasUsed3Year,
+        hasUsed4Year,
+        extensions: teamExtensions // Return all extensions for this team/season
+      });
     } catch (error) {
       console.error("Error checking extension status:", error);
       res.status(500).json({ error: "Failed to check extension status" });
@@ -4279,8 +4620,8 @@ export async function registerRoutes(
       }
 
       // Validate player contract exists and check if it's a rookie contract
-      const contracts = await storage.getPlayerContracts(leagueId);
-      const playerContract = contracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      const playerContracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = playerContracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
       
       if (!playerContract) {
         return res.status(400).json({ error: "Player contract not found" });
@@ -4355,24 +4696,11 @@ export async function registerRoutes(
       // Validate extension year(s) are within supported range (current season to season+4)
       // Contract years are: season, season+1, season+2, season+3, with year 5 (season+4) for extensions
       const maxContractYear = season + 4; // Option year / max extension year
-      const maxExtensionYear = extensionType === 1 ? extensionYear : extensionYear + 1;
+      const maxExtensionYear = extensionType === 1 ? extensionYear : (extensionType === 2 ? extensionYear + 1 : (extensionType === 3 ? extensionYear + 2 : extensionYear + 3));
       if (extensionYear < season || maxExtensionYear > maxContractYear) {
         return res.status(400).json({ 
           error: `Extension would exceed maximum contract year (${maxContractYear})` 
         });
-      }
-
-      // Validate player contract exists and is eligible
-      const contracts = await storage.getPlayerContracts(leagueId);
-      const playerContract = contracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
-      
-      if (!playerContract) {
-        return res.status(400).json({ error: "Player contract not found" });
-      }
-
-      // Check if extension already applied
-      if (playerContract.extensionApplied === 1) {
-        return res.status(400).json({ error: "Extension already applied to this player" });
       }
 
       // Validate extension target years are currently empty (no salary)

@@ -1218,11 +1218,11 @@ export default function Metrics() {
               <span>Top 25%</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-emerald-500/30" />
+              <div className="w-4 h-4 rounded bg-yellow-500" />
               <span>25-50%</span>
             </div>
             <div className="flex items-center gap-2">
-              <div className="w-4 h-4 rounded bg-red-500/30" />
+              <div className="w-4 h-4 rounded bg-orange-500" />
               <span>50-75%</span>
             </div>
             <div className="flex items-center gap-2">

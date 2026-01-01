@@ -1692,10 +1692,25 @@ function ManageTeamContractsTab({
     createdAt: number;
   }
 
-  const { data: extensionStatus } = useQuery<{ hasUsedExtension: boolean; extension: TeamExtension | null }>({
+  interface ExtensionStatus {
+    hasUsedExtension: boolean; // Legacy field
+    hasUsed1Year: boolean;
+    hasUsed2Year: boolean;
+    hasUsed3Year: boolean;
+    hasUsed4Year: boolean;
+    extensions: TeamExtension[];
+  }
+
+  const { data: extensionStatus, error: extensionStatusError } = useQuery<ExtensionStatus>({
     queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId],
     enabled: !!leagueId && !!userTeam?.rosterId,
+    retry: 1,
   });
+  
+  // Log extension status errors for debugging
+  if (extensionStatusError) {
+    console.error("Error fetching extension status:", extensionStatusError);
+  }
 
   // Query for player rankings (for quartile-based extensions)
   const { data: playerRankingsData } = useQuery({
@@ -3489,11 +3504,25 @@ function ManageTeamContractsTab({
                       <TableCell className="text-center">
                         {player.isRosterPlayer && !player.isFreeAgent && (() => {
                           const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
-                          const teamUsedExtension = extensionStatus?.hasUsedExtension || false;
-                          const thisPlayerHasExtension = extensionStatus?.extension?.playerId === player.playerId;
+                          // Check if specific extension types have been used
+                          const teamUsed1Year = extensionStatus?.hasUsed1Year || false;
+                          const teamUsed2Year = extensionStatus?.hasUsed2Year || false;
+                          const teamUsed3Year = extensionStatus?.hasUsed3Year || false;
+                          const teamUsed4Year = extensionStatus?.hasUsed4Year || false;
+                          
+                          // Check if this specific player has an extension
+                          const thisPlayerHasExtension = (extensionStatus?.extensions && Array.isArray(extensionStatus.extensions)) 
+                            ? extensionStatus.extensions.some(e => e.playerId === player.playerId) 
+                            : false;
+                          
                           // For commissioners: only disable during mutations
-                          // For non-commissioners: disable if can't apply extension (team used, not eligible, or mutation in progress)
-                          const isApplyingDisabled = !extensionEligibility.eligible || teamUsedExtension || applyExtensionMutation.isPending;
+                          // For non-commissioners: disable if can't apply extension (team used that type, not eligible, or mutation in progress)
+                          const isApplyingDisabled = !extensionEligibility.eligible || 
+                            (extensionEligibility.canDo1Year && teamUsed1Year) ||
+                            (extensionEligibility.canDo2Year && teamUsed2Year) ||
+                            (extensionEligibility.canDo3Year && teamUsed3Year) ||
+                            (extensionEligibility.canDo4Year && teamUsed4Year) ||
+                            applyExtensionMutation.isPending;
                           const toggleDisabled = isCommissioner 
                             ? (applyExtensionMutation.isPending || deleteExtensionMutation.isPending)
                             : isApplyingDisabled;
@@ -3512,7 +3541,13 @@ function ManageTeamContractsTab({
                                         onCheckedChange={(checked) => {
                                           if (checked) {
                                             // Open popover to show extension options when checked
-                                            if (extensionEligibility.eligible && !teamUsedExtension) {
+                                            // Check if any extension type is available
+                                            const hasAvailableExtension = 
+                                              (extensionEligibility.canDo1Year && !teamUsed1Year) ||
+                                              (extensionEligibility.canDo2Year && !teamUsed2Year) ||
+                                              (extensionEligibility.canDo3Year && !teamUsed3Year) ||
+                                              (extensionEligibility.canDo4Year && !teamUsed4Year);
+                                            if (extensionEligibility.eligible && hasAvailableExtension) {
                                               setOpenExtensionPopover(player.playerId);
                                             }
                                           } else {
@@ -3533,13 +3568,20 @@ function ManageTeamContractsTab({
                                     const hasBeenExtended = (contract as any)?.hasBeenExtended === 1;
                                     const hasBeenFranchiseTagged = (contract as any)?.hasBeenFranchiseTagged === 1;
                                     
+                                    // Determine which extension types are available
+                                    const availableTypes: string[] = [];
+                                    if (extensionEligibility.canDo1Year && !teamUsed1Year) availableTypes.push("1-year");
+                                    if (extensionEligibility.canDo2Year && !teamUsed2Year) availableTypes.push("2-year");
+                                    if (extensionEligibility.canDo3Year && !teamUsed3Year) availableTypes.push("3-year");
+                                    if (extensionEligibility.canDo4Year && !teamUsed4Year) availableTypes.push("4-year");
+                                    
                                     let mainText = "";
                                     if (isCommissioner && thisPlayerHasExtension) {
-                                      mainText = "This player has an extension. Click to remove and allow the team to use their extension again.";
-                                    } else if (teamUsedExtension) {
-                                      mainText = `Team has already used their ${CURRENT_YEAR} extension`;
+                                      mainText = "This player has an extension. Click to remove and allow the team to use that extension type again.";
+                                    } else if (availableTypes.length === 0 && extensionEligibility.eligible) {
+                                      mainText = `Team has already used all available extension types for ${CURRENT_YEAR}`;
                                     } else if (extensionEligibility.eligible) {
-                                      mainText = "Click to choose extension type (1 per team per season)";
+                                      mainText = `Click to choose extension type (Available: ${availableTypes.join(", ")})`;
                                     } else {
                                       mainText = extensionEligibility.reason;
                                     }
@@ -3584,7 +3626,7 @@ function ManageTeamContractsTab({
                                         const quartileSalaryInMillions = quartileInfo.salary / 10;
                                         return (
                                           <>
-                                            {extensionEligibility.canDo3Year && (
+                                            {extensionEligibility.canDo3Year && !teamUsed3Year && (
                                               <Button
                                                 size="sm"
                                                 variant="outline"
@@ -3608,7 +3650,7 @@ function ManageTeamContractsTab({
                                                 <span className="text-emerald-600 font-medium">${quartileSalaryInMillions.toFixed(1)}M/yr (Q{quartileInfo.quartile})</span>
                                               </Button>
                                             )}
-                                            {extensionEligibility.canDo4Year && (
+                                            {extensionEligibility.canDo4Year && !teamUsed4Year && (
                                               <Button
                                                 size="sm"
                                                 variant="outline"
@@ -3709,7 +3751,7 @@ function ManageTeamContractsTab({
                                             <span className="text-emerald-600 font-medium">${extensionEligibility.threeYearSalary}M/yr (1.8x)</span>
                                           </Button>
                                         )}
-                                        {extensionEligibility.canDo4Year && (
+                                        {extensionEligibility.canDo4Year && !teamUsed4Year && (
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -3740,7 +3782,7 @@ function ManageTeamContractsTab({
                                     )}
                                   </div>
                                   <div className="text-xs text-muted-foreground border-t pt-2">
-                                    Each team gets 1 extension per season.
+                                    Each team can use 1 of each extension type per season (1-year, 2-year, 3-year, 4-year).
                                     {extensionEligibility.requiresQuartilePricing && (
                                       <div className="mt-1 text-amber-600">
                                         Rookie contracts require quartile-based pricing.
@@ -3799,7 +3841,7 @@ function ManageTeamContractsTab({
             </p>
             <p className="flex items-center gap-2">
               <ArrowRightLeft className="w-4 h-4" />
-              <span>Extension options: 1-year at 1.2x salary OR 2-year at 1.5x salary (rounded up). Only for players in final contract year who were originally signed to multi-year deals. Each team gets 1 extension per season.</span>
+              <span>Extension options: 1-year at 1.2x, 2-year at 1.5x, 3-year at 1.8x, or 4-year at 2.0x salary (rounded up). Only for players in final contract year who were originally signed to multi-year deals. Each team can use 1 of each extension type per season.</span>
             </p>
           </div>
         </CardContent>
@@ -6031,6 +6073,37 @@ export default function Contracts() {
     },
   });
 
+  const [quartileAssignmentResult, setQuartileAssignmentResult] = useState<{
+    assigned: number;
+    total: number;
+    contracts: Array<{ playerId: string; rosterId: number; quartile: number; salary: number; years: number[] }>;
+  } | null>(null);
+
+  const assignContractsByQuartileMutation = useMutation({
+    mutationFn: async () => {
+      if (!league?.leagueId) throw new Error("League ID is required");
+      const response = await apiRequest("POST", `/api/league/${league.leagueId}/assign-contracts-by-quartile`, {});
+      return response.json();
+    },
+    onSuccess: (data) => {
+      refetchContracts();
+      setQuartileAssignmentResult(data);
+      toast({
+        title: "Contracts Assigned",
+        description: `Successfully assigned ${data.assigned || 0} out of ${data.total || 0} contracts based on quartile rankings.`,
+      });
+    },
+    onError: (error: any) => {
+      console.error("Error assigning contracts by quartile:", error);
+      setQuartileAssignmentResult(null);
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to assign contracts by quartile. Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const handleContractChange = (
     rosterId: string, 
     playerId: string, 
@@ -6481,6 +6554,98 @@ export default function Contracts() {
                 </CardContent>
               </Card>
             )}
+
+            {/* Contract Assignment Tools */}
+            <Card className="border-blue-500/50">
+              <CardHeader className="pb-3">
+                <CardTitle className="font-heading flex items-center gap-2 text-blue-600">
+                  <Calculator className="w-5 h-5" />
+                  Contract Assignment Tools
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Bulk assign contracts to players based on performance metrics or draft position.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Assign Contracts by Quartile */}
+                <div className="p-4 border rounded-lg bg-muted/50">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <h3 className="font-semibold mb-1">Assign Contracts by Quartile</h3>
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Automatically assign 2-year contracts to players with 3+ years of NFL experience based on their 
+                        fantasy point quartile rankings (Q1: $16M, Q2: $12M, Q3: $8M, Q4: $4M per year).
+                      </p>
+                      <p className="text-xs text-amber-600 font-medium">
+                        This will assign contracts to all eligible players. Existing contracts will be updated.
+                      </p>
+                      {quartileAssignmentResult && (
+                        <div className="mt-3 p-3 bg-background border rounded-md">
+                          <p className="text-sm font-medium mb-1">Assignment Results:</p>
+                          <p className="text-sm text-muted-foreground">
+                            Assigned {quartileAssignmentResult.assigned} out of {quartileAssignmentResult.total} contracts.
+                            {quartileAssignmentResult.assigned < quartileAssignmentResult.total && (
+                              <span className="text-amber-600"> Some contracts may have failed to assign.</span>
+                            )}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                    <Button
+                      variant="default"
+                      onClick={() => {
+                        if (confirm("Are you sure you want to assign contracts by quartile? This will assign contracts to all eligible players with 3+ years experience.")) {
+                          assignContractsByQuartileMutation.mutate();
+                        }
+                      }}
+                      disabled={assignContractsByQuartileMutation.isPending}
+                      className="whitespace-nowrap"
+                    >
+                      {assignContractsByQuartileMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                          Assigning...
+                        </>
+                      ) : (
+                        <>
+                          <Calculator className="w-4 h-4 mr-2" />
+                          Assign by Quartile
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                </div>
+
+                {/* Assign Rookie Contracts */}
+                <div className="p-4 border rounded-lg bg-muted/50">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <h3 className="font-semibold mb-1">Assign Rookie Contracts</h3>
+                      <p className="text-sm text-muted-foreground mb-2">
+                        Assign rookie contracts based on draft position. Rookies drafted in rounds 1-3 will receive 
+                        contracts based on the rookie pay scale (Round 1: $6-12M, Round 2: $4M, Round 3: $2M per year for 3 years).
+                      </p>
+                      <p className="text-xs text-amber-600 font-medium">
+                        This will only assign contracts to rookies with draft positions in the most recent completed draft.
+                      </p>
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        toast({
+                          title: "Coming Soon",
+                          description: "Rookie contract assignment feature is being developed. Use the Contract Input tab to manually assign rookie contracts.",
+                        });
+                      }}
+                      className="whitespace-nowrap"
+                    >
+                      <UserPlus className="w-4 h-4 mr-2" />
+                      Assign Rookies
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
             {Object.keys(playerMap).length > 0 && (
               <ContractInputTab 
