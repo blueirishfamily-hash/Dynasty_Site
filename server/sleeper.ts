@@ -265,3 +265,12 @@ export interface SleeperBracketMatchup {
 export async function getWinnersBracket(leagueId: string): Promise<SleeperBracketMatchup[]> {
   return fetchFromSleeper<SleeperBracketMatchup[]>(`/league/${leagueId}/winners_bracket`);
 }
+
+export async function getLosersBracket(leagueId: string): Promise<SleeperBracketMatchup[] | null> {
+  try {
+    return await fetchFromSleeper<SleeperBracketMatchup[]>(`/league/${leagueId}/losers_bracket`);
+  } catch (error) {
+    // Losers bracket may not exist for all leagues
+    return null;
+  }
+}

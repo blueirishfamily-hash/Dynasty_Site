@@ -56,22 +56,26 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Fetch NFL state
+        // Fetch NFL state and default league in parallel
+        const [nflStateRes, leagueRes] = await Promise.all([
+          fetch("/api/sleeper/nfl-state").catch(() => null),
+          DEFAULT_LEAGUE_ID ? fetch(`/api/sleeper/league/${DEFAULT_LEAGUE_ID}`).catch(() => null) : Promise.resolve(null),
+        ]);
+
+        // Get NFL state
+        let nflState: any = null;
         try {
-          const nflStateRes = await fetch("/api/sleeper/nfl-state");
-          if (nflStateRes.ok) {
-            const nflState = await nflStateRes.json();
+          if (nflStateRes?.ok) {
+            nflState = await nflStateRes.json();
             setCurrentWeek(nflState.week || 1);
-            setSeason(nflState.season || new Date().getFullYear().toString());
           }
         } catch (err) {
           console.warn("Failed to fetch NFL state:", err);
         }
 
-        // Fetch the default league (refresh stored data)
-        if (DEFAULT_LEAGUE_ID) {
+        // Fetch the default league (refresh stored data) and prioritize its season
+        if (DEFAULT_LEAGUE_ID && leagueRes) {
           try {
-            const leagueRes = await fetch(`/api/sleeper/league/${DEFAULT_LEAGUE_ID}`);
             if (leagueRes.ok) {
               const leagueData = await leagueRes.json();
               const leagueInfo: LeagueInfo = {
@@ -86,6 +90,9 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
               };
               setLeagueState(leagueInfo);
               localStorage.setItem(STORAGE_KEY_LEAGUE, JSON.stringify(leagueInfo));
+              
+              // Prioritize league season over NFL state season
+              setSeason(leagueInfo.season || nflState?.season || new Date().getFullYear().toString());
             } else {
               let errorData: any = { error: "Unknown error" };
               try {
@@ -98,6 +105,18 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
               const hasStoredLeague = typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_LEAGUE);
               if (!hasStoredLeague) {
                 setError(`Failed to load league: ${errorData.error || "League not found"}`);
+              } else {
+                // If we have stored league, use its season
+                try {
+                  const storedLeague = JSON.parse(localStorage.getItem(STORAGE_KEY_LEAGUE)!);
+                  if (storedLeague?.season) {
+                    setSeason(storedLeague.season);
+                  } else {
+                    setSeason(nflState?.season || new Date().getFullYear().toString());
+                  }
+                } catch {
+                  setSeason(nflState?.season || new Date().getFullYear().toString());
+                }
               }
             }
           } catch (err: any) {
@@ -105,6 +124,19 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
             const hasStoredLeague = typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_LEAGUE);
             if (!hasStoredLeague) {
               setError(`Failed to connect to league: ${err?.message || "Network error"}`);
+              setSeason(nflState?.season || new Date().getFullYear().toString());
+            } else {
+              // If we have stored league, use its season
+              try {
+                const storedLeague = JSON.parse(localStorage.getItem(STORAGE_KEY_LEAGUE)!);
+                if (storedLeague?.season) {
+                  setSeason(storedLeague.season);
+                } else {
+                  setSeason(nflState?.season || new Date().getFullYear().toString());
+                }
+              } catch {
+                setSeason(nflState?.season || new Date().getFullYear().toString());
+              }
             }
           }
         } else {
@@ -112,6 +144,21 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
           const hasStoredLeague = typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_LEAGUE);
           if (!hasStoredLeague) {
             setError("No league configured. Please set up a league ID.");
+          }
+          // Set season from stored league or NFL state
+          if (hasStoredLeague) {
+            try {
+              const storedLeague = JSON.parse(localStorage.getItem(STORAGE_KEY_LEAGUE)!);
+              if (storedLeague?.season) {
+                setSeason(storedLeague.season);
+              } else {
+                setSeason(nflState?.season || new Date().getFullYear().toString());
+              }
+            } catch {
+              setSeason(nflState?.season || new Date().getFullYear().toString());
+            }
+          } else {
+            setSeason(nflState?.season || new Date().getFullYear().toString());
           }
         }
       } catch (err: any) {

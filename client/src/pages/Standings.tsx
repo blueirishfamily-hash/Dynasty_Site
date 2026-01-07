@@ -18,11 +18,20 @@ import {
 } from "recharts";
 import { ListOrdered, Target, Trophy, Crown } from "lucide-react";
 
+function getOrdinalSuffix(num: number): string {
+  const j = num % 10;
+  const k = num % 100;
+  if (j === 1 && k !== 11) return "st";
+  if (j === 2 && k !== 12) return "nd";
+  if (j === 3 && k !== 13) return "rd";
+  return "th";
+}
+
 interface BracketMatchup {
   round: number;
   matchupId: number;
-  team1: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
-  team2: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
+  team1: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
+  team2: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
   winner: number | null;
   loser: number | null;
   team1From?: { w?: number; l?: number };
@@ -30,10 +39,25 @@ interface BracketMatchup {
   placement?: number;
 }
 
+interface ConsolationMatchup {
+  gameType?: string;
+  round: number;
+  matchupId: number;
+  team1: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
+  team2: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
+  winner: number | null;
+  loser: number | null;
+  placement?: number;
+  draftPickWinner?: number;
+  draftPickLoser?: number;
+}
+
 interface BracketData {
   matchups: BracketMatchup[];
   rounds: number;
   teams: Record<number, { name: string; initials: string; avatar: string | null }>;
+  consolationMatchups?: ConsolationMatchup[];
+  draftPicks?: Record<number, number>;
 }
 
 export default function Standings() {
@@ -326,9 +350,9 @@ export default function Standings() {
                 <CardHeader>
                   <CardTitle className="font-heading flex items-center gap-2">
                     <Trophy className="w-5 h-5 text-primary" />
-                    Playoff Bracket
+                    Winners Bracket
                   </CardTitle>
-                  <p className="text-sm text-muted-foreground">Reseeding tournament format</p>
+                  <p className="text-sm text-muted-foreground">Championship tournament - Reseeding format</p>
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto pb-4">
@@ -377,22 +401,24 @@ export default function Standings() {
                                         </div>
                                       )}
                                       <div className={`flex flex-col border rounded-lg overflow-hidden ${isChampionship ? "border-primary border-2 ring-2 ring-primary/20" : "border-border"}`}>
-                                        <BracketTeamRow
-                                          team={matchup.team1}
-                                          seed={matchup.team1?.rosterId}
-                                          isWinner={matchup.winner === matchup.team1?.rosterId}
-                                          isLoser={matchup.loser === matchup.team1?.rosterId}
-                                          fromMatchup={matchup.team1From}
-                                          isTop
-                                        />
-                                        <div className="border-t border-border" />
-                                        <BracketTeamRow
-                                          team={matchup.team2}
-                                          seed={matchup.team2?.rosterId}
-                                          isWinner={matchup.winner === matchup.team2?.rosterId}
-                                          isLoser={matchup.loser === matchup.team2?.rosterId}
-                                          fromMatchup={matchup.team2From}
-                                        />
+                      <BracketTeamRow
+                        team={matchup.team1}
+                        seed={matchup.team1?.seed}
+                        isWinner={matchup.winner === matchup.team1?.rosterId}
+                        isLoser={matchup.loser === matchup.team1?.rosterId}
+                        fromMatchup={matchup.team1From}
+                        isTop
+                        draftPick={matchup.team1 ? bracketData.draftPicks?.[matchup.team1.rosterId] : undefined}
+                      />
+                      <div className="border-t border-border" />
+                      <BracketTeamRow
+                        team={matchup.team2}
+                        seed={matchup.team2?.seed}
+                        isWinner={matchup.winner === matchup.team2?.rosterId}
+                        isLoser={matchup.loser === matchup.team2?.rosterId}
+                        fromMatchup={matchup.team2From}
+                        draftPick={matchup.team2 ? bracketData.draftPicks?.[matchup.team2.rosterId] : undefined}
+                      />
                                       </div>
                                     </div>
                                   );
@@ -418,6 +444,85 @@ export default function Standings() {
                   </div>
                 </CardContent>
               </Card>
+
+              {bracketData.consolationMatchups && bracketData.consolationMatchups.length > 0 && (
+                <>
+                  <div className="relative">
+                    <div className="absolute inset-0 flex items-center">
+                      <div className="w-full border-t border-border"></div>
+                    </div>
+                    <div className="relative flex justify-center text-xs uppercase">
+                      <span className="bg-background px-2 text-muted-foreground font-medium">Consolation Bracket</span>
+                    </div>
+                  </div>
+                  <Card className="border-muted">
+                  <CardHeader className="bg-muted/30">
+                    <CardTitle className="font-heading flex items-center gap-2">
+                      <Trophy className="w-5 h-5 text-muted-foreground" />
+                      Consolation Bracket
+                    </CardTitle>
+                    <p className="text-sm text-muted-foreground">Placement games determine draft positions for playoff teams</p>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      {bracketData.consolationMatchups
+                        .filter(matchup => matchup.placement === 7 || matchup.placement === 5 || matchup.placement === 3)
+                        .sort((a, b) => {
+                          // Sort by placement (3rd, 5th, 7th)
+                          const order = [3, 5, 7];
+                          const aIndex = order.indexOf(a.placement ?? 999);
+                          const bIndex = order.indexOf(b.placement ?? 999);
+                          return aIndex - bIndex;
+                        })
+                        .map((matchup) => (
+                          <div key={`${matchup.placement || matchup.matchupId}-${matchup.matchupId}`}>
+                            <div className="text-center mb-3">
+                              <span className="font-heading text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                                {matchup.placement ? `${matchup.placement}${getOrdinalSuffix(matchup.placement)} Place Game` : "Consolation Game"}
+                              </span>
+                              {matchup.draftPickWinner && matchup.draftPickLoser && (
+                                <p className="text-xs text-muted-foreground mt-1">
+                                  Winner: Pick #{matchup.draftPickWinner} • Loser: Pick #{matchup.draftPickLoser}
+                                </p>
+                              )}
+                            </div>
+                            <div className="flex flex-col border rounded-lg overflow-hidden border-border">
+                              <BracketTeamRow
+                                team={matchup.team1}
+                                seed={matchup.team1?.seed}
+                                isWinner={matchup.winner === matchup.team1?.rosterId}
+                                isLoser={matchup.loser === matchup.team1?.rosterId}
+                                draftPick={
+                                  matchup.team1
+                                    ? matchup.winner === matchup.team1.rosterId
+                                      ? matchup.draftPickWinner
+                                      : matchup.draftPickLoser
+                                    : undefined
+                                }
+                                isTop
+                              />
+                              <div className="border-t border-border" />
+                              <BracketTeamRow
+                                team={matchup.team2}
+                                seed={matchup.team2?.seed}
+                                isWinner={matchup.winner === matchup.team2?.rosterId}
+                                isLoser={matchup.loser === matchup.team2?.rosterId}
+                                draftPick={
+                                  matchup.team2
+                                    ? matchup.winner === matchup.team2.rosterId
+                                      ? matchup.draftPickWinner
+                                      : matchup.draftPickLoser
+                                    : undefined
+                                }
+                              />
+                            </div>
+                          </div>
+                        ))}
+                    </div>
+                  </CardContent>
+                </Card>
+                </>
+              )}
 
               <Card>
                 <CardHeader className="pb-3">
@@ -459,14 +564,18 @@ function BracketTeamRow({
   isLoser,
   fromMatchup,
   isTop,
+  draftPick,
 }: {
-  team: { rosterId: number; name: string; initials: string; avatar: string | null } | null;
+  team: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
   seed?: number;
   isWinner: boolean;
   isLoser: boolean;
   fromMatchup?: { w?: number; l?: number };
   isTop?: boolean;
+  draftPick?: number;
 }) {
+  // Use seed from team object if available, otherwise use prop
+  const displaySeed = team?.seed ?? seed;
   if (!team) {
     const fromText = fromMatchup?.w 
       ? `W${fromMatchup.w}` 
@@ -502,8 +611,20 @@ function BracketTeamRow({
         </AvatarFallback>
       </Avatar>
       <span className={`text-xs font-medium truncate flex-1 ${isWinner ? "text-primary font-semibold" : isLoser ? "text-muted-foreground line-through" : ""}`}>
-        {team.name}
+        {displaySeed !== undefined && displaySeed !== null ? (
+          <>
+            <span className="text-muted-foreground font-semibold mr-1.5">#{displaySeed}</span>
+            {team.name}
+          </>
+        ) : (
+          team.name
+        )}
       </span>
+      {draftPick !== undefined && (
+        <Badge variant="outline" className="text-[10px] px-1.5 py-0.5 shrink-0">
+          Pick #{draftPick}
+        </Badge>
+      )}
       {isWinner && (
         <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
           <span className="text-[10px] font-bold text-primary-foreground">W</span>

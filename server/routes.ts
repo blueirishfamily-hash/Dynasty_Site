@@ -20,6 +20,7 @@ import {
   getDraftPicks,
   getDraft,
   getWinnersBracket,
+  getLosersBracket,
   type SleeperRoster,
   type SleeperLeagueUser,
   type SleeperPlayer,
@@ -967,13 +968,17 @@ export async function registerRoutes(
   // Get roster with player details
   app.get("/api/sleeper/league/:leagueId/roster/:userId", async (req, res) => {
     try {
-      const season = new Date().getFullYear().toString();
-      
-      const [rosters, players, seasonStats, state] = await Promise.all([
+      const [league, nflState, rosters, players] = await Promise.all([
+        getLeague(req.params.leagueId),
+        getNFLState(),
         getLeagueRosters(req.params.leagueId),
         getAllPlayers(),
+      ]);
+      
+      const season = league.season || nflState.season || new Date().getFullYear().toString();
+      
+      const [seasonStats] = await Promise.all([
         getPlayerStats(season),
-        getNFLState(),
       ]);
 
       const userRoster = rosters.find(r => r.owner_id === req.params.userId);
@@ -1114,13 +1119,14 @@ export async function registerRoutes(
   // Get position depth analysis
   app.get("/api/sleeper/league/:leagueId/depth/:userId", async (req, res) => {
     try {
-      const season = new Date().getFullYear().toString();
-      
-      const [rosters, players, state] = await Promise.all([
+      const [league, nflState, rosters, players] = await Promise.all([
+        getLeague(req.params.leagueId),
+        getNFLState(),
         getLeagueRosters(req.params.leagueId),
         getAllPlayers(),
-        getNFLState(),
       ]);
+      
+      const season = league.season || nflState.season || new Date().getFullYear().toString();
 
       const userRoster = rosters.find(r => r.owner_id === req.params.userId);
       if (!userRoster) {
@@ -1128,7 +1134,7 @@ export async function registerRoutes(
       }
 
       // Fetch weekly stats to calculate games played and PPG
-      const currentWeek = state?.week || 1;
+      const currentWeek = nflState?.week || 1;
       const weeksToFetch = Math.min(currentWeek, 8); // Use up to 8 weeks of data
       
       const playerWeeklyPoints = new Map<string, number[]>();
@@ -2747,10 +2753,13 @@ export async function registerRoutes(
   app.get("/api/sleeper/league/:leagueId/bracket", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const [bracket, rosters, users] = await Promise.all([
+      const [bracket, losersBracket, rosters, users, league, nflState] = await Promise.all([
         getWinnersBracket(leagueId),
+        getLosersBracket(leagueId).catch(() => null),
         getLeagueRosters(leagueId),
         getLeagueUsers(leagueId),
+        getLeague(leagueId).catch(() => null),
+        getNFLState(),
       ]);
 
       // Build team info map
@@ -2768,32 +2777,353 @@ export async function registerRoutes(
         });
       });
 
-      // Transform bracket matchups with team names
-      const bracketWithNames = bracket.map(matchup => ({
-        round: matchup.r,
-        matchupId: matchup.m,
-        team1: matchup.t1 ? {
-          rosterId: matchup.t1,
-          ...teamMap.get(matchup.t1),
-        } : null,
-        team2: matchup.t2 ? {
-          rosterId: matchup.t2,
-          ...teamMap.get(matchup.t2),
-        } : null,
-        winner: matchup.w,
-        loser: matchup.l,
-        team1From: matchup.t1_from,
-        team2From: matchup.t2_from,
-        placement: matchup.p,
-      }));
+      // Calculate standings to determine playoff seeds
+      const currentWeek = nflState.week;
+      const matchupHistory: Map<number, Array<{ week: number; won: boolean | null }>> = new Map();
+      rosters.forEach(r => matchupHistory.set(r.roster_id, []));
+      
+      const weeksToFetch = Math.max(1, currentWeek - 1);
+      const matchupPromises = [];
+      for (let week = 1; week <= weeksToFetch; week++) {
+        matchupPromises.push(getLeagueMatchups(leagueId, week).then(matchups => ({ week, matchups })));
+      }
+      
+      const allMatchups = await Promise.all(matchupPromises);
+      
+      for (const { week, matchups } of allMatchups) {
+        const matchupGroups = new Map<number, typeof matchups>();
+        matchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) {
+            matchupGroups.set(m.matchup_id, []);
+          }
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+        
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          const [team1, team2] = group;
+          const score1 = team1.points || 0;
+          const score2 = team2.points || 0;
+          
+          if (score1 === 0 && score2 === 0) return;
+          
+          const history1 = matchupHistory.get(team1.roster_id);
+          const history2 = matchupHistory.get(team2.roster_id);
+          
+          if (score1 > score2) {
+            history1?.push({ week, won: true });
+            history2?.push({ week, won: false });
+          } else if (score2 > score1) {
+            history1?.push({ week, won: false });
+            history2?.push({ week, won: true });
+          }
+        });
+      }
+
+      // Calculate standings
+      const standings = rosters
+        .map((roster) => {
+          const wins = roster.settings.wins;
+          const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
+          return {
+            rosterId: roster.roster_id,
+            wins,
+            pointsFor,
+          };
+        })
+        .sort((a, b) => {
+          if (b.wins !== a.wins) return b.wins - a.wins;
+          return b.pointsFor - a.pointsFor;
+        });
+
+      // Create seed map (1-indexed)
+      const seedMap = new Map<number, number>();
+      standings.forEach((team, index) => {
+        seedMap.set(team.rosterId, index + 1);
+      });
 
       // Determine number of rounds
       const maxRound = Math.max(...bracket.map(m => m.r), 0);
+      const playoffTeams = league?.settings?.playoff_teams || 6;
+
+      // Transform bracket matchups with team names and seeds
+      const bracketWithNames = bracket.map(matchup => {
+        const team1Data = matchup.t1 ? teamMap.get(matchup.t1) : null;
+        const team2Data = matchup.t2 ? teamMap.get(matchup.t2) : null;
+        const team1Seed = matchup.t1 ? seedMap.get(matchup.t1) : undefined;
+        const team2Seed = matchup.t2 ? seedMap.get(matchup.t2) : undefined;
+        
+        return {
+          round: matchup.r,
+          matchupId: matchup.m,
+          team1: matchup.t1 && team1Data ? {
+            rosterId: matchup.t1,
+            name: team1Data.name,
+            initials: team1Data.initials,
+            avatar: team1Data.avatar,
+            seed: team1Seed,
+          } : null,
+          team2: matchup.t2 && team2Data ? {
+            rosterId: matchup.t2,
+            name: team2Data.name,
+            initials: team2Data.initials,
+            avatar: team2Data.avatar,
+            seed: team2Seed,
+          } : null,
+          winner: matchup.w,
+          loser: matchup.l,
+          team1From: matchup.t1_from,
+          team2From: matchup.t2_from,
+          placement: matchup.p,
+        };
+      });
+
+      // Calculate draft picks for main bracket teams
+      // Champion gets highest pick (pick = total teams), runner-up gets second highest, etc.
+      const draftPickMap = new Map<number, number>();
+      
+      // Find champion and runner-up from final round
+      const finalRound = bracket.filter(m => m.r === maxRound);
+      if (finalRound.length > 0 && finalRound[0].w && finalRound[0].l) {
+        draftPickMap.set(finalRound[0].w, playoffTeams); // Champion
+        draftPickMap.set(finalRound[0].l, playoffTeams - 1); // Runner-up
+      }
+
+      // Construct consolation games - include ALL losers bracket games
+      const consolationMatchups: Array<{
+        gameType?: string;
+        round: number;
+        matchupId: number;
+        team1: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
+        team2: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
+        winner: number | null;
+        loser: number | null;
+        placement?: number;
+        draftPickWinner?: number;
+        draftPickLoser?: number;
+      }> = [];
+
+      if (losersBracket && losersBracket.length > 0) {
+        // Use Sleeper's losers bracket - filter for 7th, 5th, and 3rd place games
+        const targetPlacements = [7, 5, 3];
+        
+        losersBracket
+          .filter(matchup => matchup.p !== undefined && targetPlacements.includes(matchup.p))
+          .forEach(matchup => {
+            // Determine draft picks based on placement
+            let draftPickWinner: number | undefined;
+            let draftPickLoser: number | undefined;
+            
+            if (matchup.p !== undefined) {
+              // Placement determines draft pick
+              // For 6-team playoff: 3rd = pick 10, 5th = pick 8, 7th = pick 6
+              // Formula: draftPick = playoffTeams - (placement - 2) for winner
+              if (matchup.p === 3) {
+                draftPickWinner = playoffTeams - 2; // 10th pick
+                draftPickLoser = playoffTeams - 3; // 9th pick
+              } else if (matchup.p === 5) {
+                draftPickWinner = playoffTeams - 4; // 8th pick
+                draftPickLoser = playoffTeams - 5; // 7th pick
+              } else if (matchup.p === 7) {
+                draftPickWinner = playoffTeams - 6; // 6th pick
+                draftPickLoser = playoffTeams - 7; // 5th pick
+              }
+            }
+
+            const team1Data = matchup.t1 ? teamMap.get(matchup.t1) : null;
+            const team2Data = matchup.t2 ? teamMap.get(matchup.t2) : null;
+            const team1Seed = matchup.t1 ? seedMap.get(matchup.t1) : undefined;
+            const team2Seed = matchup.t2 ? seedMap.get(matchup.t2) : undefined;
+            
+            consolationMatchups.push({
+              gameType: matchup.p ? `${matchup.p}` : undefined,
+              round: matchup.r,
+              matchupId: matchup.m,
+              team1: matchup.t1 && team1Data ? {
+                rosterId: matchup.t1,
+                name: team1Data.name,
+                initials: team1Data.initials,
+                avatar: team1Data.avatar,
+                seed: team1Seed,
+              } : null,
+              team2: matchup.t2 && team2Data ? {
+                rosterId: matchup.t2,
+                name: team2Data.name,
+                initials: team2Data.initials,
+                avatar: team2Data.avatar,
+                seed: team2Seed,
+              } : null,
+              winner: matchup.w,
+              loser: matchup.l,
+              placement: matchup.p,
+              draftPickWinner,
+              draftPickLoser,
+            });
+            
+            if (draftPickWinner && matchup.w) draftPickMap.set(matchup.w, draftPickWinner);
+            if (draftPickLoser && matchup.l) draftPickMap.set(matchup.l, draftPickLoser);
+          });
+      } else {
+        // Construct 7th, 5th, and 3rd place games from winners bracket when Sleeper API not available
+        const targetPlacements = [7, 5, 3];
+        let matchupIdCounter = 100;
+
+        // Try to find games with specific placements in winners bracket first
+        targetPlacements.forEach(placement => {
+          const existingMatchup = bracket.find(m => m.p === placement);
+          
+          if (existingMatchup) {
+            let draftPickWinner: number | undefined;
+            let draftPickLoser: number | undefined;
+            
+            if (placement === 3) {
+              draftPickWinner = playoffTeams - 2; // 10th pick
+              draftPickLoser = playoffTeams - 3; // 9th pick
+            } else if (placement === 5) {
+              draftPickWinner = playoffTeams - 4; // 8th pick
+              draftPickLoser = playoffTeams - 5; // 7th pick
+            } else if (placement === 7) {
+              draftPickWinner = playoffTeams - 6; // 6th pick
+              draftPickLoser = playoffTeams - 7; // 5th pick
+            }
+
+            const existingTeam1Data = existingMatchup.t1 ? teamMap.get(existingMatchup.t1) : null;
+            const existingTeam2Data = existingMatchup.t2 ? teamMap.get(existingMatchup.t2) : null;
+            const existingTeam1Seed = existingMatchup.t1 ? seedMap.get(existingMatchup.t1) : undefined;
+            const existingTeam2Seed = existingMatchup.t2 ? seedMap.get(existingMatchup.t2) : undefined;
+            
+            consolationMatchups.push({
+              gameType: `${placement}`,
+              round: existingMatchup.r,
+              matchupId: existingMatchup.m,
+              team1: existingMatchup.t1 && existingTeam1Data ? {
+                rosterId: existingMatchup.t1,
+                name: existingTeam1Data.name,
+                initials: existingTeam1Data.initials,
+                avatar: existingTeam1Data.avatar,
+                seed: existingTeam1Seed,
+              } : null,
+              team2: existingMatchup.t2 && existingTeam2Data ? {
+                rosterId: existingMatchup.t2,
+                name: existingTeam2Data.name,
+                initials: existingTeam2Data.initials,
+                avatar: existingTeam2Data.avatar,
+                seed: existingTeam2Seed,
+              } : null,
+              winner: existingMatchup.w || null,
+              loser: existingMatchup.l || null,
+              placement,
+              draftPickWinner,
+              draftPickLoser,
+            });
+
+            if (draftPickWinner && existingMatchup.w) draftPickMap.set(existingMatchup.w, draftPickWinner);
+            if (draftPickLoser && existingMatchup.l) draftPickMap.set(existingMatchup.l, draftPickLoser);
+          } else {
+            // Construct from bracket structure if not found
+            const losersByRound = new Map<number, number[]>();
+            
+            bracket.forEach(matchup => {
+              if (matchup.l !== null) {
+                if (!losersByRound.has(matchup.r)) {
+                  losersByRound.set(matchup.r, []);
+                }
+                losersByRound.get(matchup.r)!.push(matchup.l);
+              }
+            });
+
+            // Determine which round losers correspond to which placement
+            let team1: number | null = null;
+            let team2: number | null = null;
+            let round = maxRound + 1;
+
+            if (placement === 3) {
+              // 3rd place: Semifinal losers
+              const semifinalRound = maxRound - 1;
+              if (semifinalRound >= 1) {
+                const semifinalLosers = losersByRound.get(semifinalRound) || [];
+                const uniqueLosers = semifinalLosers.filter((id, index, self) => self.indexOf(id) === index);
+                if (uniqueLosers.length >= 2) {
+                  team1 = uniqueLosers[0];
+                  team2 = uniqueLosers[1];
+                  round = maxRound;
+                }
+              }
+            } else if (placement === 5) {
+              // 5th place: First round losers (if 6+ teams)
+              const firstRoundLosers = losersByRound.get(1) || [];
+              const uniqueLosers = firstRoundLosers.filter((id, index, self) => self.indexOf(id) === index);
+              if (uniqueLosers.length >= 2) {
+                team1 = uniqueLosers[0];
+                team2 = uniqueLosers[1];
+                round = maxRound + 1;
+              }
+            } else if (placement === 7) {
+              // 7th place: First round losers (if 8+ teams, second pair)
+              const firstRoundLosers = losersByRound.get(1) || [];
+              const uniqueLosers = firstRoundLosers.filter((id, index, self) => self.indexOf(id) === index);
+              if (uniqueLosers.length >= 4) {
+                team1 = uniqueLosers[2];
+                team2 = uniqueLosers[3];
+                round = maxRound + 1;
+              }
+            }
+
+            if (team1 && team2) {
+              let draftPickWinner: number | undefined;
+              let draftPickLoser: number | undefined;
+              
+              if (placement === 3) {
+                draftPickWinner = playoffTeams - 2;
+                draftPickLoser = playoffTeams - 3;
+              } else if (placement === 5) {
+                draftPickWinner = playoffTeams - 4;
+                draftPickLoser = playoffTeams - 5;
+              } else if (placement === 7) {
+                draftPickWinner = playoffTeams - 6;
+                draftPickLoser = playoffTeams - 7;
+              }
+
+              const constructedTeam1Data = teamMap.get(team1);
+              const constructedTeam2Data = teamMap.get(team2);
+              const constructedTeam1Seed = seedMap.get(team1);
+              const constructedTeam2Seed = seedMap.get(team2);
+              
+              consolationMatchups.push({
+                gameType: `${placement}`,
+                round,
+                matchupId: matchupIdCounter++,
+                team1: constructedTeam1Data ? {
+                  rosterId: team1,
+                  name: constructedTeam1Data.name,
+                  initials: constructedTeam1Data.initials,
+                  avatar: constructedTeam1Data.avatar,
+                  seed: constructedTeam1Seed,
+                } : null,
+                team2: constructedTeam2Data ? {
+                  rosterId: team2,
+                  name: constructedTeam2Data.name,
+                  initials: constructedTeam2Data.initials,
+                  avatar: constructedTeam2Data.avatar,
+                  seed: constructedTeam2Seed,
+                } : null,
+                winner: null,
+                loser: null,
+                placement,
+                draftPickWinner,
+                draftPickLoser,
+              });
+            }
+          }
+        });
+      }
 
       res.json({
         matchups: bracketWithNames,
         rounds: maxRound,
         teams: Object.fromEntries(teamMap),
+        consolationMatchups: consolationMatchups.length > 0 ? consolationMatchups : undefined,
+        draftPicks: Object.fromEntries(draftPickMap),
       });
     } catch (error) {
       console.error("Error fetching playoff bracket:", error);
@@ -3768,10 +4098,12 @@ export async function registerRoutes(
     try {
       const { playerId } = req.params;
       const week = parseInt(req.query.week as string) || 1;
+      const leagueId = req.query.leagueId as string;
       
-      const [players, nflState] = await Promise.all([
+      const [players, nflState, league] = await Promise.all([
         getAllPlayers(),
         getNFLState(),
+        leagueId ? getLeague(leagueId).catch(() => null) : Promise.resolve(null),
       ]);
       
       const player = players[playerId];
@@ -3779,7 +4111,7 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Player not found" });
       }
       
-      const season = nflState.season;
+      const season = league?.season || nflState.season || new Date().getFullYear().toString();
       const currentWeek = nflState.week;
       
       // Fetch weekly stats and projections for all weeks played so far
