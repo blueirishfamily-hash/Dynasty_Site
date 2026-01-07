@@ -59,7 +59,7 @@ function Router() {
 }
 
 function AppContent() {
-  const { user, league, clearSession, season, isLoading } = useSleeper();
+  const { user, league, clearSession, season, isLoading, error } = useSleeper();
   const [showSetup, setShowSetup] = useState(false);
   const [, setLocation] = useLocation();
 
@@ -121,6 +121,24 @@ function AppContent() {
         <div className="text-center">
           <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
           <p className="text-muted-foreground">Connecting to league...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show error state if league failed to load and no stored league exists
+  if (error && !league) {
+    return (
+      <div className="flex items-center justify-center h-screen bg-background">
+        <div className="text-center max-w-md p-6">
+          <div className="text-destructive mb-4">
+            <h2 className="font-heading text-2xl font-bold mb-2">Connection Error</h2>
+            <p className="text-muted-foreground">{error}</p>
+          </div>
+          <Button onClick={() => window.location.reload()} className="mt-4">
+            <RefreshCw className="w-4 h-4 mr-2" />
+            Retry
+          </Button>
         </div>
       </div>
     );

@@ -37,7 +37,7 @@ import type {
   DraftPick,
   Position,
   PlayerBid,
-} from "@shared/schema";
+} from "../shared/schema";
 
 function getTeamInitials(name: string): string {
   const words = name.split(/\s+/).filter(w => w.length > 0);
@@ -1520,6 +1520,9 @@ export async function registerRoutes(
     // Declare variables at function scope for error handler access
     let leagueId: string | undefined;
     let currentYear: number | undefined;
+    let nextYear: number | undefined;
+    let currentYearNum: number | undefined;
+    let nextYearNum: number | undefined;
     let contractsToAssign: Array<{rosterId: number; playerId: string; salary: number; quartile: number}> = [];
     
     // Environment and Version Logging
@@ -1612,8 +1615,8 @@ export async function registerRoutes(
       const season = league.season || nflState?.season || "2025";
       // Handle both string and number seasons, ensure valid year
       const seasonNum = typeof season === 'string' ? parseInt(season, 10) : season;
-      const currentYear = (!isNaN(seasonNum) && seasonNum > 2000 && seasonNum < 2100) ? seasonNum : new Date().getFullYear();
-      const nextYear = currentYear + 1;
+      currentYear = (!isNaN(seasonNum) && seasonNum > 2000 && seasonNum < 2100) ? seasonNum : new Date().getFullYear();
+      nextYear = currentYear + 1;
       const currentWeek = nflState?.week || 18;
       
       // Year Calculation Logging
@@ -1622,7 +1625,48 @@ export async function registerRoutes(
       console.log(`[Assign Contracts] Parsed season number: ${seasonNum}`);
       console.log(`[Assign Contracts] Current year: ${currentYear}, Next year: ${nextYear}`);
       console.log(`[Assign Contracts] Current week: ${currentWeek}`);
-      console.log(`[Assign Contracts] Processing contracts for season ${season}, current year: ${currentYear}, next year: ${nextYear}`);
+      
+      // EARLY VALIDATION: Validate years are in supported range before processing
+      // This prevents wasting time processing contracts if years are invalid
+      const yearMap: Record<number, 'salary2025' | 'salary2026' | 'salary2027' | 'salary2028' | 'salary2029'> = {
+        2025: 'salary2025',
+        2026: 'salary2026',
+        2027: 'salary2027',
+        2028: 'salary2028',
+        2029: 'salary2029',
+      };
+      
+      // Ensure years are valid numbers
+      currentYearNum = Number(currentYear);
+      nextYearNum = Number(nextYear);
+      
+      if (isNaN(currentYearNum) || isNaN(nextYearNum) || !isFinite(currentYearNum) || !isFinite(nextYearNum)) {
+        const errorMsg = `Invalid year values: currentYear=${currentYear} (type: ${typeof currentYear}), nextYear=${nextYear} (type: ${typeof nextYear})`;
+        console.error(`[Assign Contracts] ${errorMsg}`);
+        return res.status(400).json({
+          success: false,
+          error: "Invalid year values",
+          message: errorMsg,
+          currentYear,
+          nextYear,
+        });
+      }
+      
+      // Validate years are in supported range (2025-2029)
+      if (!yearMap[currentYearNum] || !yearMap[nextYearNum]) {
+        const errorMsg = `Year range ${currentYearNum}-${nextYearNum} is outside the supported range (2025-2029). Contracts can only be assigned for years 2025-2029.`;
+        console.error(`[Assign Contracts] ${errorMsg}`);
+        return res.status(400).json({
+          success: false,
+          error: "Invalid year range",
+          message: errorMsg,
+          currentYear: currentYearNum,
+          nextYear: nextYearNum,
+          supportedRange: "2025-2029",
+        });
+      }
+      
+      console.log(`[Assign Contracts] Processing contracts for season ${season}, current year: ${currentYearNum}, next year: ${nextYearNum}`);
       
       // Get player stats (reuse logic from player rankings)
       let playerTotalPoints: Map<string, number> = new Map();
@@ -1846,7 +1890,11 @@ export async function registerRoutes(
           }
           
           console.log(`[Assign Contracts] ${position} quartiles:`, quartiles);
-          console.log(`[Assign Contracts] ${position} processing: ${sortedPlayers.length} players, points range [${Math.min(...points).toFixed(1)}, ${Math.max(...points).toFixed(1)}]`);
+          // Safety check: ensure points array is not empty before calling Math.min/Max
+          const pointsRange = points.length > 0 
+            ? `[${Math.min(...points).toFixed(1)}, ${Math.max(...points).toFixed(1)}]`
+            : `[N/A - no valid points]`;
+          console.log(`[Assign Contracts] ${position} processing: ${sortedPlayers.length} players, points range ${pointsRange}`);
           
           sortedPlayers.forEach(player => {
             try {
@@ -1899,46 +1947,20 @@ export async function registerRoutes(
           success: true,
           assigned: 0,
           total: 0,
-          currentYear,
-          nextYear,
+          currentYear: currentYearNum,
+          nextYear: nextYearNum,
           contracts: [],
-          message: "No eligible players found with 3+ years of experience and fantasy points.",
+          message: "No eligible players found with 3+ years of experience and fantasy points. Ensure players have sufficient NFL experience and fantasy points for the current season.",
         });
       }
 
       // Assign contracts (2 years: current year and next year)
+      // Note: Year validation has already been performed earlier in the function
       const results: Array<{playerId: string; rosterId: number; quartile: number; salary: number; years: number[]}> = [];
-      const yearMap: Record<number, 'salary2025' | 'salary2026' | 'salary2027' | 'salary2028' | 'salary2029'> = {
-        2025: 'salary2025',
-        2026: 'salary2026',
-        2027: 'salary2027',
-        2028: 'salary2028',
-        2029: 'salary2029',
-      };
-
-      // Validate years are in range
-      if (!yearMap[currentYear] || !yearMap[nextYear]) {
-        const errorMsg = `Years ${currentYear} and ${nextYear} are outside the supported range (2025-2029).`;
-        console.error(`[Assign Contracts] ${errorMsg}`);
-        return res.status(400).json({
-          success: false,
-          error: "Invalid year range",
-          message: errorMsg,
-          currentYear,
-          nextYear,
-        });
-      }
       
-      // Additional validation: ensure years are valid numbers
-      if (isNaN(currentYear) || isNaN(nextYear) || !isFinite(currentYear) || !isFinite(nextYear)) {
-        const errorMsg = `Invalid year values: currentYear=${currentYear}, nextYear=${nextYear}`;
-        console.error(`[Assign Contracts] ${errorMsg}`);
-        return res.status(400).json({
-          success: false,
-          error: "Invalid year values",
-          message: errorMsg,
-        });
-      }
+      // Reuse yearMap from earlier validation (defined at line 1628)
+      // Years have already been validated as valid numbers in range 2025-2029
+      // yearMap is still in scope from the validation section above
 
       // Database State Logging
       console.log(`[Assign Contracts] --- DATABASE STATE ---`);
@@ -1996,11 +2018,47 @@ export async function registerRoutes(
             extensionYear: null,
             extensionSalary: null,
             extensionType: null,
+            // Note: hasBeenExtended and hasBeenFranchiseTagged are not set here
+            // The storage layer will handle these fields with defaults if the database columns exist
           };
 
           // Set salary for current year and next year (2-year contract)
-          contractData[yearMap[currentYear]] = contract.salary;
-          contractData[yearMap[nextYear]] = contract.salary;
+          // Years have already been validated earlier (currentYearNum and nextYearNum are in function scope)
+          // Get year keys using the validated values
+          const currentYearKey = yearMap[currentYearNum!];
+          const nextYearKey = yearMap[nextYearNum!];
+          
+          // Defensive check: if year keys are undefined (shouldn't happen after validation, but be safe)
+          if (!currentYearKey || !nextYearKey) {
+            const errorMsg = `Invalid year mapping: currentYear=${currentYear} (num=${currentYearNum}, key=${currentYearKey}), nextYear=${nextYear} (num=${nextYearNum}, key=${nextYearKey}). This should not happen after validation.`;
+            console.error(`[Assign Contracts] ${errorMsg} for player ${contract.playerId}`);
+            continue; // Skip this contract assignment
+          }
+          
+          // Validate salary is a valid integer
+          const salaryValue = Number(contract.salary);
+          if (isNaN(salaryValue) || !isFinite(salaryValue) || salaryValue < 0) {
+            console.error(`[Assign Contracts] Invalid salary value: ${contract.salary} (converted to ${salaryValue}) for player ${contract.playerId}. Contract assignment skipped.`);
+            continue; // Skip this contract assignment
+          }
+          
+          // Round salary to ensure it's an integer
+          const roundedSalary = Math.round(salaryValue);
+          
+          try {
+            // Assign salaries with proper type coercion
+            contractData[currentYearKey] = roundedSalary;
+            contractData[nextYearKey] = roundedSalary;
+            
+            // Validate assignment succeeded
+            if (contractData[currentYearKey] !== roundedSalary || contractData[nextYearKey] !== roundedSalary) {
+              throw new Error(`Salary assignment failed: expected ${roundedSalary} but got currentYear=${contractData[currentYearKey]}, nextYear=${contractData[nextYearKey]}`);
+            }
+          } catch (err: any) {
+            console.error(`[Assign Contracts] Error setting salary fields for player ${contract.playerId}:`, err);
+            console.error(`[Assign Contracts] Error details: currentYear=${currentYearNum} (key=${currentYearKey}), nextYear=${nextYearNum} (key=${nextYearKey}), salary=${roundedSalary}`);
+            continue; // Skip this contract assignment
+          }
 
           const result = await storage.upsertPlayerContract(contractData);
           // Only include serializable data in results
@@ -2009,11 +2067,20 @@ export async function registerRoutes(
             rosterId: contract.rosterId,
             quartile: contract.quartile,
             salary: contract.salary,
-            years: [currentYear, nextYear],
+            years: [currentYearNum!, nextYearNum!],
           });
         } catch (err: any) {
-          console.error(`[Assign Contracts] Error assigning contract for player ${contract.playerId}:`, err);
-          console.error(`[Assign Contracts] Error details:`, err.message, err.stack);
+          const errorMessage = err?.message || String(err) || 'Unknown error';
+          console.error(`[Assign Contracts] Error assigning contract for player ${contract.playerId} (roster ${contract.rosterId}, quartile ${contract.quartile}):`, errorMessage);
+          console.error(`[Assign Contracts] Error stack:`, err?.stack);
+          console.error(`[Assign Contracts] Contract data that failed:`, {
+            playerId: contract.playerId,
+            rosterId: contract.rosterId,
+            quartile: contract.quartile,
+            salary: contract.salary,
+            currentYear: currentYearNum,
+            nextYear: nextYearNum,
+          });
           // Continue with other contracts even if one fails
         }
       }
@@ -2050,12 +2117,15 @@ export async function registerRoutes(
       console.log(`[Assign Contracts] Device: ${deviceId}`);
       console.log(`[Assign Contracts] Duration: ${duration}ms`);
       console.log(`[Assign Contracts] League: ${leagueId}, Season: ${season}`);
-      console.log(`[Assign Contracts] Years: ${currentYear}-${nextYear}`);
+      console.log(`[Assign Contracts] Years: ${currentYearNum}-${nextYearNum}`);
       console.log(`[Assign Contracts] Players processed: ${filterStats.totalPlayers}`);
       console.log(`[Assign Contracts] Players included: ${filterStats.included}`);
       console.log(`[Assign Contracts] Contracts assigned: ${results.length}/${contractsToAssign.length}`);
       console.log(`[Assign Contracts] Stats source: ${playerTotalPoints.size > 0 ? 'available' : 'missing'}`);
       console.log(`[Assign Contracts] Existing contracts: ${existingContracts.length}`);
+      if (results.length < contractsToAssign.length) {
+        console.warn(`[Assign Contracts] WARNING: ${contractsToAssign.length - results.length} contract(s) failed to assign. Check error logs above for details.`);
+      }
       console.log(`[Assign Contracts] ========== DIAGNOSTIC END ==========`);
       
       // Ensure all data is serializable (convert to plain objects/numbers)
@@ -2063,8 +2133,8 @@ export async function registerRoutes(
         success: true,
         assigned: Number(results.length),
         total: Number(contractsToAssign.length),
-        currentYear: Number(currentYear),
-        nextYear: Number(nextYear),
+        currentYear: Number(currentYearNum),
+        nextYear: Number(nextYearNum),
         contracts: results.map(r => ({
           playerId: String(r.playerId),
           rosterId: Number(r.rosterId),
@@ -2091,38 +2161,59 @@ export async function registerRoutes(
       
       // Log error context if available
       if (error?.leagueId) console.error(`[Assign Contracts] Error context - leagueId: ${error.leagueId}`);
-      if (error?.currentYear) console.error(`[Assign Contracts] Error context - currentYear: ${error.currentYear}`);
-      if (error?.contractsToAssign) console.error(`[Assign Contracts] Error context - contractsToAssign count: ${error.contractsToAssign.length}`);
       
-      // Log state at error time
+      // Log state at error time with better error messages
       try {
         const contractsCount = contractsToAssign ? contractsToAssign.length : 'not initialized';
-        console.error(`[Assign Contracts] State at error: leagueId=${leagueId || 'not set'}, currentYear=${currentYear || 'not set'}, contractsToAssign=${contractsCount}`);
-      } catch (stateError) {
-        console.error(`[Assign Contracts] Could not log state: ${stateError}`);
+        const yearInfo = typeof currentYear !== 'undefined' && typeof nextYear !== 'undefined' 
+          ? `currentYear=${currentYear} (num=${typeof currentYearNum !== 'undefined' ? currentYearNum : 'N/A'}), nextYear=${nextYear} (num=${typeof nextYearNum !== 'undefined' ? nextYearNum : 'N/A'})`
+          : 'not calculated';
+        console.error(`[Assign Contracts] State at error: leagueId=${leagueId || 'not set'}, ${yearInfo}, contractsToAssign=${contractsCount}`);
+        
+        // Provide helpful context based on where the error might have occurred
+        if (typeof currentYearNum !== 'undefined' && typeof nextYearNum !== 'undefined') {
+          const supportedYears = [2025, 2026, 2027, 2028, 2029];
+          if (!supportedYears.includes(currentYearNum) || !supportedYears.includes(nextYearNum)) {
+            console.error(`[Assign Contracts] Year validation issue: Years ${currentYearNum}-${nextYearNum} may be outside supported range (2025-2029)`);
+          }
+        }
+      } catch (stateError: any) {
+        console.error(`[Assign Contracts] Could not log state: ${stateError?.message || String(stateError)}`);
       }
       
       console.error(`[Assign Contracts] ======================================`);
       
-      // Ensure we always return valid JSON
+      // Ensure we always return valid JSON with helpful error messages
       try {
+        let userFriendlyMessage = error?.message || String(error) || "Unknown error occurred while assigning contracts";
+        
+        // Provide more specific error messages for common issues
+        if (userFriendlyMessage.includes('year') || userFriendlyMessage.includes('2025') || userFriendlyMessage.includes('2029')) {
+          userFriendlyMessage = `Year range error: ${userFriendlyMessage}. Contracts can only be assigned for years 2025-2029.`;
+        } else if (userFriendlyMessage.includes('salary') || userFriendlyMessage.includes('contract')) {
+          userFriendlyMessage = `Contract assignment error: ${userFriendlyMessage}. Please check that all contract data is valid.`;
+        } else if (userFriendlyMessage.includes('database') || userFriendlyMessage.includes('db')) {
+          userFriendlyMessage = `Database error: ${userFriendlyMessage}. Please try again or contact support if the issue persists.`;
+        }
+        
         const errorResponse = {
           success: false,
-          error: "Failed to assign contracts",
-          message: error?.message || String(error) || "Unknown error",
+          error: "Failed to assign contracts by quartile",
+          message: userFriendlyMessage,
           details: process.env.NODE_ENV === "development" ? error?.stack : undefined,
           deviceId,
           timestamp: new Date().toISOString(),
         };
         console.log("[Assign Contracts] Sending error response:", errorResponse);
         res.status(500).json(errorResponse);
-      } catch (jsonError) {
+      } catch (jsonError: any) {
         // If JSON response fails, send plain text as fallback
-        console.error("[Assign Contracts] Failed to send JSON error response:", jsonError);
+        console.error("[Assign Contracts] Failed to send JSON error response:", jsonError?.message || String(jsonError));
         try {
-          res.status(500).send(`Error: ${error?.message || String(error) || "Unknown error"}`);
-        } catch (sendError) {
-          console.error("[Assign Contracts] Failed to send error response at all:", sendError);
+          const fallbackMessage = error?.message || String(error) || "Unknown error occurred while assigning contracts by quartile";
+          res.status(500).send(`Error: ${fallbackMessage}`);
+        } catch (sendError: any) {
+          console.error("[Assign Contracts] Failed to send error response at all:", sendError?.message || String(sendError));
         }
       }
     }

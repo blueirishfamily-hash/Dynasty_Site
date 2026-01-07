@@ -13,7 +13,7 @@ import {
   savedContractDraftsTable,
   contractApprovalRequestsTable,
   teamExtensionsTable,
-} from "@shared/schema";
+} from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
   AwardNomination, InsertAwardNomination,
@@ -26,7 +26,7 @@ import type {
   SavedContractDraft, InsertSavedContractDraft,
   ContractApprovalRequest, InsertContractApprovalRequest,
   TeamExtension, InsertTeamExtension
-} from "@shared/schema";
+} from "../shared/schema";
 
 export interface UserSession {
   id: string;
@@ -664,42 +664,80 @@ export class DatabaseStorage implements IStorage {
       // If rosterId changed, this is a player moving teams - reset tracking flags
       const isNewRoster = existing.rosterId !== data.rosterId;
       
-      const [updated] = await db
-        .update(playerContractsTable)
-        .set({
-          salary2025: data.salary2025,
-          salary2026: data.salary2026,
-          salary2027: data.salary2027,
-          salary2028: data.salary2028,
-          salary2029: (data as any).salary2029 ?? existing.salary2029,
-          fifthYearOption: data.fifthYearOption,
-          isOnIr: data.isOnIr ?? existing.isOnIr,
-          franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
-          franchiseTagYear: data.franchiseTagYear ?? existing.franchiseTagYear,
-          originalContractYears: data.originalContractYears !== undefined ? data.originalContractYears : existing.originalContractYears,
-          isRookieContract: (data as any).isRookieContract ?? existing.isRookieContract,
-          extensionApplied: data.extensionApplied ?? existing.extensionApplied,
-          extensionYear: data.extensionYear ?? existing.extensionYear,
-          extensionSalary: data.extensionSalary ?? existing.extensionSalary,
-          extensionType: (data as any).extensionType ?? existing.extensionType,
-          hasBeenExtended: isNewRoster ? 0 : ((data as any).hasBeenExtended !== undefined ? (data as any).hasBeenExtended : existing.hasBeenExtended ?? 0),
-          hasBeenFranchiseTagged: isNewRoster ? 0 : ((data as any).hasBeenFranchiseTagged !== undefined ? (data as any).hasBeenFranchiseTagged : existing.hasBeenFranchiseTagged ?? 0),
-          updatedAt,
-        })
-        .where(eq(playerContractsTable.id, existing.id))
-        .returning();
+      // Build update object, conditionally including tracking fields
+      const updateData: any = {
+        salary2025: data.salary2025,
+        salary2026: data.salary2026,
+        salary2027: data.salary2027,
+        salary2028: data.salary2028,
+        salary2029: (data as any).salary2029 ?? existing.salary2029,
+        fifthYearOption: data.fifthYearOption,
+        isOnIr: data.isOnIr ?? existing.isOnIr,
+        franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
+        franchiseTagYear: data.franchiseTagYear ?? existing.franchiseTagYear,
+        originalContractYears: data.originalContractYears !== undefined ? data.originalContractYears : existing.originalContractYears,
+        isRookieContract: (data as any).isRookieContract ?? existing.isRookieContract,
+        extensionApplied: data.extensionApplied ?? existing.extensionApplied,
+        extensionYear: data.extensionYear ?? existing.extensionYear,
+        extensionSalary: data.extensionSalary ?? existing.extensionSalary,
+        extensionType: (data as any).extensionType ?? existing.extensionType,
+        updatedAt: Date.now(),
+      };
 
-      return updated;
+      // Only update hasBeenExtended and hasBeenFranchiseTagged if explicitly provided or if roster changed
+      // This allows the code to work even if these database columns don't exist yet
+      if (isNewRoster || (data as any).hasBeenExtended !== undefined) {
+        updateData.hasBeenExtended = isNewRoster ? 0 : ((data as any).hasBeenExtended ?? existing.hasBeenExtended ?? 0);
+      }
+      if (isNewRoster || (data as any).hasBeenFranchiseTagged !== undefined) {
+        updateData.hasBeenFranchiseTagged = isNewRoster ? 0 : ((data as any).hasBeenFranchiseTagged ?? existing.hasBeenFranchiseTagged ?? 0);
+      }
+      
+      // Fix updatedAt to use the variable consistently
+      updateData.updatedAt = updatedAt;
+      
+      try {
+        const [updated] = await db
+          .update(playerContractsTable)
+          .set(updateData)
+          .where(eq(playerContractsTable.id, existing.id))
+          .returning();
+
+        return updated;
+      } catch (error: any) {
+        // Handle missing column errors (PostgreSQL error code 42703 or error messages about missing columns)
+        const errorCode = error?.code;
+        const errorMessage = (error?.message || String(error) || '').toLowerCase();
+        const isColumnError = errorCode === '42703' || 
+                              (errorMessage.includes('column') && 
+                               (errorMessage.includes('does not exist') || 
+                                errorMessage.includes('undefined') ||
+                                errorMessage.includes('unknown')));
+        
+        if (isColumnError && (updateData.hasBeenExtended !== undefined || updateData.hasBeenFranchiseTagged !== undefined)) {
+          // Retry without the problematic tracking fields
+          const retryUpdateData = { ...updateData };
+          delete retryUpdateData.hasBeenExtended;
+          delete retryUpdateData.hasBeenFranchiseTagged;
+          
+          const [updated] = await db
+            .update(playerContractsTable)
+            .set(retryUpdateData)
+            .where(eq(playerContractsTable.id, existing.id))
+            .returning();
+          
+          return updated;
+        }
+        
+        // Re-throw if it's not a column error or if retry didn't work
+        throw error;
+      }
     }
 
-    // If this is a new contract (new roster), reset tracking flags
-    // Otherwise, use provided values or default to 0
-    const hasBeenExtended = (data as any).hasBeenExtended !== undefined ? (data as any).hasBeenExtended : 0;
-    const hasBeenFranchiseTagged = (data as any).hasBeenFranchiseTagged !== undefined ? (data as any).hasBeenFranchiseTagged : 0;
-
-    const id = randomUUID();
-    const [inserted] = await db.insert(playerContractsTable).values({
-      id,
+    // Build insert object, conditionally including tracking fields only if provided
+    // This allows the code to work even if database columns don't exist yet
+    const insertData: any = {
+      id: randomUUID(),
       leagueId: data.leagueId,
       rosterId: data.rosterId,
       playerId: data.playerId,
@@ -718,12 +756,44 @@ export class DatabaseStorage implements IStorage {
       extensionYear: data.extensionYear ?? null,
       extensionSalary: data.extensionSalary ?? null,
       extensionType: (data as any).extensionType ?? null,
-      hasBeenExtended,
-      hasBeenFranchiseTagged,
       updatedAt,
-    }).returning();
+    };
 
-    return inserted;
+    // Only include hasBeenExtended and hasBeenFranchiseTagged if explicitly provided
+    // This allows the code to work even if these database columns don't exist yet
+    if ((data as any).hasBeenExtended !== undefined) {
+      insertData.hasBeenExtended = (data as any).hasBeenExtended;
+    }
+    if ((data as any).hasBeenFranchiseTagged !== undefined) {
+      insertData.hasBeenFranchiseTagged = (data as any).hasBeenFranchiseTagged;
+    }
+
+    try {
+      const [inserted] = await db.insert(playerContractsTable).values(insertData).returning();
+      return inserted;
+    } catch (error: any) {
+      // Handle missing column errors (PostgreSQL error code 42703 or error messages about missing columns)
+      const errorCode = error?.code;
+      const errorMessage = (error?.message || String(error) || '').toLowerCase();
+      const isColumnError = errorCode === '42703' || 
+                            (errorMessage.includes('column') && 
+                             (errorMessage.includes('does not exist') || 
+                              errorMessage.includes('undefined') ||
+                              errorMessage.includes('unknown')));
+      
+      if (isColumnError && (insertData.hasBeenExtended !== undefined || insertData.hasBeenFranchiseTagged !== undefined)) {
+        // Retry without the problematic tracking fields
+        const retryInsertData = { ...insertData };
+        delete retryInsertData.hasBeenExtended;
+        delete retryInsertData.hasBeenFranchiseTagged;
+        
+        const [inserted] = await db.insert(playerContractsTable).values(retryInsertData).returning();
+        return inserted;
+      }
+      
+      // Re-throw if it's not a column error or if retry didn't work
+      throw error;
+    }
   }
 
   async deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void> {
