@@ -147,26 +147,32 @@ export default function Matchup() {
       return { rosterSlots: [], maxPoints: 0 };
     }
 
-    const userStarters = [...userTeam.starters];
-    const opponentStarters = opponentTeam ? [...opponentTeam.starters] : [];
+    const userStarters = [...userTeam.starters].filter(p => p != null);
+    const opponentStarters = opponentTeam ? [...opponentTeam.starters].filter(p => p != null) : [];
 
+    // Safely extract points with null checks
     const allPoints = [
-      ...userStarters.map(p => p.points),
-      ...opponentStarters.map(p => p.points),
-    ];
-    const maxPts = Math.max(...allPoints, 1);
+      ...userStarters.map(p => p?.points ?? 0),
+      ...opponentStarters.map(p => p?.points ?? 0),
+    ].filter(points => typeof points === 'number');
+    
+    // Handle empty array case for Math.max
+    const maxPts = allPoints.length > 0 ? Math.max(...allPoints, 1) : 1;
 
     const assignPlayersToSlots = (starters: MatchupPlayer[]): Map<string, MatchupPlayer | null> => {
       const slots = new Map<string, MatchupPlayer | null>();
       const slotOrder = ["QB", "RB1", "RB2", "WR1", "WR2", "TE", "FLEX1", "FLEX2", "K", "DEF"];
       slotOrder.forEach(slot => slots.set(slot, null));
 
-      const available = [...starters];
+      const available = [...starters].filter(p => p != null);
       
       const findAndAssign = (slotName: string, positions: string[]) => {
-        const idx = available.findIndex(p => positions.includes(p.position));
+        const idx = available.findIndex(p => p != null && positions.includes(p.position));
         if (idx !== -1) {
-          slots.set(slotName, available.splice(idx, 1)[0]);
+          const player = available.splice(idx, 1)[0];
+          if (player != null) {
+            slots.set(slotName, player);
+          }
         }
       };
 

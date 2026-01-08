@@ -20,6 +20,7 @@ interface TeamStanding {
   losses: number;
   pointsFor: number;
   pointsAgainst: number;
+  maxPointsFor?: number;
   streak: string;
   trend: number[];
   isUser?: boolean;
@@ -73,6 +74,7 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
               <TableHead className="text-center">W-L</TableHead>
               <TableHead className="text-center">GB</TableHead>
               <TableHead className="text-right">PF</TableHead>
+              <TableHead className="text-right">Max PF</TableHead>
               <TableHead className="text-right">PA</TableHead>
               <TableHead className="text-center">Streak</TableHead>
               <TableHead className="w-24">Trend</TableHead>
@@ -136,6 +138,11 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
                 </TableCell>
                 <TableCell className="text-right tabular-nums">
                   {team.pointsFor.toFixed(1)}
+                </TableCell>
+                <TableCell className="text-right tabular-nums text-muted-foreground">
+                  {team.maxPointsFor !== undefined && team.maxPointsFor !== null 
+                    ? team.maxPointsFor.toFixed(1) 
+                    : "—"}
                 </TableCell>
                 <TableCell className="text-right tabular-nums text-muted-foreground">
                   {team.pointsAgainst.toFixed(1)}

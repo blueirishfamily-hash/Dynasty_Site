@@ -122,6 +122,7 @@ export default function Standings() {
     losses: team.losses,
     pointsFor: team.pointsFor,
     pointsAgainst: team.pointsAgainst,
+    maxPointsFor: team.maxPointsFor,
     streak: team.streak || "—",
     trend: [100, 110, 105, 115, 120],
     isUser: team.isUser,
