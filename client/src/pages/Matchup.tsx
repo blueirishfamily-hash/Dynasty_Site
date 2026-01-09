@@ -139,6 +139,8 @@ export default function Matchup() {
   const userTeam = matchup?.userTeam;
   const opponentTeam = matchup?.opponentTeam;
   const userWinning = userTeam && opponentTeam && userTeam.score > opponentTeam.score;
+  const isTied = userTeam && opponentTeam && userTeam.score === opponentTeam.score;
+  const isWeekCompleted = selectedWeek < currentWeek;
   const scoreDiff = userTeam && opponentTeam 
     ? Math.abs(userTeam.score - opponentTeam.score).toFixed(1)
     : "0.0";
@@ -325,14 +327,31 @@ export default function Matchup() {
               </div>
               
               <div className="flex justify-center mt-4">
-                <Badge variant={userWinning ? "default" : "secondary"} className="px-4 py-1">
-                  {userWinning ? (
-                    <>
-                      <Trophy className="w-3 h-3 mr-1" />
-                      Winning by {scoreDiff} pts
-                    </>
+                <Badge variant={userWinning ? "default" : isTied ? "outline" : "secondary"} className="px-4 py-1">
+                  {isWeekCompleted ? (
+                    // Completed week - show final result
+                    isTied ? (
+                      `Tied ${scoreDiff !== "0.0" ? `(${scoreDiff} pts)` : ""}`
+                    ) : userWinning ? (
+                      <>
+                        <Trophy className="w-3 h-3 mr-1" />
+                        Won by {scoreDiff} pts
+                      </>
+                    ) : (
+                      `Lost by ${scoreDiff} pts`
+                    )
                   ) : (
-                    `Trailing by ${scoreDiff} pts`
+                    // Current/future week - show live status
+                    isTied ? (
+                      `Tied ${scoreDiff !== "0.0" ? `(${scoreDiff} pts)` : ""}`
+                    ) : userWinning ? (
+                      <>
+                        <Trophy className="w-3 h-3 mr-1" />
+                        Winning by {scoreDiff} pts
+                      </>
+                    ) : (
+                      `Trailing by ${scoreDiff} pts`
+                    )
                   )}
                 </Badge>
               </div>

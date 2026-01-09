@@ -30,6 +30,63 @@ This document outlines the coding structure, patterns, and conventions used in t
 └── script/              # Build scripts
 ```
 
+## Development Workflow and Auto-Reload
+
+### Starting the Development Server
+
+**Running the Development Server**:
+- Run `npm run dev` to start both frontend and backend
+- Server runs on port 5000 (configurable via `PORT` env variable)
+- Preview browser should be opened at `http://localhost:5000`
+
+### Automatic Code Reloading
+
+**Frontend Changes** (`client/src/**`):
+- Automatically hot-reloaded via Vite HMR (Hot Module Replacement)
+- Changes appear immediately in the browser without refresh
+- React components maintain state during hot reload
+- No manual browser refresh needed
+
+**Backend Changes** (`server/**`):
+- Automatically restarted via `tsx --watch` when files change
+- Server restart is automatic on save
+- API endpoints update without manual intervention
+- Note: Brief connection interruption during restart is normal
+
+**Shared Code Changes** (`shared/**`):
+- Changes to shared types/schemas trigger both frontend and backend reloads
+- Ensure both are running to see changes reflected
+
+**Configuration Changes** (`vite.config.ts`, `tsconfig.json`, etc.):
+- May require manual server restart to take effect
+- Check server console for restart messages
+
+### Expected Behavior After Adding Code
+
+**CRITICAL: Restart the development server after making code changes**
+
+1. **Stop the server**: Press `Ctrl+C` in the terminal
+2. **Restart the server**: Run `npm run dev` again
+3. **Save the file** (if not already saved)
+4. **Wait for server to start**: Watch terminal for "serving on port 5000"
+5. **Refresh browser**: Navigate to `http://localhost:5000` or refresh the page
+6. Verify changes appear in the preview browser
+
+**Automatic Reloading:**
+While `tsx --watch` and Vite HMR provide automatic reloading:
+- Manual restart is the most reliable method
+- Always restart if changes don't appear automatically
+- Backend changes always require server restart
+- Frontend changes may require browser refresh even with HMR
+
+### Troubleshooting
+
+- If changes don't appear, check terminal for compilation errors
+- Check browser console for HMR connection status
+- Ensure dev server is running (`npm run dev`)
+- Hard refresh browser (Ctrl+Shift+R / Cmd+Shift+R) if HMR fails
+- Check that file is being watched (no `.gitignore` or `.vite` cache issues)
+
 ## Frontend Patterns
 
 ### Component Structure

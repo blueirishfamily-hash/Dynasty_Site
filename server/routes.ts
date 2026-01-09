@@ -1205,130 +1205,187 @@ export async function registerRoutes(
       let opponentMaxPF: number | undefined = undefined;
       
       if (week <= currentWeek) {
-        // Map roster positions (exclude bench/IR/taxi since they don't affect optimal lineup)
-        const rosterPositions = (league?.roster_positions || []).filter(pos => !["BN", "IR", "TAXI"].includes(pos));
-        
-        // Helper functions for optimal lineup calculation
-        const isEligibleForSlot = (position: string, slot: string) => {
-          if (slot === "FLEX") return ["RB", "WR", "TE"].includes(position);
-          if (slot === "SUPER_FLEX") return ["QB", "RB", "WR", "TE"].includes(position);
-          if (slot === "WRRB") return ["WR", "RB"].includes(position);
-          if (slot === "WRRBTE") return ["WR", "RB", "TE"].includes(position);
-          return position === slot;
-        };
+        try {
+          // Map roster positions (exclude bench/IR/taxi since they don't affect optimal lineup)
+          const rosterPositions = (league?.roster_positions || []).filter(pos => !["BN", "IR", "TAXI"].includes(pos));
+          
+          // Helper functions for optimal lineup calculation
+          const isEligibleForSlot = (position: string, slot: string) => {
+            if (slot === "FLEX") return ["RB", "WR", "TE"].includes(position);
+            if (slot === "SUPER_FLEX") return ["QB", "RB", "WR", "TE"].includes(position);
+            if (slot === "WRRB") return ["WR", "RB"].includes(position);
+            if (slot === "WRRBTE") return ["WR", "RB", "TE"].includes(position);
+            return position === slot;
+          };
 
-        const buildSlotOrder = (slots: string[]) => {
-          const priority = ["QB", "RB", "WR", "TE", "K", "DEF"];
-          const flexes = ["SUPER_FLEX", "WRRBTE", "WRRB", "FLEX"];
-          const fixed = slots.filter(s => priority.includes(s));
-          const remaining = slots.filter(s => !priority.includes(s) && flexes.includes(s));
-          return [...fixed, ...remaining];
-        };
+          const buildSlotOrder = (slots: string[]) => {
+            const priority = ["QB", "RB", "WR", "TE", "K", "DEF"];
+            const flexes = ["SUPER_FLEX", "WRRBTE", "WRRB", "FLEX"];
+            const fixed = slots.filter(s => priority.includes(s));
+            const remaining = slots.filter(s => !priority.includes(s) && flexes.includes(s));
+            return [...fixed, ...remaining];
+          };
 
-        const slotOrder = buildSlotOrder(rosterPositions);
+          const slotOrder = buildSlotOrder(rosterPositions);
 
-        const calculateOptimalLineup = (
-          playerIds: string[],
-          playerPoints: Record<string, number>,
-          slots: string[]
-        ): number => {
-          const used = new Set<string>();
-          let total = 0;
+          const calculateOptimalLineup = (
+            playerIds: string[],
+            playerPoints: Record<string, number>,
+            slots: string[]
+          ): number => {
+            if (!playerIds || playerIds.length === 0) return 0;
+            
+            const used = new Set<string>();
+            let total = 0;
 
-          for (const slot of slots) {
-            const best = playerIds
-              .filter(pid => !used.has(pid))
-              .map(pid => {
-                const player = players[pid];
-                const position = player?.position || "FLEX";
-                const points = playerPoints[pid] ?? 0;
-                return { pid, position, points };
-              })
-              .filter(p => isEligibleForSlot(p.position, slot))
-              .sort((a, b) => b.points - a.points)[0];
+            for (const slot of slots) {
+              const best = playerIds
+                .filter(pid => !used.has(pid))
+                .map(pid => {
+                  const player = players[pid];
+                  const position = player?.position || "FLEX";
+                  const points = playerPoints[pid] ?? 0;
+                  return { pid, position, points };
+                })
+                .filter(p => isEligibleForSlot(p.position, slot))
+                .sort((a, b) => b.points - a.points)[0];
 
-            if (best) {
-              used.add(best.pid);
-              total += best.points || 0;
+              if (best) {
+                used.add(best.pid);
+                total += best.points || 0;
+              }
+            }
+
+            return total;
+          };
+
+          // Build roster history for the selected week
+          // Fetch transactions up to the selected week
+          const transactionPromises: Array<Promise<{ week: number; transactions: SleeperTransaction[] }>> = [];
+          for (let w = 1; w <= week; w++) {
+            transactionPromises.push(
+              getLeagueTransactions(req.params.leagueId, w)
+                .then(transactions => ({ week: w, transactions }))
+                .catch(error => {
+                  console.warn(`[Matchup Detail Max PF] Error fetching transactions for week ${w}:`, error);
+                  return { week: w, transactions: [] };
+                })
+            );
+          }
+          const weeklyTransactions = await Promise.all(transactionPromises);
+
+          // Build roster state for the selected week
+          // Use matchup.players if available (most accurate), otherwise build from transactions
+          const getRosterForWeek = (roster: SleeperRoster, matchup: SleeperMatchup | null): string[] => {
+            // If matchup has players field, use it directly (most accurate)
+            if (matchup?.players && Array.isArray(matchup.players)) {
+              return matchup.players;
+            }
+
+            // Otherwise, build roster by applying transactions chronologically
+            // Initialize with current roster as baseline
+            const rosterState = new Set<string>(roster.players || []);
+
+            // Apply transactions chronologically from week 1 to the selected week
+            for (let w = 1; w <= week; w++) {
+              const transactionsForWeek = weeklyTransactions.find(t => t.week === w)?.transactions || [];
+              transactionsForWeek
+                .filter(t => t.status === "complete")
+                .forEach(t => {
+                  const adds = t.adds || {};
+                  const drops = t.drops || {};
+
+                  // Apply adds for this roster
+                  Object.entries(adds).forEach(([playerId, rosterId]) => {
+                    if (Number(rosterId) === roster.roster_id) {
+                      rosterState.add(playerId);
+                    }
+                  });
+
+                  // Apply drops for this roster
+                  Object.entries(drops).forEach(([playerId, rosterId]) => {
+                    if (Number(rosterId) === roster.roster_id) {
+                      rosterState.delete(playerId);
+                    }
+                  });
+                });
+            }
+
+            return Array.from(rosterState);
+          };
+
+          // Helper function to build player points map with fallback to player stats API
+          const buildPlayerPointsMap = async (
+            roster: string[],
+            matchup: SleeperMatchup | null,
+            week: number,
+            season: string
+          ): Promise<Record<string, number>> => {
+            const pointsMap: Record<string, number> = {};
+            
+            // Check if players_points is available and has data
+            const hasPlayersPoints = matchup?.players_points && 
+                                   typeof matchup.players_points === 'object' && 
+                                   Object.keys(matchup.players_points).length > 0;
+            
+            // Try to use players_points first
+            if (hasPlayersPoints) {
+              roster.forEach(playerId => {
+                const points = matchup!.players_points![playerId];
+                pointsMap[playerId] = typeof points === 'number' ? points : 0;
+              });
+              
+              // Check if we have points for all players (or at least most of them)
+              const playersWithPoints = Object.values(pointsMap).filter(p => p > 0).length;
+              const hasCompleteData = playersWithPoints > 0 && (playersWithPoints / roster.length) > 0.3; // At least 30% have points
+              
+              if (hasCompleteData) {
+                return pointsMap;
+              }
+            }
+            
+            // Fallback: fetch player stats for this week
+            try {
+              const weekStats = await getPlayerStats(season, week);
+              
+              roster.forEach(playerId => {
+                // Use matchup.players_points if available, otherwise use fetched stats
+                if (hasPlayersPoints && typeof matchup!.players_points![playerId] === 'number') {
+                  pointsMap[playerId] = matchup!.players_points![playerId];
+                } else if (weekStats[playerId]) {
+                  const playerStats = weekStats[playerId] as any;
+                  // Use pts_ppr if available, otherwise fallback to half_ppr or std
+                  pointsMap[playerId] = playerStats.pts_ppr || playerStats.pts_half_ppr || playerStats.pts_std || 0;
+                } else {
+                  pointsMap[playerId] = 0;
+                }
+              });
+            } catch (error) {
+              console.warn(`[Matchup Detail Max PF] Could not fetch player stats for week ${week}, using available data:`, error);
+              // Continue with whatever points we have (may be 0 for missing players)
+            }
+            
+            return pointsMap;
+          };
+
+          // Calculate Max PF for user team
+          const userWeekRoster = getRosterForWeek(userRoster, userMatchup);
+          if (userWeekRoster.length > 0) {
+            const userWeekPoints = await buildPlayerPointsMap(userWeekRoster, userMatchup, week, season);
+            userMaxPF = calculateOptimalLineup(userWeekRoster, userWeekPoints, slotOrder);
+          }
+
+          // Calculate Max PF for opponent team (if exists)
+          if (opponentMatchup && opponentRoster) {
+            const opponentWeekRoster = getRosterForWeek(opponentRoster, opponentMatchup);
+            if (opponentWeekRoster.length > 0) {
+              const opponentWeekPoints = await buildPlayerPointsMap(opponentWeekRoster, opponentMatchup, week, season);
+              opponentMaxPF = calculateOptimalLineup(opponentWeekRoster, opponentWeekPoints, slotOrder);
             }
           }
-
-          return total;
-        };
-
-        // Build roster history for the selected week
-        // Fetch transactions up to the selected week
-        const transactionPromises: Array<Promise<{ week: number; transactions: SleeperTransaction[] }>> = [];
-        for (let w = 1; w <= week; w++) {
-          transactionPromises.push(
-            getLeagueTransactions(req.params.leagueId, w)
-              .then(transactions => ({ week: w, transactions }))
-              .catch(error => {
-                console.warn(`[Matchup Detail Max PF] Error fetching transactions for week ${w}:`, error);
-                return { week: w, transactions: [] };
-              })
-          );
-        }
-        const weeklyTransactions = await Promise.all(transactionPromises);
-
-        // Build roster state for the selected week
-        // Use matchup.players if available (most accurate), otherwise build from transactions
-        const getRosterForWeek = (roster: SleeperRoster, matchup: SleeperMatchup | null): string[] => {
-          // If matchup has players field, use it directly (most accurate)
-          if (matchup?.players && Array.isArray(matchup.players)) {
-            return matchup.players;
-          }
-
-          // Otherwise, build roster by applying transactions chronologically
-          // Initialize with current roster as baseline
-          const rosterState = new Set<string>(roster.players || []);
-
-          // Apply transactions chronologically from week 1 to the selected week
-          for (let w = 1; w <= week; w++) {
-            const transactionsForWeek = weeklyTransactions.find(t => t.week === w)?.transactions || [];
-            transactionsForWeek
-              .filter(t => t.status === "complete")
-              .forEach(t => {
-                const adds = t.adds || {};
-                const drops = t.drops || {};
-
-                // Apply adds for this roster
-                Object.entries(adds).forEach(([playerId, rosterId]) => {
-                  if (Number(rosterId) === roster.roster_id) {
-                    rosterState.add(playerId);
-                  }
-                });
-
-                // Apply drops for this roster
-                Object.entries(drops).forEach(([playerId, rosterId]) => {
-                  if (Number(rosterId) === roster.roster_id) {
-                    rosterState.delete(playerId);
-                  }
-                });
-              });
-          }
-
-          return Array.from(rosterState);
-        };
-
-        // Calculate Max PF for user team
-        const userWeekRoster = getRosterForWeek(userRoster, userMatchup);
-        const userPlayersPoints = userMatchup?.players_points || {};
-        const userWeekPoints: Record<string, number> = {};
-        userWeekRoster.forEach(playerId => {
-          userWeekPoints[playerId] = typeof userPlayersPoints[playerId] === 'number' ? userPlayersPoints[playerId] : 0;
-        });
-        userMaxPF = calculateOptimalLineup(userWeekRoster, userWeekPoints, slotOrder);
-
-        // Calculate Max PF for opponent team (if exists)
-        if (opponentMatchup && opponentRoster) {
-          const opponentWeekRoster = getRosterForWeek(opponentRoster, opponentMatchup);
-          const opponentPlayersPoints = opponentMatchup?.players_points || {};
-          const opponentWeekPoints: Record<string, number> = {};
-          opponentWeekRoster.forEach(playerId => {
-            opponentWeekPoints[playerId] = typeof opponentPlayersPoints[playerId] === 'number' ? opponentPlayersPoints[playerId] : 0;
-          });
-          opponentMaxPF = calculateOptimalLineup(opponentWeekRoster, opponentWeekPoints, slotOrder);
+        } catch (error) {
+          console.error(`[Matchup Detail Max PF] Error calculating Max PF for week ${week}:`, error);
+          // Continue without Max PF rather than failing entire request
         }
       }
 
