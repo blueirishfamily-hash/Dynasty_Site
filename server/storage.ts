@@ -666,21 +666,21 @@ export class DatabaseStorage implements IStorage {
       
       // Build update object, conditionally including tracking fields
       const updateData: any = {
-        salary2025: data.salary2025,
-        salary2026: data.salary2026,
-        salary2027: data.salary2027,
-        salary2028: data.salary2028,
-        salary2029: (data as any).salary2029 ?? existing.salary2029,
-        fifthYearOption: data.fifthYearOption,
-        isOnIr: data.isOnIr ?? existing.isOnIr,
-        franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
-        franchiseTagYear: data.franchiseTagYear ?? existing.franchiseTagYear,
-        originalContractYears: data.originalContractYears !== undefined ? data.originalContractYears : existing.originalContractYears,
-        isRookieContract: (data as any).isRookieContract ?? existing.isRookieContract,
-        extensionApplied: data.extensionApplied ?? existing.extensionApplied,
-        extensionYear: data.extensionYear ?? existing.extensionYear,
-        extensionSalary: data.extensionSalary ?? existing.extensionSalary,
-        extensionType: (data as any).extensionType ?? existing.extensionType,
+          salary2025: data.salary2025,
+          salary2026: data.salary2026,
+          salary2027: data.salary2027,
+          salary2028: data.salary2028,
+          salary2029: (data as any).salary2029 ?? existing.salary2029,
+          fifthYearOption: data.fifthYearOption,
+          isOnIr: data.isOnIr ?? existing.isOnIr,
+          franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
+          franchiseTagYear: data.franchiseTagYear ?? existing.franchiseTagYear,
+          originalContractYears: data.originalContractYears !== undefined ? data.originalContractYears : existing.originalContractYears,
+          isRookieContract: (data as any).isRookieContract ?? existing.isRookieContract,
+          extensionApplied: data.extensionApplied ?? existing.extensionApplied,
+          extensionYear: data.extensionYear ?? existing.extensionYear,
+          extensionSalary: data.extensionSalary ?? existing.extensionSalary,
+          extensionType: (data as any).extensionType ?? existing.extensionType,
         updatedAt: Date.now(),
       };
 
@@ -723,12 +723,12 @@ export class DatabaseStorage implements IStorage {
           const [updated] = await db
             .update(playerContractsTable)
             .set(retryUpdateData)
-            .where(eq(playerContractsTable.id, existing.id))
-            .returning();
-          
-          return updated;
-        }
-        
+        .where(eq(playerContractsTable.id, existing.id))
+        .returning();
+
+      return updated;
+    }
+
         // Re-throw if it's not a column error or if retry didn't work
         throw error;
       }
@@ -788,7 +788,7 @@ export class DatabaseStorage implements IStorage {
         delete retryInsertData.hasBeenFranchiseTagged;
         
         const [inserted] = await db.insert(playerContractsTable).values(retryInsertData).returning();
-        return inserted;
+    return inserted;
       }
       
       // Re-throw if it's not a column error or if retry didn't work

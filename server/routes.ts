@@ -79,23 +79,102 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
   
-  // Helper function to get effective week - caps at week 18 if season completed but league hasn't advanced
+  // Helper function to get effective week - handles offseason detection and capping
   const getEffectiveWeek = (nflState: SleeperNFLState, league: any): number => {
     const nflWeek = nflState.week;
     const nflSeason = nflState.season;
     const leagueSeason = league?.season;
+    const seasonType = nflState.season_type;
+    
+    // Debug logging
+    console.log(`[Effective Week] Input - nflWeek: ${nflWeek}, nflSeason: ${nflSeason}, leagueSeason: ${leagueSeason}, seasonType: ${seasonType}`);
+    
+    // Get playoff week start from league settings (default to 18 for standard leagues)
+    const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 18;
+    const lastRegularSeasonWeek = playoffWeekStart - 1; // Typically 17
+    
+    // Normalize seasons to strings for comparison
+    const leagueSeasonStr = leagueSeason ? leagueSeason.toString() : null;
+    const nflSeasonStr = nflSeason ? nflSeason.toString() : null;
+    
+    // Check if we're viewing a past season (league season is before NFL season year)
+    const leagueSeasonYear = leagueSeason ? parseInt(leagueSeasonStr!) : null;
+    const nflSeasonYear = nflSeason ? parseInt(nflSeasonStr!) : null;
+    const isPastSeason = leagueSeasonYear && nflSeasonYear && leagueSeasonYear < nflSeasonYear;
+    
+    // If viewing a past season, use the last regular season week (season is complete)
+    if (isPastSeason) {
+      console.log(`[Effective Week] Past season detected (league ${leagueSeason}, NFL ${nflSeason}). Using last regular season week ${lastRegularSeasonWeek}.`);
+      return lastRegularSeasonWeek;
+    }
+    
+    // If league has advanced to new season, use actual week
+    if (leagueSeasonStr && nflSeasonStr && leagueSeasonStr !== nflSeasonStr) {
+      console.log(`[Effective Week] League advanced (season ${leagueSeason} !== NFL ${nflSeason}). Using actual week ${nflWeek}.`);
+      return nflWeek;
+    }
+    
+    // Check if seasons match (for offseason detection)
+    const seasonsMatch = leagueSeasonStr && nflSeasonStr && leagueSeasonStr === nflSeasonStr;
+    
+    // Get current date info
+    const currentDate = new Date();
+    const currentMonth = currentDate.getMonth() + 1; // 1-12 (Jan = 1, Feb = 2, Mar = 3, ..., Dec = 12)
+    const currentYear = currentDate.getFullYear();
+    
+    // SIMPLIFIED APPROACH: If week is 1-5 and it's NOT September-December (NFL regular season months), we're in offseason
+    // NFL regular season runs September-December (months 9-12)
+    // If we're at week 1-5 outside of those months, the season has ended and reset
+    const isNFLRegularSeasonMonths = currentMonth >= 9 && currentMonth <= 12; // Sept-Dec
+    const isLowWeek = nflWeek >= 1 && nflWeek <= 5;
+    
+    // Primary check: season_type explicitly indicates offseason
+    const isOffseasonByType = seasonsMatch && (seasonType === "off" || seasonType === "post");
+    
+    // Secondary check: Low week (1-5) outside NFL regular season months = offseason
+    // This is the most reliable indicator - if it's January-August and week is 1-5, season has ended
+    // Exception: If it's September and week 1, it might be the start of a new season, so only apply if seasons don't match (indicating offseason)
+    // If seasons match in September week 1, it's likely offseason reset from previous season
+    if (isLowWeek && !isNFLRegularSeasonMonths && league && leagueSeasonStr) {
+      console.log(`[Effective Week] Offseason detected: Week ${nflWeek} in month ${currentMonth} (outside Sept-Dec). Using last regular season week ${lastRegularSeasonWeek}.`);
+      return lastRegularSeasonWeek;
+    }
+    
+    // Also check: If it's September-October (months 9-10) and week is 1, but seasons match (league hasn't advanced),
+    // it's likely offseason reset, not the start of a new season
+    if (nflWeek === 1 && (currentMonth === 9 || currentMonth === 10) && seasonsMatch && league && leagueSeasonStr) {
+      console.log(`[Effective Week] Offseason detected: Week 1 in ${currentMonth === 9 ? 'September' : 'October'} with matching seasons (likely offseason reset). Using last regular season week ${lastRegularSeasonWeek}.`);
+      return lastRegularSeasonWeek;
+    }
+    
+    // Tertiary check: season_type indicates offseason AND seasons match
+    if (isOffseasonByType) {
+      console.log(`[Effective Week] Offseason detected by season_type: ${seasonType}. Using last regular season week ${lastRegularSeasonWeek}.`);
+      return lastRegularSeasonWeek;
+    }
+    
+    // Quaternary check: Low week (1-3) with seasons matching (very likely offseason reset)
+    // If seasons match and week is 1-3, the league hasn't advanced, so it's offseason reset
+    if (seasonsMatch && nflWeek >= 1 && nflWeek <= 3) {
+      console.log(`[Effective Week] Offseason detected: Week ${nflWeek} with matching seasons (league hasn't advanced). Using last regular season week ${lastRegularSeasonWeek}.`);
+      return lastRegularSeasonWeek;
+    }
+    
+    // Final aggressive check: If week is 1-2 and we have league data, assume offseason
+    // (This catches any remaining edge cases)
+    if (nflWeek >= 1 && nflWeek <= 2 && league && leagueSeasonStr) {
+      console.log(`[Effective Week] Final aggressive check: Week ${nflWeek} with league data, assuming offseason. Using last regular season week ${lastRegularSeasonWeek}.`);
+      return lastRegularSeasonWeek;
+    }
     
     // If season is complete (week > 18) and league hasn't advanced (same season), cap at week 18
-    if (nflWeek > 18 && leagueSeason === nflSeason) {
+    if (nflWeek > 18 && seasonsMatch) {
       console.log(`[Effective Week] Season completed (week ${nflWeek}) but league hasn't advanced (season ${leagueSeason} === ${nflSeason}). Capping at week 18.`);
       return 18;
     }
     
-    // If league has advanced to new season, use actual week
-    if (leagueSeason && leagueSeason !== nflSeason) {
-      console.log(`[Effective Week] League advanced (season ${leagueSeason} !== NFL ${nflSeason}). Using actual week ${nflWeek}.`);
-    }
-    
+    // Default: return the NFL week as-is
+    console.log(`[Effective Week] Returning default NFL week: ${nflWeek} (seasonsMatch: ${seasonsMatch}, leagueSeason: ${leagueSeason}, nflSeason: ${nflSeason}, month: ${currentMonth})`);
     return nflWeek;
   };
   // Get Sleeper user by username
@@ -421,7 +500,6 @@ export async function registerRoutes(
       
       try {
         const players = await getAllPlayers();
-        const season = league?.season || nflState.season || new Date().getFullYear().toString();
 
         // Fetch transactions for each week to build roster history
         // Use completedRegularSeasonWeeks to match PF/PA calculation
@@ -484,138 +562,43 @@ export async function registerRoutes(
 
       const rosterHistory = buildRosterHistory();
 
-      // Fetch weekly player stats for completed regular season weeks only (matching PF/PA calculation)
-      // This is necessary because matchup.players_points only includes starters/players who played
-      const weeklyPlayerStatsPromises: Array<Promise<{ week: number; stats: Record<string, Record<string, number>> }>> = [];
+      // Fetch matchups for each completed week to get pre-calculated player points
+      const weeklyMatchupsPromises: Array<Promise<{ week: number; matchups: SleeperMatchup[] }>> = [];
       for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-        weeklyPlayerStatsPromises.push(
-          getPlayerStats(season, week)
-            .then(stats => ({ week, stats }))
+        weeklyMatchupsPromises.push(
+          getLeagueMatchups(req.params.leagueId, week)
+            .then(matchups => ({ week, matchups }))
             .catch(error => {
-              console.warn(`[Standings] Error fetching stats for week ${week}:`, error);
-              return { week, stats: {} };
+              console.warn(`[Max PF] Error fetching matchups for week ${week}:`, error);
+              return { week, matchups: [] };
             })
         );
       }
-      const weeklyPlayerStatsResults = await Promise.all(weeklyPlayerStatsPromises);
-      const weeklyPlayerStats = new Map<number, Record<string, Record<string, number>>>();
-      weeklyPlayerStatsResults.forEach(({ week, stats }) => {
-        weeklyPlayerStats.set(week, stats);
+      const weeklyMatchupsResults = await Promise.all(weeklyMatchupsPromises);
+      const weeklyMatchupsMap = new Map<number, SleeperMatchup[]>();
+      weeklyMatchupsResults.forEach(({ week, matchups }) => {
+        weeklyMatchupsMap.set(week, matchups);
       });
 
-      // Helper function to extract fantasy points from player stats
-      // Sleeper API returns pts_ppr, pts_half_ppr, and pts_std - use the format that matches league settings
-      // Check league scoring_settings to determine which format to use
-      const determineScoringFormat = (): "ppr" | "half_ppr" | "std" => {
-        if (!league?.scoring_settings) return "ppr"; // Default to PPR if unknown
-        
-        const rec = league.scoring_settings.rec ?? 0;
-        
-        // Standard: 0 points per reception
-        if (rec === 0) return "std";
-        // Half-PPR: 0.5 points per reception
-        if (rec === 0.5) return "half_ppr";
-        // PPR: 1 point per reception (or any other value)
-        return "ppr";
-      };
+      // Build a lookup map: week -> roster_id -> matchup
+      const matchupByRosterAndWeek = new Map<number, Map<number, SleeperMatchup>>();
+      weeklyMatchupsMap.forEach((matchups, week) => {
+        const weekMap = new Map<number, SleeperMatchup>();
+        matchups.forEach(matchup => {
+          weekMap.set(matchup.roster_id, matchup);
+        });
+        matchupByRosterAndWeek.set(week, weekMap);
+      });
 
-      const scoringFormat = determineScoringFormat();
-      const scoringSettings = league?.scoring_settings || {};
-      
-      // Calculate fantasy points from raw stats when pts_* fields are not available
-      const calculateFantasyPointsFromRawStats = (
-        playerStats: Record<string, number>,
-        position: string | undefined
-      ): number => {
-        let points = 0;
-        
-        // Passing stats
-        const passYd = (playerStats.pass_yd || 0) * (scoringSettings.pass_yd || 0.04); // Default: 0.04 per yard
-        const passTd = (playerStats.pass_td || 0) * (scoringSettings.pass_td || 4); // Default: 4 per TD
-        const passInt = (playerStats.pass_int || 0) * (scoringSettings.pass_int || -2); // Default: -2 per INT
-        const pass2pt = (playerStats.pass_2pt || 0) * (scoringSettings.pass_2pt || 2); // Default: 2 per 2PT
-        points += passYd + passTd + passInt + pass2pt;
-        
-        // Rushing stats
-        const rushYd = (playerStats.rush_yd || 0) * (scoringSettings.rush_yd || 0.1); // Default: 0.1 per yard
-        const rushTd = (playerStats.rush_td || 0) * (scoringSettings.rush_td || 6); // Default: 6 per TD
-        const rush2pt = (playerStats.rush_2pt || 0) * (scoringSettings.rush_2pt || 2); // Default: 2 per 2PT
-        const fumbleLost = (playerStats.fum_lost || 0) * (scoringSettings.fum_lost || -2); // Default: -2 per fumble
-        points += rushYd + rushTd + rush2pt + fumbleLost;
-        
-        // Receiving stats
-        const rec = (playerStats.rec || 0) * (scoringSettings.rec || 1); // Default: 1 per reception (PPR)
-        const recYd = (playerStats.rec_yd || 0) * (scoringSettings.rec_yd || 0.1); // Default: 0.1 per yard
-        const recTd = (playerStats.rec_td || 0) * (scoringSettings.rec_td || 6); // Default: 6 per TD
-        const rec2pt = (playerStats.rec_2pt || 0) * (scoringSettings.rec_2pt || 2); // Default: 2 per 2PT
-        points += rec + recYd + recTd + rec2pt;
-        
-        // Kicker stats
-        if (position === "K") {
-          const fgMade0_19 = (playerStats.fg_0_19 || 0) * (scoringSettings.fg_0_19 || 3);
-          const fgMade20_29 = (playerStats.fg_20_29 || 0) * (scoringSettings.fg_20_29 || 3);
-          const fgMade30_39 = (playerStats.fg_30_39 || 0) * (scoringSettings.fg_30_39 || 3);
-          const fgMade40_49 = (playerStats.fg_40_49 || 0) * (scoringSettings.fg_40_49 || 4);
-          const fgMade50Plus = (playerStats.fg_50_plus || 0) * (scoringSettings.fg_50_plus || 5);
-          const xpm = (playerStats.xpm || 0) * (scoringSettings.xpm || 1);
-          const xpmMissed = (playerStats.xpmissed || 0) * (scoringSettings.xpmissed || -1);
-          points += fgMade0_19 + fgMade20_29 + fgMade30_39 + fgMade40_49 + fgMade50Plus + xpm + xpmMissed;
-        }
-        
-        // Defense stats
-        if (position === "DEF") {
-          const defTd = (playerStats.def_td || 0) * (scoringSettings.def_td || 6);
-          const defInt = (playerStats.def_int || 0) * (scoringSettings.def_int || 2);
-          const defFumRec = (playerStats.def_fum_rec || 0) * (scoringSettings.def_fum_rec || 2);
-          const defSack = (playerStats.def_sack || 0) * (scoringSettings.sack || 1);
-          const defSafe = (playerStats.safe || 0) * (scoringSettings.safe || 2);
-          const defBlock = (playerStats.blk_kick || 0) * (scoringSettings.blk_kick || 2);
-          const ptsAllowed = playerStats.pts_allowed || 0;
-          let ptsAllowedPoints = 0;
-          if (ptsAllowed === 0) ptsAllowedPoints = scoringSettings.pts_allowed_0 || 10;
-          else if (ptsAllowed <= 6) ptsAllowedPoints = scoringSettings.pts_allowed_1_6 || 7;
-          else if (ptsAllowed <= 13) ptsAllowedPoints = scoringSettings.pts_allowed_7_13 || 4;
-          else if (ptsAllowed <= 20) ptsAllowedPoints = scoringSettings.pts_allowed_14_20 || 1;
-          else if (ptsAllowed <= 27) ptsAllowedPoints = scoringSettings.pts_allowed_21_27 || 0;
-          else if (ptsAllowed <= 34) ptsAllowedPoints = scoringSettings.pts_allowed_28_34 || -1;
-          else ptsAllowedPoints = scoringSettings.pts_allowed_35_plus || -4;
-          points += defTd + defInt + defFumRec + defSack + defSafe + defBlock + ptsAllowedPoints;
-        }
-        
-        return points;
-      };
-      
-      const getFantasyPoints = (playerStats: Record<string, number> | undefined, playerPosition?: string): number => {
-        if (!playerStats || Object.keys(playerStats).length === 0) return 0;
-        
-        // Check if pts_* fields exist in the stats object
-        const hasPtsFields = "pts_ppr" in playerStats || "pts_half_ppr" in playerStats || "pts_std" in playerStats;
-        
-        // First, try to use pre-calculated pts_* fields if available
-        if (hasPtsFields) {
-          switch (scoringFormat) {
-            case "half_ppr":
-              return playerStats.pts_half_ppr ?? playerStats.pts_ppr ?? playerStats.pts_std ?? 0;
-            case "std":
-              return playerStats.pts_std ?? playerStats.pts_half_ppr ?? playerStats.pts_ppr ?? 0;
-            case "ppr":
-            default:
-              return playerStats.pts_ppr ?? playerStats.pts_half_ppr ?? playerStats.pts_std ?? 0;
-          }
-        }
-        
-        // If pts_* fields are not available, calculate from raw stats
-        return calculateFantasyPointsFromRawStats(playerStats, playerPosition);
-      };
-
-      // Build weekly player points per roster from weekly stats (includes all players on roster)
-      // Only include regular season weeks to match PF/PA calculation
+      // Build weekly player points per roster from matchup data
       const rosterWeeklyPoints = new Map<number, Map<number, Record<string, number>>>();
       for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-        const weekStats = weeklyPlayerStats.get(week) || {};
+        const weekMatchups = matchupByRosterAndWeek.get(week) || new Map();
         
         rosters.forEach(roster => {
           const weekRoster = rosterHistory.get(roster.roster_id)?.get(week) || [];
+          const matchup = weekMatchups.get(roster.roster_id);
+          const playersPoints = matchup?.players_points || {};
           
           if (!rosterWeeklyPoints.has(roster.roster_id)) {
             rosterWeeklyPoints.set(roster.roster_id, new Map());
@@ -623,11 +606,8 @@ export async function registerRoutes(
           
           const weekPoints: Record<string, number> = {};
           weekRoster.forEach(playerId => {
-            const playerStats = weekStats[playerId];
-            const player = players[playerId];
-            const position = player?.position;
-            const points = getFantasyPoints(playerStats, position);
-            weekPoints[playerId] = points;
+            // Use pre-calculated points from matchup, default to 0 if player didn't play
+            weekPoints[playerId] = typeof playersPoints[playerId] === 'number' ? playersPoints[playerId] : 0;
           });
           
           rosterWeeklyPoints.get(roster.roster_id)!.set(week, weekPoints);
@@ -681,28 +661,9 @@ export async function registerRoutes(
         return total;
       };
 
-      // Calculate max points for each roster by summing optimal weekly points
-      // calculatedMaxPoints already declared outside try block
-      let hasStatsData = false;
-      let sampleStatsKeys: string[] = [];
-      
-      // Debug: Check if we have stats data
-      if (weeklyPlayerStats.size > 0) {
-        const firstWeekStats = weeklyPlayerStats.get(1);
-        if (firstWeekStats) {
-          const firstPlayerId = Object.keys(firstWeekStats)[0];
-          if (firstPlayerId) {
-            const sampleStats = firstWeekStats[firstPlayerId];
-            sampleStatsKeys = Object.keys(sampleStats || {});
-            hasStatsData = sampleStatsKeys.length > 0;
-          }
-        }
-      }
-      
-      console.log(`[Max PF] Regular season weeks: ${regularSeasonWeeks}, Completed regular season weeks: ${completedRegularSeasonWeeks}, Current week: ${currentWeek}`);
-      console.log(`[Max PF] Has stats data: ${hasStatsData}, Sample stats keys: ${sampleStatsKeys.slice(0, 10).join(", ")}`);
-      
       // Calculate max points for each roster by summing optimal weekly lineups
+      console.log(`[Max PF] Regular season weeks: ${regularSeasonWeeks}, Completed regular season weeks: ${completedRegularSeasonWeeks}, Current week: ${currentWeek}`);
+      
       rosters.forEach(roster => {
         let total = 0;
         const weeklyMap = rosterHistory.get(roster.roster_id) || new Map();
@@ -747,8 +708,7 @@ export async function registerRoutes(
       
       // Debug logging
       if (calculatedMaxPoints.size > 0) {
-        console.log(`[Max PF] Calculated max points for ${calculatedMaxPoints.size} rosters`);
-        console.log(`[Max PF] Scoring format: ${scoringFormat}, Using raw stats calculation: ${!hasStatsData || !sampleStatsKeys.includes("pts_ppr")}`);
+        console.log(`[Max PF] Calculated max points for ${calculatedMaxPoints.size} rosters using matchup points`);
         // Log a sample team's calculation
         const sampleRosterId = rosters[0]?.roster_id;
         if (sampleRosterId && calculatedMaxPoints.has(sampleRosterId)) {
@@ -1240,7 +1200,143 @@ export async function registerRoutes(
         ? buildDetailedMatchupTeam(opponentMatchup, opponentRoster)
         : null;
 
-      res.json({ userTeam, opponentTeam, week });
+      // Calculate Max PF for the selected week (only for completed weeks)
+      let userMaxPF: number | undefined = undefined;
+      let opponentMaxPF: number | undefined = undefined;
+      
+      if (week <= currentWeek) {
+        // Map roster positions (exclude bench/IR/taxi since they don't affect optimal lineup)
+        const rosterPositions = (league?.roster_positions || []).filter(pos => !["BN", "IR", "TAXI"].includes(pos));
+        
+        // Helper functions for optimal lineup calculation
+        const isEligibleForSlot = (position: string, slot: string) => {
+          if (slot === "FLEX") return ["RB", "WR", "TE"].includes(position);
+          if (slot === "SUPER_FLEX") return ["QB", "RB", "WR", "TE"].includes(position);
+          if (slot === "WRRB") return ["WR", "RB"].includes(position);
+          if (slot === "WRRBTE") return ["WR", "RB", "TE"].includes(position);
+          return position === slot;
+        };
+
+        const buildSlotOrder = (slots: string[]) => {
+          const priority = ["QB", "RB", "WR", "TE", "K", "DEF"];
+          const flexes = ["SUPER_FLEX", "WRRBTE", "WRRB", "FLEX"];
+          const fixed = slots.filter(s => priority.includes(s));
+          const remaining = slots.filter(s => !priority.includes(s) && flexes.includes(s));
+          return [...fixed, ...remaining];
+        };
+
+        const slotOrder = buildSlotOrder(rosterPositions);
+
+        const calculateOptimalLineup = (
+          playerIds: string[],
+          playerPoints: Record<string, number>,
+          slots: string[]
+        ): number => {
+          const used = new Set<string>();
+          let total = 0;
+
+          for (const slot of slots) {
+            const best = playerIds
+              .filter(pid => !used.has(pid))
+              .map(pid => {
+                const player = players[pid];
+                const position = player?.position || "FLEX";
+                const points = playerPoints[pid] ?? 0;
+                return { pid, position, points };
+              })
+              .filter(p => isEligibleForSlot(p.position, slot))
+              .sort((a, b) => b.points - a.points)[0];
+
+            if (best) {
+              used.add(best.pid);
+              total += best.points || 0;
+            }
+          }
+
+          return total;
+        };
+
+        // Build roster history for the selected week
+        // Fetch transactions up to the selected week
+        const transactionPromises: Array<Promise<{ week: number; transactions: SleeperTransaction[] }>> = [];
+        for (let w = 1; w <= week; w++) {
+          transactionPromises.push(
+            getLeagueTransactions(req.params.leagueId, w)
+              .then(transactions => ({ week: w, transactions }))
+              .catch(error => {
+                console.warn(`[Matchup Detail Max PF] Error fetching transactions for week ${w}:`, error);
+                return { week: w, transactions: [] };
+              })
+          );
+        }
+        const weeklyTransactions = await Promise.all(transactionPromises);
+
+        // Build roster state for the selected week
+        // Use matchup.players if available (most accurate), otherwise build from transactions
+        const getRosterForWeek = (roster: SleeperRoster, matchup: SleeperMatchup | null): string[] => {
+          // If matchup has players field, use it directly (most accurate)
+          if (matchup?.players && Array.isArray(matchup.players)) {
+            return matchup.players;
+          }
+
+          // Otherwise, build roster by applying transactions chronologically
+          // Initialize with current roster as baseline
+          const rosterState = new Set<string>(roster.players || []);
+
+          // Apply transactions chronologically from week 1 to the selected week
+          for (let w = 1; w <= week; w++) {
+            const transactionsForWeek = weeklyTransactions.find(t => t.week === w)?.transactions || [];
+            transactionsForWeek
+              .filter(t => t.status === "complete")
+              .forEach(t => {
+                const adds = t.adds || {};
+                const drops = t.drops || {};
+
+                // Apply adds for this roster
+                Object.entries(adds).forEach(([playerId, rosterId]) => {
+                  if (Number(rosterId) === roster.roster_id) {
+                    rosterState.add(playerId);
+                  }
+                });
+
+                // Apply drops for this roster
+                Object.entries(drops).forEach(([playerId, rosterId]) => {
+                  if (Number(rosterId) === roster.roster_id) {
+                    rosterState.delete(playerId);
+                  }
+                });
+              });
+          }
+
+          return Array.from(rosterState);
+        };
+
+        // Calculate Max PF for user team
+        const userWeekRoster = getRosterForWeek(userRoster, userMatchup);
+        const userPlayersPoints = userMatchup?.players_points || {};
+        const userWeekPoints: Record<string, number> = {};
+        userWeekRoster.forEach(playerId => {
+          userWeekPoints[playerId] = typeof userPlayersPoints[playerId] === 'number' ? userPlayersPoints[playerId] : 0;
+        });
+        userMaxPF = calculateOptimalLineup(userWeekRoster, userWeekPoints, slotOrder);
+
+        // Calculate Max PF for opponent team (if exists)
+        if (opponentMatchup && opponentRoster) {
+          const opponentWeekRoster = getRosterForWeek(opponentRoster, opponentMatchup);
+          const opponentPlayersPoints = opponentMatchup?.players_points || {};
+          const opponentWeekPoints: Record<string, number> = {};
+          opponentWeekRoster.forEach(playerId => {
+            opponentWeekPoints[playerId] = typeof opponentPlayersPoints[playerId] === 'number' ? opponentPlayersPoints[playerId] : 0;
+          });
+          opponentMaxPF = calculateOptimalLineup(opponentWeekRoster, opponentWeekPoints, slotOrder);
+        }
+      }
+
+      // Add Max PF to team objects
+      const userTeamWithMaxPF = { ...userTeam, maxPointsFor: userMaxPF };
+      const opponentTeamWithMaxPF = opponentTeam ? { ...opponentTeam, maxPointsFor: opponentMaxPF } : null;
+
+      res.json({ userTeam: userTeamWithMaxPF, opponentTeam: opponentTeamWithMaxPF, week });
     } catch (error) {
       console.error("Error fetching detailed matchup:", error);
       res.status(500).json({ error: "Failed to fetch detailed matchup" });
@@ -1483,6 +1579,13 @@ export async function registerRoutes(
         return "bench";
       };
 
+      // Use effective week to handle offseason correctly
+      const effectiveWeek = getEffectiveWeek(nflState, league);
+      const weeksPlayed = Math.max(1, effectiveWeek); // Ensure at least 1 to avoid division by zero
+      
+      // Debug logging for troubleshooting
+      console.log(`[Roster Endpoint] Effective week: ${effectiveWeek}, NFL week: ${nflState?.week}, League season: ${league?.season}, NFL season: ${nflState?.season}, Season type: ${nflState?.season_type}, Weeks played: ${weeksPlayed}`);
+      
       const rosterPlayers = (userRoster.players || [])
         .map(pid => {
           const player = players[pid];
@@ -1490,7 +1593,6 @@ export async function registerRoutes(
           
           const stats = seasonStats[pid];
           const points = stats?.pts_ppr || stats?.pts_std || 0;
-          const weeksPlayed = Math.max(1, nflState?.week || 1); // Ensure at least 1 to avoid division by zero
           
           return {
             id: pid,
@@ -1581,7 +1683,7 @@ export async function registerRoutes(
       }
 
       // Fetch weekly stats to calculate games played and PPG
-      const currentWeek = nflState?.week || 1;
+      const currentWeek = getEffectiveWeek(nflState, league);
       const weeksToFetch = Math.min(currentWeek, 8); // Use up to 8 weeks of data
       
       const playerWeeklyPoints = new Map<string, number[]>();
@@ -1766,7 +1868,7 @@ export async function registerRoutes(
       ]);
 
       const season = league.season || nflState.season;
-      const currentWeek = nflState.week || 18;
+      const currentWeek = getEffectiveWeek(nflState, league);
       
       console.log(`[Player Rankings] Fetching stats for season ${season}, current week ${currentWeek}`);
       
@@ -2070,7 +2172,7 @@ export async function registerRoutes(
       const seasonNum = typeof season === 'string' ? parseInt(season, 10) : season;
       currentYear = (!isNaN(seasonNum) && seasonNum > 2000 && seasonNum < 2100) ? seasonNum : new Date().getFullYear();
       nextYear = currentYear + 1;
-      const currentWeek = nflState?.week || 18;
+      const currentWeek = nflState ? getEffectiveWeek(nflState, league) : 18;
       
       // Year Calculation Logging
       console.log(`[Assign Contracts] --- YEAR CALCULATION ---`);
@@ -2874,7 +2976,7 @@ export async function registerRoutes(
 
       const playoffTeams = league.settings.playoff_teams || 6;
       const playoffWeekStart = (league.settings as any).playoff_week_start || 15;
-      const currentWeek = nflState.week;
+      const currentWeek = getEffectiveWeek(nflState, league);
       const regularSeasonWeeks = playoffWeekStart - 1;
       // Include current week in remaining weeks (e.g., week 12 with 14-week season = 3 weeks left including current)
       const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek + 1);
@@ -3226,7 +3328,7 @@ export async function registerRoutes(
       });
 
       // Calculate standings to determine playoff seeds
-      const currentWeek = nflState.week;
+      const currentWeek = league ? getEffectiveWeek(nflState, league) : nflState.week;
       const matchupHistory: Map<number, Array<{ week: number; won: boolean | null }>> = new Map();
       rosters.forEach(r => matchupHistory.set(r.roster_id, []));
       
@@ -3582,17 +3684,18 @@ export async function registerRoutes(
   // Team Luck - calculate luck based on points vs league median
   app.get("/api/sleeper/league/:leagueId/team-luck", async (req, res) => {
     try {
-      const [rosters, users, nflState] = await Promise.all([
+      const [rosters, users, nflState, league] = await Promise.all([
         getLeagueRosters(req.params.leagueId),
         getLeagueUsers(req.params.leagueId),
         getNFLState(),
+        getLeague(req.params.leagueId).catch(() => null),
       ]);
 
       const userMap = new Map<string, SleeperLeagueUser>();
       users.forEach(u => userMap.set(u.user_id, u));
 
       // Get current week (completed weeks only)
-      const currentWeek = nflState.week;
+      const currentWeek = getEffectiveWeek(nflState, league);
       const completedWeeks = Math.max(0, currentWeek - 1);
       
       if (completedWeeks === 0) {
@@ -3931,14 +4034,16 @@ export async function registerRoutes(
     try {
       const { leagueId } = req.params;
       
-      const [rosters, users, nflState] = await Promise.all([
+      const [rosters, users, nflState, league] = await Promise.all([
         getLeagueRosters(leagueId),
         getLeagueUsers(leagueId),
         getNFLState(),
+        getLeague(leagueId).catch(() => null),
       ]);
       
       // Calculate completed weeks (current week - 1, since current week may not be done)
-      const currentWeek = Math.max(1, nflState.week - 1);
+      const effectiveWeek = getEffectiveWeek(nflState, league);
+      const currentWeek = Math.max(1, effectiveWeek - 1);
       
       // Need at least 5 weeks of data (4 recent + 1 baseline)
       if (currentWeek < 5) {
@@ -4055,7 +4160,7 @@ export async function registerRoutes(
 
       // Get league season
       let leagueSeason = league.season;
-      const currentWeek = nflState.week;
+      const currentWeek = getEffectiveWeek(nflState, league);
       
       // Determine which league ID to use for matchups
       // If current league has no matchup data, use previous league (for dynasty leagues that rolled over)
@@ -4359,10 +4464,11 @@ export async function registerRoutes(
           // 2. This is a past season (season year < current year), OR
           // 3. This is the current season AND we're at or past the playoff start week
           const isCurrentSeason = parseInt(season) === currentSeasonYear || season === nflState.season;
+          const effectiveWeek = getEffectiveWeek(nflState, league);
           const regularSeasonComplete = 
             leagueStatus === 'complete' || 
             parseInt(season) < currentSeasonYear ||
-            (isCurrentSeason && nflState.week >= playoffWeekStart);
+            (isCurrentSeason && effectiveWeek >= playoffWeekStart);
           
           if (regularSeasonComplete) {
             const highestScorer = rosters.reduce((best, current) => {
@@ -4562,7 +4668,7 @@ export async function registerRoutes(
       }
       
       const season = league?.season || nflState.season || new Date().getFullYear().toString();
-      const currentWeek = nflState.week;
+      const currentWeek = getEffectiveWeek(nflState, league);
       
       // Fetch weekly stats and projections for all weeks played so far
       const weeklyData: { week: number; actual: number | null; projected: number }[] = [];

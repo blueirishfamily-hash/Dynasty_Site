@@ -67,7 +67,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         try {
           if (nflStateRes?.ok) {
             nflState = await nflStateRes.json();
-            setCurrentWeek(nflState.week || 1);
+        setCurrentWeek(nflState.week || 1);
           }
         } catch (err) {
           console.warn("Failed to fetch NFL state:", err);
@@ -76,20 +76,20 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         // Fetch the default league (refresh stored data) and prioritize its season
         if (DEFAULT_LEAGUE_ID && leagueRes) {
           try {
-            if (leagueRes.ok) {
-              const leagueData = await leagueRes.json();
-              const leagueInfo: LeagueInfo = {
-                leagueId: leagueData.leagueId,
-                name: leagueData.name,
-                season: leagueData.season,
-                totalRosters: leagueData.totalRosters,
-                rosterPositions: leagueData.rosterPositions || [],
-                playoffTeams: leagueData.playoffTeams,
-                waiverBudget: leagueData.waiverBudget,
-                commissionerId: leagueData.commissionerId,
-              };
-              setLeagueState(leagueInfo);
-              localStorage.setItem(STORAGE_KEY_LEAGUE, JSON.stringify(leagueInfo));
+        if (leagueRes.ok) {
+          const leagueData = await leagueRes.json();
+          const leagueInfo: LeagueInfo = {
+            leagueId: leagueData.leagueId,
+            name: leagueData.name,
+            season: leagueData.season,
+            totalRosters: leagueData.totalRosters,
+            rosterPositions: leagueData.rosterPositions || [],
+            playoffTeams: leagueData.playoffTeams,
+            waiverBudget: leagueData.waiverBudget,
+            commissionerId: leagueData.commissionerId,
+          };
+          setLeagueState(leagueInfo);
+          localStorage.setItem(STORAGE_KEY_LEAGUE, JSON.stringify(leagueInfo));
               
               // Prioritize league season over NFL state season
               setSeason(leagueInfo.season || nflState?.season || new Date().getFullYear().toString());
@@ -154,7 +154,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
               } else {
                 setSeason(nflState?.season || new Date().getFullYear().toString());
               }
-            } catch {
+          } catch {
               setSeason(nflState?.season || new Date().getFullYear().toString());
             }
           } else {

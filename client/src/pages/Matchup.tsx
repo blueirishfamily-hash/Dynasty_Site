@@ -38,6 +38,7 @@ interface MatchupTeam {
   record: string;
   starters: MatchupPlayer[];
   bench: MatchupPlayer[];
+  maxPointsFor?: number;
 }
 
 interface MatchupData {
@@ -278,6 +279,9 @@ export default function Matchup() {
                   <div>
                     <p className="font-heading font-bold text-lg" data-testid="text-user-name">{userTeam.name}</p>
                     <p className="text-sm text-muted-foreground">{userTeam.record}</p>
+                    {userTeam.maxPointsFor !== undefined && selectedWeek <= currentWeek && (
+                      <p className="text-xs text-muted-foreground">Max PF: {userTeam.maxPointsFor.toFixed(1)}</p>
+                    )}
                   </div>
                 </div>
                 
@@ -307,6 +311,9 @@ export default function Matchup() {
                   <div className="text-right">
                     <p className="font-heading font-bold text-lg" data-testid="text-opponent-name">{opponentTeam.name}</p>
                     <p className="text-sm text-muted-foreground">{opponentTeam.record}</p>
+                    {opponentTeam.maxPointsFor !== undefined && selectedWeek <= currentWeek && (
+                      <p className="text-xs text-muted-foreground">Max PF: {opponentTeam.maxPointsFor.toFixed(1)}</p>
+                    )}
                   </div>
                   <Avatar className="w-16 h-16">
                     {opponentTeam.avatar && <AvatarImage src={opponentTeam.avatar} alt={opponentTeam.name} />}
