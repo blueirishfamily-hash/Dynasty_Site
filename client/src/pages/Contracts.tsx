@@ -2268,10 +2268,12 @@ function ManageTeamContractsTab({
       extensionYear,
       currentSalary: salaryToUse,
       currentSalaryTenths: Math.round(salaryToUse * 10),
+      // For rookie contracts, only 3-year and 4-year extensions are available (via quartile pricing)
+      // For non-rookie contracts, all extension types are available
       canDo1Year: requiresQuartilePricing ? false : canDo1Year,
       canDo2Year: requiresQuartilePricing ? false : canDo2Year,
-      canDo3Year: requiresQuartilePricing ? false : canDo3Year,
-      canDo4Year: requiresQuartilePricing ? false : canDo4Year,
+      canDo3Year: canDo3Year, // Available for both rookie and non-rookie contracts
+      canDo4Year: canDo4Year, // Available for both rookie and non-rookie contracts
       oneYearSalary,
       twoYearSalary,
       threeYearSalary,
@@ -3626,7 +3628,7 @@ function ManageTeamContractsTab({
                                         const quartileSalaryInMillions = quartileInfo.salary / 10;
                                         return (
                                           <>
-                                            {extensionEligibility.canDo3Year && !teamUsed3Year && (
+                                            {extensionEligibility.canDo3Year && (
                                               <Button
                                                 size="sm"
                                                 variant="outline"
@@ -3643,14 +3645,14 @@ function ManageTeamContractsTab({
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
-                                                disabled={applyExtensionMutation.isPending}
+                                                disabled={applyExtensionMutation.isPending || teamUsed3Year}
                                                 data-testid={`button-extend-3yr-quartile-${player.playerId}`}
                                               >
                                                 <span>3-Year Extension</span>
                                                 <span className="text-emerald-600 font-medium">${quartileSalaryInMillions.toFixed(1)}M/yr (Q{quartileInfo.quartile})</span>
                                               </Button>
                                             )}
-                                            {extensionEligibility.canDo4Year && !teamUsed4Year && (
+                                            {extensionEligibility.canDo4Year && (
                                               <Button
                                                 size="sm"
                                                 variant="outline"
@@ -3667,7 +3669,7 @@ function ManageTeamContractsTab({
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
-                                                disabled={applyExtensionMutation.isPending}
+                                                disabled={applyExtensionMutation.isPending || teamUsed4Year}
                                                 data-testid={`button-extend-4yr-quartile-${player.playerId}`}
                                               >
                                                 <span>4-Year Extension</span>
@@ -3751,7 +3753,7 @@ function ManageTeamContractsTab({
                                             <span className="text-emerald-600 font-medium">${extensionEligibility.threeYearSalary}M/yr (1.8x)</span>
                                           </Button>
                                         )}
-                                        {extensionEligibility.canDo4Year && !teamUsed4Year && (
+                                        {extensionEligibility.canDo4Year && (
                                           <Button
                                             size="sm"
                                             variant="outline"
@@ -3766,7 +3768,7 @@ function ManageTeamContractsTab({
                                               );
                                               setOpenExtensionPopover(null);
                                             }}
-                                            disabled={applyExtensionMutation.isPending}
+                                            disabled={applyExtensionMutation.isPending || teamUsed4Year}
                                             data-testid={`button-extend-4yr-${player.playerId}`}
                                           >
                                             <span>4-Year Extension</span>

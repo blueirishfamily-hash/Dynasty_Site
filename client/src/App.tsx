@@ -92,7 +92,8 @@ function AppContent() {
   const userDraftPicks = (draftPicks || [])
     .filter((p: any) => 
       p.currentOwnerId === userRosterId && 
-      (p.season === currentYear.toString() || p.season === (currentYear + 1).toString())
+      (p.season === currentYear.toString() || p.season === (currentYear + 1).toString()) &&
+      p.round <= 3 // Only show rounds 1-3 (draft is only 3 rounds)
     )
     .slice(0, 8)
     .map((p: any) => ({

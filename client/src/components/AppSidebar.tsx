@@ -141,7 +141,7 @@ export default function AppSidebar({
                   className={`text-xs ${getRoundColor(pick.round)}`}
                   data-testid={`badge-pick-${pick.year}-${pick.round}`}
                 >
-                  {pick.year} {pick.round === 1 ? "1st" : pick.round === 2 ? "2nd" : `${pick.round}rd`}
+                  {pick.year} {pick.round === 1 ? "1st" : pick.round === 2 ? "2nd" : pick.round === 3 ? "3rd" : `${pick.round}th`}
                   {pick.originalOwner && ` (via ${pick.originalOwner})`}
                 </Badge>
               ))

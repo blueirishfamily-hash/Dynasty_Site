@@ -96,6 +96,24 @@ interface SalaryCapImpact {
   netChange: number;
 }
 
+// Helper function to calculate current team salary for a given year
+function calculateCurrentTeamSalary(
+  playerIds: string[],
+  contractData: ContractDataStore,
+  rosterId: number | undefined,
+  year: number
+): number {
+  if (!rosterId || !playerIds || playerIds.length === 0) return 0;
+  
+  const rosterIdStr = rosterId.toString();
+  const teamContracts = contractData[rosterIdStr] || {};
+  
+  return playerIds.reduce((sum, playerId) => {
+    const contract = teamContracts[playerId];
+    return sum + (contract?.salaries?.[year] || 0);
+  }, 0);
+}
+
 function calculateSalaryCapImpactWithOpponent(
   userOutgoingPlayers: string[],
   userIncomingPlayers: string[],
@@ -352,6 +370,44 @@ export default function TradeCenter({
     getRosterId,
     selectedTeamId,
   ]);
+
+  // Calculate current and new salaries for each team
+  const teamSalaries = useMemo(() => {
+    if (!capImpact || !userRosterId || !opponentRosterId || !selectedTeam) return null;
+
+    const userCurrentSalaries = contractYears.map(year => 
+      calculateCurrentTeamSalary(
+        userTeam.players.map(p => p.id),
+        contractData,
+        userRosterId,
+        year
+      )
+    );
+
+    const opponentCurrentSalaries = contractYears.map(year => 
+      calculateCurrentTeamSalary(
+        selectedTeam.players.map(p => p.id),
+        contractData,
+        opponentRosterId,
+        year
+      )
+    );
+
+    const userNewSalaries = userCurrentSalaries.map((current, index) => 
+      current + capImpact.userImpact[index].netChange
+    );
+
+    const opponentNewSalaries = opponentCurrentSalaries.map((current, index) => 
+      current + capImpact.opponentImpact[index].netChange
+    );
+
+    return {
+      userCurrent: userCurrentSalaries,
+      userNew: userNewSalaries,
+      opponentCurrent: opponentCurrentSalaries,
+      opponentNew: opponentNewSalaries,
+    };
+  }, [capImpact, userRosterId, opponentRosterId, contractData, contractYears, userTeam.players, selectedTeam]);
 
   const toggleSelection = (
     id: string,
@@ -650,6 +706,54 @@ export default function TradeCenter({
                           </TableCell>
                         ))}
                       </TableRow>
+                      {teamSalaries && (
+                        <>
+                          <TableRow className="border-t-2 border-border">
+                            <TableCell className="font-medium text-muted-foreground">
+                              {userTeam.teamName} New Salary
+                            </TableCell>
+                            {teamSalaries.userNew.map((salary, index) => (
+                              <TableCell
+                                key={contractYears[index]}
+                                className={`text-center font-medium ${
+                                  salary > TOTAL_CAP
+                                    ? "text-red-600"
+                                    : salary > TOTAL_CAP * 0.9
+                                    ? "text-amber-600"
+                                    : "text-foreground"
+                                }`}
+                              >
+                                ${salary.toFixed(1)}M
+                                {salary > TOTAL_CAP && (
+                                  <span className="text-xs block text-red-600">Over Cap</span>
+                                )}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                          <TableRow>
+                            <TableCell className="font-medium text-muted-foreground">
+                              {selectedTeam.teamName} New Salary
+                            </TableCell>
+                            {teamSalaries.opponentNew.map((salary, index) => (
+                              <TableCell
+                                key={contractYears[index]}
+                                className={`text-center font-medium ${
+                                  salary > TOTAL_CAP
+                                    ? "text-red-600"
+                                    : salary > TOTAL_CAP * 0.9
+                                    ? "text-amber-600"
+                                    : "text-foreground"
+                                }`}
+                              >
+                                ${salary.toFixed(1)}M
+                                {salary > TOTAL_CAP && (
+                                  <span className="text-xs block text-red-600">Over Cap</span>
+                                )}
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        </>
+                      )}
                     </TableBody>
                   </Table>
                 </div>
