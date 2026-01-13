@@ -662,15 +662,18 @@ export async function registerRoutes(
       };
 
       // Calculate max points for each roster by summing optimal weekly lineups
-      console.log(`[Max PF] Regular season weeks: ${regularSeasonWeeks}, Completed regular season weeks: ${completedRegularSeasonWeeks}, Current week: ${currentWeek}`);
+      // Max PF is the sum of all completed weeks max PF for weeks 1-14
+      const maxPFWeeks = 14; // Always sum weeks 1-14 (or up to completed weeks if less)
+      const weeksToSum = Math.min(completedRegularSeasonWeeks, maxPFWeeks);
+      console.log(`[Max PF] Regular season weeks: ${regularSeasonWeeks}, Completed regular season weeks: ${completedRegularSeasonWeeks}, Weeks to sum: ${weeksToSum}, Current week: ${currentWeek}`);
       
       rosters.forEach(roster => {
         let total = 0;
         const weeklyMap = rosterHistory.get(roster.roster_id) || new Map();
         const weeklyMaxPoints: number[] = []; // Track per-week values for validation
 
-        // Sum optimal weekly lineup points for all completed regular season weeks
-        for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
+        // Sum optimal weekly lineup points for all completed weeks up to week 14
+        for (let week = 1; week <= weeksToSum; week++) {
           const weekRoster = weeklyMap.get(week) || [];
           const weekPoints = rosterWeeklyPoints.get(roster.roster_id)?.get(week) || {};
           
@@ -4933,24 +4936,42 @@ export async function registerRoutes(
 
       const suggestions = await storage.getRuleSuggestions(leagueId);
       
-      // Get voting status for each rule
-      const suggestionsWithVoting = await Promise.all(
-        suggestions.map(async (suggestion) => {
-          const votingEnabled = await storage.getLeagueSetting(
-            leagueId,
-            `rule_voting_enabled_${suggestion.id}`
-          );
-          return {
-            ...suggestion,
-            votingEnabled: votingEnabled === "true",
-          };
-        })
-      );
+      // Get voting status for each rule (only if there are suggestions)
+      const suggestionsWithVoting = suggestions.length > 0
+        ? await Promise.all(
+            suggestions.map(async (suggestion) => {
+              const votingEnabled = await storage.getLeagueSetting(
+                leagueId,
+                `rule_voting_enabled_${suggestion.id}`
+              );
+              return {
+                ...suggestion,
+                votingEnabled: votingEnabled === "true",
+              };
+            })
+          )
+        : [];
       
       res.json(suggestionsWithVoting);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Error fetching rule suggestions:", error);
-      res.status(500).json({ error: "Failed to fetch rule suggestions" });
+      const errorMessage = error?.message || "Unknown error";
+      const errorCode = error?.code;
+      
+      // Check if table doesn't exist (PostgreSQL error code 42P01)
+      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation") || errorMessage.includes("rule_suggestions")) {
+        return res.status(500).json({ 
+          error: "Database table does not exist. Please run 'npm run db:push' to create the required tables.",
+          details: errorMessage,
+          code: errorCode
+        });
+      }
+      
+      res.status(500).json({ 
+        error: "Failed to fetch rule suggestions",
+        details: errorMessage,
+        code: errorCode
+      });
     }
   });
 
@@ -6417,11 +6438,28 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
       }
 
+      // Verify DATABASE_URL is set
+      if (!process.env.DATABASE_URL) {
+        console.error("[API] DATABASE_URL environment variable is not set");
+        return res.status(500).json({ 
+          error: "Database connection not configured",
+          details: "DATABASE_URL environment variable is not set. Please configure the database connection."
+        });
+      }
+
       const tables = await storage.getTableList();
+      console.log(`[API] Successfully retrieved ${tables.length} tables`);
       res.json(tables);
     } catch (error: any) {
       console.error("[API] Error getting table list:", error);
-      res.status(500).json({ error: error.message || "Failed to get table list" });
+      const errorMessage = error?.message || "Failed to get table list";
+      const errorCode = error?.code;
+      
+      res.status(500).json({ 
+        error: errorMessage,
+        details: error?.details || errorMessage,
+        code: errorCode
+      });
     }
   });
 

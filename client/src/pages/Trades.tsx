@@ -144,7 +144,16 @@ export default function Trades() {
       </div>
 
       {userTeam ? (
-        <TradeCenter userTeam={userTeam} leagueTeams={leagueTeams} />
+        <TradeCenter
+          userTeam={userTeam}
+          leagueTeams={leagueTeams}
+          leagueId={league?.leagueId}
+          userRosterId={userRosterId}
+          getRosterId={(teamId: string) => {
+            const team = standings?.find((s: any) => s.ownerId === teamId);
+            return team?.rosterId;
+          }}
+        />
       ) : (
         <Card>
           <CardContent className="py-8 text-center text-muted-foreground">
