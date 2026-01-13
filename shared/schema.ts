@@ -311,6 +311,7 @@ export const leagueInfoSchema = z.object({
   totalRosters: z.number(),
   rosterPositions: z.array(z.string()),
   playoffTeams: z.number().optional(),
+  playoffWeekStart: z.number().optional(),
   waiverBudget: z.number().optional(),
   commissionerId: z.string().optional(),
 });

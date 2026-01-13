@@ -67,7 +67,13 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         try {
           if (nflStateRes?.ok) {
             nflState = await nflStateRes.json();
-        setCurrentWeek(nflState.week || 1);
+            // Check if NFL is in offseason
+            const isOffseason = nflState.seasonType === "off" || nflState.seasonType === "post";
+            if (isOffseason) {
+              setCurrentWeek(18);
+            } else {
+              setCurrentWeek(nflState.week || 1);
+            }
           }
         } catch (err) {
           console.warn("Failed to fetch NFL state:", err);
@@ -85,6 +91,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
             totalRosters: leagueData.totalRosters,
             rosterPositions: leagueData.rosterPositions || [],
             playoffTeams: leagueData.playoffTeams,
+            playoffWeekStart: leagueData.playoffWeekStart,
             waiverBudget: leagueData.waiverBudget,
             commissionerId: leagueData.commissionerId,
           };

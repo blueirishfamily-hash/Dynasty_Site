@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -16,7 +16,7 @@ import {
   TableHeader, 
   TableRow 
 } from "@/components/ui/table";
-import { Calendar, Dice1, Trophy, TrendingDown } from "lucide-react";
+import { Calendar, Dice1, Trophy, TrendingDown, Lock } from "lucide-react";
 
 interface DraftInfo {
   draftId: string;
@@ -90,6 +90,7 @@ interface DraftOddsTeam {
   makePlayoffsPct?: number;
   projectedWins?: number;
   status: "eliminated" | "clinched" | "bubble";
+  isLocked?: boolean;
 }
 
 const positionColors: Record<string, string> = {
@@ -113,6 +114,7 @@ export default function Draft() {
   const { user, league, season } = useSleeper();
   const [activeTab, setActiveTab] = useState<"future" | "historical" | "odds">("future");
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
+  const lockedOddsRef = useRef<Map<number, number[]>>(new Map());
 
   const { data: draftPicks, isLoading: picksLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "draft-picks"],
@@ -156,11 +158,25 @@ export default function Draft() {
     enabled: !!selectedDraftId,
   });
 
-  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[]; remainingWeeks: number }>({
+  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[]; remainingWeeks: number; currentWeek: number }>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
       if (!res.ok) throw new Error("Failed to fetch playoff predictions");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
+  const { data: bracketData } = useQuery<{
+    matchups: Array<{ winner: number | null; loser: number | null }>;
+    consolationMatchups?: Array<{ winner: number | null; loser: number | null }>;
+    draftPicks?: Record<number, number>;
+  }>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "bracket"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/bracket`);
+      if (!res.ok) throw new Error("Failed to fetch bracket");
       return res.json();
     },
     enabled: !!league?.leagueId,
@@ -313,17 +329,66 @@ export default function Draft() {
   // Non-playoff teams get picks 1-5 based on max points (lowest = pick 1)
   // Playoff teams get picks 6-12 based on postseason finish (worst finisher = pick 6, champion = pick 12)
   // Bubble teams have odds spread across all picks based on their playoff probability
-  // After regular season ends (remainingWeeks === 0), eliminated teams are locked into draft slots by points scored
+  // After regular season ends, eliminated teams are locked into draft slots by points scored
   const calculateDraftOdds = (): DraftOddsTeam[] => {
     if (!standings) return [];
 
     const SIMULATIONS = 10000;
     const NON_PLAYOFF_PICKS = 5; // Picks 1-5 for non-playoff teams
-    const regularSeasonEnded = playoffPredictions?.remainingWeeks === 0;
+    
+    // Determine if regular season has ended based on playoff_week_start from Sleeper settings
+    // Get playoff week start from league (defaults to 15 if not available)
+    // Regular season ends at week 14, playoffs run weeks 15-17
+    const playoffWeekStart = league?.playoffWeekStart || 15;
+    const currentWeek = playoffPredictions?.currentWeek;
+    
+    // Regular season ends at week (playoff_week_start - 1)
+    // Regular season has ended if current week >= playoff_week_start
+    // Also check remainingWeeks === 0 as a fallback
+    const regularSeasonEnded = currentWeek !== undefined 
+      ? currentWeek >= playoffWeekStart 
+      : playoffPredictions?.remainingWeeks === 0;
 
     const predictionMap = new Map(
       (playoffPredictions?.predictions || []).map(p => [p.rosterId, p])
     );
+
+    // Helper function to determine which teams have locked odds
+    const getLockedTeams = (): Set<number> => {
+      const locked = new Set<number>();
+      
+      // Eliminated teams lock after regular season ends
+      if (regularSeasonEnded) {
+        standings.forEach(team => {
+          const prediction = predictionMap.get(team.rosterId);
+          const makePlayoffsPct = prediction?.makePlayoffsPct ?? (team.rank <= playoffTeams ? 100 : 0);
+          if (makePlayoffsPct === 0) {
+            locked.add(team.rosterId);
+          }
+        });
+      }
+      
+      // Playoff teams lock after they lose in the playoffs
+      if (bracketData) {
+        // Check winners bracket
+        bracketData.matchups?.forEach(matchup => {
+          if (matchup.loser !== null) {
+            locked.add(matchup.loser);
+          }
+        });
+        
+        // Check losers bracket (consolation matchups)
+        bracketData.consolationMatchups?.forEach(matchup => {
+          if (matchup.loser !== null) {
+            locked.add(matchup.loser);
+          }
+        });
+      }
+      
+      return locked;
+    };
+
+    const lockedTeams = getLockedTeams();
 
     // Build list of teams with prediction data
     const teamsWithData: DraftOddsTeam[] = standings.map(team => {
@@ -340,6 +405,11 @@ export default function Draft() {
         status = "bubble";
       }
       
+      const isLocked = lockedTeams.has(team.rosterId);
+      
+      // If team is locked, use previously stored odds if available
+      const storedOdds = isLocked ? lockedOddsRef.current.get(team.rosterId) : undefined;
+      
       return {
         rosterId: team.rosterId,
         name: team.name,
@@ -351,12 +421,13 @@ export default function Draft() {
         isPlayoffTeam: makePlayoffsPct >= 50,
         projectedFinish: undefined,
         maxPoints: team.pointsFor,
-        pickOdds: new Array(totalTeams).fill(0),
+        pickOdds: storedOdds || new Array(totalTeams).fill(0),
         isUser: team.isUser,
         missPlayoffsPct: 100 - makePlayoffsPct,
         makePlayoffsPct,
         projectedWins: prediction?.projectedWins ?? team.wins,
         status,
+        isLocked,
       };
     });
 
@@ -378,52 +449,86 @@ export default function Draft() {
     // If regular season has ended, lock eliminated teams into draft slots by points scored
     // Lowest points = Pick 1, highest points among eliminated = Pick 5
     if (regularSeasonEnded) {
-      const eliminatedTeams = teamsWithData.filter(t => t.status === "eliminated");
-      const clinched = teamsWithData.filter(t => t.status === "clinched");
+      const eliminatedTeams = teamsWithData.filter(t => t.status === "eliminated" && !t.isLocked);
+      const lockedEliminatedTeams = teamsWithData.filter(t => t.status === "eliminated" && t.isLocked);
+      const clinched = teamsWithData.filter(t => t.status === "clinched" && !t.isLocked);
+      const lockedClinchedTeams = teamsWithData.filter(t => t.status === "clinched" && t.isLocked);
       
       // Sort eliminated teams by points (lowest first = pick 1)
-      eliminatedTeams.sort((a, b) => a.pointsFor - b.pointsFor);
+      // Include locked eliminated teams in sorting to maintain correct order
+      const allEliminatedTeams = teamsWithData.filter(t => t.status === "eliminated");
+      allEliminatedTeams.sort((a, b) => a.pointsFor - b.pointsFor);
       
       // Assign 100% odds for eliminated teams (locked in - no uncertainty)
+      // Only update odds for non-locked teams, locked teams already have their odds preserved
       eliminatedTeams.forEach((team, index) => {
-        if (index < NON_PLAYOFF_PICKS) {
-          team.pickOdds[index] = 100;
+        // Find the team's position among all eliminated teams
+        const positionInAll = allEliminatedTeams.findIndex(t => t.rosterId === team.rosterId);
+        if (positionInAll < NON_PLAYOFF_PICKS) {
+          team.pickOdds = new Array(totalTeams).fill(0);
+          team.pickOdds[positionInAll] = 100;
         }
       });
       
-      // For playoff teams, run Monte Carlo for picks 6-12 based on playoff finish
-      for (let sim = 0; sim < SIMULATIONS; sim++) {
-        // Sort clinched teams with random variance for playoff finish
-        const sortedClinched = [...clinched].sort((a, b) => {
-          const varianceA = (Math.random() - 0.5) * 2;
-          const varianceB = (Math.random() - 0.5) * 2;
-          const winsA = (a.projectedWins ?? a.wins) + varianceA;
-          const winsB = (b.projectedWins ?? b.wins) + varianceB;
-          if (Math.abs(winsA - winsB) > 0.1) return winsA - winsB;
-          return a.pointsFor - b.pointsFor;
-        });
-        
-        sortedClinched.forEach((team, index) => {
-          const pickPosition = NON_PLAYOFF_PICKS + index;
-          if (pickPosition < totalTeams) {
-            const counts = pickCounts.get(team.rosterId)!;
-            counts[pickPosition]++;
+      // For locked eliminated teams, ensure their odds are set correctly if not already set
+      lockedEliminatedTeams.forEach(team => {
+        const positionInAll = allEliminatedTeams.findIndex(t => t.rosterId === team.rosterId);
+        if (positionInAll < NON_PLAYOFF_PICKS && (!team.pickOdds || team.pickOdds.every(odds => odds === 0))) {
+          team.pickOdds = new Array(totalTeams).fill(0);
+          team.pickOdds[positionInAll] = 100;
+        }
+      });
+      
+      // Handle locked playoff teams - use draft picks from bracket if available
+      if (bracketData?.draftPicks) {
+        lockedClinchedTeams.forEach(team => {
+          const draftPick = bracketData.draftPicks?.[team.rosterId];
+          if (draftPick !== undefined) {
+            // Convert to 0-indexed
+            const pickIndex = draftPick - 1;
+            if (pickIndex >= 0 && pickIndex < totalTeams) {
+              team.pickOdds = new Array(totalTeams).fill(0);
+              team.pickOdds[pickIndex] = 100;
+            }
           }
         });
       }
       
-      // Convert counts to percentages with Bayesian smoothing for playoff teams
-      // This ensures no playoff team shows exactly 0% or 100% for any pick in their range
-      clinched.forEach(team => {
-        const counts = pickCounts.get(team.rosterId)!;
-        team.pickOdds = counts.map((count, pickIndex) => {
-          // Only apply smoothing to picks 6-12 (playoff team range)
-          if (pickIndex >= NON_PLAYOFF_PICKS && pickIndex < totalTeams) {
-            return smoothProbability(count, SIMULATIONS);
-          }
-          return 0; // Playoff teams have 0% chance at picks 1-5
+      // For non-locked playoff teams, run Monte Carlo for picks 6-12 based on playoff finish
+      if (clinched.length > 0) {
+        for (let sim = 0; sim < SIMULATIONS; sim++) {
+          // Sort clinched teams with random variance for playoff finish
+          const sortedClinched = [...clinched].sort((a, b) => {
+            const varianceA = (Math.random() - 0.5) * 2;
+            const varianceB = (Math.random() - 0.5) * 2;
+            const winsA = (a.projectedWins ?? a.wins) + varianceA;
+            const winsB = (b.projectedWins ?? b.wins) + varianceB;
+            if (Math.abs(winsA - winsB) > 0.1) return winsA - winsB;
+            return a.pointsFor - b.pointsFor;
+          });
+          
+          sortedClinched.forEach((team, index) => {
+            const pickPosition = NON_PLAYOFF_PICKS + index;
+            if (pickPosition < totalTeams) {
+              const counts = pickCounts.get(team.rosterId)!;
+              counts[pickPosition]++;
+            }
+          });
+        }
+        
+        // Convert counts to percentages with Bayesian smoothing for playoff teams
+        // This ensures no playoff team shows exactly 0% or 100% for any pick in their range
+        clinched.forEach(team => {
+          const counts = pickCounts.get(team.rosterId)!;
+          team.pickOdds = counts.map((count, pickIndex) => {
+            // Only apply smoothing to picks 6-12 (playoff team range)
+            if (pickIndex >= NON_PLAYOFF_PICKS && pickIndex < totalTeams) {
+              return smoothProbability(count, SIMULATIONS);
+            }
+            return 0; // Playoff teams have 0% chance at picks 1-5
+          });
         });
-      });
+      }
       
       // Sort teams by their most likely pick position
       teamsWithData.sort((a, b) => {
@@ -434,16 +539,26 @@ export default function Draft() {
         return bestPickA - bestPickB;
       });
       
+      // Store locked odds for future recalculations
+      teamsWithData.forEach(team => {
+        if (team.isLocked) {
+          lockedOddsRef.current.set(team.rosterId, team.pickOdds);
+        }
+      });
+      
       return teamsWithData;
     }
 
     // Run Monte Carlo simulations (regular season still ongoing)
+    // Filter out locked teams from simulations
+    const unlockedTeams = teamsWithData.filter(t => !t.isLocked);
+    
     for (let sim = 0; sim < SIMULATIONS; sim++) {
       // For each simulation, determine which teams make playoffs
       const madePlayoffs: DraftOddsTeam[] = [];
       const missedPlayoffs: DraftOddsTeam[] = [];
 
-      teamsWithData.forEach(team => {
+      unlockedTeams.forEach(team => {
         const rand = Math.random() * 100;
         if (rand < (team.makePlayoffsPct ?? 0)) {
           madePlayoffs.push(team);
@@ -510,15 +625,17 @@ export default function Draft() {
     }
 
     // Convert counts to percentages (preserve to thousandth place)
-    teamsWithData.forEach(team => {
+    // Only update odds for unlocked teams
+    unlockedTeams.forEach(team => {
       const counts = pickCounts.get(team.rosterId)!;
       team.pickOdds = counts.map(count => (count / SIMULATIONS) * 100);
     });
 
     // Apply minimum floor of 0.001% for all picks within each team's competitive range
     // This represents the "upset" factor - any team can theoretically get any pick in their range
+    // Skip this for locked teams as their odds are already finalized
     const MIN_ODDS = 0.001;
-    teamsWithData.forEach(team => {
+    unlockedTeams.forEach(team => {
       // Determine the pick range for this team based on status
       let pickRange: [number, number];
       if (team.status === "eliminated") {
@@ -565,6 +682,13 @@ export default function Draft() {
       const bestPickA = a.pickOdds.indexOf(maxOddsA);
       const bestPickB = b.pickOdds.indexOf(maxOddsB);
       return bestPickA - bestPickB;
+    });
+
+    // Store locked odds for future recalculations
+    teamsWithData.forEach(team => {
+      if (team.isLocked) {
+        lockedOddsRef.current.set(team.rosterId, team.pickOdds);
+      }
     });
 
     return teamsWithData;
@@ -907,6 +1031,12 @@ export default function Draft() {
                             {team.isUser && (
                               <Badge variant="outline" className="text-xs">
                                 You
+                              </Badge>
+                            )}
+                            {team.isLocked && (
+                              <Badge variant="outline" className="text-xs ml-1">
+                                <Lock className="w-3 h-3 mr-1" />
+                                Locked
                               </Badge>
                             )}
                           </div>

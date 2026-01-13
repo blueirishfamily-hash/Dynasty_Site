@@ -89,9 +89,9 @@ export async function registerRoutes(
     // Debug logging
     console.log(`[Effective Week] Input - nflWeek: ${nflWeek}, nflSeason: ${nflSeason}, leagueSeason: ${leagueSeason}, seasonType: ${seasonType}`);
     
-    // Get playoff week start from league settings (default to 18 for standard leagues)
-    const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 18;
-    const lastRegularSeasonWeek = playoffWeekStart - 1; // Typically 17
+    // Get playoff week start from league settings (default to 15 for standard leagues)
+    const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
+    const lastRegularSeasonWeek = playoffWeekStart - 1; // Typically 14
     
     // Normalize seasons to strings for comparison
     const leagueSeasonStr = leagueSeason ? leagueSeason.toString() : null;
@@ -227,6 +227,7 @@ export async function registerRoutes(
         totalRosters: league.total_rosters,
         rosterPositions: league.roster_positions,
         playoffTeams: league.settings.playoff_teams,
+        playoffWeekStart: (league.settings as any).playoff_week_start || 15,
         waiverBudget: league.settings.waiver_budget,
         commissionerId: league.owner_id,
       });
