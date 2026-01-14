@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import StandingsTable from "@/components/StandingsTable";
 import PlayoffPredictor from "@/components/PlayoffPredictor";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -37,6 +37,8 @@ interface BracketMatchup {
   team1From?: { w?: number; l?: number };
   team2From?: { w?: number; l?: number };
   placement?: number;
+  team1Score?: number;
+  team2Score?: number;
 }
 
 interface ConsolationMatchup {
@@ -48,8 +50,8 @@ interface ConsolationMatchup {
   winner: number | null;
   loser: number | null;
   placement?: number;
-  draftPickWinner?: number;
-  draftPickLoser?: number;
+  team1Score?: number;
+  team2Score?: number;
 }
 
 interface BracketData {
@@ -57,7 +59,6 @@ interface BracketData {
   rounds: number;
   teams: Record<number, { name: string; initials: string; avatar: string | null }>;
   consolationMatchups?: ConsolationMatchup[];
-  draftPicks?: Record<number, number>;
 }
 
 export default function Standings() {
@@ -357,10 +358,11 @@ export default function Standings() {
                 </CardHeader>
                 <CardContent>
                   <div className="overflow-x-auto pb-4">
-                    <div className="flex items-stretch min-w-max">
+                    <div className="flex items-start min-w-max gap-4">
                       {Array.from({ length: bracketData.rounds }, (_, i) => i + 1).map((round) => {
                         const roundMatchups = bracketData.matchups
                           .filter((m) => m.round === round)
+                          .filter((m) => !m.placement || m.placement === 1) // Only show championship (placement 1) or no placement
                           .sort((a, b) => a.matchupId - b.matchupId);
                         
                         const roundName = round === bracketData.rounds 
@@ -371,10 +373,15 @@ export default function Standings() {
                         
                         const isLastRound = round === bracketData.rounds;
                         const matchupHeight = 88;
-                        const matchupGap = round === 1 ? 16 : matchupHeight * Math.pow(2, round - 1) - matchupHeight + 16 * Math.pow(2, round - 1);
+                        const matchupSpacing = 16;
+                        
+                        // Calculate total height needed for this round
+                        const totalMatchups = roundMatchups.length;
+                        const totalHeight = totalMatchups * (matchupHeight * 2 + matchupSpacing) - matchupSpacing;
 
                         return (
-                          <div key={round} className="flex items-stretch">
+                          <div key={round} className="flex items-start">
+                            {/* Round Column */}
                             <div className="flex flex-col" style={{ minWidth: 200 }}>
                               <div className="text-center mb-4 px-2">
                                 <span className="font-heading text-xs font-semibold text-muted-foreground uppercase tracking-wider">
@@ -382,10 +389,10 @@ export default function Standings() {
                                 </span>
                               </div>
                               <div 
-                                className="flex flex-col justify-around flex-1"
-                                style={{ gap: matchupGap }}
+                                className="flex flex-col"
+                                style={{ gap: matchupSpacing }}
                               >
-                                {roundMatchups.map((matchup) => {
+                                {roundMatchups.map((matchup, matchupIndex) => {
                                   const isChampionship = matchup.placement === 1;
                                   const champion = matchup.winner ? bracketData.teams[matchup.winner] : null;
                                   
@@ -393,49 +400,118 @@ export default function Standings() {
                                     <div
                                       key={matchup.matchupId}
                                       className="relative"
+                                      style={{ height: matchupHeight * 2 }}
                                       data-testid={`bracket-matchup-${round}-${matchup.matchupId}`}
                                     >
                                       {isChampionship && champion && (
-                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary">
+                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary z-10">
                                           <Crown className="w-4 h-4" />
                                           <span className="font-heading font-bold text-xs whitespace-nowrap">Champion</span>
                                         </div>
                                       )}
-                                      <div className={`flex flex-col border rounded-lg overflow-hidden ${isChampionship ? "border-primary border-2 ring-2 ring-primary/20" : "border-border"}`}>
-                      <BracketTeamRow
-                        team={matchup.team1}
-                        seed={matchup.team1?.seed}
-                        isWinner={matchup.winner === matchup.team1?.rosterId}
-                        isLoser={matchup.loser === matchup.team1?.rosterId}
-                        fromMatchup={matchup.team1From}
-                        isTop
-                        draftPick={matchup.team1 ? bracketData.draftPicks?.[matchup.team1.rosterId] : undefined}
-                      />
-                      <div className="border-t border-border" />
-                      <BracketTeamRow
-                        team={matchup.team2}
-                        seed={matchup.team2?.seed}
-                        isWinner={matchup.winner === matchup.team2?.rosterId}
-                        isLoser={matchup.loser === matchup.team2?.rosterId}
-                        fromMatchup={matchup.team2From}
-                        draftPick={matchup.team2 ? bracketData.draftPicks?.[matchup.team2.rosterId] : undefined}
-                      />
+                                      <div className={`flex flex-col border rounded-lg overflow-hidden h-full ${isChampionship ? "border-primary border-2 ring-2 ring-primary/20" : "border-border"}`}>
+                                        <BracketTeamRow
+                                          team={matchup.team1}
+                                          seed={matchup.team1?.seed}
+                                          isWinner={matchup.winner === matchup.team1?.rosterId}
+                                          isLoser={matchup.loser === matchup.team1?.rosterId}
+                                          fromMatchup={matchup.team1From}
+                                          isTop
+                                          score={matchup.team1Score}
+                                        />
+                                        <div className="border-t border-border" />
+                                        <BracketTeamRow
+                                          team={matchup.team2}
+                                          seed={matchup.team2?.seed}
+                                          isWinner={matchup.winner === matchup.team2?.rosterId}
+                                          isLoser={matchup.loser === matchup.team2?.rosterId}
+                                          fromMatchup={matchup.team2From}
+                                          score={matchup.team2Score}
+                                        />
                                       </div>
                                     </div>
                                   );
                                 })}
                               </div>
                             </div>
+                            
+                            {/* Connecting Lines */}
                             {!isLastRound && (
-                              <div className="flex flex-col justify-around flex-1 py-8" style={{ width: 32 }}>
-                                {roundMatchups.map((_, idx) => (
-                                  idx % 2 === 0 && (
-                                    <div key={idx} className="flex flex-col items-center" style={{ height: matchupHeight * 2 + matchupGap }}>
-                                      <div className="w-4 border-t-2 border-r-2 border-border rounded-tr-lg flex-1" />
-                                      <div className="w-4 border-b-2 border-r-2 border-border rounded-br-lg flex-1" />
+                              <div 
+                                className="relative"
+                                style={{ 
+                                  width: 80,
+                                  height: totalHeight,
+                                }}
+                              >
+                                {roundMatchups.map((matchup, matchupIndex) => {
+                                  const isEven = matchupIndex % 2 === 0;
+                                  
+                                  if (!isEven) return null;
+                                  
+                                  // Calculate position for this pair of matchups
+                                  const matchupPairHeight = (matchupHeight * 2 + matchupSpacing) * 2;
+                                  const lineTop = matchupIndex * (matchupHeight * 2 + matchupSpacing);
+                                  const centerY = matchupHeight * 2 + matchupSpacing;
+                                  
+                                  return (
+                                    <div
+                                      key={`connector-${matchup.matchupId}`}
+                                      className="absolute left-0"
+                                      style={{
+                                        top: `${lineTop}px`,
+                                        height: `${matchupPairHeight}px`,
+                                        width: '80px',
+                                      }}
+                                    >
+                                      {/* Vertical line from top matchup center going down */}
+                                      <div 
+                                        className="absolute bg-border"
+                                        style={{
+                                          left: '0px',
+                                          top: `${matchupHeight}px`,
+                                          width: '2px',
+                                          height: `${centerY}px`,
+                                        }}
+                                      />
+                                      
+                                      {/* Vertical line from bottom matchup center going up */}
+                                      <div 
+                                        className="absolute bg-border"
+                                        style={{
+                                          left: '0px',
+                                          bottom: `${matchupHeight}px`,
+                                          width: '2px',
+                                          height: `${centerY}px`,
+                                        }}
+                                      />
+                                      
+                                      {/* Horizontal connector line in the middle */}
+                                      <div 
+                                        className="absolute bg-border"
+                                        style={{
+                                          left: '0px',
+                                          top: '50%',
+                                          width: '100%',
+                                          height: '2px',
+                                          transform: 'translateY(-50%)',
+                                        }}
+                                      />
+                                      
+                                      {/* Right edge arrow pointing to next round */}
+                                      <div 
+                                        className="absolute bg-border"
+                                        style={{
+                                          right: '0px',
+                                          top: '50%',
+                                          width: '20px',
+                                          height: '2px',
+                                          transform: 'translateY(-50%)',
+                                        }}
+                                      />
                                     </div>
-                                  )
-                                ))}
+                                  );
+                                })}
                               </div>
                             )}
                           </div>
@@ -446,82 +522,71 @@ export default function Standings() {
                 </CardContent>
               </Card>
 
+              {/* Consolation/Placement Games Section */}
               {bracketData.consolationMatchups && bracketData.consolationMatchups.length > 0 && (
                 <>
-                  <div className="relative">
+                  {/* Visual separator */}
+                  <div className="relative my-8">
                     <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t border-border"></div>
+                      <div className="w-full border-t-2 border-border"></div>
                     </div>
-                    <div className="relative flex justify-center text-xs uppercase">
-                      <span className="bg-background px-2 text-muted-foreground font-medium">Consolation Bracket</span>
+                    <div className="relative flex justify-center">
+                      <span className="bg-background px-4 text-sm font-medium text-muted-foreground">
+                        Placement Games
+                      </span>
                     </div>
                   </div>
+                  
+                  {/* Consolation bracket card */}
                   <Card className="border-muted">
-                  <CardHeader className="bg-muted/30">
-                    <CardTitle className="font-heading flex items-center gap-2">
-                      <Trophy className="w-5 h-5 text-muted-foreground" />
-                      Consolation Bracket
-                    </CardTitle>
-                    <p className="text-sm text-muted-foreground">Placement games determine draft positions for playoff teams</p>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {bracketData.consolationMatchups
-                        .filter(matchup => matchup.placement === 7 || matchup.placement === 5 || matchup.placement === 3)
-                        .sort((a, b) => {
-                          // Sort by placement (3rd, 5th, 7th)
-                          const order = [3, 5, 7];
-                          const aIndex = order.indexOf(a.placement ?? 999);
-                          const bIndex = order.indexOf(b.placement ?? 999);
-                          return aIndex - bIndex;
-                        })
-                        .map((matchup) => (
-                          <div key={`${matchup.placement || matchup.matchupId}-${matchup.matchupId}`}>
-                            <div className="text-center mb-3">
-                              <span className="font-heading text-sm font-semibold text-muted-foreground uppercase tracking-wider">
-                                {matchup.placement ? `${matchup.placement}${getOrdinalSuffix(matchup.placement)} Place Game` : "Consolation Game"}
-                              </span>
-                              {matchup.draftPickWinner && matchup.draftPickLoser && (
-                                <p className="text-xs text-muted-foreground mt-1">
-                                  Winner: Pick #{matchup.draftPickWinner} • Loser: Pick #{matchup.draftPickLoser}
-                                </p>
-                              )}
+                    <CardHeader className="bg-muted/30">
+                      <CardTitle className="font-heading flex items-center gap-2">
+                        <Trophy className="w-5 h-5 text-muted-foreground" />
+                        Placement Games
+                      </CardTitle>
+                      <CardDescription>Games determine final standings and draft positions for eliminated teams</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        {bracketData.consolationMatchups
+                          .filter(matchup => matchup.placement === 7 || matchup.placement === 5 || matchup.placement === 3)
+                          .sort((a, b) => {
+                            // Sort by placement (3rd, 5th, 7th)
+                            const order = [3, 5, 7];
+                            const aIndex = order.indexOf(a.placement ?? 999);
+                            const bIndex = order.indexOf(b.placement ?? 999);
+                            return aIndex - bIndex;
+                          })
+                          .map((matchup) => (
+                            <div key={`${matchup.placement || matchup.matchupId}-${matchup.matchupId}`}>
+                              <div className="text-center mb-3">
+                                <span className="font-heading text-sm font-semibold text-muted-foreground uppercase tracking-wider">
+                                  {matchup.placement ? `${matchup.placement}${getOrdinalSuffix(matchup.placement)} Place Game` : "Consolation Game"}
+                                </span>
+                              </div>
+                              <div className="flex flex-col border rounded-lg overflow-hidden border-border">
+                                <BracketTeamRow
+                                  team={matchup.team1}
+                                  seed={matchup.team1?.seed}
+                                  isWinner={matchup.winner === matchup.team1?.rosterId}
+                                  isLoser={matchup.loser === matchup.team1?.rosterId}
+                                  isTop
+                                  score={matchup.team1Score}
+                                />
+                                <div className="border-t border-border" />
+                                <BracketTeamRow
+                                  team={matchup.team2}
+                                  seed={matchup.team2?.seed}
+                                  isWinner={matchup.winner === matchup.team2?.rosterId}
+                                  isLoser={matchup.loser === matchup.team2?.rosterId}
+                                  score={matchup.team2Score}
+                                />
+                              </div>
                             </div>
-                            <div className="flex flex-col border rounded-lg overflow-hidden border-border">
-                              <BracketTeamRow
-                                team={matchup.team1}
-                                seed={matchup.team1?.seed}
-                                isWinner={matchup.winner === matchup.team1?.rosterId}
-                                isLoser={matchup.loser === matchup.team1?.rosterId}
-                                draftPick={
-                                  matchup.team1
-                                    ? matchup.winner === matchup.team1.rosterId
-                                      ? matchup.draftPickWinner
-                                      : matchup.draftPickLoser
-                                    : undefined
-                                }
-                                isTop
-                              />
-                              <div className="border-t border-border" />
-                              <BracketTeamRow
-                                team={matchup.team2}
-                                seed={matchup.team2?.seed}
-                                isWinner={matchup.winner === matchup.team2?.rosterId}
-                                isLoser={matchup.loser === matchup.team2?.rosterId}
-                                draftPick={
-                                  matchup.team2
-                                    ? matchup.winner === matchup.team2.rosterId
-                                      ? matchup.draftPickWinner
-                                      : matchup.draftPickLoser
-                                    : undefined
-                                }
-                              />
-                            </div>
-                          </div>
-                        ))}
-                    </div>
-                  </CardContent>
-                </Card>
+                          ))}
+                      </div>
+                    </CardContent>
+                  </Card>
                 </>
               )}
 
@@ -566,6 +631,7 @@ function BracketTeamRow({
   fromMatchup,
   isTop,
   draftPick,
+  score,
 }: {
   team: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
   seed?: number;
@@ -574,6 +640,7 @@ function BracketTeamRow({
   fromMatchup?: { w?: number; l?: number };
   isTop?: boolean;
   draftPick?: number;
+  score?: number;
 }) {
   // Use seed from team object if available, otherwise use prop
   const displaySeed = team?.seed ?? seed;
@@ -593,6 +660,8 @@ function BracketTeamRow({
       </div>
     );
   }
+
+  const hasScore = score !== undefined && score !== null && score > 0;
 
   return (
     <div
@@ -621,10 +690,10 @@ function BracketTeamRow({
           team.name
         )}
       </span>
-      {draftPick !== undefined && (
-        <Badge variant="outline" className="text-[10px] px-1.5 py-0.5 shrink-0">
-          Pick #{draftPick}
-        </Badge>
+      {hasScore && (
+        <span className={`text-xs font-semibold tabular-nums shrink-0 ${isWinner ? "text-primary" : isLoser ? "text-muted-foreground" : "text-muted-foreground"}`}>
+          {score.toFixed(2)}
+        </span>
       )}
       {isWinner && (
         <div className="w-5 h-5 rounded-full bg-primary flex items-center justify-center shrink-0">
