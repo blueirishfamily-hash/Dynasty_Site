@@ -7024,6 +7024,7 @@ export async function registerRoutes(
           position: pick.metadata.position,
           team: pick.metadata.team,
           fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
+          yearsExp: pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0,
         }));
 
         return res.json(formattedPicks);
