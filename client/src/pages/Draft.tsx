@@ -762,6 +762,148 @@ export default function Draft() {
 
   const draftOddsTeams = calculateDraftOdds();
 
+  const renderDraftByRound = (picks: DraftPick[]) => {
+    if (!picks || picks.length === 0) {
+      return <p className="text-center text-muted-foreground py-8">No picks available</p>;
+    }
+    
+    // Calculate max rounds from picks
+    const maxRounds = picks.length > 0 ? Math.max(...picks.map(p => p.round || 1)) : 1;
+    
+    // Group picks by round
+    const picksByRound = new Map<number, DraftPick[]>();
+    picks.forEach(pick => {
+      const round = pick.round || 1;
+      if (!picksByRound.has(round)) {
+        picksByRound.set(round, []);
+      }
+      picksByRound.get(round)!.push(pick);
+    });
+    
+    // Sort picks within each round by pick number
+    picksByRound.forEach((roundPicks, round) => {
+      roundPicks.sort((a, b) => a.pick - b.pick);
+    });
+    
+    // Find the maximum number of picks in any round to determine column height
+    const maxPicksInRound = Math.max(...Array.from(picksByRound.values()).map(p => p.length));
+    
+    return (
+      <ScrollArea className="w-full">
+        <div className="min-w-[600px]">
+          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${maxRounds}, minmax(180px, 1fr))` }}>
+            {Array.from({ length: maxRounds }, (_, i) => (
+              <div key={i} className="text-center font-medium text-sm p-2 bg-muted rounded-md">
+                Round {i + 1}
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-2">
+            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${maxRounds}, minmax(180px, 1fr))` }}>
+              {Array.from({ length: maxRounds }, (_, roundIndex) => {
+                const round = roundIndex + 1;
+                const roundPicks = picksByRound.get(round) || [];
+                
+                return (
+                  <div key={roundIndex} className="space-y-2">
+                    {Array.from({ length: maxPicksInRound }, (_, pickIndex) => {
+                      const pick = roundPicks[pickIndex];
+                      
+                      if (!pick) {
+                        return <div key={pickIndex} className="h-20" />;
+                      }
+                      
+                      return (
+                        <div
+                          key={pickIndex}
+                          className={`p-2 rounded-md border border-border hover-elevate ${
+                            pick.isUserPick ? "bg-primary/10 border-primary/30" : "bg-card"
+                          }`}
+                          data-testid={`pick-${pick.round}-${pick.pick}`}
+                        >
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-xs text-muted-foreground">
+                              {pick.round}.{String(pick.pick || "").padStart(2, "0")}
+                            </span>
+                            {pick.fantasyTeam && (
+                              <span className="text-[10px] text-muted-foreground truncate">
+                                {pick.fantasyTeam}
+                              </span>
+                            )}
+                          </div>
+
+                          {pick.player ? (
+                            <div className="flex items-center gap-2">
+                              <Avatar className="w-8 h-8">
+                                <AvatarImage 
+                                  src={`https://sleepercdn.com/content/nfl/players/${pick.player.id}.jpg`}
+                                  alt={pick.player.name || ""}
+                                />
+                                <AvatarFallback className="text-xs">
+                                  {(pick.player.name || "").split(" ").map((n) => n[0]).join("")}
+                                </AvatarFallback>
+                              </Avatar>
+                              <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium truncate">{pick.player.name || "Unknown"}</p>
+                                <div className="flex items-center gap-1 flex-wrap">
+                                  {pick.player.position && (
+                                    <Badge
+                                      className={`text-[10px] px-1.5 ${
+                                        positionColors[pick.player.position] || "bg-muted"
+                                      }`}
+                                    >
+                                      {pick.player.position}
+                                    </Badge>
+                                  )}
+                                  {pick.isNFLRookie && (
+                                    <Badge className="text-[10px] px-1.5 bg-green-500 text-white">
+                                      NFL Rookie
+                                    </Badge>
+                                  )}
+                                  {pick.player.team && (
+                                    <span className="text-xs text-muted-foreground">
+                                      {pick.player.team}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <Avatar className="w-8 h-8">
+                                {pick.currentOwner?.avatar && (
+                                  <AvatarImage src={pick.currentOwner.avatar} alt={pick.currentOwner?.name || ""} />
+                                )}
+                                <AvatarFallback
+                                  className={`text-xs ${
+                                    pick.isUserPick
+                                      ? "bg-primary text-primary-foreground"
+                                      : "bg-muted"
+                                  }`}
+                                >
+                                  {pick.currentOwner?.initials || "??"}
+                                </AvatarFallback>
+                              </Avatar>
+                              <span className="text-sm text-muted-foreground truncate">
+                                {pick.currentOwner?.name || "Unknown Team"}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+        <ScrollBar orientation="horizontal" />
+      </ScrollArea>
+    );
+  };
+
   const renderDraftGrid = (picks: DraftPick[], showPlayers: boolean) => {
     if (!picks || picks.length === 0) {
       return <p className="text-center text-muted-foreground py-8">No picks available</p>;
@@ -1060,25 +1202,31 @@ export default function Draft() {
                             </Label>
                           </div>
                         )}
-                        <div className="flex items-center gap-4 mb-2 text-xs text-muted-foreground">
-                          <div className="flex items-center gap-1.5">
-                            <Badge className={`text-[10px] px-1.5 ${positionColors.QB}`}>QB</Badge>
-                            <span>Quarterback</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <Badge className={`text-[10px] px-1.5 ${positionColors.RB}`}>RB</Badge>
-                            <span>Running Back</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <Badge className={`text-[10px] px-1.5 ${positionColors.WR}`}>WR</Badge>
-                            <span>Wide Receiver</span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
-                            <Badge className={`text-[10px] px-1.5 ${positionColors.TE}`}>TE</Badge>
-                            <span>Tight End</span>
-                          </div>
-                        </div>
-                        {renderDraftGrid(formattedHistoricalPicks, true)}
+                        {is2023Draft ? (
+                          renderDraftByRound(formattedHistoricalPicks)
+                        ) : (
+                          <>
+                            <div className="flex items-center gap-4 mb-2 text-xs text-muted-foreground">
+                              <div className="flex items-center gap-1.5">
+                                <Badge className={`text-[10px] px-1.5 ${positionColors.QB}`}>QB</Badge>
+                                <span>Quarterback</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Badge className={`text-[10px] px-1.5 ${positionColors.RB}`}>RB</Badge>
+                                <span>Running Back</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Badge className={`text-[10px] px-1.5 ${positionColors.WR}`}>WR</Badge>
+                                <span>Wide Receiver</span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <Badge className={`text-[10px] px-1.5 ${positionColors.TE}`}>TE</Badge>
+                                <span>Tight End</span>
+                              </div>
+                            </div>
+                            {renderDraftGrid(formattedHistoricalPicks, true)}
+                          </>
+                        )}
                       </>
                     ) : (
                       <p className="text-center text-muted-foreground py-8">

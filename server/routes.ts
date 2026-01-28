@@ -7013,19 +7013,81 @@ export async function registerRoutes(
         });
 
         // Format picks to match Sleeper API format
-        const formattedPicks = picks.map(pick => ({
-          round: pick.round,
-          rosterId: pick.roster_id,
-          playerId: pick.player_id,
-          pickedBy: pick.picked_by,
-          pickNo: pick.pick_no,
-          draftSlot: pick.draft_slot,
-          playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
-          position: pick.metadata.position,
-          team: pick.metadata.team,
-          fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
-          yearsExp: pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0,
-        }));
+        // Check if years_exp in metadata appears to be current (high values) or historical (low values)
+        const currentYear = new Date().getFullYear();
+        const draftYear = parseInt(season);
+        const yearsSinceDraft = currentYear - draftYear;
+        
+        // Sample some picks to determine if metadata is historical or current
+        const sampleSize = Math.min(10, picks.length);
+        const sampleYearsExp = picks.slice(0, sampleSize)
+          .map(p => p.metadata.years_exp ? parseInt(p.metadata.years_exp) : 0)
+          .filter(exp => exp > 0); // Only non-zero values
+        
+        const avgYearsExp = sampleYearsExp.length > 0 
+          ? sampleYearsExp.reduce((a, b) => a + b, 0) / sampleYearsExp.length 
+          : 0;
+        
+        // If average is high (>= yearsSinceDraft), metadata is likely current, not historical
+        const metadataIsCurrent = avgYearsExp >= yearsSinceDraft;
+        
+        // Debug logging
+        if (season === "2023" && picks.length > 0) {
+          console.log(`[2023 Draft Debug] Years since draft: ${yearsSinceDraft}, Avg metadata years_exp: ${avgYearsExp.toFixed(1)}, Metadata appears: ${metadataIsCurrent ? 'CURRENT' : 'HISTORICAL'}`);
+          const samplePicks = picks.slice(0, Math.min(5, picks.length));
+          samplePicks.forEach((pick, idx) => {
+            const rawYearsExp = pick.metadata.years_exp;
+            const parsedYearsExp = rawYearsExp ? parseInt(rawYearsExp) : 0;
+            const finalYearsExp = metadataIsCurrent 
+              ? Math.max(0, parsedYearsExp - yearsSinceDraft)
+              : parsedYearsExp;
+            console.log(`[2023 Draft Debug] Pick ${idx + 1}: ${pick.metadata.first_name} ${pick.metadata.last_name} - Raw: "${rawYearsExp}", Final: ${finalYearsExp}`);
+          });
+        }
+        
+        // Fetch current player data if metadata appears to be current
+        let currentPlayers: Record<string, SleeperPlayer> | null = null;
+        if (metadataIsCurrent) {
+          try {
+            currentPlayers = await getAllPlayers();
+            console.log(`[2023 Draft Debug] Fetched current player data for ${Object.keys(currentPlayers).length} players`);
+          } catch (error) {
+            console.error(`[2023 Draft Debug] Failed to fetch current players, using metadata:`, error);
+          }
+        }
+        
+        const formattedPicks = picks.map(pick => {
+          let yearsExp: number;
+          
+          if (metadataIsCurrent && currentPlayers) {
+            // Metadata is current, fetch from current player data and calculate backwards
+            const currentPlayer = currentPlayers[pick.player_id];
+            if (currentPlayer?.years_exp !== undefined) {
+              yearsExp = Math.max(0, currentPlayer.years_exp - yearsSinceDraft);
+            } else {
+              // Fallback to metadata calculation
+              const metadataExp = pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0;
+              yearsExp = Math.max(0, metadataExp - yearsSinceDraft);
+            }
+          } else {
+            // Metadata is historical, use directly
+            yearsExp = pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0;
+          }
+          
+          return {
+            round: pick.round,
+            rosterId: pick.roster_id,
+            playerId: pick.player_id,
+            pickedBy: pick.picked_by,
+            pickNo: pick.pick_no,
+            draftSlot: pick.draft_slot,
+            playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
+            position: pick.metadata.position,
+            team: pick.metadata.team,
+            fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
+            yearsExp: yearsExp,
+          };
+        });
 
         return res.json(formattedPicks);
       }
