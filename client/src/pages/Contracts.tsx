@@ -504,11 +504,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     playerId: string;
     playerName: string;
     playerPosition: string;
-    salary2025: number;
-    salary2026: number;
-    salary2027: number;
-    salary2028: number;
-    salary2029: number;
+    salaries: string;
     franchiseTagApplied: number;
     updatedAt: number;
   }
@@ -745,18 +741,14 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
 
   // Auto-save mutation for contract length
   const saveContractLengthMutation = useMutation({
-    mutationFn: async (data: { rosterId: number; playerId: string; originalContractYears: number | null; isRookieContract: number }) => {
+    mutationFn: async (data: { rosterId: number; playerId: string; originalContractYears: number | null; isRookieContract: number; salaries: Record<number, number> }) => {
       if (!league?.leagueId) {
         throw new Error("League ID is required");
       }
       return apiRequest("POST", `/api/league/${league.leagueId}/contracts`, [{
         rosterId: data.rosterId,
         playerId: data.playerId,
-        salary2025: 0,
-        salary2026: 0,
-        salary2027: 0,
-        salary2028: 0,
-        salary2029: 0,
+        salaries: JSON.stringify(data.salaries || {}),
         fifthYearOption: null,
         isOnIr: 0,
         originalContractYears: data.originalContractYears ?? 0,
@@ -784,6 +776,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           playerId,
           originalContractYears: currentContract.originalContractYears ?? 0,
           isRookieContract: currentContract.isRookieContract ? 1 : 0,
+          salaries: currentContract.salaries || {},
         });
       }
       delete contractLengthSaveTimeoutRef.current[playerId];
@@ -881,22 +874,14 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     playerId: string;
     playerName: string;
     playerPosition: string;
-    salary2025: number;
-    salary2026: number;
-    salary2027: number;
-    salary2028: number;
-    salary2029: number;
+    salaries: string;
     franchiseTagApplied: number;
   }> => {
     const drafts: Array<{
       playerId: string;
       playerName: string;
       playerPosition: string;
-      salary2025: number;
-      salary2026: number;
-      salary2027: number;
-      salary2028: number;
-      salary2029: number;
+      salaries: string;
       franchiseTagApplied: number;
     }> = [];
 
@@ -912,23 +897,22 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
       
       if (!player) continue;
 
-      const salary2025 = (contract.salaries?.[CURRENT_YEAR] || 0) * 10;
-      const salary2026 = (contract.salaries?.[CURRENT_YEAR + 1] || 0) * 10;
-      const salary2027 = (contract.salaries?.[CURRENT_YEAR + 2] || 0) * 10;
-      const salary2028 = (contract.salaries?.[CURRENT_YEAR + 3] || 0) * 10;
-      const salary2029 = (contract.salaries?.[OPTION_YEAR] || 0) * 10;
+      const salaryByYear: Record<string, number> = {};
+      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+      yearKeys.forEach((year) => {
+        const value = contract.salaries?.[year] || 0;
+        if (value > 0) {
+          salaryByYear[String(year)] = Math.round(value * 10);
+        }
+      });
 
       // Include if there's any salary value
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
+      if (Object.keys(salaryByYear).length > 0) {
         drafts.push({
           playerId,
           playerName: player.name || "Unknown",
           playerPosition: player.position || "NA",
-          salary2025: Math.round(salary2025),
-          salary2026: Math.round(salary2026),
-          salary2027: Math.round(salary2027),
-          salary2028: Math.round(salary2028),
-          salary2029: Math.round(salary2029),
+          salaries: JSON.stringify(salaryByYear),
           franchiseTagApplied: 0, // ContractInputTab doesn't have franchise tag functionality
         });
       }
@@ -944,11 +928,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         playerId: string;
         playerName: string;
         playerPosition: string;
-        salary2025: number;
-        salary2026: number;
-        salary2027: number;
-        salary2028: number;
-        salary2029: number;
+        salaries: string;
         franchiseTagApplied: number;
       }>; 
       rosterId: string;
@@ -1062,13 +1042,20 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
       const playerId = draft.playerId;
       
       // Restore salaries (convert from tenths to millions)
-      const salaries: Record<number, number> = {
-        [CURRENT_YEAR]: (draft.salary2025 || 0) / 10,
-        [CURRENT_YEAR + 1]: (draft.salary2026 || 0) / 10,
-        [CURRENT_YEAR + 2]: (draft.salary2027 || 0) / 10,
-        [CURRENT_YEAR + 3]: (draft.salary2028 || 0) / 10,
-        [OPTION_YEAR]: (draft.salary2029 || 0) / 10,
-      };
+      const parsedDraftSalaries = (() => {
+        try {
+          return JSON.parse(draft.salaries || "{}");
+        } catch {
+          return {};
+        }
+      })();
+      const salaries: Record<number, number> = {};
+      Object.entries(parsedDraftSalaries).forEach(([year, value]) => {
+        const yearNum = Number(year);
+        if (!isNaN(yearNum)) {
+          salaries[yearNum] = (Number(value) || 0) / 10;
+        }
+      });
 
       // Only restore if there are any salaries
       if (Object.values(salaries).some(s => s > 0)) {
@@ -1600,7 +1587,7 @@ interface ManageTeamContractsTabProps {
   leagueContractData: ContractDataStore;
   allPlayers: SleeperPlayerData[];
   rosterPlayerIds: string[];
-  dbContracts: DbPlayerContract[];
+  dbContracts: NormalizedPlayerContract[];
   leagueId: string;
   deadCapEnabled?: boolean;
 }
@@ -1663,11 +1650,7 @@ function ManageTeamContractsTab({
     playerId: string;
     playerName: string;
     playerPosition: string;
-    salary2025: number;
-    salary2026: number;
-    salary2027: number;
-    salary2028: number;
-    salary2029: number;
+    salaries: string;
     franchiseTagApplied: number;
     updatedAt: number;
   }
@@ -1827,45 +1810,36 @@ function ManageTeamContractsTab({
     playerId: string;
     playerName: string;
     playerPosition: string;
-    salary2025: number;
-    salary2026: number;
-    salary2027: number;
-    salary2028: number;
-    salary2029: number;
+    salaries: string;
     franchiseTagApplied: number;
   }> => {
     const drafts: Array<{
       playerId: string;
       playerName: string;
       playerPosition: string;
-      salary2025: number;
-      salary2026: number;
-      salary2027: number;
-      salary2028: number;
-      salary2029: number;
+      salaries: string;
       franchiseTagApplied: number;
     }> = [];
 
     // Add roster players with their hypothetical salaries
     for (const player of rosterPlayers) {
-      const salary2025 = player.hypotheticalSalaries[2025] || 0;
-      const salary2026 = player.hypotheticalSalaries[2026] || 0;
-      const salary2027 = player.hypotheticalSalaries[2027] || 0;
-      const salary2028 = player.hypotheticalSalaries[2028] || 0;
-      const salary2029 = player.hypotheticalSalaries[2029] || 0;
+      const salaryByYear: Record<string, number> = {};
+      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+      yearKeys.forEach((year) => {
+        const value = player.hypotheticalSalaries[year] || 0;
+        if (value > 0) {
+          salaryByYear[String(year)] = Math.round(value * 10);
+        }
+      });
 
       // Include if there's any salary value or overrides
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0 ||
+      if (Object.keys(salaryByYear).length > 0 ||
           hypotheticalData.salaryOverrides[player.playerId]) {
         drafts.push({
           playerId: player.playerId,
           playerName: player.name,
           playerPosition: player.position,
-          salary2025: Math.round(salary2025 * 10),
-          salary2026: Math.round(salary2026 * 10),
-          salary2027: Math.round(salary2027 * 10),
-          salary2028: Math.round(salary2028 * 10),
-          salary2029: Math.round(salary2029 * 10),
+          salaries: JSON.stringify(salaryByYear),
           franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId) ? 1 : 0,
         });
       }
@@ -1873,22 +1847,21 @@ function ManageTeamContractsTab({
 
     // Add free agents with their salaries
     for (const player of hypotheticalData.addedFreeAgents) {
-      const salary2025 = player.hypotheticalSalaries[2025] || 0;
-      const salary2026 = player.hypotheticalSalaries[2026] || 0;
-      const salary2027 = player.hypotheticalSalaries[2027] || 0;
-      const salary2028 = player.hypotheticalSalaries[2028] || 0;
-      const salary2029 = player.hypotheticalSalaries[2029] || 0;
+      const salaryByYear: Record<string, number> = {};
+      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+      yearKeys.forEach((year) => {
+        const value = player.hypotheticalSalaries[year] || 0;
+        if (value > 0) {
+          salaryByYear[String(year)] = Math.round(value * 10);
+        }
+      });
 
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
+      if (Object.keys(salaryByYear).length > 0) {
         drafts.push({
           playerId: player.playerId,
           playerName: player.name,
           playerPosition: player.position,
-          salary2025: Math.round(salary2025 * 10),
-          salary2026: Math.round(salary2026 * 10),
-          salary2027: Math.round(salary2027 * 10),
-          salary2028: Math.round(salary2028 * 10),
-          salary2029: Math.round(salary2029 * 10),
+          salaries: JSON.stringify(salaryByYear),
           franchiseTagApplied: 0,
         });
       }
@@ -1903,11 +1876,7 @@ function ManageTeamContractsTab({
       playerId: string;
       playerName: string;
       playerPosition: string;
-      salary2025: number;
-      salary2026: number;
-      salary2027: number;
-      salary2028: number;
-      salary2029: number;
+      salaries: string;
       franchiseTagApplied: number;
     }>; silent?: boolean }) => {
       return apiRequest("POST", `/api/league/${leagueId}/contract-drafts`, {
@@ -1944,11 +1913,7 @@ function ManageTeamContractsTab({
       playerId: string;
       playerName: string;
       playerPosition: string;
-      salary2025: number;
-      salary2026: number;
-      salary2027: number;
-      salary2028: number;
-      salary2029: number;
+      salaries: string;
       franchiseTagApplied: boolean;
     }>) => {
       return apiRequest("POST", `/api/league/${leagueId}/contract-approvals`, {
@@ -1992,6 +1957,14 @@ function ManageTeamContractsTab({
       const currentTeamContracts = leagueContractData[rosterId] || {};
       
       for (const draft of savedDrafts) {
+        const draftParsed = (() => {
+          try {
+            return JSON.parse(draft.salaries || "{}");
+          } catch {
+            return {};
+          }
+        })();
+
         // Track franchise tags
         if (draft.franchiseTagApplied === 1) {
           taggedPlayers.add(draft.playerId);
@@ -2008,19 +1981,19 @@ function ManageTeamContractsTab({
         if (isRosterPlayer) {
           // This is a roster player - create salary overrides for differences
           const officialContract = currentTeamContracts[draft.playerId];
-          const draftSalaries = {
-            2025: (draft.salary2025 || 0) / 10,
-            2026: (draft.salary2026 || 0) / 10,
-            2027: (draft.salary2027 || 0) / 10,
-            2028: (draft.salary2028 || 0) / 10,
-            2029: (draft.salary2029 || 0) / 10,
-          };
+          const draftSalaries: Record<number, number> = {};
+          Object.entries(draftParsed).forEach(([year, value]) => {
+            const yearNum = Number(year);
+            if (!isNaN(yearNum)) {
+              draftSalaries[yearNum] = (Number(value) || 0) / 10;
+            }
+          });
           
           const officialSalaries = officialContract?.salaries || {};
           const overrides: Record<number, number> = {};
           
           // Only create overrides where draft differs from official
-          for (const year of [2025, 2026, 2027, 2028, 2029] as const) {
+          for (const year of [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR] as const) {
             const draftSalary = draftSalaries[year];
             const officialSalary = officialSalaries[year] || 0;
             
@@ -2034,13 +2007,13 @@ function ManageTeamContractsTab({
           }
         } else {
           // This is a free agent - add to addedFreeAgents array
-          const hypotheticalSalaries: Record<number, number> = {
-            2025: (draft.salary2025 || 0) / 10,
-            2026: (draft.salary2026 || 0) / 10,
-            2027: (draft.salary2027 || 0) / 10,
-            2028: (draft.salary2028 || 0) / 10,
-            2029: (draft.salary2029 || 0) / 10,
-          };
+          const hypotheticalSalaries: Record<number, number> = {};
+          Object.entries(draftParsed).forEach(([year, value]) => {
+            const yearNum = Number(year);
+            if (!isNaN(yearNum)) {
+              hypotheticalSalaries[yearNum] = (Number(value) || 0) / 10;
+            }
+          });
           
           // Only add if there are any salaries
           if (Object.values(hypotheticalSalaries).some(s => s > 0)) {
@@ -2084,13 +2057,13 @@ function ManageTeamContractsTab({
       const player = playerMap[contract.playerId];
       if (!player?.position) continue;
       
-      const salary2025 = contract.salary2025 / 10; // Convert from stored format
-      if (salary2025 <= 0) continue;
+      const salaryCurrent = contract.salaries?.[CURRENT_YEAR] || 0;
+      if (salaryCurrent <= 0) continue;
       
       if (!salariesByPosition[player.position]) {
         salariesByPosition[player.position] = [];
       }
-      salariesByPosition[player.position].push(salary2025);
+      salariesByPosition[player.position].push(salaryCurrent);
     }
     
     // Sort and take top 5, calculate average rounded up
@@ -2107,7 +2080,7 @@ function ManageTeamContractsTab({
     }
     
     return result;
-  }, [dbContracts, playerMap]);
+  }, [dbContracts, playerMap, CURRENT_YEAR]);
 
   // Check if player has been previously franchise tagged (from database)
   const isPlayerPreviouslyFranchiseTagged = (playerId: string): boolean => {
@@ -2175,61 +2148,19 @@ function ManageTeamContractsTab({
     const isRookieContract = contract.isRookieContract === 1;
     const requiresQuartilePricing = isRookieContract;
 
-    // Get salaries to determine contract years (stored in tenths of millions)
-    const salary2025 = (contract.salary2025 || 0) / 10;
-    const salary2026 = (contract.salary2026 || 0) / 10;
-    const salary2027 = (contract.salary2027 || 0) / 10;
-    const salary2028 = (contract.salary2028 || 0) / 10;
-    const salary2029 = ((contract as any).salary2029 || 0) / 10;
+    const salaries = contract.salaries || {};
+    const salaryEntries = Object.entries(salaries)
+      .map(([year, value]) => ({ year: Number(year), value: Number(value) }))
+      .filter(entry => !isNaN(entry.year) && entry.value > 0)
+      .sort((a, b) => a.year - b.year);
 
     // Find last and second-to-last contract years
-    let lastYearWithSalary = 0;
-    let secondToLastYearWithSalary = 0;
-    let lastYearSalary = 0;
-    let secondToLastYearSalary = 0;
-    
-    // Check years in reverse order to find the last year with salary
-    if (salary2029 > 0) { 
-      lastYearWithSalary = 2029; 
-      lastYearSalary = salary2029;
-      if (salary2028 > 0) {
-        secondToLastYearWithSalary = 2028;
-        secondToLastYearSalary = salary2028;
-      }
-    }
-    else if (salary2028 > 0) { 
-      lastYearWithSalary = 2028; 
-      lastYearSalary = salary2028;
-      if (salary2027 > 0) {
-        secondToLastYearWithSalary = 2027;
-        secondToLastYearSalary = salary2027;
-      }
-    }
-    else if (salary2027 > 0) { 
-      lastYearWithSalary = 2027; 
-      lastYearSalary = salary2027;
-      if (salary2026 > 0) {
-        secondToLastYearWithSalary = 2026;
-        secondToLastYearSalary = salary2026;
-      }
-    }
-    else if (salary2026 > 0) { 
-      lastYearWithSalary = 2026; 
-      lastYearSalary = salary2026;
-      if (salary2025 > 0) {
-        secondToLastYearWithSalary = 2025;
-        secondToLastYearSalary = salary2025;
-      }
-    }
-    else if (salary2025 > 0) { 
-      lastYearWithSalary = 2025; 
-      lastYearSalary = salary2025;
-    }
-
-    // Cannot extend if already at 2029 (max year in schema)
-    if (lastYearWithSalary === 2029) {
-      return { ...defaultResult, reason: "Cannot extend - 2029 is the maximum contract year" };
-    }
+    const lastEntry = salaryEntries[salaryEntries.length - 1];
+    const secondLastEntry = salaryEntries[salaryEntries.length - 2];
+    const lastYearWithSalary = lastEntry?.year || 0;
+    const secondToLastYearWithSalary = secondLastEntry?.year || 0;
+    const lastYearSalary = lastEntry?.value || 0;
+    const secondToLastYearSalary = secondLastEntry?.value || 0;
 
     // Must be in last year OR second-to-last year of contract
     const isInLastYear = lastYearWithSalary === CURRENT_YEAR;
@@ -2252,11 +2183,12 @@ function ManageTeamContractsTab({
     const threeYearSalary = requiresQuartilePricing ? 0 : Math.ceil(salaryToUse * 1.8); // 1.8x rounded up
     const fourYearSalary = requiresQuartilePricing ? 0 : Math.ceil(salaryToUse * 2.0); // 2.0x rounded up
     
-    // Check if we can do each extension type (max year is 2029)
-    const canDo1Year = extensionYear <= 2029;
-    const canDo2Year = extensionYear + 1 <= 2029;
-    const canDo3Year = extensionYear + 2 <= 2029;
-    const canDo4Year = extensionYear + 3 <= 2029;
+    // Check if we can do each extension type (max year is option year)
+    const maxYear = OPTION_YEAR;
+    const canDo1Year = extensionYear <= maxYear;
+    const canDo2Year = extensionYear + 1 <= maxYear;
+    const canDo3Year = extensionYear + 2 <= maxYear;
+    const canDo4Year = extensionYear + 3 <= maxYear;
 
     return {
       eligible: canDo1Year || canDo2Year || canDo3Year || canDo4Year,
@@ -2264,7 +2196,7 @@ function ManageTeamContractsTab({
         ? "Eligible for quartile-based extension (rookie contract)" 
         : (canDo1Year || canDo2Year || canDo3Year || canDo4Year) 
           ? "Eligible for extension" 
-          : "Cannot extend - would exceed 2029",
+          : `Cannot extend - would exceed ${maxYear}`,
       extensionYear,
       currentSalary: salaryToUse,
       currentSalaryTenths: Math.round(salaryToUse * 10),
@@ -2664,33 +2596,28 @@ function ManageTeamContractsTab({
       playerId: string;
       playerName: string;
       playerPosition: string;
-      salary2025: number;
-      salary2026: number;
-      salary2027: number;
-      salary2028: number;
-      salary2029: number;
+      salaries: string;
       franchiseTagApplied: boolean;
     }> = [];
 
     // Add roster players with their salaries
     for (const player of rosterPlayers) {
-      const salary2025 = player.hypotheticalSalaries[2025] || 0;
-      const salary2026 = player.hypotheticalSalaries[2026] || 0;
-      const salary2027 = player.hypotheticalSalaries[2027] || 0;
-      const salary2028 = player.hypotheticalSalaries[2028] || 0;
-      const salary2029 = player.hypotheticalSalaries[2029] || 0;
+      const salaryByYear: Record<string, number> = {};
+      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+      yearKeys.forEach((year) => {
+        const value = player.hypotheticalSalaries[year] || 0;
+        if (value > 0) {
+          salaryByYear[String(year)] = Math.round(value * 10);
+        }
+      });
 
       // Only include players with at least one salary value
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
+      if (Object.keys(salaryByYear).length > 0) {
         contracts.push({
           playerId: player.playerId,
           playerName: player.name,
           playerPosition: player.position,
-          salary2025: Math.round(salary2025 * 10), // Store in tenths of millions
-          salary2026: Math.round(salary2026 * 10),
-          salary2027: Math.round(salary2027 * 10),
-          salary2028: Math.round(salary2028 * 10),
-          salary2029: Math.round(salary2029 * 10),
+          salaries: JSON.stringify(salaryByYear),
           franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId),
         });
       }
@@ -2698,22 +2625,21 @@ function ManageTeamContractsTab({
 
     // Add free agents with their salaries
     for (const player of hypotheticalData.addedFreeAgents) {
-      const salary2025 = player.hypotheticalSalaries[2025] || 0;
-      const salary2026 = player.hypotheticalSalaries[2026] || 0;
-      const salary2027 = player.hypotheticalSalaries[2027] || 0;
-      const salary2028 = player.hypotheticalSalaries[2028] || 0;
-      const salary2029 = player.hypotheticalSalaries[2029] || 0;
+      const salaryByYear: Record<string, number> = {};
+      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+      yearKeys.forEach((year) => {
+        const value = player.hypotheticalSalaries[year] || 0;
+        if (value > 0) {
+          salaryByYear[String(year)] = Math.round(value * 10);
+        }
+      });
 
-      if (salary2025 > 0 || salary2026 > 0 || salary2027 > 0 || salary2028 > 0 || salary2029 > 0) {
+      if (Object.keys(salaryByYear).length > 0) {
         contracts.push({
           playerId: player.playerId,
           playerName: player.name,
           playerPosition: player.position,
-          salary2025: Math.round(salary2025 * 10),
-          salary2026: Math.round(salary2026 * 10),
-          salary2027: Math.round(salary2027 * 10),
-          salary2028: Math.round(salary2028 * 10),
-          salary2029: Math.round(salary2029 * 10),
+          salaries: JSON.stringify(salaryByYear),
           franchiseTagApplied: false,
         });
       }
@@ -3641,7 +3567,7 @@ function ManageTeamContractsTab({
                                                     extensionEligibility.currentSalaryTenths,
                                                     3,
                                                     true,
-                                                    quartileInfo.salary
+                                                    quartileInfo.salary || undefined
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
@@ -3665,7 +3591,7 @@ function ManageTeamContractsTab({
                                                     extensionEligibility.currentSalaryTenths,
                                                     4,
                                                     true,
-                                                    quartileInfo.salary
+                                                    quartileInfo.salary || undefined
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
@@ -5037,6 +4963,7 @@ interface ExpiringContractsTabProps {
   playerMap: PlayerMap;
   contractData: ContractDataStore;
   leagueUsers: any[];
+  deadCapEnabled?: boolean;
 }
 
 interface ExpiringPlayer {
@@ -5052,7 +4979,7 @@ interface ExpiringPlayer {
   rosterId: number;
 }
 
-function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: ExpiringContractsTabProps) {
+function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, deadCapEnabled = true }: ExpiringContractsTabProps) {
   const { season } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   
@@ -5091,29 +5018,23 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
         const playerTeam = playerTeamMap.get(playerId);
         if (!playerTeam) continue; // Player not on any roster
         
-        const salary2025 = contract.salaries[2025] || 0;
-        const salary2026 = contract.salaries[2026] || 0;
-        const salary2027 = contract.salaries[2027] || 0;
-        const salary2028 = contract.salaries[2028] || 0;
-        const salary2029 = contract.salaries[2029] || 0;
+        const salaryCurrent = contract.salaries[CURRENT_YEAR] || 0;
+        const salaryEntries = Object.entries(contract.salaries || {})
+          .map(([year, value]) => ({ year: Number(year), value: Number(value) }))
+          .filter(entry => !isNaN(entry.year) && entry.value > 0);
+        const lastPaidYear = salaryEntries.length > 0
+          ? Math.max(...salaryEntries.map(entry => entry.year))
+          : 0;
         
-        // Find the last year with a non-zero salary
-        let lastPaidYear = 0;
-        if (salary2029 > 0) lastPaidYear = 2029;
-        else if (salary2028 > 0) lastPaidYear = 2028;
-        else if (salary2027 > 0) lastPaidYear = 2027;
-        else if (salary2026 > 0) lastPaidYear = 2026;
-        else if (salary2025 > 0) lastPaidYear = 2025;
-        
-        // Player is expiring if their last paid year is the current year (2025)
-        if (lastPaidYear === CURRENT_YEAR && salary2025 > 0) {
+        // Player is expiring if their last paid year is the current year
+        if (lastPaidYear === CURRENT_YEAR && salaryCurrent > 0) {
           players.push({
             playerId,
             name: player.name,
             position: player.position || "NA",
             nflTeam: player.team || null,
             yearsExp: player.yearsExp ?? 0,
-            currentSalary: salary2025,
+            currentSalary: salaryCurrent,
             teamName: playerTeam.teamName,
             ownerName: playerTeam.ownerName,
             avatar: playerTeam.avatar,
@@ -5187,7 +5108,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
                   <TableHead className="text-center w-[60px]">Pos</TableHead>
                   <TableHead className="text-center w-[60px]">NFL</TableHead>
                   <TableHead className="text-center w-[60px]">Exp</TableHead>
-                  <TableHead className="text-right w-[100px]">2025 Salary</TableHead>
+                  <TableHead className="text-right w-[100px]">{CURRENT_YEAR} Salary</TableHead>
                   <TableHead className="text-right w-[100px]">Dead Cap</TableHead>
                   <TableHead className="w-[180px]">Team</TableHead>
                 </TableRow>
@@ -5269,7 +5190,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers }: E
           <div className="text-sm text-muted-foreground">
             <p className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-orange-500" />
-              <span>Players shown have salary for 2025 only, with no contract beyond this season.</span>
+              <span>Players shown have salary for {CURRENT_YEAR} only, with no contract beyond this season.</span>
             </p>
           </div>
         </CardContent>
@@ -5283,11 +5204,7 @@ interface DbPlayerContract {
   leagueId: string;
   rosterId: number;
   playerId: string;
-  salary2025: number;
-  salary2026: number;
-  salary2027: number;
-  salary2028: number;
-  salary2029: number;
+  salaries: string;
   fifthYearOption: string | null;
   isOnIr: number;
   franchiseTagUsed: number;
@@ -5300,6 +5217,10 @@ interface DbPlayerContract {
   updatedAt: number;
 }
 
+type NormalizedPlayerContract = Omit<DbPlayerContract, "salaries"> & {
+  salaries: Record<number, number>;
+};
+
 interface DbDeadCapEntry {
   id: string;
   leagueId: string;
@@ -5308,11 +5229,7 @@ interface DbDeadCapEntry {
   playerName: string;
   playerPosition: string;
   reason: string;
-  deadCap2025: number;
-  deadCap2026: number;
-  deadCap2027: number;
-  deadCap2028: number;
-  deadCap2029: number;
+  deadCapSalaries: string;
   createdAt: number;
 }
 
@@ -5322,11 +5239,7 @@ interface OrphanedContract {
   playerName: string;
   playerPosition: string;
   contract: {
-    salary2025: number;
-    salary2026: number;
-    salary2027: number;
-    salary2028: number;
-    salary2029: number;
+    salaries: Record<number, number>;
   };
   teamName: string;
 }
@@ -5348,11 +5261,8 @@ interface ApprovalContractData {
   playerId: string;
   playerName: string;
   playerPosition: string;
-  salary2025: number;
-  salary2026: number;
-  salary2027: number;
-  salary2028: number;
-  salary2029: number;
+  salaries: string;
+  salariesByYear: Record<number, number>;
   franchiseTagApplied?: number;
 }
 
@@ -5362,6 +5272,9 @@ interface ContractApprovalsTabProps {
 
 function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
   const { toast } = useToast();
+  const { season } = useSleeper();
+  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
+  const OPTION_YEAR = CURRENT_YEAR + 4;
   const [expandedRequests, setExpandedRequests] = useState<Set<string>>(new Set());
   const [reviewDialog, setReviewDialog] = useState<{ request: ContractApprovalRequest; action: "approve" | "reject" } | null>(null);
   const [reviewNotes, setReviewNotes] = useState("");
@@ -5426,15 +5339,29 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
 
   const parseContracts = (json: string): ApprovalContractData[] => {
     try {
-      return JSON.parse(json);
+      const parsed = JSON.parse(json) as Array<ApprovalContractData>;
+      return parsed.map(contract => {
+        let salariesByYear: Record<number, number> = {};
+        try {
+          const salaryObj = JSON.parse(contract.salaries || "{}");
+          Object.entries(salaryObj).forEach(([year, value]) => {
+            const yearNum = Number(year);
+            if (!isNaN(yearNum)) {
+              salariesByYear[yearNum] = (Number(value) || 0) / 10;
+            }
+          });
+        } catch {
+          salariesByYear = {};
+        }
+        return { ...contract, salariesByYear };
+      });
     } catch {
       return [];
     }
   };
 
   const calculateTotalSalary = (contracts: ApprovalContractData[], year: number) => {
-    const key = `salary${year}` as keyof ApprovalContractData;
-    return contracts.reduce((sum, c) => sum + (Number(c[key]) || 0), 0) / 10;
+    return contracts.reduce((sum, c) => sum + (c.salariesByYear?.[year] || 0), 0);
   };
 
   if (isLoadingRequests) {
@@ -5510,7 +5437,7 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                 </CardHeader>
                 <CardContent>
                   <div className="grid grid-cols-4 gap-3 mb-4">
-                    {[2025, 2026, 2027, 2028].map(year => (
+                    {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3].map(year => (
                       <Card key={year} className="p-2">
                         <div className="text-center">
                           <div className="text-xs text-muted-foreground">{year}</div>
@@ -5549,7 +5476,7 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                           <TableRow>
                             <TableHead>Player</TableHead>
                             <TableHead className="text-center">Pos</TableHead>
-                            {[2025, 2026, 2027, 2028, 2029].map((year, idx) => (
+                            {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR].map((year, idx) => (
                               <TableHead key={year} className="text-center">{idx === 4 ? `${year} (Ext)` : year}</TableHead>
                             ))}
                             <TableHead className="text-center">Total</TableHead>
@@ -5559,13 +5486,9 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                         </TableHeader>
                         <TableBody>
                           {contracts.map(contract => {
-                            const salary2025 = (Number(contract.salary2025) || 0) / 10;
-                            const salary2026 = (Number(contract.salary2026) || 0) / 10;
-                            const salary2027 = (Number(contract.salary2027) || 0) / 10;
-                            const salary2028 = (Number(contract.salary2028) || 0) / 10;
-                            const salary2029 = (Number(contract.salary2029) || 0) / 10;
-                            const totalValue = salary2025 + salary2026 + salary2027 + salary2028 + salary2029;
-                            const remainingValue = salary2026 + salary2027 + salary2028 + salary2029;
+                            const yearColumns = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+                            const totalValue = yearColumns.reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
+                            const remainingValue = yearColumns.slice(1).reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
                             
                             return (
                               <TableRow key={contract.playerId}>
@@ -5575,9 +5498,8 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                                     {contract.playerPosition}
                                   </Badge>
                                 </TableCell>
-                                {[2025, 2026, 2027, 2028, 2029].map(year => {
-                                  const key = `salary${year}` as keyof ApprovalContractData;
-                                  const salary = (Number(contract[key]) || 0) / 10;
+                                {yearColumns.map(year => {
+                                  const salary = contract.salariesByYear?.[year] || 0;
                                   return (
                                     <TableCell key={year} className="text-center">
                                       {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
@@ -5716,13 +5638,9 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                         </TableHeader>
                         <TableBody>
                           {contracts.map(contract => {
-                            const salary2025 = (Number(contract.salary2025) || 0) / 10;
-                            const salary2026 = (Number(contract.salary2026) || 0) / 10;
-                            const salary2027 = (Number(contract.salary2027) || 0) / 10;
-                            const salary2028 = (Number(contract.salary2028) || 0) / 10;
-                            const salary2029 = (Number(contract.salary2029) || 0) / 10;
-                            const totalValue = salary2025 + salary2026 + salary2027 + salary2028 + salary2029;
-                            const remainingValue = salary2026 + salary2027 + salary2028 + salary2029;
+                            const yearColumns = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
+                            const totalValue = yearColumns.reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
+                            const remainingValue = yearColumns.slice(1).reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
                             
                             return (
                               <TableRow key={contract.playerId}>
@@ -5732,9 +5650,8 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                                     {contract.playerPosition}
                                   </Badge>
                                 </TableCell>
-                                {[2025, 2026, 2027, 2028, 2029].map(year => {
-                                  const key = `salary${year}` as keyof ApprovalContractData;
-                                  const salary = (Number(contract[key]) || 0) / 10;
+                                {yearColumns.map(year => {
+                                  const salary = contract.salariesByYear?.[year] || 0;
                                   return (
                                     <TableCell key={year} className="text-center">
                                       {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
@@ -5868,6 +5785,27 @@ export default function Contracts() {
     enabled: !!league?.leagueId,
   });
 
+  const normalizedDbContracts = useMemo<NormalizedPlayerContract[]>(() => {
+    if (!dbContracts) return [];
+    return dbContracts.map(contract => {
+      const parsed = (() => {
+        try {
+          return JSON.parse(contract.salaries || "{}");
+        } catch {
+          return {};
+        }
+      })();
+      const salaries: Record<number, number> = {};
+      Object.entries(parsed).forEach(([year, value]) => {
+        const yearNum = Number(year);
+        if (!isNaN(yearNum)) {
+          salaries[yearNum] = (Number(value) || 0) / 10;
+        }
+      });
+      return { ...contract, salaries };
+    });
+  }, [dbContracts]);
+
   const { data: deadCapEntries, refetch: refetchDeadCap } = useQuery<DbDeadCapEntry[]>({
     queryKey: ["/api/leagues", league?.leagueId, "dead-cap"],
     enabled: !!league?.leagueId,
@@ -5928,13 +5866,22 @@ export default function Contracts() {
         if (!contractStore[rosterId]) {
           contractStore[rosterId] = {};
         }
+        const parsedSalaries = (() => {
+          try {
+            return JSON.parse(contract.salaries || "{}");
+          } catch {
+            return {};
+          }
+        })();
+        const salaries: Record<number, number> = {};
+        Object.entries(parsedSalaries).forEach(([year, value]) => {
+          const yearNum = Number(year);
+          if (!isNaN(yearNum)) {
+            salaries[yearNum] = (Number(value) || 0) / 10;
+          }
+        });
         contractStore[rosterId][contract.playerId] = {
-          salaries: {
-            2025: contract.salary2025 / 10,
-            2026: contract.salary2026 / 10,
-            2027: contract.salary2027 / 10,
-            2028: contract.salary2028 / 10,
-          },
+          salaries,
           fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
           isOnIr: contract.isOnIr === 1,
           originalContractYears: contract.originalContractYears || 0,
@@ -5995,13 +5942,21 @@ export default function Contracts() {
     
     for (const entry of deadCapEntries) {
       const currentDeadCap = map.get(entry.rosterId) || 0;
-      map.set(entry.rosterId, currentDeadCap + (entry.deadCap2025 / 10));
+      const parsed = (() => {
+        try {
+          return JSON.parse(entry.deadCapSalaries || "{}");
+        } catch {
+          return {};
+        }
+      })();
+      const yearValue = Number(parsed[String(CURRENT_YEAR)] || 0) / 10;
+      map.set(entry.rosterId, currentDeadCap + yearValue);
     }
     return map;
   }, [deadCapEntries, deadCapEnabled]);
 
   const orphanedContracts = useMemo(() => {
-    if (!dbContracts || !rosters || !leagueUsers || !playerMap) return [];
+    if (!normalizedDbContracts || !rosters || !leagueUsers || !playerMap) return [];
     
     const userMap = new Map(
       (leagueUsers || []).map((u: any) => [u.user_id, u])
@@ -6016,12 +5971,10 @@ export default function Contracts() {
     
     const orphans: OrphanedContract[] = [];
     
-    for (const contract of dbContracts) {
+    for (const contract of normalizedDbContracts) {
       const rosterPlayers = rosterPlayerMap.get(contract.rosterId);
       const isOnRoster = rosterPlayers?.has(contract.playerId) ?? false;
-      const hasSalary = contract.salary2025 > 0 || contract.salary2026 > 0 || 
-                        contract.salary2027 > 0 || contract.salary2028 > 0 ||
-                        (contract.salary2029 || 0) > 0;
+      const hasSalary = Object.values(contract.salaries || {}).some((value) => Number(value) > 0);
       
       if (!isOnRoster && hasSalary) {
         const player = playerMap[contract.playerId];
@@ -6031,11 +5984,12 @@ export default function Contracts() {
           playerName: player?.name || `Unknown (${contract.playerId})`,
           playerPosition: player?.position || "NA",
           contract: {
-            salary2025: contract.salary2025,
-            salary2026: contract.salary2026,
-            salary2027: contract.salary2027,
-            salary2028: contract.salary2028,
-            salary2029: contract.salary2029 || 0,
+            salaries: Object.fromEntries(
+              Object.entries(contract.salaries || {}).map(([year, value]) => [
+                year,
+                Math.round((Number(value) || 0) * 10),
+              ])
+            ),
           },
           teamName: rosterOwnerMap.get(contract.rosterId) || `Team ${contract.rosterId}`,
         });
@@ -6043,7 +5997,7 @@ export default function Contracts() {
     }
     
     return orphans;
-  }, [dbContracts, rosters, leagueUsers, playerMap, rosterPlayerMap]);
+  }, [normalizedDbContracts, rosters, leagueUsers, playerMap, rosterPlayerMap]);
 
   const processCutTradeMutation = useMutation({
     mutationFn: async (data: { 
@@ -6172,15 +6126,17 @@ export default function Contracts() {
         const contract = teamContracts[playerId];
         
         // Calculate salaries (allow zero values)
-        const salary2025 = Math.round((contract.salaries[2025] || 0) * 10);
-        const salary2026 = Math.round((contract.salaries[2026] || 0) * 10);
-        const salary2027 = Math.round((contract.salaries[2027] || 0) * 10);
-        const salary2028 = Math.round((contract.salaries[2028] || 0) * 10);
-        const salary2029 = Math.round((contract.salaries[2029] || 0) * 10);
+        const salariesPayload: Record<string, number> = {};
+        Object.entries(contract.salaries || {}).forEach(([year, value]) => {
+          const yearNum = Number(year);
+          if (!isNaN(yearNum)) {
+            salariesPayload[String(yearNum)] = Math.round((Number(value) || 0) * 10);
+          }
+        });
         
         // Determine originalContractYears: allow 0, null, or 1-4 values
         let originalContractYears: number | null = null;
-        const existingContract = dbContracts?.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
+        const existingContract = normalizedDbContracts.find(c => c.playerId === playerId && c.rosterId === parseInt(rosterId));
         
         // Use provided value if it's a valid number (0-4), otherwise use existing or default to 0
         if (typeof contract.originalContractYears === 'number' && 
@@ -6200,11 +6156,7 @@ export default function Contracts() {
         contractsToSave.push({
           rosterId: parseInt(rosterId),
           playerId,
-          salary2025,
-          salary2026,
-          salary2027,
-          salary2028,
-          salary2029,
+          salaries: JSON.stringify(salariesPayload),
           fifthYearOption: contract.fifthYearOption,
           isOnIr: contract.isOnIr ? 1 : 0,
           originalContractYears,
@@ -6361,6 +6313,7 @@ export default function Contracts() {
               playerMap={playerMap}
               contractData={contractData}
               leagueUsers={leagueUsers || []}
+              deadCapEnabled={deadCapEnabled}
             />
           )}
         </TabsContent>
@@ -6373,7 +6326,7 @@ export default function Contracts() {
               leagueContractData={contractData}
               allPlayers={playersArray}
               rosterPlayerIds={allRosterPlayerIds}
-              dbContracts={dbContracts || []}
+              dbContracts={normalizedDbContracts}
               leagueId={league?.leagueId || ""}
               deadCapEnabled={deadCapEnabled}
             />
@@ -6417,10 +6370,14 @@ export default function Contracts() {
                   <ScrollArea className="max-h-[300px]">
                     <div className="space-y-3">
                       {orphanedContracts.map((orphan) => {
-                        const totalRemaining = (orphan.contract.salary2025 + orphan.contract.salary2026 + 
-                                                orphan.contract.salary2027 + orphan.contract.salary2028) / 10;
-                        const deadCapY1 = deadCapEnabled ? (orphan.contract.salary2025 * 0.4 / 10) : 0;
-                        const deadCapY2 = deadCapEnabled ? ((orphan.contract.salary2025 * 0.3 + orphan.contract.salary2026 * 0.4) / 10) : 0;
+                        const salaryYears = Object.entries(orphan.contract.salaries || {})
+                          .map(([year, value]) => ({ year: Number(year), value: Number(value) }))
+                          .filter(entry => !isNaN(entry.year) && entry.value > 0);
+                        const totalRemaining = salaryYears.reduce((sum, entry) => sum + entry.value, 0) / 10;
+                        const currentYearSalary = Number(orphan.contract.salaries?.[CURRENT_YEAR] || 0);
+                        const nextYearSalary = Number(orphan.contract.salaries?.[CURRENT_YEAR + 1] || 0);
+                        const deadCapY1 = deadCapEnabled ? (currentYearSalary * 0.4 / 10) : 0;
+                        const deadCapY2 = deadCapEnabled ? ((currentYearSalary * 0.3 + nextYearSalary * 0.4) / 10) : 0;
                         
                         return (
                           <div 
@@ -6510,15 +6467,22 @@ export default function Contracts() {
                           <TableHead>Player</TableHead>
                           <TableHead>Team</TableHead>
                           <TableHead className="text-center">Reason</TableHead>
-                          <TableHead className="text-center">2025</TableHead>
-                          <TableHead className="text-center">2026</TableHead>
-                          <TableHead className="text-center">2027</TableHead>
-                          <TableHead className="text-center">2028</TableHead>
+                          {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3].map(year => (
+                            <TableHead key={year} className="text-center">{year}</TableHead>
+                          ))}
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {deadCapEntries.map((entry) => {
                           const team = teamCapData.find(t => t.rosterId === entry.rosterId);
+                          const deadCapParsed = (() => {
+                            try {
+                              return JSON.parse(entry.deadCapSalaries || "{}");
+                            } catch {
+                              return {};
+                            }
+                          })();
+                          const yearColumns = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
                           return (
                             <TableRow key={entry.id}>
                               <TableCell>
@@ -6535,18 +6499,11 @@ export default function Contracts() {
                                   {entry.reason}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
-                                ${(entry.deadCap2025 / 10).toFixed(1)}M
-                              </TableCell>
-                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
-                                ${(entry.deadCap2026 / 10).toFixed(1)}M
-                              </TableCell>
-                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
-                                ${(entry.deadCap2027 / 10).toFixed(1)}M
-                              </TableCell>
-                              <TableCell className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
-                                ${(entry.deadCap2028 / 10).toFixed(1)}M
-                              </TableCell>
+                              {yearColumns.map(year => (
+                                <TableCell key={year} className="text-center tabular-nums" style={{ color: COLORS.deadCap }}>
+                                  ${(Number(deadCapParsed[String(year)] || 0) / 10).toFixed(1)}M
+                                </TableCell>
+                              ))}
                             </TableRow>
                           );
                         })}

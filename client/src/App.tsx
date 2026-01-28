@@ -22,6 +22,7 @@ import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
 import RuleChanges from "@/pages/RuleChanges";
 import DatabaseViewer from "@/pages/DatabaseViewer";
+import Historical from "@/pages/Historical";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -52,6 +53,7 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
+      <Route path="/historical" component={Historical} />
       <Route path="/admin/database" component={DatabaseViewer} />
       <Route component={NotFound} />
     </Switch>
@@ -127,23 +129,10 @@ function AppContent() {
     );
   }
 
-  // Show error state if league failed to load and no stored league exists
-  if (error && !league) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-background">
-        <div className="text-center max-w-md p-6">
-          <div className="text-destructive mb-4">
-            <h2 className="font-heading text-2xl font-bold mb-2">Connection Error</h2>
-            <p className="text-muted-foreground">{error}</p>
-          </div>
-          <Button onClick={() => window.location.reload()} className="mt-4">
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Retry
-          </Button>
-        </div>
-      </div>
-    );
-  }
+  // Don't block the app completely - allow navigation even without league
+  // Users can still access Settings to configure a league
+  // Only show a warning banner if there's an error and no league
+  const showLeagueWarning = error && !league && (error.includes("No league configured") || error.includes("Failed to connect"));
 
   return (
     <>
@@ -211,6 +200,22 @@ function AppContent() {
                 </DropdownMenu>
               </div>
             </header>
+            {showLeagueWarning && (
+              <div className="bg-yellow-500/10 border-b border-yellow-500/20 px-4 py-2">
+                <div className="flex items-center justify-between max-w-7xl mx-auto">
+                  <p className="text-sm text-yellow-700 dark:text-yellow-400">
+                    <strong>No league configured.</strong> Please go to Settings to set up a league ID.
+                  </p>
+                  <Button 
+                    variant="outline" 
+                    size="sm"
+                    onClick={() => setLocation("/settings")}
+                  >
+                    Go to Settings
+                  </Button>
+                </div>
+              </div>
+            )}
             <main className="flex-1 overflow-auto bg-background">
               <Router />
             </main>

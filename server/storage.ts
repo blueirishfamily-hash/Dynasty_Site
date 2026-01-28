@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, desc, sql, isNull } from "drizzle-orm";
 import { db } from "./db";
 import {
   ruleSuggestionsTable,
@@ -13,6 +13,15 @@ import {
   savedContractDraftsTable,
   contractApprovalRequestsTable,
   teamExtensionsTable,
+  leagueMigrationsTable,
+  rosterMappingsTable,
+  activeLeaguesTable,
+  standingsSnapshotsTable,
+  playerStatsSnapshotsTable,
+  teamStatsSnapshotsTable,
+  draftSnapshotsTable,
+  matchupSnapshotsTable,
+  transactionSnapshotsTable,
 } from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -25,7 +34,16 @@ import type {
   DeadCapEntry, InsertDeadCapEntry,
   SavedContractDraft, InsertSavedContractDraft,
   ContractApprovalRequest, InsertContractApprovalRequest,
-  TeamExtension, InsertTeamExtension
+  TeamExtension, InsertTeamExtension,
+  LeagueMigration, InsertLeagueMigration,
+  RosterMapping, InsertRosterMapping,
+  ActiveLeague, InsertActiveLeague,
+  StandingsSnapshot, InsertStandingsSnapshot,
+  PlayerStatsSnapshot, InsertPlayerStatsSnapshot,
+  TeamStatsSnapshot, InsertTeamStatsSnapshot,
+  DraftSnapshot, InsertDraftSnapshot,
+  MatchupSnapshot, InsertMatchupSnapshot,
+  TransactionSnapshot, InsertTransactionSnapshot
 } from "../shared/schema";
 
 export interface UserSession {
@@ -89,6 +107,35 @@ export interface IStorage {
   getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined>;
   createTeamExtension(data: InsertTeamExtension): Promise<TeamExtension>;
   deleteTeamExtension(leagueId: string, rosterId: number, season: number): Promise<void>;
+
+  // Active league tracking
+  getActiveLeague(): Promise<ActiveLeague | undefined>;
+  listLeagues(): Promise<ActiveLeague[]>;
+  upsertActiveLeague(data: InsertActiveLeague): Promise<ActiveLeague>;
+  deactivateLeague(leagueId: string): Promise<void>;
+
+  // League migration + roster mapping
+  createLeagueMigration(data: InsertLeagueMigration): Promise<LeagueMigration>;
+  updateLeagueMigration(id: string, updates: Partial<InsertLeagueMigration> & { status?: string; errorMessage?: string | null }): Promise<LeagueMigration | undefined>;
+  createRosterMapping(data: InsertRosterMapping): Promise<RosterMapping>;
+  getRosterMappings(migrationId: string): Promise<RosterMapping[]>;
+
+  // Snapshot storage
+  createStandingsSnapshot(data: InsertStandingsSnapshot): Promise<StandingsSnapshot>;
+  createPlayerStatsSnapshot(data: InsertPlayerStatsSnapshot): Promise<PlayerStatsSnapshot>;
+  createTeamStatsSnapshot(data: InsertTeamStatsSnapshot): Promise<TeamStatsSnapshot>;
+  createDraftSnapshot(data: InsertDraftSnapshot): Promise<DraftSnapshot>;
+  createMatchupSnapshot(data: InsertMatchupSnapshot): Promise<MatchupSnapshot>;
+  createTransactionSnapshot(data: InsertTransactionSnapshot): Promise<TransactionSnapshot>;
+  getStandingsSnapshots(leagueId: string, season: string, week?: number | null): Promise<StandingsSnapshot[]>;
+  getPlayerStatsSnapshots(leagueId: string, season: string, week?: number | null): Promise<PlayerStatsSnapshot[]>;
+  getTeamStatsSnapshots(leagueId: string, season: string, week?: number | null): Promise<TeamStatsSnapshot[]>;
+  getDraftSnapshots(leagueId: string, season: string): Promise<DraftSnapshot[]>;
+  getMatchupSnapshots(leagueId: string, season: string, week: number): Promise<MatchupSnapshot[]>;
+  getTransactionSnapshots(leagueId: string, season: string, week: number): Promise<TransactionSnapshot[]>;
+
+  // Bidding reset
+  deleteAllPlayerBids(leagueId: string): Promise<void>;
   
   // Database inspection methods
   getTableList(): Promise<Array<{ name: string; rowCount: number }>>;
@@ -135,25 +182,38 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
-    const rows = await db
-      .select()
-      .from(ruleSuggestionsTable)
-      .where(eq(ruleSuggestionsTable.leagueId, leagueId))
-      .orderBy(desc(ruleSuggestionsTable.createdAt));
+    try {
+      const rows = await db
+        .select()
+        .from(ruleSuggestionsTable)
+        .where(eq(ruleSuggestionsTable.leagueId, leagueId))
+        .orderBy(desc(ruleSuggestionsTable.createdAt));
 
-    return rows.map(row => ({
-      id: row.id,
-      leagueId: row.leagueId,
-      authorId: row.authorId,
-      authorName: row.authorName,
-      rosterId: row.rosterId,
-      title: row.title,
-      description: row.description,
-      status: row.status as "pending" | "approved" | "rejected",
-      upvotes: [],
-      downvotes: [],
-      createdAt: row.createdAt,
-    }));
+      return rows.map(row => ({
+        id: row.id,
+        leagueId: row.leagueId,
+        authorId: row.authorId,
+        authorName: row.authorName,
+        rosterId: row.rosterId,
+        title: row.title,
+        description: row.description,
+        status: row.status as "pending" | "approved" | "rejected",
+        upvotes: [],
+        downvotes: [],
+        createdAt: row.createdAt,
+      }));
+    } catch (error: any) {
+      console.error("[Storage] Error fetching rule suggestions:", error);
+      const errorMessage = error?.message || String(error);
+      const errorCode = error?.code;
+      
+      // Check if table doesn't exist
+      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation")) {
+        throw new Error(`Database table 'rule_suggestions' does not exist. Please run 'npm run db:push' to create the required tables.`);
+      }
+      
+      throw error;
+    }
   }
 
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
@@ -666,11 +726,7 @@ export class DatabaseStorage implements IStorage {
       
       // Build update object, conditionally including tracking fields
       const updateData: any = {
-          salary2025: data.salary2025,
-          salary2026: data.salary2026,
-          salary2027: data.salary2027,
-          salary2028: data.salary2028,
-          salary2029: (data as any).salary2029 ?? existing.salary2029,
+          salaries: (data as any).salaries ?? existing.salaries,
           fifthYearOption: data.fifthYearOption,
           isOnIr: data.isOnIr ?? existing.isOnIr,
           franchiseTagUsed: data.franchiseTagUsed ?? existing.franchiseTagUsed,
@@ -741,11 +797,7 @@ export class DatabaseStorage implements IStorage {
       leagueId: data.leagueId,
       rosterId: data.rosterId,
       playerId: data.playerId,
-      salary2025: data.salary2025,
-      salary2026: data.salary2026,
-      salary2027: data.salary2027,
-      salary2028: data.salary2028,
-      salary2029: (data as any).salary2029 ?? 0,
+      salaries: (data as any).salaries ?? "{}",
       fifthYearOption: data.fifthYearOption,
       isOnIr: data.isOnIr ?? 0,
       franchiseTagUsed: data.franchiseTagUsed ?? 0,
@@ -915,10 +967,7 @@ export class DatabaseStorage implements IStorage {
       playerName: data.playerName,
       playerPosition: data.playerPosition,
       reason: data.reason,
-      deadCap2025: data.deadCap2025,
-      deadCap2026: data.deadCap2026,
-      deadCap2027: data.deadCap2027,
-      deadCap2028: data.deadCap2028,
+      deadCapSalaries: (data as any).deadCapSalaries ?? "{}",
       createdAt: now,
     }).returning();
 
@@ -962,11 +1011,7 @@ export class DatabaseStorage implements IStorage {
         .set({
           playerName: data.playerName,
           playerPosition: data.playerPosition,
-          salary2025: data.salary2025,
-          salary2026: data.salary2026,
-          salary2027: data.salary2027,
-          salary2028: data.salary2028,
-          salary2029: (data as any).salary2029 ?? existing.salary2029,
+          salaries: (data as any).salaries ?? existing.salaries,
           franchiseTagApplied: data.franchiseTagApplied,
           updatedAt: now,
         })
@@ -983,11 +1028,7 @@ export class DatabaseStorage implements IStorage {
       playerId: data.playerId,
       playerName: data.playerName,
       playerPosition: data.playerPosition,
-      salary2025: data.salary2025,
-      salary2026: data.salary2026,
-      salary2027: data.salary2027,
-      salary2028: data.salary2028,
-      salary2029: (data as any).salary2029 ?? 0,
+      salaries: (data as any).salaries ?? "{}",
       franchiseTagApplied: data.franchiseTagApplied,
       updatedAt: now,
     }).returning();
@@ -1145,9 +1186,285 @@ export class DatabaseStorage implements IStorage {
       ));
   }
 
+  async getActiveLeague(): Promise<ActiveLeague | undefined> {
+    const [row] = await db
+      .select()
+      .from(activeLeaguesTable)
+      .where(eq(activeLeaguesTable.isActive, 1))
+      .orderBy(desc(activeLeaguesTable.activatedAt))
+      .limit(1);
+    return row;
+  }
+
+  async listLeagues(): Promise<ActiveLeague[]> {
+    return db
+      .select()
+      .from(activeLeaguesTable)
+      .orderBy(desc(activeLeaguesTable.activatedAt));
+  }
+
+  async upsertActiveLeague(data: InsertActiveLeague): Promise<ActiveLeague> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db
+      .insert(activeLeaguesTable)
+      .values({
+        id,
+        leagueId: data.leagueId,
+        season: data.season,
+        isActive: data.isActive ?? 1,
+        activatedAt: now,
+        deactivatedAt: data.deactivatedAt ?? null,
+      })
+      .onConflictDoUpdate({
+        target: activeLeaguesTable.leagueId,
+        set: {
+          season: data.season,
+          isActive: data.isActive ?? 1,
+          activatedAt: now,
+          deactivatedAt: data.deactivatedAt ?? null,
+        },
+      })
+      .returning();
+    return inserted;
+  }
+
+  async deactivateLeague(leagueId: string): Promise<void> {
+    await db
+      .update(activeLeaguesTable)
+      .set({ isActive: 0, deactivatedAt: Date.now() })
+      .where(eq(activeLeaguesTable.leagueId, leagueId));
+  }
+
+  async createLeagueMigration(data: InsertLeagueMigration): Promise<LeagueMigration> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db
+      .insert(leagueMigrationsTable)
+      .values({
+        id,
+        oldLeagueId: data.oldLeagueId,
+        newLeagueId: data.newLeagueId,
+        oldSeason: data.oldSeason,
+        newSeason: data.newSeason,
+        migratedBy: data.migratedBy,
+        migratedAt: now,
+        status: data.status ?? "completed",
+        errorMessage: null,
+      })
+      .returning();
+    return inserted;
+  }
+
+  async updateLeagueMigration(
+    id: string,
+    updates: Partial<InsertLeagueMigration> & { status?: string; errorMessage?: string | null }
+  ): Promise<LeagueMigration | undefined> {
+    const [row] = await db
+      .update(leagueMigrationsTable)
+      .set({
+        oldLeagueId: updates.oldLeagueId,
+        newLeagueId: updates.newLeagueId,
+        oldSeason: updates.oldSeason,
+        newSeason: updates.newSeason,
+        migratedBy: updates.migratedBy,
+        status: updates.status,
+        errorMessage: updates.errorMessage ?? null,
+      })
+      .where(eq(leagueMigrationsTable.id, id))
+      .returning();
+    return row;
+  }
+
+  async createRosterMapping(data: InsertRosterMapping): Promise<RosterMapping> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db
+      .insert(rosterMappingsTable)
+      .values({
+        id,
+        migrationId: data.migrationId,
+        oldLeagueId: data.oldLeagueId,
+        oldRosterId: data.oldRosterId,
+        newLeagueId: data.newLeagueId,
+        newRosterId: data.newRosterId,
+        mappingType: data.mappingType,
+        mappedBy: data.mappedBy ?? null,
+        mappedAt: now,
+      })
+      .returning();
+    return inserted;
+  }
+
+  async getRosterMappings(migrationId: string): Promise<RosterMapping[]> {
+    return db
+      .select()
+      .from(rosterMappingsTable)
+      .where(eq(rosterMappingsTable.migrationId, migrationId))
+      .orderBy(desc(rosterMappingsTable.mappedAt));
+  }
+
+  async createStandingsSnapshot(data: InsertStandingsSnapshot): Promise<StandingsSnapshot> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(standingsSnapshotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      week: data.week ?? null,
+      snapshotType: data.snapshotType,
+      standingsData: data.standingsData,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async createPlayerStatsSnapshot(data: InsertPlayerStatsSnapshot): Promise<PlayerStatsSnapshot> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(playerStatsSnapshotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      week: data.week ?? null,
+      playerId: data.playerId,
+      statsData: data.statsData,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async createTeamStatsSnapshot(data: InsertTeamStatsSnapshot): Promise<TeamStatsSnapshot> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(teamStatsSnapshotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      week: data.week ?? null,
+      rosterId: data.rosterId,
+      statsData: data.statsData,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async createDraftSnapshot(data: InsertDraftSnapshot): Promise<DraftSnapshot> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(draftSnapshotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      draftId: data.draftId,
+      draftData: data.draftData,
+      picksData: data.picksData,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async createMatchupSnapshot(data: InsertMatchupSnapshot): Promise<MatchupSnapshot> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(matchupSnapshotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      week: data.week,
+      matchupData: data.matchupData,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async createTransactionSnapshot(data: InsertTransactionSnapshot): Promise<TransactionSnapshot> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(transactionSnapshotsTable).values({
+      id,
+      leagueId: data.leagueId,
+      season: data.season,
+      week: data.week,
+      transactionData: data.transactionData,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async getStandingsSnapshots(leagueId: string, season: string, week?: number | null): Promise<StandingsSnapshot[]> {
+    const conditions = [eq(standingsSnapshotsTable.leagueId, leagueId), eq(standingsSnapshotsTable.season, season)];
+    if (week === null) {
+      conditions.push(isNull(standingsSnapshotsTable.week));
+    } else if (week !== undefined) {
+      conditions.push(eq(standingsSnapshotsTable.week, week));
+    }
+    return db.select().from(standingsSnapshotsTable).where(and(...conditions));
+  }
+
+  async getPlayerStatsSnapshots(leagueId: string, season: string, week?: number | null): Promise<PlayerStatsSnapshot[]> {
+    const conditions = [eq(playerStatsSnapshotsTable.leagueId, leagueId), eq(playerStatsSnapshotsTable.season, season)];
+    if (week === null) {
+      conditions.push(isNull(playerStatsSnapshotsTable.week));
+    } else if (week !== undefined) {
+      conditions.push(eq(playerStatsSnapshotsTable.week, week));
+    }
+    return db.select().from(playerStatsSnapshotsTable).where(and(...conditions));
+  }
+
+  async getTeamStatsSnapshots(leagueId: string, season: string, week?: number | null): Promise<TeamStatsSnapshot[]> {
+    const conditions = [eq(teamStatsSnapshotsTable.leagueId, leagueId), eq(teamStatsSnapshotsTable.season, season)];
+    if (week === null) {
+      conditions.push(isNull(teamStatsSnapshotsTable.week));
+    } else if (week !== undefined) {
+      conditions.push(eq(teamStatsSnapshotsTable.week, week));
+    }
+    return db.select().from(teamStatsSnapshotsTable).where(and(...conditions));
+  }
+
+  async getDraftSnapshots(leagueId: string, season: string): Promise<DraftSnapshot[]> {
+    return db
+      .select()
+      .from(draftSnapshotsTable)
+      .where(and(eq(draftSnapshotsTable.leagueId, leagueId), eq(draftSnapshotsTable.season, season)));
+  }
+
+  async getMatchupSnapshots(leagueId: string, season: string, week: number): Promise<MatchupSnapshot[]> {
+    return db
+      .select()
+      .from(matchupSnapshotsTable)
+      .where(and(
+        eq(matchupSnapshotsTable.leagueId, leagueId),
+        eq(matchupSnapshotsTable.season, season),
+        eq(matchupSnapshotsTable.week, week)
+      ));
+  }
+
+  async getTransactionSnapshots(leagueId: string, season: string, week: number): Promise<TransactionSnapshot[]> {
+    return db
+      .select()
+      .from(transactionSnapshotsTable)
+      .where(and(
+        eq(transactionSnapshotsTable.leagueId, leagueId),
+        eq(transactionSnapshotsTable.season, season),
+        eq(transactionSnapshotsTable.week, week)
+      ));
+  }
+
+  async deleteAllPlayerBids(leagueId: string): Promise<void> {
+    await db
+      .delete(playerBidsTable)
+      .where(eq(playerBidsTable.leagueId, leagueId));
+  }
+
   // Database inspection methods
   async getTableList(): Promise<Array<{ name: string; rowCount: number }>> {
     try {
+      // First, verify database connection by checking if DATABASE_URL is set
+      if (!process.env.DATABASE_URL) {
+        throw new Error("DATABASE_URL environment variable is not set. Database connection cannot be established.");
+      }
+
       // Get list of tables from information_schema
       const tables = await db.execute(sql`
         SELECT table_name 
@@ -1157,25 +1474,34 @@ export class DatabaseStorage implements IStorage {
         ORDER BY table_name
       `);
 
-      const tableList = [];
-      for (const row of tables.rows as Array<{ table_name: string }>) {
-        const tableName = row.table_name;
-        try {
-          // Get row count for each table
-          const countResult = await db.execute(sql.raw(`SELECT COUNT(*) as count FROM ${sql.identifier(tableName)}`));
-          const rowCount = parseInt((countResult.rows[0] as { count: string }).count || "0", 10);
-          tableList.push({ name: tableName, rowCount });
-        } catch (error) {
-          // If we can't count rows, still include the table with 0 count
-          console.warn(`[Storage] Could not get row count for table ${tableName}:`, error);
-          tableList.push({ name: tableName, rowCount: 0 });
-        }
-      }
+      console.log(`[Storage] Found ${tables.rows.length} tables in database`);
+
+      // Return table list with row counts
+      // For now, return all tables with 0 counts - counts can be fetched individually when viewing tables
+      // This avoids SQL injection concerns with dynamic table names in COUNT queries
+      const tableList = (tables.rows as Array<{ table_name: string }>).map(row => ({
+        name: row.table_name,
+        rowCount: 0, // Will be calculated on-demand when viewing table details
+      }));
 
       return tableList;
     } catch (error: any) {
       console.error("[Storage] Error getting table list:", error);
-      throw new Error(`Failed to get table list: ${error.message}`);
+      const errorMessage = error?.message || String(error);
+      const errorCode = error?.code;
+      
+      // Provide more specific error messages
+      if (errorMessage.includes("DATABASE_URL")) {
+        throw new Error("Database connection not configured. Please set DATABASE_URL environment variable.");
+      }
+      if (errorCode === "08003" || errorCode === "08006" || errorMessage.includes("connection")) {
+        throw new Error("Database connection failed. Please check DATABASE_URL and ensure the database is accessible.");
+      }
+      if (errorCode === "42P01" || errorMessage.includes("does not exist") || errorMessage.includes("relation")) {
+        throw new Error("Database schema issue. Please run 'npm run db:push' to create required tables.");
+      }
+      
+      throw new Error(`Failed to get table list: ${errorMessage}`);
     }
   }
 
@@ -1220,6 +1546,15 @@ export class DatabaseStorage implements IStorage {
         saved_contract_drafts: savedContractDraftsTable,
         contract_approval_requests: contractApprovalRequestsTable,
         team_extensions: teamExtensionsTable,
+        league_migrations: leagueMigrationsTable,
+        roster_mappings: rosterMappingsTable,
+        active_leagues: activeLeaguesTable,
+        standings_snapshots: standingsSnapshotsTable,
+        player_stats_snapshots: playerStatsSnapshotsTable,
+        team_stats_snapshots: teamStatsSnapshotsTable,
+        draft_snapshots: draftSnapshotsTable,
+        matchup_snapshots: matchupSnapshotsTable,
+        transaction_snapshots: transactionSnapshotsTable,
       };
 
       const table = tableMap[tableName];
@@ -1285,6 +1620,15 @@ export class DatabaseStorage implements IStorage {
         saved_contract_drafts: savedContractDraftsTable,
         contract_approval_requests: contractApprovalRequestsTable,
         team_extensions: teamExtensionsTable,
+        league_migrations: leagueMigrationsTable,
+        roster_mappings: rosterMappingsTable,
+        active_leagues: activeLeaguesTable,
+        standings_snapshots: standingsSnapshotsTable,
+        player_stats_snapshots: playerStatsSnapshotsTable,
+        team_stats_snapshots: teamStatsSnapshotsTable,
+        draft_snapshots: draftSnapshotsTable,
+        matchup_snapshots: matchupSnapshotsTable,
+        transaction_snapshots: transactionSnapshotsTable,
       };
 
       const table = tableMap[tableName];

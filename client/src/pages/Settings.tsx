@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,11 +23,47 @@ export default function Settings() {
   const { user, league, clearSession } = useSleeper();
   const { toast } = useToast();
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [advanceLeagueId, setAdvanceLeagueId] = useState("");
+  const [manualLeagueId, setManualLeagueId] = useState("");
+  const [unmatchedRosters, setUnmatchedRosters] = useState<Array<{ oldRosterId: number; ownerId: string | null }>>([]);
+  const [manualMappings, setManualMappings] = useState<Record<number, number>>({});
   const [notifications, setNotifications] = useState({
     trades: true,
     waivers: true,
     lineupReminder: false,
     weeklyRecap: true,
+  });
+
+  const { data: availableLeagues } = useQuery({
+    queryKey: ["/api/league/list"],
+    queryFn: async () => {
+      const res = await fetch("/api/league/list");
+      if (!res.ok) throw new Error("Failed to fetch league list");
+      return res.json();
+    },
+  });
+
+  const { data: activeLeague } = useQuery({
+    queryKey: ["/api/league/active"],
+    queryFn: async () => {
+      const res = await fetch("/api/league/active");
+      if (!res.ok) {
+        if (res.status === 404) return null;
+        throw new Error("Failed to fetch active league");
+      }
+      return res.json();
+    },
+  });
+
+  const { data: sleeperLeagues } = useQuery({
+    queryKey: ["/api/sleeper/user", user?.userId, "leagues", league?.season],
+    queryFn: async () => {
+      const season = league?.season || new Date().getFullYear().toString();
+      const res = await fetch(`/api/sleeper/user/${user?.userId}/leagues?season=${season}`);
+      if (!res.ok) throw new Error("Failed to fetch Sleeper leagues");
+      return res.json();
+    },
+    enabled: !!user?.userId && (!availableLeagues || availableLeagues.length === 0),
   });
 
   const handleRefreshData = async () => {
@@ -46,6 +83,155 @@ export default function Settings() {
       title: "Disconnected",
       description: "Your Sleeper account has been disconnected.",
     });
+  };
+
+  const handleLeagueChange = async (leagueId: string) => {
+    if (!leagueId) return;
+    const res = await fetch("/api/league/set-active", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leagueId }),
+    });
+    if (!res.ok) {
+      toast({
+        title: "Failed to switch league",
+        description: "Could not set active league. Please try again.",
+      });
+      return;
+    }
+    await queryClient.invalidateQueries();
+    toast({
+      title: "League updated",
+      description: "Active league has been updated. Reloading...",
+    });
+    window.location.reload();
+  };
+
+  const isCommissioner = !!(user?.userId && league?.commissionerId && user.userId === league.commissionerId);
+
+  const knownLeagueOptions = useMemo(() => ([
+    { leagueId: "918240874625257472", season: "2023" },
+    { leagueId: "1048746932522405888", season: "2024" },
+    { leagueId: "1194798912048705536", season: "2025" },
+  ]), []);
+
+  const mostRecentKnownLeagueId = useMemo(() => {
+    const sorted = [...knownLeagueOptions].sort((a, b) => {
+      const seasonA = parseInt(a.season) || 0;
+      const seasonB = parseInt(b.season) || 0;
+      return seasonB - seasonA;
+    });
+    return sorted[0]?.leagueId || "";
+  }, [knownLeagueOptions]);
+
+  const normalizedSleeperLeagues = useMemo(() => {
+    return (sleeperLeagues || [])
+      .map((l: any) => ({
+        leagueId: l.league_id || l.leagueId,
+        season: l.season,
+        name: l.name,
+      }))
+      .filter((l: any) => !!l.leagueId);
+  }, [sleeperLeagues]);
+
+  const leagueOptions = useMemo(() => {
+    const baseOptions = (availableLeagues && availableLeagues.length > 0)
+      ? availableLeagues
+      : normalizedSleeperLeagues;
+
+    const merged: Array<{ leagueId: string; season?: string; name?: string }> = [];
+    const seen = new Set<string>();
+
+    const pushUnique = (item: { leagueId: string; season?: string; name?: string }) => {
+      if (!item.leagueId || seen.has(item.leagueId)) return;
+      seen.add(item.leagueId);
+      merged.push(item);
+    };
+
+    knownLeagueOptions.forEach(pushUnique);
+    baseOptions.forEach(pushUnique);
+
+    if (activeLeague?.leagueId) {
+      pushUnique({ leagueId: activeLeague.leagueId, season: activeLeague.season });
+    }
+
+    const activeFromList = (availableLeagues || []).find((l: any) => l.isActive === 1 || l.isActive === "1");
+    if (activeFromList?.leagueId) {
+      pushUnique({ leagueId: activeFromList.leagueId, season: activeFromList.season });
+    }
+
+    if (league?.leagueId) {
+      pushUnique({ leagueId: league.leagueId, season: league.season, name: league.name });
+    }
+
+    return merged;
+  }, [
+    availableLeagues,
+    normalizedSleeperLeagues,
+    knownLeagueOptions,
+    activeLeague?.leagueId,
+    activeLeague?.season,
+    league?.leagueId,
+    league?.season,
+    league?.name,
+  ]);
+
+  const activeLeagueIdFromList = useMemo(() => {
+    const active = (availableLeagues || []).find((l: any) => l.isActive === 1 || l.isActive === "1");
+    return active?.leagueId || "";
+  }, [availableLeagues]);
+
+  const selectedLeagueId = activeLeagueIdFromList || activeLeague?.leagueId || league?.leagueId || mostRecentKnownLeagueId;
+
+  useEffect(() => {
+    if (selectedLeagueId) {
+      setManualLeagueId(selectedLeagueId);
+    }
+  }, [selectedLeagueId]);
+
+  const handleAdvanceLeagueYear = async () => {
+    if (!advanceLeagueId.trim() || !user?.userId) return;
+
+    const manualMappingArray = Object.entries(manualMappings)
+      .filter(([, newRosterId]) => !!newRosterId)
+      .map(([oldRosterId, newRosterId]) => ({
+        oldRosterId: parseInt(oldRosterId, 10),
+        newRosterId,
+      }));
+
+    const res = await fetch("/api/league/advance-year", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        newLeagueId: advanceLeagueId.trim(),
+        userId: user.userId,
+        manualMappings: manualMappingArray,
+      }),
+    });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({}));
+      if (error?.unmatched) {
+        setUnmatchedRosters(error.unmatched);
+        toast({
+          title: "Roster mapping required",
+          description: "Please map all unmatched rosters before continuing.",
+        });
+        return;
+      }
+      toast({
+        title: "Advance failed",
+        description: error?.error || "Failed to advance league year.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    toast({
+      title: "League advanced",
+      description: "League year advanced successfully. Reloading...",
+    });
+    window.location.reload();
   };
 
   return (
@@ -98,8 +284,104 @@ export default function Settings() {
                 </span>
               </div>
             )}
+
+            {leagueOptions && Array.isArray(leagueOptions) && leagueOptions.length > 0 && (
+              <div className="space-y-2">
+                <Label htmlFor="activeLeague">Active League</Label>
+                <Select
+                  value={selectedLeagueId}
+                  onValueChange={handleLeagueChange}
+                >
+                  <SelectTrigger id="activeLeague" data-testid="select-active-league">
+                    <SelectValue placeholder="Select league" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {leagueOptions.map((l: any) => (
+                      <SelectItem key={l.leagueId} value={l.leagueId}>
+                        {l.leagueId} {l.season ? `(${l.season})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!availableLeagues?.length && (
+                  <p className="text-xs text-muted-foreground">
+                    No active leagues saved yet. Select a Sleeper league to set the initial active league.
+                  </p>
+                )}
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="manualLeagueId">Set Active League ID</Label>
+              <div className="flex gap-2">
+                <Input
+                  id="manualLeagueId"
+                  value={manualLeagueId}
+                  onChange={(e) => setManualLeagueId(e.target.value)}
+                  placeholder="Enter Sleeper league ID"
+                />
+                <Button
+                  onClick={() => {
+                    if (!manualLeagueId.trim()) return;
+                    handleLeagueChange(manualLeagueId.trim());
+                  }}
+                >
+                  Set Active
+                </Button>
+              </div>
+            </div>
           </CardContent>
         </Card>
+
+        {isCommissioner && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Database className="w-5 h-5 text-muted-foreground" />
+                <CardTitle className="font-heading text-lg">League Year Advancement</CardTitle>
+              </div>
+              <CardDescription>Advance league year and migrate contracts</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="advance-league-id">New Sleeper League ID</Label>
+                <Input
+                  id="advance-league-id"
+                  value={advanceLeagueId}
+                  onChange={(e) => setAdvanceLeagueId(e.target.value)}
+                  placeholder="Enter new league ID"
+                  data-testid="input-advance-league-id"
+                />
+              </div>
+              {unmatchedRosters.length > 0 && (
+                <div className="space-y-2">
+                  <Label>Unmatched Rosters</Label>
+                  {unmatchedRosters.map((roster) => (
+                    <div key={roster.oldRosterId} className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">
+                        Old roster {roster.oldRosterId} {roster.ownerId ? `(${roster.ownerId})` : ""}
+                      </span>
+                      <Input
+                        className="w-32"
+                        placeholder="New roster ID"
+                        value={manualMappings[roster.oldRosterId] || ""}
+                        onChange={(e) =>
+                          setManualMappings((prev) => ({
+                            ...prev,
+                            [roster.oldRosterId]: parseInt(e.target.value, 10) || 0,
+                          }))
+                        }
+                        data-testid={`input-roster-map-${roster.oldRosterId}`}
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <Button onClick={handleAdvanceLeagueYear} data-testid="button-advance-league-year">
+                Advance League Year
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardHeader>

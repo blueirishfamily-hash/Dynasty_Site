@@ -89,7 +89,7 @@ function DualSidedBar({
             style={{ width: `${userWidth}%` }}
           />
           <span className="relative z-10 pr-2 text-xs font-bold tabular-nums text-foreground">
-            {userPoints.toFixed(1)}
+            {userPoints.toFixed(2)}
           </span>
         </div>
       </div>
@@ -103,7 +103,7 @@ function DualSidedBar({
             style={{ width: `${opponentWidth}%` }}
           />
           <span className="relative z-10 pl-2 text-xs font-bold tabular-nums text-foreground">
-            {opponentPoints.toFixed(1)}
+            {opponentPoints.toFixed(2)}
           </span>
         </div>
       </div>
@@ -142,8 +142,8 @@ export default function Matchup() {
   const isTied = userTeam && opponentTeam && userTeam.score === opponentTeam.score;
   const isWeekCompleted = selectedWeek < currentWeek;
   const scoreDiff = userTeam && opponentTeam 
-    ? Math.abs(userTeam.score - opponentTeam.score).toFixed(1)
-    : "0.0";
+    ? Math.abs(userTeam.score - opponentTeam.score).toFixed(2)
+    : "0.00";
 
   const { rosterSlots, maxPoints } = useMemo(() => {
     if (!userTeam) {
@@ -282,7 +282,7 @@ export default function Matchup() {
                     <p className="font-heading font-bold text-lg" data-testid="text-user-name">{userTeam.name}</p>
                     <p className="text-sm text-muted-foreground">{userTeam.record}</p>
                     {userTeam.maxPointsFor !== undefined && selectedWeek <= currentWeek && (
-                      <p className="text-xs text-muted-foreground">Max PF: {userTeam.maxPointsFor.toFixed(1)}</p>
+                      <p className="text-xs text-muted-foreground">Max PF: {userTeam.maxPointsFor.toFixed(2)}</p>
                     )}
                   </div>
                 </div>
@@ -290,10 +290,10 @@ export default function Matchup() {
                 <div className="flex flex-col items-center px-8">
                   <div className="text-center">
                     <p className={`text-4xl font-bold tabular-nums ${userWinning ? "text-primary" : ""}`} data-testid="text-user-score">
-                      {userTeam.score.toFixed(1)}
+                      {userTeam.score.toFixed(2)}
                     </p>
                     <p className="text-xs text-muted-foreground tabular-nums">
-                      Proj: {userTeam.projectedTotal.toFixed(1)}
+                      Proj: {userTeam.projectedTotal.toFixed(2)}
                     </p>
                   </div>
                   <div className="flex items-center gap-2 my-2">
@@ -301,10 +301,10 @@ export default function Matchup() {
                   </div>
                   <div className="text-center">
                     <p className={`text-4xl font-bold tabular-nums ${!userWinning ? "text-primary" : ""}`} data-testid="text-opponent-score">
-                      {opponentTeam.score.toFixed(1)}
+                      {opponentTeam.score.toFixed(2)}
                     </p>
                     <p className="text-xs text-muted-foreground tabular-nums">
-                      Proj: {opponentTeam.projectedTotal.toFixed(1)}
+                      Proj: {opponentTeam.projectedTotal.toFixed(2)}
                     </p>
                   </div>
                 </div>
@@ -314,7 +314,7 @@ export default function Matchup() {
                     <p className="font-heading font-bold text-lg" data-testid="text-opponent-name">{opponentTeam.name}</p>
                     <p className="text-sm text-muted-foreground">{opponentTeam.record}</p>
                     {opponentTeam.maxPointsFor !== undefined && selectedWeek <= currentWeek && (
-                      <p className="text-xs text-muted-foreground">Max PF: {opponentTeam.maxPointsFor.toFixed(1)}</p>
+                      <p className="text-xs text-muted-foreground">Max PF: {opponentTeam.maxPointsFor.toFixed(2)}</p>
                     )}
                   </div>
                   <Avatar className="w-16 h-16">
@@ -331,7 +331,7 @@ export default function Matchup() {
                   {isWeekCompleted ? (
                     // Completed week - show final result
                     isTied ? (
-                      `Tied ${scoreDiff !== "0.0" ? `(${scoreDiff} pts)` : ""}`
+                      `Tied ${scoreDiff !== "0.00" ? `(${scoreDiff} pts)` : ""}`
                     ) : userWinning ? (
                       <>
                         <Trophy className="w-3 h-3 mr-1" />
@@ -343,7 +343,7 @@ export default function Matchup() {
                   ) : (
                     // Current/future week - show live status
                     isTied ? (
-                      `Tied ${scoreDiff !== "0.0" ? `(${scoreDiff} pts)` : ""}`
+                      `Tied ${scoreDiff !== "0.00" ? `(${scoreDiff} pts)` : ""}`
                     ) : userWinning ? (
                       <>
                         <Trophy className="w-3 h-3 mr-1" />
@@ -358,14 +358,31 @@ export default function Matchup() {
               
               {/* Win Probability Bar */}
               {(() => {
-                // Calculate win probability using projected totals
-                // Using a logistic function: probability = 1 / (1 + e^(-k * diff))
-                // where k is a scaling factor (higher k = more sensitive to point differences)
-                const projDiff = userTeam.projectedTotal - opponentTeam.projectedTotal;
-                const k = 0.1; // Scaling factor - about 10 point lead = ~73% win probability
-                const userWinProb = 1 / (1 + Math.exp(-k * projDiff));
-                const userWinPct = Math.round(userWinProb * 100);
-                const oppWinPct = 100 - userWinPct;
+                let userWinPct: number;
+                let oppWinPct: number;
+
+                if (isWeekCompleted) {
+                  // Week is completed - use actual result
+                  if (isTied) {
+                    userWinPct = 50;
+                    oppWinPct = 50;
+                  } else if (userWinning) {
+                    userWinPct = 100;
+                    oppWinPct = 0;
+                  } else {
+                    userWinPct = 0;
+                    oppWinPct = 100;
+                  }
+                } else {
+                  // Current/future week - calculate using projected totals
+                  // Using a logistic function: probability = 1 / (1 + e^(-k * diff))
+                  // where k is a scaling factor (higher k = more sensitive to point differences)
+                  const projDiff = userTeam.projectedTotal - opponentTeam.projectedTotal;
+                  const k = 0.1; // Scaling factor - about 10 point lead = ~73% win probability
+                  const userWinProb = 1 / (1 + Math.exp(-k * projDiff));
+                  userWinPct = Math.round(userWinProb * 100);
+                  oppWinPct = 100 - userWinPct;
+                }
                 
                 return (
                   <div className="mt-4 px-4">
@@ -533,6 +550,171 @@ export default function Matchup() {
                     </div>
                   );
                 })}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="font-heading text-lg">Bench</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-[minmax(120px,160px)_minmax(200px,1fr)_minmax(120px,160px)] gap-3 mb-4 items-center">
+                <div className="text-right">
+                  <p className="text-sm font-medium text-primary truncate">{userTeam.name}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Proj · <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
+                  </p>
+                </div>
+                <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground text-center">
+                  Points
+                </div>
+                <div className="text-left">
+                  <p className="text-sm font-medium text-muted-foreground truncate">{opponentTeam.name}</p>
+                  <p className="text-[10px] text-muted-foreground">
+                    Proj · <span className="text-chart-2">Boom</span>/<span className="text-destructive">Bust</span>
+                  </p>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                {(() => {
+                  // Get max number of bench players between user and opponent
+                  const maxBenchLength = Math.max(userTeam.bench.length, opponentTeam.bench.length);
+                  const benchRows: Array<{ userPlayer: MatchupPlayer | null; opponentPlayer: MatchupPlayer | null }> = [];
+                  
+                  for (let i = 0; i < maxBenchLength; i++) {
+                    benchRows.push({
+                      userPlayer: userTeam.bench[i] || null,
+                      opponentPlayer: opponentTeam.bench[i] || null,
+                    });
+                  }
+                  
+                  // Calculate max points for bench comparison bar
+                  const allBenchPoints = [
+                    ...userTeam.bench.map(p => p?.points ?? 0),
+                    ...opponentTeam.bench.map(p => p?.points ?? 0),
+                  ].filter(points => typeof points === 'number');
+                  const benchMaxPoints = allBenchPoints.length > 0 ? Math.max(...allBenchPoints, 1) : 1;
+                  
+                  return benchRows.map((row, index) => {
+                    const userPts = row.userPlayer?.points ?? 0;
+                    const oppPts = row.opponentPlayer?.points ?? 0;
+
+                    return (
+                      <div 
+                        key={`bench-${index}`}
+                        className="grid grid-cols-[minmax(120px,160px)_minmax(200px,1fr)_minmax(120px,160px)] gap-3 items-center py-2 border-b border-border last:border-0"
+                        data-testid={`bench-row-${index}`}
+                      >
+                        <div className="flex items-center justify-end gap-2">
+                          <div className="text-right min-w-0 flex-1">
+                            {row.userPlayer ? (
+                              <button
+                                onClick={() => setSelectedPlayer({ id: row.userPlayer!.id, name: row.userPlayer!.name })}
+                                className="text-sm font-medium truncate hover:text-primary hover:underline transition-colors text-right w-full"
+                                data-testid={`bench-player-user-${index}`}
+                              >
+                                {row.userPlayer.name}
+                                {row.userPlayer.status && (
+                                  <span className="ml-1 text-xs text-destructive font-normal">({row.userPlayer.status})</span>
+                                )}
+                                {row.userPlayer.isOnBye && (
+                                  <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
+                                )}
+                              </button>
+                            ) : (
+                              <p className="text-sm font-medium truncate text-muted-foreground">—</p>
+                            )}
+                            <div className="flex items-center justify-end gap-2 text-xs text-muted-foreground">
+                              <span>{row.userPlayer?.team || ""}</span>
+                              {row.userPlayer && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="tabular-nums cursor-help">
+                                      <span className={row.userPlayer.projectedPoints === 0 ? "text-muted-foreground" : "text-foreground"}>{row.userPlayer.projectedPoints}</span>
+                                      <span className="mx-1">·</span>
+                                      <span className="text-chart-2">{row.userPlayer.boom}</span>
+                                      <span className="mx-0.5">/</span>
+                                      <span className="text-destructive">{row.userPlayer.bust}</span>
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" className="text-xs">
+                                    <p className="font-medium">Projected: {row.userPlayer.projectedPoints} pts</p>
+                                    {(row.userPlayer.status || row.userPlayer.isOnBye) && (
+                                      <p className="text-destructive">{row.userPlayer.status || "On Bye"} - Not expected to play</p>
+                                    )}
+                                    <p>Boom/Bust Range: {row.userPlayer.boom} / {row.userPlayer.bust}</p>
+                                    <p className="text-muted-foreground">Based on {row.userPlayer.gamesPlayed >= 3 ? `${row.userPlayer.gamesPlayed} games` : row.userPlayer.gamesPlayed > 0 ? `${row.userPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <Badge 
+                            className={`text-[10px] px-1.5 h-5 w-14 justify-center shrink-0 ${positionColors[row.userPlayer?.position || ""] || "bg-muted text-muted-foreground"}`}
+                          >
+                            {row.userPlayer?.position || "—"}
+                          </Badge>
+                          <DualSidedBar
+                            userPoints={userPts}
+                            opponentPoints={oppPts}
+                            maxPoints={benchMaxPoints}
+                          />
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          <div className="text-left min-w-0 flex-1">
+                            {row.opponentPlayer ? (
+                              <button
+                                onClick={() => setSelectedPlayer({ id: row.opponentPlayer!.id, name: row.opponentPlayer!.name })}
+                                className="text-sm font-medium truncate hover:text-primary hover:underline transition-colors text-left w-full"
+                                data-testid={`bench-player-opp-${index}`}
+                              >
+                                {row.opponentPlayer.name}
+                                {row.opponentPlayer.status && (
+                                  <span className="ml-1 text-xs text-destructive font-normal">({row.opponentPlayer.status})</span>
+                                )}
+                                {row.opponentPlayer.isOnBye && (
+                                  <span className="ml-1 text-xs text-muted-foreground font-normal">(BYE)</span>
+                                )}
+                              </button>
+                            ) : (
+                              <p className="text-sm font-medium truncate text-muted-foreground">—</p>
+                            )}
+                            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                              {row.opponentPlayer && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <span className="tabular-nums cursor-help">
+                                      <span className={row.opponentPlayer.projectedPoints === 0 ? "text-muted-foreground" : "text-foreground"}>{row.opponentPlayer.projectedPoints}</span>
+                                      <span className="mx-1">·</span>
+                                      <span className="text-chart-2">{row.opponentPlayer.boom}</span>
+                                      <span className="mx-0.5">/</span>
+                                      <span className="text-destructive">{row.opponentPlayer.bust}</span>
+                                    </span>
+                                  </TooltipTrigger>
+                                  <TooltipContent side="top" className="text-xs">
+                                    <p className="font-medium">Projected: {row.opponentPlayer.projectedPoints} pts</p>
+                                    {(row.opponentPlayer.status || row.opponentPlayer.isOnBye) && (
+                                      <p className="text-destructive">{row.opponentPlayer.status || "On Bye"} - Not expected to play</p>
+                                    )}
+                                    <p>Boom/Bust Range: {row.opponentPlayer.boom} / {row.opponentPlayer.bust}</p>
+                                    <p className="text-muted-foreground">Based on {row.opponentPlayer.gamesPlayed >= 3 ? `${row.opponentPlayer.gamesPlayed} games` : row.opponentPlayer.gamesPlayed > 0 ? `${row.opponentPlayer.gamesPlayed} game (blended)` : "position avg"}</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+                              <span>{row.opponentPlayer?.team || ""}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()}
               </div>
             </CardContent>
           </Card>

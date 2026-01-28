@@ -34,12 +34,151 @@ This document outlines the coding structure, patterns, and conventions used in t
 
 ### Starting the Development Server
 
+**Required Environment Variables**:
+- **`DATABASE_URL`**: **REQUIRED** - PostgreSQL connection string (must be set before starting server)
+- **`NODE_ENV`**: Set to `"development"` for development mode
+- **`PORT`**: Server port (defaults to `5000`)
+
+**⚠️ IMPORTANT: Database Connection Requirement**:
+- The server **MUST** have `DATABASE_URL` environment variable set before starting
+- Without `DATABASE_URL`, the server will fail to start with: `"DATABASE_URL must be set. Did you forget to provision a database?"`
+- Database connection is automatically established when server starts (if `DATABASE_URL` is set)
+- All database operations require an active connection - ensure database is accessible
+
 **Running the Development Server**:
+- **ALWAYS** set `DATABASE_URL` before running `npm run dev`
 - Run `npm run dev` to start both frontend and backend
 - Server runs on port 5000 (configurable via `PORT` env variable)
 - Preview browser should be opened at `http://localhost:5000`
 
+**Opening the Preview Browser**:
+
+When the server is not running, use the following process to start the server in a new PowerShell window **with database connection** and open the preview browser:
+
+1. **Start the server in a new PowerShell window with database connection**:
+   ```powershell
+   Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'C:\Users\elwth\OneDrive\Desktop\Dynasty Site Original\Dynasty_Site' ; `$env:DATABASE_URL='postgresql://neondb_owner:npg_6jNhWviYx5su@ep-summer-meadow-aeij97oi.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require' ; `$env:NODE_ENV='development' ; `$env:PORT='5000' ; npm run dev"
+   ```
+
+   This command:
+   - Opens a new PowerShell window that stays open (`-NoExit`)
+   - Changes to the project directory
+   - **Sets `DATABASE_URL` environment variable** (required for database connection)
+   - Sets required environment variables (`NODE_ENV`, `PORT`)
+   - Runs `npm run dev` to start the development server
+   - **Database connection is automatically established on server start**
+
+2. **Wait for server to start**:
+   - Wait 5-8 seconds for the server to fully initialize
+   - The server is ready when you see "serving on port 5000" in the PowerShell window
+   - **Database connection is established during server initialization** - no additional setup needed
+
+3. **Verify server and database connection** (optional):
+   ```powershell
+   # Check if server is running
+   Test-NetConnection -ComputerName localhost -Port 5000 -InformationLevel Quiet
+   ```
+   Should return `True` when the server is ready.
+   
+   **Verify database connection**: Navigate to `/admin/database` in the browser to verify tables are accessible.
+
+4. **Open the preview browser**:
+   - Navigate to `http://localhost:5000` using the browser navigation tool
+   - The application will load automatically once the server is ready
+   - **Database is already connected** - no additional connection steps needed
+
+**Alternative: Using the PowerShell script** (Recommended):
+The `start-server.ps1` script automatically sets all required environment variables including `DATABASE_URL`:
+```powershell
+.\start-server.ps1
+```
+
+This is the **preferred method** as it ensures database connection is always established.
+
+**Note**: 
+- The server **MUST** be running with `DATABASE_URL` set before the preview browser can connect and use database features
+- If you see connection errors, verify the server is running in the PowerShell window and that `DATABASE_URL` is set
+- If database errors occur, check the server logs for connection issues
+- Wait a few more seconds before retrying if the server just started
+
+### Database Connection Requirements
+
+**Overview**:
+- The application uses **Neon PostgreSQL** (serverless) for all database operations
+- Database connection is established automatically when the server starts (if `DATABASE_URL` is set)
+- **No manual connection setup is required** - the connection is handled by `server/db.ts`
+
+**Connection Process**:
+1. Server starts and loads `server/db.ts`
+2. `DATABASE_URL` environment variable is checked (throws error if not set)
+3. Connection pool is created using Neon serverless client
+4. Database connection is established automatically
+5. All database operations use the established connection pool
+
+**Required Environment Variable**:
+- **`DATABASE_URL`**: PostgreSQL connection string
+  - Format: `postgresql://username:password@host:port/database?sslmode=require`
+  - Example: `postgresql://neondb_owner:password@ep-summer-meadow-aeij97oi.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require`
+  - **Must be set before starting the server**
+
+**Database Connection Verification**:
+
+To verify the database connection is working:
+
+1. **Check server logs**: Look for "serving on port 5000" - connection errors would appear before this
+2. **Use Database Viewer**: Navigate to `/admin/database` in the browser - should **automatically display** all tables
+   - Database tables are **automatically displayed** on the frontend when connection is established
+   - No manual refresh needed - data appears automatically when database is connected
+   - See "Frontend Database Display" section below for details
+3. **Check for errors**: Database connection errors appear in server logs with codes:
+   - `08003` / `08006`: Connection error (check `DATABASE_URL`)
+   - `42P01`: Table does not exist (run `npm run db:push`)
+
+**Testing Database Connection**:
+
+If you need to test the database connection independently:
+
+```powershell
+# Set DATABASE_URL and run test
+$env:DATABASE_URL="postgresql://neondb_owner:password@host/database?sslmode=require"
+node -e "import('@neondatabase/serverless').then(({ Pool, neonConfig }) => { neonConfig.webSocketConstructor = require('ws'); const pool = new Pool({ connectionString: process.env.DATABASE_URL }); pool.query('SELECT 1').then(() => { console.log('✅ Database connection successful'); process.exit(0); }).catch(err => { console.error('❌ Connection failed:', err.message); process.exit(1); }); })"
+```
+
+**Troubleshooting Database Connection Issues**:
+
+**Problem**: Server fails to start with "DATABASE_URL must be set"
+- **Solution**: Set `DATABASE_URL` environment variable before running `npm run dev`
+- **Use**: `start-server.ps1` script or set environment variables manually
+
+**Problem**: Database connection errors in server logs (`08003`, `08006`)
+- **Solution**: Verify `DATABASE_URL` is correct and database server is accessible
+- **Check**: Network connectivity, firewall settings, connection string format
+
+**Problem**: "Table does not exist" errors (`42P01`)
+- **Solution**: Run `npm run db:push` to create database schema
+- **Check**: Verify tables are defined in `shared/schema.ts`
+
+**Problem**: Database Viewer shows "Database Connection Issue"
+- **Solution**: Verify server is running with `DATABASE_URL` set
+- **Check**: Server logs for connection errors, verify environment variables
+
+**Key Points**:
+- ✅ **Always set `DATABASE_URL` before starting the server**
+- ✅ **Use `start-server.ps1` script to ensure database connection** (preferred method)
+- ✅ **Database connection is automatic** - no manual connection code needed
+- ✅ **Connection is established on server start** - verify in server logs
+- ❌ **Never start server without `DATABASE_URL`** - will cause startup failure
+- ❌ **Don't manually connect/disconnect** - connection pool handles this automatically
+
 ### Automatic Code Reloading
+
+**Backend Changes** (`server/**`):
+- **Automatically restarted** via `tsx --watch` when files change
+- Server restart happens immediately on save
+- Watch terminal for "Restarting 'server/index.ts'" message
+- New code is available in preview browser after restart completes (~1-2 seconds)
+- Frontend automatically reconnects after backend restart
+- **No manual restart needed** for code changes
 
 **Frontend Changes** (`client/src/**`):
 - Automatically hot-reloaded via Vite HMR (Hot Module Replacement)
@@ -47,45 +186,293 @@ This document outlines the coding structure, patterns, and conventions used in t
 - React components maintain state during hot reload
 - No manual browser refresh needed
 
-**Backend Changes** (`server/**`):
-- Automatically restarted via `tsx --watch` when files change
-- Server restart is automatic on save
-- API endpoints update without manual intervention
-- Note: Brief connection interruption during restart is normal
-
 **Shared Code Changes** (`shared/**`):
 - Changes to shared types/schemas trigger both frontend and backend reloads
+- Backend restarts automatically via `tsx --watch`
+- Frontend hot-reloads via Vite HMR
 - Ensure both are running to see changes reflected
 
-**Configuration Changes** (`vite.config.ts`, `tsconfig.json`, etc.):
-- May require manual server restart to take effect
-- Check server console for restart messages
+### How to Verify Auto-Reload is Working
 
-### Expected Behavior After Adding Code
+After saving a file, watch the terminal:
+1. You should see: **"Restarting 'server/index.ts'"** (for backend changes)
+2. Followed by: **"serving on port 5000"**
+3. Preview browser reconnects automatically
+4. Changes are immediately visible (backend) or hot-reloaded (frontend)
 
-**CRITICAL: Restart the development server after making code changes**
+If you don't see these messages, check the troubleshooting section below.
 
-1. **Stop the server**: Press `Ctrl+C` in the terminal
-2. **Restart the server**: Run `npm run dev` again
-3. **Save the file** (if not already saved)
-4. **Wait for server to start**: Watch terminal for "serving on port 5000"
-5. **Refresh browser**: Navigate to `http://localhost:5000` or refresh the page
-6. Verify changes appear in the preview browser
+### When Manual Restart IS Required
 
-**Automatic Reloading:**
-While `tsx --watch` and Vite HMR provide automatic reloading:
-- Manual restart is the most reliable method
-- Always restart if changes don't appear automatically
-- Backend changes always require server restart
-- Frontend changes may require browser refresh even with HMR
+**Manual restart needed for**:
+- **Environment variable changes** (`.env` files, `DATABASE_URL`, etc.)
+  - **⚠️ IMPORTANT**: If `DATABASE_URL` changes, server **MUST** be restarted
+  - Database connection is established on server start - changes require restart
+- **Dependency installation** (`npm install` after updating `package.json`)
+- **Configuration file changes** (`tsconfig.json`, `vite.config.ts`, `drizzle.config.ts`)
+- **Database schema changes** (after running `npm run db:push`)
+  - Schema changes may require server restart to pick up new table definitions
+- **Server startup errors** or port conflicts
+- **Persistent cached errors** that don't clear automatically
+- **Database connection issues** - restart with `DATABASE_URL` set to re-establish connection
+
+**To manually restart**:
+1. Stop the server: Press `Ctrl+C` in the terminal
+2. **Set environment variables** (especially `DATABASE_URL` if needed):
+   ```powershell
+   $env:DATABASE_URL="postgresql://..."
+   $env:NODE_ENV="development"
+   $env:PORT="5000"
+   ```
+3. Restart the server: Run `npm run dev` **OR** use `.\start-server.ps1` (recommended)
+4. Wait for "serving on port 5000" message
+5. **Verify database connection**: Check server logs for connection errors, or navigate to `/admin/database` to verify tables are accessible
 
 ### Troubleshooting
 
-- If changes don't appear, check terminal for compilation errors
+**Backend changes not appearing**:
+- Check terminal for "Restarting 'server/index.ts'" message
+- Verify `tsx --watch` process is running (should see it in terminal)
+- Check for TypeScript compilation errors in terminal
+- Ensure file is saved (check for unsaved indicator in editor)
+- Manually restart if auto-reload fails
+
+**Frontend changes not appearing**:
 - Check browser console for HMR connection status
-- Ensure dev server is running (`npm run dev`)
+- Look for Vite HMR messages in browser console
 - Hard refresh browser (Ctrl+Shift+R / Cmd+Shift+R) if HMR fails
-- Check that file is being watched (no `.gitignore` or `.vite` cache issues)
+- Ensure dev server is running (`npm run dev`)
+
+**General issues**:
+- Check for compilation errors in terminal
+- Verify port 5000 is not blocked by another process
+- Check that file is being watched (not in `.gitignore` or node_modules)
+
+## Code Quality and Testing
+
+### Runtime Error Prevention
+
+**CRITICAL**: Before marking any task as complete, you **MUST** verify there are no runtime errors:
+
+1. **Check Browser Console**:
+   - Open browser developer tools (F12)
+   - Navigate to the Console tab
+   - Verify there are no JavaScript errors, warnings, or React errors
+   - Check for any red error messages or stack traces
+
+2. **Test the Feature**:
+   - Navigate to the page/feature you modified
+   - Interact with all relevant UI elements
+   - Verify the feature works as expected
+   - Check that data loads correctly (if applicable)
+
+3. **Check Network Tab** (if applicable):
+   - Open browser developer tools → Network tab
+   - Verify API calls are successful (status 200)
+   - Check for failed requests (status 4xx, 5xx)
+   - Verify response data is in expected format
+
+4. **Common Runtime Error Sources**:
+   - **Variable reference errors**: Using variables before they're defined (e.g., `useMemo` before `useEffect`)
+   - **Type errors**: Passing wrong types to functions/components
+   - **Null/undefined access**: Accessing properties on null/undefined values
+   - **Query dependencies**: Missing dependencies in React Query or useEffect
+   - **Loading state checks**: Incorrect loading state conditions (checking data instead of `isLoading`)
+
+5. **Fix Before Completion**:
+   - **DO NOT** mark a task complete if there are runtime errors
+   - Fix all errors before considering the task done
+   - Re-test after fixes to ensure errors are resolved
+   - If errors are complex, document them and ask for help rather than leaving broken code
+
+**Example Checklist Before Marking Complete**:
+- [ ] Browser console shows no errors
+- [ ] Feature works as expected when tested
+- [ ] All API calls succeed (if applicable)
+- [ ] No TypeScript compilation errors
+- [ ] No React warnings in console
+- [ ] Page loads without crashes
+- Clear Vite cache if persistent issues: delete `node_modules/.vite`
+
+**Database connection issues**:
+- **Server fails to start with "DATABASE_URL must be set"**:
+  - **Solution**: Set `DATABASE_URL` environment variable before starting server
+  - **Use**: `start-server.ps1` script or set manually: `$env:DATABASE_URL="postgresql://..."`
+  - **Verify**: Check PowerShell window where server is running for `DATABASE_URL` in environment
+  
+- **Database connection errors in server logs (`08003`, `08006`)**:
+  - **Solution**: Verify `DATABASE_URL` is correct and database server is accessible
+  - **Check**: 
+    - Connection string format: `postgresql://username:password@host/database?sslmode=require`
+    - Network connectivity to database server
+    - Firewall settings allowing connection
+    - Database server is running and accessible
+  
+- **"Table does not exist" errors (`42P01`)**:
+  - **Solution**: Run `npm run db:push` to create database schema
+  - **Check**: Verify tables are defined in `shared/schema.ts`
+  - **Note**: May require server restart after schema changes
+  
+- **Database Viewer shows "Database Connection Issue"**:
+  - **Solution**: Verify server is running with `DATABASE_URL` set
+  - **Check**: 
+    - Server logs for connection errors
+    - Environment variables in PowerShell window
+    - Navigate to `/admin/database` to verify connection
+  - **Restart**: Stop server and restart with `.\start-server.ps1` (ensures `DATABASE_URL` is set)
+  
+- **Database operations fail silently**:
+  - **Solution**: Check server logs for connection errors
+  - **Verify**: Database connection is established (check server startup logs)
+  - **Test**: Navigate to `/admin/database` - should show tables if connected
+  - **Restart**: If issues persist, restart server with `DATABASE_URL` set
+
+### Frontend Database Display
+
+**Overview**:
+- The frontend automatically displays database data when the database is connected
+- Database connection is established automatically on server start (if `DATABASE_URL` is set)
+- Frontend queries automatically fetch and display data when connection is available
+- No manual refresh or connection steps needed - it's fully automatic
+
+**How It Works**:
+
+1. **Database Connection Established**:
+   - When server starts with `DATABASE_URL` set, database connection is automatically established
+   - Connection pool is created in `server/db.ts` on server initialization
+   - All API endpoints have access to the database connection
+
+2. **Frontend Query Pattern**:
+   - Frontend uses `useQuery` from TanStack Query to fetch database data
+   - Queries are automatically enabled when required conditions are met
+   - Data is automatically fetched and displayed when database is connected
+
+3. **Database Viewer Example** (`/admin/database`):
+   ```typescript
+   // Fetch table list - automatically enabled when user is commissioner
+   const { data: tables, isLoading, isError } = useQuery<TableInfo[]>({
+     queryKey: ["/api/admin/database/tables"],
+     queryFn: async () => {
+       const res = await fetch(`/api/admin/database/tables?userId=${user?.userId}`);
+       if (!res.ok) throw new Error("Failed to fetch tables");
+       return res.json();
+     },
+     enabled: !!user?.userId && isCommissioner, // Automatically enabled when conditions met
+   });
+
+   // Fetch table data - automatically enabled when table is selected
+   const { data: tableData } = useQuery<TableDataResponse>({
+     queryKey: ["/api/admin/database/tables", selectedTable, "data", page, limit],
+     queryFn: async () => {
+       const res = await fetch(`/api/admin/database/tables/${selectedTable}?userId=${user?.userId}&page=${page}&limit=${limit}`);
+       if (!res.ok) throw new Error("Failed to fetch table data");
+       return res.json();
+     },
+     enabled: !!selectedTable && !!user?.userId && isCommissioner, // Auto-enabled
+   });
+   ```
+
+**Automatic Display Behavior**:
+
+- **When Database is Connected**:
+  - Frontend queries automatically execute when `enabled` conditions are met
+  - Data is automatically fetched from API endpoints
+  - UI automatically updates to display fetched data
+  - No manual refresh or connection steps needed
+
+- **When Database is Not Connected**:
+  - Queries are automatically disabled (if `enabled` condition fails)
+  - Error states are automatically displayed if connection fails
+  - User-friendly error messages guide troubleshooting
+
+- **Query Auto-Refetch**:
+  - TanStack Query automatically refetches data when:
+    - Component mounts (if data is stale)
+    - Window regains focus (if data is stale)
+    - Network reconnects
+    - Query is invalidated (after mutations)
+
+**Key Points**:
+- ✅ **Fully Automatic**: Database data displays automatically when connected - no manual steps
+- ✅ **Query-Based**: Uses TanStack Query `useQuery` with `enabled` conditions
+- ✅ **Conditional Fetching**: Queries only execute when conditions are met (user authenticated, data available, etc.)
+- ✅ **Error Handling**: Automatic error display if database connection fails
+- ✅ **Auto-Refresh**: Data automatically refreshes on window focus, network reconnect, or query invalidation
+- ✅ **No Manual Connection**: No frontend connection code needed - handled by server
+
+**Example: Database Viewer Page**:
+
+The Database Viewer (`/admin/database`) demonstrates the automatic display pattern:
+
+1. **Automatic Table List Fetch**:
+   - Query automatically executes when page loads (if user is commissioner)
+   - Table list is automatically displayed with row counts
+   - Loading state is automatically shown while fetching
+
+2. **Automatic Table Data Fetch**:
+   - When user selects a table, query automatically executes
+   - Table data is automatically displayed in a table format
+   - Pagination automatically works with query parameters
+
+3. **Automatic Error Display**:
+   - If database connection fails, error is automatically displayed
+   - Error message guides user to check database connection
+   - No manual error handling code needed in component
+
+**Implementation Pattern for New Database Displays**:
+
+When creating new pages that display database data, follow this pattern:
+
+```typescript
+export default function YourPage() {
+  const { user, league } = useSleeper();
+  
+  // Query automatically fetches when enabled conditions are met
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["/api/your/endpoint", league?.leagueId],
+    queryFn: async () => {
+      const res = await fetch(`/api/your/endpoint/${league?.leagueId}`);
+      if (!res.ok) throw new Error("Failed to fetch data");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!user?.userId, // Auto-enabled when conditions met
+  });
+
+  // Loading state - automatically shown while fetching
+  if (isLoading) {
+    return <Skeleton className="h-48 w-full" />;
+  }
+
+  // Error state - automatically displayed if fetch fails
+  if (isError) {
+    return (
+      <Alert variant="destructive">
+        <AlertTitle>Error</AlertTitle>
+        <AlertDescription>
+          {error?.message || "Failed to load data. Please check database connection."}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  // Data automatically displayed when available
+  return (
+    <div>
+      {data?.map(item => (
+        <Card key={item.id}>
+          {/* Display item data */}
+        </Card>
+      ))}
+    </div>
+  );
+}
+```
+
+**Verification**:
+- Navigate to `/admin/database` - should automatically display all tables with row counts
+- Select a table - should automatically display table data
+- Check browser console - should see successful API requests
+- If errors occur - should see error messages guiding troubleshooting
 
 ## Frontend Patterns
 

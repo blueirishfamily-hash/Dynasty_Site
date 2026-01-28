@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -148,12 +148,83 @@ export default function Draft() {
     enabled: !!league?.leagueId,
   });
 
-  const { data: historicalPicks, isLoading: historicalLoading } = useQuery<DraftPickData[]>({
-    queryKey: ["/api/sleeper/draft", selectedDraftId, "picks"],
+  // Fetch historical drafts for 2023 and 2024 leagues directly from Sleeper
+  const HISTORICAL_LEAGUE_2023 = "918240874625257472";
+  const HISTORICAL_LEAGUE_2024 = "1048746932522405888";
+
+  const { data: historicalDrafts2023 } = useQuery<DraftInfo[]>({
+    queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2023, "drafts"],
     queryFn: async () => {
-      const res = await fetch(`/api/sleeper/draft/${selectedDraftId}/picks`);
-      if (!res.ok) throw new Error("Failed to fetch draft picks");
+      const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2023}/drafts`);
+      if (!res.ok) throw new Error("Failed to fetch 2023 drafts");
       return res.json();
+    },
+  });
+
+  const { data: historicalDrafts2024, isLoading: historicalDraftsLoading } = useQuery<DraftInfo[]>({
+    queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2024, "drafts"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2024}/drafts`);
+      if (!res.ok) throw new Error("Failed to fetch 2024 drafts");
+      return res.json();
+    },
+  });
+
+  // Combine current league drafts with historical 2023 and 2024 drafts
+  const allDrafts = useMemo(() => {
+    const current = drafts || [];
+    const historical2023 = historicalDrafts2023 || [];
+    const historical2024 = historicalDrafts2024 || [];
+    // Combine and deduplicate by draftId
+    const draftMap = new Map<string, DraftInfo>();
+    [...current, ...historical2023, ...historical2024].forEach(d => {
+      if (!draftMap.has(d.draftId)) {
+        draftMap.set(d.draftId, d);
+      }
+    });
+    return Array.from(draftMap.values());
+  }, [drafts, historicalDrafts2023, historicalDrafts2024]);
+
+  // Determine if selected draft is from 2023/2024 (fetch from Sleeper) or snapshot
+  const selectedDraftInfo = useMemo(() => {
+    if (!selectedDraftId) return { isSnapshot: false, leagueId: null, season: null };
+    
+    // Check if it's from 2023 or 2024
+    const draft2023 = historicalDrafts2023?.find(d => d.draftId === selectedDraftId);
+    const draft2024 = historicalDrafts2024?.find(d => d.draftId === selectedDraftId);
+    
+    if (draft2023) {
+      return { isSnapshot: false, leagueId: HISTORICAL_LEAGUE_2023, season: "2023" };
+    }
+    if (draft2024) {
+      return { isSnapshot: false, leagueId: HISTORICAL_LEAGUE_2024, season: "2024" };
+    }
+    
+    // Check if it's from snapshot (has isSnapshot flag)
+    const allHistorical = [...(historicalDrafts2023 || []), ...(historicalDrafts2024 || [])];
+    const snapshotDraft = allHistorical.find(d => d.draftId === selectedDraftId && (d as any).isSnapshot);
+    if (snapshotDraft) {
+      // Would need to determine leagueId and season from snapshot - for now, treat as Sleeper
+      return { isSnapshot: false, leagueId: null, season: null };
+    }
+    
+    return { isSnapshot: false, leagueId: null, season: null };
+  }, [selectedDraftId, historicalDrafts2023, historicalDrafts2024]);
+
+  const { data: historicalPicks, isLoading: historicalLoading } = useQuery<DraftPickData[]>({
+    queryKey: ["/api/draft", selectedDraftId, "picks", selectedDraftInfo.isSnapshot, selectedDraftInfo.leagueId, selectedDraftInfo.season],
+    queryFn: async () => {
+      if (selectedDraftInfo.isSnapshot && selectedDraftInfo.leagueId && selectedDraftInfo.season) {
+        // Fetch from snapshot endpoint
+        const res = await fetch(`/api/league/${selectedDraftInfo.leagueId}/historical/draft/${selectedDraftId}/picks?season=${selectedDraftInfo.season}`);
+        if (!res.ok) throw new Error("Failed to fetch draft picks from snapshot");
+        return res.json();
+      } else {
+        // Fetch from Sleeper API (for 2023/2024 or current drafts)
+        const res = await fetch(`/api/sleeper/draft/${selectedDraftId}/picks`);
+        if (!res.ok) throw new Error("Failed to fetch draft picks");
+        return res.json();
+      }
     },
     enabled: !!selectedDraftId,
   });
@@ -171,7 +242,6 @@ export default function Draft() {
   const { data: bracketData } = useQuery<{
     matchups: Array<{ winner: number | null; loser: number | null }>;
     consolationMatchups?: Array<{ winner: number | null; loser: number | null }>;
-    draftPicks?: Record<number, number>;
   }>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "bracket"],
     queryFn: async () => {
@@ -196,44 +266,14 @@ export default function Draft() {
            normalizedStatus === "ended";
   };
 
-  // Temporary debugging to identify 2024 draft issue
-  useEffect(() => {
-    if (drafts && drafts.length > 0) {
-      console.log("=== DRAFT DEBUGGING ===");
-      console.log("All drafts from API:", drafts);
-      console.log("Draft statuses:", drafts.map((d: any) => ({ 
-        season: d.season, 
-        type: d.type, 
-        status: d.status,
-        draftId: d.draftId 
-      })));
-      
-      const draft2024 = drafts.find((d: any) => d.season === "2024");
-      if (draft2024) {
-        console.log("2024 draft found:", draft2024);
-        console.log("2024 draft status:", draft2024.status);
-        console.log("Is 2024 draft complete?", isDraftComplete(draft2024.status));
-      } else {
-        console.log("2024 draft NOT found in drafts array");
-      }
-      
-      const completedDrafts = drafts.filter((d: any) => isDraftComplete(d.status));
-      console.log("Completed drafts:", completedDrafts.map((d: any) => ({ 
-        season: d.season, 
-        type: d.type, 
-        status: d.status 
-      })));
-      console.log("=== END DEBUGGING ===");
-    }
-  }, [drafts]);
 
   // Auto-select most recent completed draft when drafts load or Historical tab is selected
   useEffect(() => {
-    if (drafts && drafts.length > 0) {
+    if (allDrafts && allDrafts.length > 0) {
       // When Historical tab is active, prioritize most recent completed draft
       if (activeTab === "historical") {
         // Get all completed drafts
-        const allCompletedDrafts = drafts
+        const allCompletedDrafts = allDrafts
           .filter(d => isDraftComplete(d.status))
           .sort((a, b) => parseInt(b.season) - parseInt(a.season));
         
@@ -246,11 +286,11 @@ export default function Draft() {
       
       // For other tabs or if no completed draft found, use existing logic
       if (!selectedDraftId) {
-        const draft2024 = drafts.find(d => d.season === "2024" && isDraftComplete(d.status));
+        const draft2024 = allDrafts.find(d => d.season === "2024" && isDraftComplete(d.status));
         if (draft2024) {
           setSelectedDraftId(draft2024.draftId);
         } else {
-          const latestCompleted = drafts
+          const latestCompleted = allDrafts
             .filter(d => isDraftComplete(d.status))
             .sort((a, b) => parseInt(b.season) - parseInt(a.season))[0];
           if (latestCompleted) {
@@ -259,7 +299,7 @@ export default function Draft() {
         }
       }
     }
-  }, [drafts, selectedDraftId, activeTab]);
+  }, [allDrafts, selectedDraftId, activeTab]);
 
   const userTeamStanding = standings?.find((s: any) => s.isUser);
   const userRosterId = userTeamStanding?.rosterId;
@@ -297,15 +337,22 @@ export default function Draft() {
   const formattedHistoricalPicks: DraftPick[] = (historicalPicks || [])
     .filter((p) => p.round <= totalRounds)
     .map((pick) => {
-      const owner = rosterNameMap.get(pick.rosterId) || { name: `Team ${pick.rosterId}`, initials: "??", avatar: null };
+      // For historical drafts, use fantasyTeam from snapshot if available
+      // Otherwise fall back to rosterNameMap from current league
+      const fantasyTeamName = pick.fantasyTeam || `Team ${pick.rosterId}`;
+      const owner = rosterNameMap.get(pick.rosterId) || { 
+        name: fantasyTeamName, 
+        initials: fantasyTeamName.split(" ").map((n: string) => n[0]).join("").substring(0, 2).toUpperCase() || "??", 
+        avatar: null 
+      };
       
       return {
         round: pick.round,
         pick: pick.draftSlot,
-        originalOwner: { name: owner.name, initials: owner.initials, avatar: owner.avatar },
-        currentOwner: { name: owner.name, initials: owner.initials, avatar: owner.avatar },
+        originalOwner: { name: fantasyTeamName, initials: owner.initials, avatar: owner.avatar },
+        currentOwner: { name: fantasyTeamName, initials: owner.initials, avatar: owner.avatar },
         isUserPick: pick.pickedBy === user?.userId,
-        fantasyTeam: pick.fantasyTeam,
+        fantasyTeam: fantasyTeamName,
         player: {
           id: pick.playerId,
           name: pick.playerName,
@@ -321,7 +368,7 @@ export default function Draft() {
 
   // Filter for completed drafts (for historical tab)
   // Check multiple status values to handle different Sleeper API responses
-  const completedDrafts = (drafts || [])
+  const completedDrafts = allDrafts
     .filter(d => isDraftComplete(d.status))
     .sort((a, b) => parseInt(b.season) - parseInt(a.season));
 
@@ -479,20 +526,6 @@ export default function Draft() {
         }
       });
       
-      // Handle locked playoff teams - use draft picks from bracket if available
-      if (bracketData?.draftPicks) {
-        lockedClinchedTeams.forEach(team => {
-          const draftPick = bracketData.draftPicks?.[team.rosterId];
-          if (draftPick !== undefined) {
-            // Convert to 0-indexed
-            const pickIndex = draftPick - 1;
-            if (pickIndex >= 0 && pickIndex < totalTeams) {
-              team.pickOdds = new Array(totalTeams).fill(0);
-              team.pickOdds[pickIndex] = 100;
-            }
-          }
-        });
-      }
       
       // For non-locked playoff teams, run Monte Carlo for picks 6-12 based on playoff finish
       if (clinched.length > 0) {
@@ -892,7 +925,7 @@ export default function Draft() {
             </>
           ) : activeTab === "historical" ? (
             <div className="space-y-4">
-              {draftsLoading ? (
+              {(draftsLoading || historicalDraftsLoading) ? (
                 <div className="flex gap-2">
                   {[...Array(3)].map((_, i) => (
                     <Skeleton key={i} className="h-9 w-32" />

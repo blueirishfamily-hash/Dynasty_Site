@@ -44,6 +44,7 @@ const baseNavItems = [
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
+  { title: "Historical", url: "/historical", icon: Database },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 

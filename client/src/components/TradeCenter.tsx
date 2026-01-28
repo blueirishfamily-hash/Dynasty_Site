@@ -57,11 +57,7 @@ interface DbPlayerContract {
   leagueId: string;
   rosterId: number;
   playerId: string;
-  salary2025: number;
-  salary2026: number;
-  salary2027: number;
-  salary2028: number;
-  salary2029: number;
+  salaries: string;
   fifthYearOption: string | null;
   isOnIr: number;
   originalContractYears: number;
@@ -145,8 +141,10 @@ function calculateSalaryCapImpactWithOpponent(
     if (!deadCapEnabled) return 0;
 
     // Find contract end year (last year with salary > 0)
+    const salaryYears = Object.keys(contract.salaries || {}).map(Number).filter(y => !isNaN(y));
+    const maxYear = salaryYears.length > 0 ? Math.max(...salaryYears) : year;
     let contractEndYear = year;
-    for (let y = year; y <= 2029; y++) {
+    for (let y = year; y <= maxYear; y++) {
       if ((contract.salaries[y] || 0) > 0) {
         contractEndYear = y;
       }
@@ -310,14 +308,23 @@ export default function TradeCenter({
       if (!store[rosterIdStr]) {
         store[rosterIdStr] = {};
       }
+      const parsed = (() => {
+        try {
+          return JSON.parse(contract.salaries || "{}");
+        } catch {
+          return {};
+        }
+      })();
+      const salaries: Record<number, number> = {};
+      Object.entries(parsed).forEach(([year, value]) => {
+        const yearNum = Number(year);
+        if (!isNaN(yearNum)) {
+          salaries[yearNum] = Number(value || 0) / 10;
+        }
+      });
+
       store[rosterIdStr][contract.playerId] = {
-        salaries: {
-          2025: contract.salary2025 / 10,
-          2026: contract.salary2026 / 10,
-          2027: contract.salary2027 / 10,
-          2028: contract.salary2028 / 10,
-          2029: contract.salary2029 / 10,
-        },
+        salaries,
         fifthYearOption: contract.fifthYearOption as "accepted" | "declined" | null,
         isOnIr: contract.isOnIr === 1,
         originalContractYears: contract.originalContractYears || 0,

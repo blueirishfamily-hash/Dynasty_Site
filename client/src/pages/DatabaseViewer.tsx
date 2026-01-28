@@ -77,7 +77,7 @@ export default function DatabaseViewer() {
   );
 
   // Fetch table list
-  const { data: tables, isLoading: tablesLoading } = useQuery<TableInfo[]>({
+  const { data: tables, isLoading: tablesLoading, isError: tablesError, error: tablesErrorDetails } = useQuery<TableInfo[]>({
     queryKey: ["/api/admin/database/tables"],
     queryFn: async () => {
       const res = await fetch(`/api/admin/database/tables?userId=${user?.userId}`);
@@ -85,7 +85,12 @@ export default function DatabaseViewer() {
         if (res.status === 403) {
           throw new Error("Unauthorized: Commissioner access required");
         }
-        throw new Error("Failed to fetch tables");
+        const errorData = await res.json().catch(() => ({}));
+        const errorMessage = errorData.error || errorData.details || "Failed to fetch tables";
+        const error = new Error(errorMessage);
+        (error as any).details = errorData.details;
+        (error as any).code = errorData.code;
+        throw error;
       }
       return res.json();
     },
@@ -219,6 +224,48 @@ export default function DatabaseViewer() {
                     <Skeleton key={i} className="h-12 w-full" />
                   ))}
                 </div>
+              ) : tablesError ? (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Error Loading Database Tables</AlertTitle>
+                  <AlertDescription>
+                    <div className="space-y-2">
+                      <p>
+                        {tablesErrorDetails instanceof Error 
+                          ? tablesErrorDetails.message 
+                          : "Failed to fetch database tables. Please check the connection."}
+                      </p>
+                      {tablesErrorDetails instanceof Error && 
+                       ((tablesErrorDetails as any).details || (tablesErrorDetails as any).code) && (
+                        <div className="mt-2 p-3 bg-destructive/10 rounded-md">
+                          <p className="text-sm font-medium mb-1">Error Details</p>
+                          {(tablesErrorDetails as any).code && (
+                            <p className="text-sm">Error Code: <code className="bg-background px-1 rounded">{(tablesErrorDetails as any).code}</code></p>
+                          )}
+                          {(tablesErrorDetails as any).details && (
+                            <p className="text-sm mt-1">{(tablesErrorDetails as any).details}</p>
+                          )}
+                        </div>
+                      )}
+                      {tablesErrorDetails instanceof Error && 
+                       (tablesErrorDetails.message.includes("DATABASE_URL") || 
+                        tablesErrorDetails.message.includes("connection") ||
+                        tablesErrorDetails.message.includes("not configured")) && (
+                        <div className="mt-2 p-3 bg-destructive/10 rounded-md">
+                          <p className="text-sm font-medium mb-1">Database Connection Issue</p>
+                          <p className="text-sm">
+                            The database connection is not properly configured. Please ensure:
+                          </p>
+                          <ul className="text-sm list-disc list-inside mt-1 space-y-1">
+                            <li>DATABASE_URL environment variable is set</li>
+                            <li>Database is accessible and running</li>
+                            <li>Connection credentials are correct</li>
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  </AlertDescription>
+                </Alert>
               ) : tables && tables.length > 0 ? (
                 <Table>
                   <TableHeader>

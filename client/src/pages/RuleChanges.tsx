@@ -116,7 +116,14 @@ export default function RuleChanges() {
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
-      if (!res.ok) throw new Error("Failed to fetch rule suggestions");
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        const errorMessage = errorData.error || errorData.details || "Failed to fetch rule suggestions";
+        const error = new Error(errorMessage);
+        (error as any).details = errorData.details;
+        (error as any).code = errorData.code;
+        throw error;
+      }
       return res.json();
     },
     enabled: !!league?.leagueId && !!user?.userId,
@@ -544,9 +551,22 @@ export default function RuleChanges() {
                     : "Failed to fetch rule suggestions. Please try again."}
                 </p>
                 {rulesErrorDetails instanceof Error && 
+                 ((rulesErrorDetails as any).details || (rulesErrorDetails as any).code) && (
+                  <div className="mt-2 p-3 bg-destructive/10 rounded-md">
+                    <p className="text-sm font-medium mb-1">Error Details</p>
+                    {(rulesErrorDetails as any).code && (
+                      <p className="text-sm">Error Code: <code className="bg-background px-1 rounded">{(rulesErrorDetails as any).code}</code></p>
+                    )}
+                    {(rulesErrorDetails as any).details && (
+                      <p className="text-sm mt-1">{(rulesErrorDetails as any).details}</p>
+                    )}
+                  </div>
+                )}
+                {rulesErrorDetails instanceof Error && 
                  (rulesErrorDetails.message.includes("does not exist") || 
                   rulesErrorDetails.message.includes("migrations") ||
-                  rulesErrorDetails.message.includes("db:push")) && (
+                  rulesErrorDetails.message.includes("db:push") ||
+                  rulesErrorDetails.message.includes("Database table")) && (
                   <div className="mt-2 p-3 bg-destructive/10 rounded-md">
                     <p className="text-sm font-medium mb-1">Database Setup Required</p>
                     <p className="text-sm">

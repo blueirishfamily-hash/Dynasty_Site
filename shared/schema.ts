@@ -66,11 +66,7 @@ export const playerContractsTable = pgTable("player_contracts", {
   leagueId: varchar("league_id", { length: 64 }).notNull(),
   rosterId: integer("roster_id").notNull(),
   playerId: varchar("player_id", { length: 64 }).notNull(),
-  salary2025: integer("salary_2025").notNull().default(0),
-  salary2026: integer("salary_2026").notNull().default(0),
-  salary2027: integer("salary_2027").notNull().default(0),
-  salary2028: integer("salary_2028").notNull().default(0),
-  salary2029: integer("salary_2029").notNull().default(0),
+  salaries: text("salaries").notNull().default("{}"), // JSON string: { "2025": 100, "2026": 120, ... }
   fifthYearOption: varchar("fifth_year_option", { length: 8 }),
   isOnIr: integer("is_on_ir").notNull().default(0),
   franchiseTagUsed: integer("franchise_tag_used").notNull().default(0),
@@ -127,11 +123,7 @@ export const deadCapEntriesTable = pgTable("dead_cap_entries", {
   playerName: varchar("player_name", { length: 128 }).notNull(),
   playerPosition: varchar("player_position", { length: 16 }).notNull(),
   reason: varchar("reason", { length: 16 }).notNull(),
-  deadCap2025: integer("dead_cap_2025").notNull().default(0),
-  deadCap2026: integer("dead_cap_2026").notNull().default(0),
-  deadCap2027: integer("dead_cap_2027").notNull().default(0),
-  deadCap2028: integer("dead_cap_2028").notNull().default(0),
-  deadCap2029: integer("dead_cap_2029").notNull().default(0),
+  deadCapSalaries: text("dead_cap_salaries").notNull().default("{}"), // JSON string: { "2025": 10, "2026": 5, ... }
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -143,13 +135,104 @@ export const savedContractDraftsTable = pgTable("saved_contract_drafts", {
   playerId: varchar("player_id", { length: 64 }).notNull(),
   playerName: varchar("player_name", { length: 128 }).notNull(),
   playerPosition: varchar("player_position", { length: 16 }).notNull(),
-  salary2025: integer("salary_2025").notNull().default(0),
-  salary2026: integer("salary_2026").notNull().default(0),
-  salary2027: integer("salary_2027").notNull().default(0),
-  salary2028: integer("salary_2028").notNull().default(0),
-  salary2029: integer("salary_2029").notNull().default(0),
+  salaries: text("salaries").notNull().default("{}"), // JSON string: { "2025": 100, "2026": 120, ... }
   franchiseTagApplied: integer("franchise_tag_applied").notNull().default(0),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+// League migration tracking
+export const leagueMigrationsTable = pgTable("league_migrations", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  oldLeagueId: varchar("old_league_id", { length: 64 }).notNull(),
+  newLeagueId: varchar("new_league_id", { length: 64 }).notNull(),
+  oldSeason: varchar("old_season", { length: 8 }).notNull(),
+  newSeason: varchar("new_season", { length: 8 }).notNull(),
+  migratedBy: varchar("migrated_by", { length: 64 }).notNull(),
+  migratedAt: bigint("migrated_at", { mode: "number" }).notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("completed"),
+  errorMessage: text("error_message"),
+});
+
+// Roster mapping for migration (auto + manual)
+export const rosterMappingsTable = pgTable("roster_mappings", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  migrationId: varchar("migration_id", { length: 36 }).notNull(),
+  oldLeagueId: varchar("old_league_id", { length: 64 }).notNull(),
+  oldRosterId: integer("old_roster_id").notNull(),
+  newLeagueId: varchar("new_league_id", { length: 64 }).notNull(),
+  newRosterId: integer("new_roster_id").notNull(),
+  mappingType: varchar("mapping_type", { length: 16 }).notNull(), // auto | manual
+  mappedBy: varchar("mapped_by", { length: 64 }),
+  mappedAt: bigint("mapped_at", { mode: "number" }).notNull(),
+});
+
+// Active + historical league tracking
+export const activeLeaguesTable = pgTable("active_leagues", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull().unique(),
+  season: varchar("season", { length: 8 }).notNull(),
+  isActive: integer("is_active").notNull().default(1),
+  activatedAt: bigint("activated_at", { mode: "number" }).notNull(),
+  deactivatedAt: bigint("deactivated_at", { mode: "number" }),
+});
+
+// Historical snapshots (weekly + end-of-season)
+export const standingsSnapshotsTable = pgTable("standings_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  week: integer("week"),
+  snapshotType: varchar("snapshot_type", { length: 16 }).notNull(), // weekly | end_of_season
+  standingsData: text("standings_data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const playerStatsSnapshotsTable = pgTable("player_stats_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  week: integer("week"),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  statsData: text("stats_data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const teamStatsSnapshotsTable = pgTable("team_stats_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  week: integer("week"),
+  rosterId: integer("roster_id").notNull(),
+  statsData: text("stats_data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const draftSnapshotsTable = pgTable("draft_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  draftId: varchar("draft_id", { length: 64 }).notNull(),
+  draftData: text("draft_data").notNull(), // JSON
+  picksData: text("picks_data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const matchupSnapshotsTable = pgTable("matchup_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  week: integer("week").notNull(),
+  matchupData: text("matchup_data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const transactionSnapshotsTable = pgTable("transaction_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  week: integer("week").notNull(),
+  transactionData: text("transaction_data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 // Contract approval requests - submitted by teams for commissioner approval
@@ -178,6 +261,15 @@ export const insertDeadCapEntryDbSchema = createInsertSchema(deadCapEntriesTable
 export const insertSavedContractDraftDbSchema = createInsertSchema(savedContractDraftsTable).omit({ id: true, updatedAt: true });
 export const insertContractApprovalRequestDbSchema = createInsertSchema(contractApprovalRequestsTable).omit({ id: true, submittedAt: true, status: true, reviewedAt: true, reviewerNotes: true });
 export const insertTeamExtensionDbSchema = createInsertSchema(teamExtensionsTable).omit({ id: true, createdAt: true });
+export const insertLeagueMigrationDbSchema = createInsertSchema(leagueMigrationsTable).omit({ id: true, migratedAt: true, errorMessage: true });
+export const insertRosterMappingDbSchema = createInsertSchema(rosterMappingsTable).omit({ id: true, mappedAt: true });
+export const insertActiveLeagueDbSchema = createInsertSchema(activeLeaguesTable).omit({ id: true, activatedAt: true });
+export const insertStandingsSnapshotDbSchema = createInsertSchema(standingsSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertPlayerStatsSnapshotDbSchema = createInsertSchema(playerStatsSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertTeamStatsSnapshotDbSchema = createInsertSchema(teamStatsSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertDraftSnapshotDbSchema = createInsertSchema(draftSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertMatchupSnapshotDbSchema = createInsertSchema(matchupSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertTransactionSnapshotDbSchema = createInsertSchema(transactionSnapshotsTable).omit({ id: true, createdAt: true });
 
 // Player Contract types
 export type PlayerContract = typeof playerContractsTable.$inferSelect;
@@ -202,6 +294,24 @@ export type InsertContractApprovalRequest = z.infer<typeof insertContractApprova
 // Team Extension types
 export type TeamExtension = typeof teamExtensionsTable.$inferSelect;
 export type InsertTeamExtension = z.infer<typeof insertTeamExtensionDbSchema>;
+export type LeagueMigration = typeof leagueMigrationsTable.$inferSelect;
+export type InsertLeagueMigration = z.infer<typeof insertLeagueMigrationDbSchema>;
+export type RosterMapping = typeof rosterMappingsTable.$inferSelect;
+export type InsertRosterMapping = z.infer<typeof insertRosterMappingDbSchema>;
+export type ActiveLeague = typeof activeLeaguesTable.$inferSelect;
+export type InsertActiveLeague = z.infer<typeof insertActiveLeagueDbSchema>;
+export type StandingsSnapshot = typeof standingsSnapshotsTable.$inferSelect;
+export type InsertStandingsSnapshot = z.infer<typeof insertStandingsSnapshotDbSchema>;
+export type PlayerStatsSnapshot = typeof playerStatsSnapshotsTable.$inferSelect;
+export type InsertPlayerStatsSnapshot = z.infer<typeof insertPlayerStatsSnapshotDbSchema>;
+export type TeamStatsSnapshot = typeof teamStatsSnapshotsTable.$inferSelect;
+export type InsertTeamStatsSnapshot = z.infer<typeof insertTeamStatsSnapshotDbSchema>;
+export type DraftSnapshot = typeof draftSnapshotsTable.$inferSelect;
+export type InsertDraftSnapshot = z.infer<typeof insertDraftSnapshotDbSchema>;
+export type MatchupSnapshot = typeof matchupSnapshotsTable.$inferSelect;
+export type InsertMatchupSnapshot = z.infer<typeof insertMatchupSnapshotDbSchema>;
+export type TransactionSnapshot = typeof transactionSnapshotsTable.$inferSelect;
+export type InsertTransactionSnapshot = z.infer<typeof insertTransactionSnapshotDbSchema>;
 
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;

@@ -86,8 +86,9 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
-  // On Windows, use localhost instead of 0.0.0.0 and don't use reusePort
-  const host = process.platform === "win32" ? "localhost" : "0.0.0.0";
+  // Bind to all interfaces so both IPv4 (127.0.0.1) and localhost work consistently.
+  // Can be overridden via HOST env var.
+  const host = process.env.HOST || "0.0.0.0";
   const listenOptions = process.platform === "win32" 
     ? { port, host }
     : { port, host, reusePort: true };

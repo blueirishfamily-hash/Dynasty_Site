@@ -2242,16 +2242,6 @@ export async function registerRoutes(
       console.log(`[Assign Contracts] Current year: ${currentYear}, Next year: ${nextYear}`);
       console.log(`[Assign Contracts] Current week: ${currentWeek}`);
       
-      // EARLY VALIDATION: Validate years are in supported range before processing
-      // This prevents wasting time processing contracts if years are invalid
-      const yearMap: Record<number, 'salary2025' | 'salary2026' | 'salary2027' | 'salary2028' | 'salary2029'> = {
-        2025: 'salary2025',
-        2026: 'salary2026',
-        2027: 'salary2027',
-        2028: 'salary2028',
-        2029: 'salary2029',
-      };
-      
       // Ensure years are valid numbers
       currentYearNum = Number(currentYear);
       nextYearNum = Number(nextYear);
@@ -2265,20 +2255,6 @@ export async function registerRoutes(
           message: errorMsg,
           currentYear,
           nextYear,
-        });
-      }
-      
-      // Validate years are in supported range (2025-2029)
-      if (!yearMap[currentYearNum] || !yearMap[nextYearNum]) {
-        const errorMsg = `Year range ${currentYearNum}-${nextYearNum} is outside the supported range (2025-2029). Contracts can only be assigned for years 2025-2029.`;
-        console.error(`[Assign Contracts] ${errorMsg}`);
-        return res.status(400).json({
-          success: false,
-          error: "Invalid year range",
-          message: errorMsg,
-          currentYear: currentYearNum,
-          nextYear: nextYearNum,
-          supportedRange: "2025-2029",
         });
       }
       
@@ -2574,10 +2550,6 @@ export async function registerRoutes(
       // Note: Year validation has already been performed earlier in the function
       const results: Array<{playerId: string; rosterId: number; quartile: number; salary: number; years: number[]}> = [];
       
-      // Reuse yearMap from earlier validation (defined at line 1628)
-      // Years have already been validated as valid numbers in range 2025-2029
-      // yearMap is still in scope from the validation section above
-
       // Database State Logging
       console.log(`[Assign Contracts] --- DATABASE STATE ---`);
       const existingContracts = await storage.getPlayerContracts(leagueId);
@@ -2619,11 +2591,7 @@ export async function registerRoutes(
             leagueId,
             rosterId: contract.rosterId,
             playerId: contract.playerId,
-            salary2025: 0,
-            salary2026: 0,
-            salary2027: 0,
-            salary2028: 0,
-            salary2029: 0,
+            salaries: "{}",
             fifthYearOption: null,
             isOnIr: 0,
             franchiseTagUsed: 0,
@@ -2638,19 +2606,6 @@ export async function registerRoutes(
             // The storage layer will handle these fields with defaults if the database columns exist
           };
 
-          // Set salary for current year and next year (2-year contract)
-          // Years have already been validated earlier (currentYearNum and nextYearNum are in function scope)
-          // Get year keys using the validated values
-          const currentYearKey = yearMap[currentYearNum!];
-          const nextYearKey = yearMap[nextYearNum!];
-          
-          // Defensive check: if year keys are undefined (shouldn't happen after validation, but be safe)
-          if (!currentYearKey || !nextYearKey) {
-            const errorMsg = `Invalid year mapping: currentYear=${currentYear} (num=${currentYearNum}, key=${currentYearKey}), nextYear=${nextYear} (num=${nextYearNum}, key=${nextYearKey}). This should not happen after validation.`;
-            console.error(`[Assign Contracts] ${errorMsg} for player ${contract.playerId}`);
-            continue; // Skip this contract assignment
-          }
-          
           // Validate salary is a valid integer
           const salaryValue = Number(contract.salary);
           if (isNaN(salaryValue) || !isFinite(salaryValue) || salaryValue < 0) {
@@ -2661,20 +2616,11 @@ export async function registerRoutes(
           // Round salary to ensure it's an integer
           const roundedSalary = Math.round(salaryValue);
           
-          try {
-            // Assign salaries with proper type coercion
-            contractData[currentYearKey] = roundedSalary;
-            contractData[nextYearKey] = roundedSalary;
-            
-            // Validate assignment succeeded
-            if (contractData[currentYearKey] !== roundedSalary || contractData[nextYearKey] !== roundedSalary) {
-              throw new Error(`Salary assignment failed: expected ${roundedSalary} but got currentYear=${contractData[currentYearKey]}, nextYear=${contractData[nextYearKey]}`);
-            }
-          } catch (err: any) {
-            console.error(`[Assign Contracts] Error setting salary fields for player ${contract.playerId}:`, err);
-            console.error(`[Assign Contracts] Error details: currentYear=${currentYearNum} (key=${currentYearKey}), nextYear=${nextYearNum} (key=${nextYearKey}), salary=${roundedSalary}`);
-            continue; // Skip this contract assignment
-          }
+          const salaries: Record<string, number> = {
+            [String(currentYearNum)]: roundedSalary,
+            [String(nextYearNum)]: roundedSalary,
+          };
+          contractData.salaries = JSON.stringify(salaries);
 
           const result = await storage.upsertPlayerContract(contractData);
           // Only include serializable data in results
@@ -3463,7 +3409,7 @@ export async function registerRoutes(
       // Map: week -> matchupId -> scores
       
       // Fetch matchup data for playoff weeks (up to 3 weeks of playoffs)
-      const playoffWeeks = [];
+      const playoffWeeks: number[] = [];
       for (let i = 0; i < 3; i++) {
         const week = playoffWeekStart + i;
         if (week <= currentWeek) {
@@ -3482,7 +3428,7 @@ export async function registerRoutes(
       // Build a map of week -> matchupId -> scores
       for (const { week, matchups } of allPlayoffMatchups) {
         const weekMap = new Map<number, { team1Score: number; team2Score: number }>();
-        const matchupGroups = new Map<number, typeof matchups>();
+        const matchupGroups = new Map<number, SleeperMatchup[]>();
         
         matchups.forEach(m => {
           if (!matchupGroups.has(m.matchup_id)) {
@@ -3518,7 +3464,7 @@ export async function registerRoutes(
         // Search through all relevant weeks
         for (const week of weeksToSearch) {
           const weekMatchups = allPlayoffMatchups.find(m => m.week === week)?.matchups || [];
-          const matchupGroups = new Map<number, typeof weekMatchups>();
+          const matchupGroups = new Map<number, SleeperMatchup[]>();
           
           weekMatchups.forEach(m => {
             if (!matchupGroups.has(m.matchup_id)) {
@@ -3528,7 +3474,7 @@ export async function registerRoutes(
           });
           
           // Find the matchup group that contains both teams
-          for (const group of matchupGroups.values()) {
+          for (const group of Array.from(matchupGroups.values())) {
             if (group.length === 2) {
               const [t1, t2] = group;
               if ((t1.roster_id === team1Id && t2.roster_id === team2Id) ||
@@ -3661,36 +3607,12 @@ export async function registerRoutes(
         winner: number | null;
         loser: number | null;
         placement?: number;
+        team1Score?: number;
+        team2Score?: number;
       }> = [];
 
-      // Construct placement games based on bracket structure
-      // First, identify Round 1 losers and their seeds
-      const round1Matchups = bracket.filter(m => m.r === 1);
-      const round1Losers: Array<{ rosterId: number; seed: number }> = [];
-      
-      round1Matchups.forEach(matchup => {
-        if (matchup.l) {
-          const seed = seedMap.get(matchup.l);
-          if (seed !== undefined) {
-            round1Losers.push({ rosterId: matchup.l, seed });
-          }
-        }
-      });
-      
-      // Sort by seed (ascending - lower number = better seed)
-      round1Losers.sort((a, b) => a.seed - b.seed);
-      
-      // Identify semifinal losers
-      const semifinalRound = maxRound - 1;
-      const semifinalMatchups = bracket.filter(m => m.r === semifinalRound);
-      const semifinalLosers: number[] = [];
-      
-      semifinalMatchups.forEach(matchup => {
-        if (matchup.l) {
-          semifinalLosers.push(matchup.l);
-        }
-      });
-      
+      // Construct placement games based on bracket structure.
+      // Note: `round1Losers` + `semifinalLosers` were already computed above and are reused here.
       let matchupIdCounter = 100;
       
       // Construct 7th place game: Two lowest seeded losers from Round 1
@@ -5675,15 +5597,15 @@ export async function registerRoutes(
           }
         }
         
+        const salariesPayload = typeof contract.salaries === "string"
+          ? contract.salaries
+          : JSON.stringify(contract.salaries || {});
+
         const result = await storage.upsertPlayerContract({
           leagueId,
           rosterId: contract.rosterId,
           playerId: contract.playerId,
-          salary2025: contract.salary2025 || 0,
-          salary2026: contract.salary2026 || 0,
-          salary2027: contract.salary2027 || 0,
-          salary2028: contract.salary2028 || 0,
-          salary2029: contract.salary2029 || 0,
+          salaries: salariesPayload,
           fifthYearOption: contract.fifthYearOption || null,
           isOnIr: contract.isOnIr || 0,
           franchiseTagUsed: contract.franchiseTagUsed,
@@ -5829,7 +5751,7 @@ export async function registerRoutes(
       }
 
       // Calculate extension salaries based on type
-      let extensionSalary1: number;
+      let extensionSalary1 = 0;
       let extensionSalary2: number | null = null;
       let extensionSalary3: number | null = null;
       let extensionSalary4: number | null = null;
@@ -5881,15 +5803,20 @@ export async function registerRoutes(
       }
 
       // Validate extension target years are currently empty (no salary)
-      const getSalaryForYear = (year: number): number => {
-        switch (year) {
-          case 2025: return playerContract.salary2025 || 0;
-          case 2026: return playerContract.salary2026 || 0;
-          case 2027: return playerContract.salary2027 || 0;
-          case 2028: return playerContract.salary2028 || 0;
-          case 2029: return (playerContract as any).salary2029 || 0;
-          default: return 0;
+      const existingSalaries = (() => {
+        try {
+          if (typeof (playerContract as any).salaries === "string") {
+            return JSON.parse((playerContract as any).salaries || "{}");
+          }
+          return (playerContract as any).salaries || {};
+        } catch {
+          return {};
         }
+      })();
+
+      const getSalaryForYear = (year: number): number => {
+        const val = (existingSalaries as Record<string, number>)[String(year)];
+        return typeof val === "number" ? val : 0;
       };
 
       // Check that all extension year(s) don't have existing salary
@@ -5903,11 +5830,6 @@ export async function registerRoutes(
           console.error(`Extension blocked: Player ${playerId} already has salary in ${year}`);
           return res.status(400).json({ 
             error: `Cannot extend - player already has salary for ${year}` 
-          });
-        }
-        if (year > 2029) {
-          return res.status(400).json({ 
-            error: `Cannot extend - year ${year} exceeds maximum contract year (2029)` 
           });
         }
       }
@@ -5927,15 +5849,12 @@ export async function registerRoutes(
       });
 
       // Update the player's contract with extension info
+      const updatedSalaries: Record<string, number> = { ...existingSalaries };
       const salaryUpdates: any = {
         leagueId,
         rosterId,
         playerId,
-        salary2025: playerContract.salary2025,
-        salary2026: playerContract.salary2026,
-        salary2027: playerContract.salary2027,
-        salary2028: playerContract.salary2028,
-        salary2029: (playerContract as any).salary2029 || 0,
+        salaries: JSON.stringify(updatedSalaries),
         fifthYearOption: playerContract.fifthYearOption,
         franchiseTagUsed: playerContract.franchiseTagUsed,
         franchiseTagYear: playerContract.franchiseTagYear,
@@ -5950,11 +5869,8 @@ export async function registerRoutes(
       
       // Set the extension year salary(s) for all extension years
       const setYearSalary = (year: number, salary: number) => {
-        if (year === 2025) salaryUpdates.salary2025 = salary;
-        else if (year === 2026) salaryUpdates.salary2026 = salary;
-        else if (year === 2027) salaryUpdates.salary2027 = salary;
-        else if (year === 2028) salaryUpdates.salary2028 = salary;
-        else if (year === 2029) salaryUpdates.salary2029 = salary;
+        updatedSalaries[String(year)] = salary;
+        salaryUpdates.salaries = JSON.stringify(updatedSalaries);
       };
       
       // Set salaries for all extension years
@@ -6002,15 +5918,23 @@ export async function registerRoutes(
       
       if (playerContract) {
         // Revert the contract: clear extension year salary(s) and reset flags
+        const existingSalaries = (() => {
+          try {
+            if (typeof (playerContract as any).salaries === "string") {
+              return JSON.parse((playerContract as any).salaries || "{}");
+            }
+            return (playerContract as any).salaries || {};
+          } catch {
+            return {};
+          }
+        })();
+
+        const updatedSalaries: Record<string, number> = { ...existingSalaries };
         const salaryUpdates: any = {
           leagueId,
           rosterId: rosterIdNum,
           playerId: extension.playerId,
-          salary2025: playerContract.salary2025,
-          salary2026: playerContract.salary2026,
-          salary2027: playerContract.salary2027,
-          salary2028: playerContract.salary2028,
-          salary2029: (playerContract as any).salary2029 || 0,
+          salaries: JSON.stringify(updatedSalaries),
           fifthYearOption: playerContract.fifthYearOption,
           franchiseTagUsed: playerContract.franchiseTagUsed,
           franchiseTagYear: playerContract.franchiseTagYear,
@@ -6025,11 +5949,8 @@ export async function registerRoutes(
 
         // Clear the extension year salary(s)
         const clearYearSalary = (year: number) => {
-          if (year === 2025) salaryUpdates.salary2025 = 0;
-          else if (year === 2026) salaryUpdates.salary2026 = 0;
-          else if (year === 2027) salaryUpdates.salary2027 = 0;
-          else if (year === 2028) salaryUpdates.salary2028 = 0;
-          else if (year === 2029) salaryUpdates.salary2029 = 0;
+          updatedSalaries[String(year)] = 0;
+          salaryUpdates.salaries = JSON.stringify(updatedSalaries);
         };
 
         clearYearSalary(extension.extensionYear);
@@ -6268,10 +6189,7 @@ export async function registerRoutes(
         playerName: data.playerName,
         playerPosition: data.playerPosition,
         reason: data.reason,
-        deadCap2025: data.deadCap2025,
-        deadCap2026: data.deadCap2026,
-        deadCap2027: data.deadCap2027,
-        deadCap2028: data.deadCap2028,
+        deadCapSalaries: data.deadCapSalaries || "{}",
       });
       
       res.json(entry);
@@ -6298,23 +6216,20 @@ export async function registerRoutes(
       const { rosterId, playerId, playerName, playerPosition, reason, contract } = req.body;
       
       const deadCapPercentages = [0.5, 0.25, 0.1, 0];
-      const years = [2025, 2026, 2027, 2028];
-      
-      const deadCapAmounts = {
-        deadCap2025: 0,
-        deadCap2026: 0,
-        deadCap2027: 0,
-        deadCap2028: 0,
-      };
-      
+      const contractSalaries: Record<string, number> = contract?.salaries || {};
+      const years = Object.keys(contractSalaries)
+        .map(Number)
+        .filter(year => !isNaN(year))
+        .sort((a, b) => a - b);
+
+      const deadCapAmounts: Record<string, number> = {};
+
       years.forEach((year, index) => {
-        const salaryKey = `salary${year}` as keyof typeof contract;
-        const salary = contract[salaryKey] || 0;
-        
-        for (let i = index; i < years.length; i++) {
+        const salary = Number(contractSalaries[String(year)] || 0);
+        for (let i = index; i < Math.min(index + deadCapPercentages.length, years.length); i++) {
           const dcPercent = deadCapPercentages[i - index] || 0;
-          const dcKey = `deadCap${years[i]}` as keyof typeof deadCapAmounts;
-          deadCapAmounts[dcKey] += Math.ceil(salary * dcPercent);
+          const dcYear = years[i];
+          deadCapAmounts[String(dcYear)] = (deadCapAmounts[String(dcYear)] || 0) + Math.ceil(salary * dcPercent);
         }
       });
       
@@ -6325,7 +6240,7 @@ export async function registerRoutes(
         playerName,
         playerPosition,
         reason,
-        ...deadCapAmounts,
+        deadCapSalaries: JSON.stringify(deadCapAmounts),
       });
       
       await storage.deletePlayerContract(leagueId, rosterId, playerId);
@@ -6365,17 +6280,26 @@ export async function registerRoutes(
 
       const results = [];
       for (const draft of drafts) {
+        const salariesPayload = (() => {
+          if (draft.salaries) {
+            return typeof draft.salaries === "string" ? draft.salaries : JSON.stringify(draft.salaries);
+          }
+          const legacy: Record<string, number> = {};
+          if (draft.salary2025) legacy["2025"] = draft.salary2025;
+          if (draft.salary2026) legacy["2026"] = draft.salary2026;
+          if (draft.salary2027) legacy["2027"] = draft.salary2027;
+          if (draft.salary2028) legacy["2028"] = draft.salary2028;
+          if (draft.salary2029) legacy["2029"] = draft.salary2029;
+          return JSON.stringify(legacy);
+        })();
+
         const result = await storage.upsertSavedContractDraft({
           leagueId,
           rosterId,
           playerId: draft.playerId,
           playerName: draft.playerName,
           playerPosition: draft.playerPosition,
-          salary2025: draft.salary2025 || 0,
-          salary2026: draft.salary2026 || 0,
-          salary2027: draft.salary2027 || 0,
-          salary2028: draft.salary2028 || 0,
-          salary2029: draft.salary2029 || 0,
+          salaries: salariesPayload,
           franchiseTagApplied: draft.franchiseTagApplied || 0,
         });
         results.push(result);
@@ -6474,34 +6398,39 @@ export async function registerRoutes(
 
       // If approved, update the official contracts in the permanent database
       if (status === "approved") {
+        const league = await getLeague(request.leagueId).catch(() => null);
+        const leagueSeason = league?.season ? parseInt(league.season) : null;
         const contracts = JSON.parse(request.contractsJson);
         for (const contract of contracts) {
-          // Calculate original contract years based on how many years have salary values
-          const salary2025 = contract.salary2025 || 0;
-          const salary2026 = contract.salary2026 || 0;
-          const salary2027 = contract.salary2027 || 0;
-          const salary2028 = contract.salary2028 || 0;
-          const salary2029 = contract.salary2029 || 0;
-          
+          const salariesPayload = (() => {
+            if (contract.salaries) {
+              return typeof contract.salaries === "string" ? contract.salaries : JSON.stringify(contract.salaries);
+            }
+            const legacy: Record<string, number> = {};
+            if (contract.salary2025) legacy["2025"] = contract.salary2025;
+            if (contract.salary2026) legacy["2026"] = contract.salary2026;
+            if (contract.salary2027) legacy["2027"] = contract.salary2027;
+            if (contract.salary2028) legacy["2028"] = contract.salary2028;
+            if (contract.salary2029) legacy["2029"] = contract.salary2029;
+            return JSON.stringify(legacy);
+          })();
+
           let originalContractYears = 0;
-          if (salary2025 > 0) originalContractYears++;
-          if (salary2026 > 0) originalContractYears++;
-          if (salary2027 > 0) originalContractYears++;
-          if (salary2028 > 0) originalContractYears++;
-          if (salary2029 > 0) originalContractYears++;
+          try {
+            const salariesObj = JSON.parse(salariesPayload || "{}");
+            originalContractYears = Object.values(salariesObj).filter((v: any) => Number(v) > 0).length;
+          } catch {
+            originalContractYears = 0;
+          }
           
           await storage.upsertPlayerContract({
             leagueId: request.leagueId,
             rosterId: request.rosterId,
             playerId: contract.playerId,
-            salary2025,
-            salary2026,
-            salary2027,
-            salary2028,
-            salary2029,
+            salaries: salariesPayload,
             fifthYearOption: contract.fifthYearOption || null,
             franchiseTagUsed: contract.franchiseTagApplied ? 1 : 0,
-            franchiseTagYear: contract.franchiseTagApplied ? 2025 : null,
+            franchiseTagYear: contract.franchiseTagApplied ? (leagueSeason || new Date().getFullYear()) : null,
             originalContractYears: originalContractYears || 1,
           });
         }
@@ -6523,6 +6452,916 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting approval request:", error);
       res.status(500).json({ error: "Failed to delete approval request" });
+    }
+  });
+
+  // ==================== LEAGUE YEAR ADVANCEMENT ====================
+  app.get("/api/league/active", async (_req, res) => {
+    try {
+      // First, try to get the league where isActive = 1
+      const activeLeague = await storage.getActiveLeague();
+      if (activeLeague) {
+        console.log(`[Active League] Using league with isActive=1: ${activeLeague.leagueId} (season ${activeLeague.season})`);
+        return res.json(activeLeague);
+      }
+      
+      // Fallback: if no league is marked as active, use the most recent league by season
+      const allLeagues = await storage.listLeagues();
+      if (allLeagues.length > 0) {
+        // Sort by season descending (most recent year first), then by activatedAt descending
+        const sortedLeagues = allLeagues.sort((a, b) => {
+          const seasonA = parseInt(a.season) || 0;
+          const seasonB = parseInt(b.season) || 0;
+          if (seasonA !== seasonB) {
+            return seasonB - seasonA; // Most recent season first
+          }
+          return (b.activatedAt || 0) - (a.activatedAt || 0); // Most recent activation first
+        });
+        
+        const mostRecentLeague = sortedLeagues[0];
+        console.log(`[Active League] No league with isActive=1 found, using most recent: ${mostRecentLeague.leagueId} (season ${mostRecentLeague.season})`);
+        return res.json(mostRecentLeague);
+      }
+      
+      // No leagues at all
+      return res.status(404).json({ error: "No active league configured" });
+    } catch (error) {
+      console.error("Error fetching active league:", error);
+      res.status(500).json({ error: "Failed to fetch active league" });
+    }
+  });
+
+  app.get("/api/league/list", async (_req, res) => {
+    try {
+      const leagues = await storage.listLeagues();
+      res.json(leagues);
+    } catch (error) {
+      console.error("Error listing leagues:", error);
+      res.status(500).json({ error: "Failed to list leagues" });
+    }
+  });
+
+  app.post("/api/league/set-active", async (req, res) => {
+    try {
+      const { leagueId } = req.body;
+      if (!leagueId) {
+        return res.status(400).json({ error: "leagueId is required" });
+      }
+
+      const league = await getLeague(leagueId);
+      const existingLeagues = await storage.listLeagues();
+      const activeLeagues = existingLeagues.filter(l => l.isActive === 1);
+      for (const active of activeLeagues) {
+        await storage.deactivateLeague(active.leagueId);
+      }
+
+      const active = await storage.upsertActiveLeague({
+        leagueId: league.league_id,
+        season: league.season,
+        isActive: 1,
+      });
+
+      res.json(active);
+    } catch (error) {
+      console.error("Error setting active league:", error);
+      res.status(500).json({ error: "Failed to set active league" });
+    }
+  });
+
+  app.post("/api/league/advance-year", async (req, res) => {
+    try {
+      const { newLeagueId, userId, manualMappings } = req.body as {
+        newLeagueId: string;
+        userId: string;
+        manualMappings?: Array<{ oldRosterId: number; newRosterId: number }>;
+      };
+
+      if (!newLeagueId || !userId) {
+        return res.status(400).json({ error: "newLeagueId and userId are required" });
+      }
+
+      const currentActive = await storage.getActiveLeague();
+      if (!currentActive) {
+        return res.status(400).json({ error: "No active league configured" });
+      }
+
+      const oldLeagueId = currentActive.leagueId;
+      if (oldLeagueId === newLeagueId) {
+        return res.status(400).json({ error: "New league ID must be different from current league ID" });
+      }
+
+      const isUserCommissioner = await isCommissioner(userId, oldLeagueId);
+      if (!isUserCommissioner) {
+        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
+      }
+
+      const [oldLeague, newLeague] = await Promise.all([
+        getLeague(oldLeagueId),
+        getLeague(newLeagueId),
+      ]);
+
+      const oldSeason = parseInt(oldLeague.season);
+      const newSeason = parseInt(newLeague.season);
+      if (Number.isNaN(oldSeason) || Number.isNaN(newSeason) || newSeason !== oldSeason + 1) {
+        return res.status(400).json({
+          error: "League season mismatch",
+          details: `Expected new season ${oldSeason + 1}, got ${newLeague.season}`,
+        });
+      }
+
+      const [oldRosters, newRosters] = await Promise.all([
+        getLeagueRosters(oldLeagueId),
+        getLeagueRosters(newLeagueId),
+      ]);
+
+      const ownerToNewRoster = new Map<string, number>();
+      newRosters.forEach(r => {
+        if (r.owner_id) ownerToNewRoster.set(r.owner_id, r.roster_id);
+      });
+
+      const mappingByOldRoster = new Map<number, { newRosterId: number; mappingType: "auto" | "manual" }>();
+      oldRosters.forEach(r => {
+        const mapped = r.owner_id ? ownerToNewRoster.get(r.owner_id) : undefined;
+        if (mapped) {
+          mappingByOldRoster.set(r.roster_id, { newRosterId: mapped, mappingType: "auto" });
+        }
+      });
+
+      (manualMappings || []).forEach(m => {
+        if (m && typeof m.oldRosterId === "number" && typeof m.newRosterId === "number") {
+          mappingByOldRoster.set(m.oldRosterId, { newRosterId: m.newRosterId, mappingType: "manual" });
+        }
+      });
+
+      const unmatched = oldRosters
+        .filter(r => !mappingByOldRoster.has(r.roster_id))
+        .map(r => ({ oldRosterId: r.roster_id, ownerId: r.owner_id || null }));
+
+      if (unmatched.length > 0) {
+        return res.status(400).json({ error: "Unmatched rosters", unmatched });
+      }
+
+      const migration = await storage.createLeagueMigration({
+        oldLeagueId,
+        newLeagueId,
+        oldSeason: oldLeague.season,
+        newSeason: newLeague.season,
+        migratedBy: userId,
+        status: "in_progress",
+      });
+
+      for (const [oldRosterId, mapping] of Array.from(mappingByOldRoster.entries())) {
+        await storage.createRosterMapping({
+          migrationId: migration.id,
+          oldLeagueId,
+          oldRosterId,
+          newLeagueId,
+          newRosterId: mapping.newRosterId,
+          mappingType: mapping.mappingType,
+          mappedBy: mapping.mappingType === "manual" ? userId : null,
+        });
+      }
+
+      // Snapshot creation (weekly + end-of-season)
+      const [nflState, leagueContext] = await Promise.all([
+        getNFLState(),
+        getLeague(oldLeagueId).catch(() => null),
+      ]);
+      const effectiveWeek = getEffectiveWeek(nflState, leagueContext);
+
+      const users = await getLeagueUsers(oldLeagueId);
+      const userMap = new Map(users.map(u => [u.user_id, u]));
+      const rosterTotals = new Map<number, { wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }>();
+      oldRosters.forEach(r => {
+        rosterTotals.set(r.roster_id, { wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0 });
+      });
+
+      for (let week = 1; week <= effectiveWeek; week++) {
+        const matchups = await getLeagueMatchups(oldLeagueId, week).catch(() => []);
+        const matchupGroups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) matchupGroups.set(m.matchup_id, []);
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const score1 = t1.points || 0;
+          const score2 = t2.points || 0;
+          const r1 = rosterTotals.get(t1.roster_id);
+          const r2 = rosterTotals.get(t2.roster_id);
+          if (!r1 || !r2) return;
+          r1.pointsFor += score1;
+          r1.pointsAgainst += score2;
+          r2.pointsFor += score2;
+          r2.pointsAgainst += score1;
+
+          if (score1 > score2) {
+            r1.wins += 1;
+            r2.losses += 1;
+          } else if (score2 > score1) {
+            r2.wins += 1;
+            r1.losses += 1;
+          } else if (score1 !== 0 || score2 !== 0) {
+            r1.ties += 1;
+            r2.ties += 1;
+          }
+        });
+
+        const standingsData = oldRosters.map(r => {
+          const totals = rosterTotals.get(r.roster_id);
+          const owner = userMap.get(r.owner_id);
+          return {
+            rosterId: r.roster_id,
+            ownerId: r.owner_id,
+            name: owner?.metadata?.team_name || owner?.display_name || `Team ${r.roster_id}`,
+            wins: totals?.wins || 0,
+            losses: totals?.losses || 0,
+            ties: totals?.ties || 0,
+            pointsFor: totals?.pointsFor || 0,
+            pointsAgainst: totals?.pointsAgainst || 0,
+            week,
+          };
+        }).sort((a, b) => (b.wins - a.wins) || (b.pointsFor - a.pointsFor));
+
+        await storage.createStandingsSnapshot({
+          leagueId: oldLeagueId,
+          season: oldLeague.season,
+          week,
+          snapshotType: "weekly",
+          standingsData: JSON.stringify(standingsData),
+        });
+
+        for (const [rosterId, totals] of Array.from(rosterTotals.entries())) {
+          await storage.createTeamStatsSnapshot({
+            leagueId: oldLeagueId,
+            season: oldLeague.season,
+            week,
+            rosterId,
+            statsData: JSON.stringify(totals),
+          });
+        }
+
+        await storage.createMatchupSnapshot({
+          leagueId: oldLeagueId,
+          season: oldLeague.season,
+          week,
+          matchupData: JSON.stringify(matchups),
+        });
+
+        const weekTransactions = await getLeagueTransactions(oldLeagueId, week).catch(() => []);
+        await storage.createTransactionSnapshot({
+          leagueId: oldLeagueId,
+          season: oldLeague.season,
+          week,
+          transactionData: JSON.stringify(weekTransactions),
+        });
+
+        const weekStats = await getPlayerStats(oldLeague.season, week).catch(() => ({}));
+        for (const [playerId, stats] of Object.entries(weekStats)) {
+          await storage.createPlayerStatsSnapshot({
+            leagueId: oldLeagueId,
+            season: oldLeague.season,
+            week,
+            playerId,
+            statsData: JSON.stringify(stats),
+          });
+        }
+      }
+
+      // End-of-season snapshots
+      const seasonStats = await getPlayerStats(oldLeague.season).catch(() => ({}));
+      for (const [playerId, stats] of Object.entries(seasonStats)) {
+        await storage.createPlayerStatsSnapshot({
+          leagueId: oldLeagueId,
+          season: oldLeague.season,
+          week: null,
+          playerId,
+          statsData: JSON.stringify(stats),
+        });
+      }
+
+      await storage.createStandingsSnapshot({
+        leagueId: oldLeagueId,
+        season: oldLeague.season,
+        week: null,
+        snapshotType: "end_of_season",
+        standingsData: JSON.stringify(Array.from(rosterTotals.entries()).map(([rosterId, totals]) => ({
+          rosterId,
+          ...totals,
+        }))),
+      });
+
+      for (const [rosterId, totals] of Array.from(rosterTotals.entries())) {
+        await storage.createTeamStatsSnapshot({
+          leagueId: oldLeagueId,
+          season: oldLeague.season,
+          week: null,
+          rosterId,
+          statsData: JSON.stringify(totals),
+        });
+      }
+
+      const drafts = await getLeagueDrafts(oldLeagueId).catch(() => []);
+      for (const draft of drafts.filter(d => d.status === "complete")) {
+        const picks = await getDraftPicks(draft.draft_id).catch(() => []);
+        await storage.createDraftSnapshot({
+          leagueId: oldLeagueId,
+          season: oldLeague.season,
+          draftId: draft.draft_id,
+          draftData: JSON.stringify(draft),
+          picksData: JSON.stringify(picks),
+        });
+      }
+
+      // Migrate contracts
+      const contracts = await storage.getPlayerContracts(oldLeagueId);
+      for (const contract of contracts) {
+        const mapping = mappingByOldRoster.get(contract.rosterId);
+        if (!mapping) continue;
+        await storage.upsertPlayerContract({
+          leagueId: newLeagueId,
+          rosterId: mapping.newRosterId,
+          playerId: contract.playerId,
+          salaries: (contract as any).salaries ?? "{}",
+          fifthYearOption: contract.fifthYearOption ?? null,
+          isOnIr: contract.isOnIr ?? 0,
+          franchiseTagUsed: contract.franchiseTagUsed ?? 0,
+          franchiseTagYear: contract.franchiseTagYear ?? null,
+          originalContractYears: contract.originalContractYears ?? 1,
+          isRookieContract: contract.isRookieContract ?? 0,
+          extensionApplied: contract.extensionApplied ?? 0,
+          extensionYear: contract.extensionYear ?? null,
+          extensionSalary: contract.extensionSalary ?? null,
+          extensionType: contract.extensionType ?? null,
+          hasBeenExtended: 0,
+          hasBeenFranchiseTagged: 0,
+        });
+      }
+
+      // Reset bidding
+      await storage.deleteAllPlayerBids(oldLeagueId);
+
+      await storage.deactivateLeague(oldLeagueId);
+      await storage.upsertActiveLeague({
+        leagueId: newLeagueId,
+        season: newLeague.season,
+        isActive: 1,
+      });
+
+      await storage.updateLeagueMigration(migration.id, { status: "completed", errorMessage: null });
+      res.json({ success: true, migrationId: migration.id });
+    } catch (error: any) {
+      console.error("Error advancing league year:", error);
+      res.status(500).json({ error: "Failed to advance league year", details: error?.message || String(error) });
+    }
+  });
+
+  app.get("/api/league/migration/:migrationId/roster-mapping", async (req, res) => {
+    try {
+      const { migrationId } = req.params;
+      const mappings = await storage.getRosterMappings(migrationId);
+      res.json(mappings);
+    } catch (error) {
+      console.error("Error fetching roster mappings:", error);
+      res.status(500).json({ error: "Failed to fetch roster mappings" });
+    }
+  });
+
+  app.post("/api/league/migration/:migrationId/roster-mapping", async (req, res) => {
+    try {
+      const { migrationId } = req.params;
+      const { oldLeagueId, newLeagueId, oldRosterId, newRosterId, mappingType, userId } = req.body;
+      if (!oldLeagueId || !newLeagueId || !oldRosterId || !newRosterId || !mappingType) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+      const mapping = await storage.createRosterMapping({
+        migrationId,
+        oldLeagueId,
+        newLeagueId,
+        oldRosterId,
+        newRosterId,
+        mappingType,
+        mappedBy: mappingType === "manual" ? userId : null,
+      });
+      res.json(mapping);
+    } catch (error) {
+      console.error("Error creating roster mapping:", error);
+      res.status(500).json({ error: "Failed to create roster mapping" });
+    }
+  });
+
+  // Historical snapshot endpoints
+  app.get("/api/league/:leagueId/historical/standings", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+      const parsedWeek = week === undefined ? undefined : (week === "null" ? null : parseInt(week));
+      const snapshots = await storage.getStandingsSnapshots(leagueId, season, parsedWeek);
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching standings snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch standings snapshots" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/player-stats", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+      const parsedWeek = week === undefined ? undefined : (week === "null" ? null : parseInt(week));
+      const snapshots = await storage.getPlayerStatsSnapshots(leagueId, season, parsedWeek);
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching player stats snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch player stats snapshots" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/team-stats", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+      const parsedWeek = week === undefined ? undefined : (week === "null" ? null : parseInt(week));
+      const snapshots = await storage.getTeamStatsSnapshots(leagueId, season, parsedWeek);
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching team stats snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch team stats snapshots" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/drafts", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season } = req.query as { season?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      // For 2023/2024, fetch directly from Sleeper API
+      if (season === "2023" || season === "2024") {
+        const drafts = await getLeagueDrafts(leagueId);
+        const filteredDrafts = drafts.filter(d => d.season === season);
+        
+        // Format to match snapshot structure
+        const formattedDrafts = filteredDrafts.map(draft => ({
+          id: draft.draft_id,
+          leagueId: draft.league_id,
+          season: draft.season,
+          draftId: draft.draft_id,
+          draftData: JSON.stringify(draft),
+          picksData: JSON.stringify([]), // Will be fetched separately when needed
+          createdAt: Date.now(),
+        }));
+        
+        return res.json(formattedDrafts);
+      }
+
+      // For other seasons, use snapshots
+      const snapshots = await storage.getDraftSnapshots(leagueId, season);
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching draft snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch draft snapshots" });
+    }
+  });
+
+  // Get historical draft snapshots formatted like Sleeper API drafts
+  app.get("/api/league/:leagueId/historical/drafts-formatted", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season } = req.query as { season?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      // For 2023/2024, fetch directly from Sleeper API
+      if (season === "2023" || season === "2024") {
+        const drafts = await getLeagueDrafts(leagueId);
+        const filteredDrafts = drafts.filter(d => d.season === season);
+        
+        // Format to match Sleeper API draft format
+        const formattedDrafts = filteredDrafts.map(draft => ({
+          draftId: draft.draft_id,
+          leagueId: draft.league_id,
+          season: draft.season,
+          status: draft.status,
+          type: draft.type,
+          rounds: draft.settings.rounds,
+          startTime: draft.start_time,
+          created: draft.created,
+          isSnapshot: false, // Not from snapshot - direct from Sleeper
+        }));
+        
+        return res.json(formattedDrafts);
+      }
+
+      // For other seasons, use snapshots
+      const snapshots = await storage.getDraftSnapshots(leagueId, season);
+      
+      // Format snapshots to match Sleeper API draft format
+      const formattedDrafts = snapshots.map(snapshot => {
+        const draftData = JSON.parse(snapshot.draftData);
+        return {
+          draftId: snapshot.draftId,
+          leagueId: snapshot.leagueId,
+          season: draftData.season || snapshot.season,
+          status: draftData.status || "complete",
+          type: draftData.type || "rookie",
+          rounds: draftData.settings?.rounds || 0,
+          startTime: draftData.start_time || null,
+          created: draftData.created || null,
+          isSnapshot: true, // Flag to indicate this is from snapshot
+        };
+      });
+      
+      res.json(formattedDrafts);
+    } catch (error) {
+      console.error("Error fetching formatted draft snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch formatted draft snapshots" });
+    }
+  });
+
+  // Get historical draft picks from snapshot or Sleeper
+  app.get("/api/league/:leagueId/historical/draft/:draftId/picks", async (req, res) => {
+    try {
+      const { leagueId, draftId } = req.params;
+      const { season } = req.query as { season?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      // For 2023/2024, fetch directly from Sleeper API
+      if (season === "2023" || season === "2024") {
+        const [draft, picks] = await Promise.all([
+          getDraft(draftId),
+          getDraftPicks(draftId),
+        ]);
+
+        const [users, rosters] = await Promise.all([
+          getLeagueUsers(leagueId).catch(() => []),
+          getLeagueRosters(leagueId).catch(() => []),
+        ]);
+
+        const userMap = new Map<string, SleeperLeagueUser>();
+        users.forEach(u => userMap.set(u.user_id, u));
+
+        const rosterTeamMap = new Map<number, string>();
+        rosters.forEach(r => {
+          const user = userMap.get(r.owner_id);
+          const teamName = user?.metadata?.team_name || user?.display_name || `Team ${r.roster_id}`;
+          rosterTeamMap.set(r.roster_id, teamName);
+        });
+
+        // Format picks to match Sleeper API format
+        const formattedPicks = picks.map(pick => ({
+          round: pick.round,
+          rosterId: pick.roster_id,
+          playerId: pick.player_id,
+          pickedBy: pick.picked_by,
+          pickNo: pick.pick_no,
+          draftSlot: pick.draft_slot,
+          playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
+          position: pick.metadata.position,
+          team: pick.metadata.team,
+          fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
+        }));
+
+        return res.json(formattedPicks);
+      }
+      
+      // For other seasons, use snapshots
+      const snapshots = await storage.getDraftSnapshots(leagueId, season);
+      const snapshot = snapshots.find(s => s.draftId === draftId);
+      
+      if (!snapshot) {
+        return res.status(404).json({ error: "Draft snapshot not found" });
+      }
+
+      const picksData = JSON.parse(snapshot.picksData);
+      
+      // Get league users and rosters for the historical league
+      const [users, rosters] = await Promise.all([
+        getLeagueUsers(leagueId).catch(() => []),
+        getLeagueRosters(leagueId).catch(() => []),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      const rosterTeamMap = new Map<number, string>();
+      rosters.forEach(r => {
+        const user = userMap.get(r.owner_id);
+        const teamName = user?.metadata?.team_name || user?.display_name || `Team ${r.roster_id}`;
+        rosterTeamMap.set(r.roster_id, teamName);
+      });
+
+      // Format picks to match Sleeper API format
+      const formattedPicks = picksData.map((pick: any) => ({
+        round: pick.round,
+        rosterId: pick.roster_id,
+        playerId: pick.player_id,
+        pickedBy: pick.picked_by,
+        pickNo: pick.pick_no,
+        draftSlot: pick.draft_slot,
+        playerName: pick.metadata?.first_name && pick.metadata?.last_name
+          ? `${pick.metadata.first_name} ${pick.metadata.last_name}`
+          : pick.playerName || "Unknown",
+        position: pick.metadata?.position || pick.position || "",
+        team: pick.metadata?.team || pick.team || "",
+        fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
+      }));
+
+      res.json(formattedPicks);
+    } catch (error) {
+      console.error("Error fetching draft picks:", error);
+      res.status(500).json({ error: "Failed to fetch draft picks" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/matchups", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season || !week) return res.status(400).json({ error: "season and week are required" });
+      const snapshots = await storage.getMatchupSnapshots(leagueId, season, parseInt(week));
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching matchup snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch matchup snapshots" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/transactions", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season || !week) return res.status(400).json({ error: "season and week are required" });
+      const snapshots = await storage.getTransactionSnapshots(leagueId, season, parseInt(week));
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching transaction snapshots:", error);
+      res.status(500).json({ error: "Failed to fetch transaction snapshots" });
+    }
+  });
+
+  // ==================== HISTORICAL SLEEPER ENDPOINTS (2023/2024) ====================
+  // These endpoints fetch directly from Sleeper API for historical seasons
+
+  app.get("/api/league/:leagueId/historical-sleeper/standings", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      const [rosters, users, league] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getLeague(leagueId).catch(() => null),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+
+      // Calculate standings from matchups
+      const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
+      const regularSeasonWeeks = playoffWeekStart - 1;
+      const targetWeek = week ? parseInt(week) : regularSeasonWeeks;
+
+      const rosterTotals = new Map<number, { wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }>();
+      rosters.forEach(r => {
+        rosterTotals.set(r.roster_id, { wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0 });
+      });
+
+      // Fetch matchups up to target week
+      for (let w = 1; w <= targetWeek; w++) {
+        const matchups = await getLeagueMatchups(leagueId, w).catch(() => []);
+        const matchupGroups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) matchupGroups.set(m.matchup_id, []);
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const score1 = t1.points || 0;
+          const score2 = t2.points || 0;
+          const r1 = rosterTotals.get(t1.roster_id);
+          const r2 = rosterTotals.get(t2.roster_id);
+          if (!r1 || !r2) return;
+
+          r1.pointsFor += score1;
+          r1.pointsAgainst += score2;
+          r2.pointsFor += score2;
+          r2.pointsAgainst += score1;
+
+          if (score1 > score2) {
+            r1.wins += 1;
+            r2.losses += 1;
+          } else if (score2 > score1) {
+            r2.wins += 1;
+            r1.losses += 1;
+          } else if (score1 !== 0 || score2 !== 0) {
+            r1.ties += 1;
+            r2.ties += 1;
+          }
+        });
+      }
+
+      const standingsData = rosters.map(r => {
+        const totals = rosterTotals.get(r.roster_id);
+        const owner = userMap.get(r.owner_id);
+        return {
+          rosterId: r.roster_id,
+          ownerId: r.owner_id,
+          name: owner?.metadata?.team_name || owner?.display_name || `Team ${r.roster_id}`,
+          wins: totals?.wins || 0,
+          losses: totals?.losses || 0,
+          ties: totals?.ties || 0,
+          pointsFor: totals?.pointsFor || 0,
+          pointsAgainst: totals?.pointsAgainst || 0,
+          week: targetWeek,
+        };
+      }).sort((a, b) => (b.wins - a.wins) || (b.pointsFor - a.pointsFor));
+
+      // Format to match snapshot structure
+      res.json([{
+        leagueId,
+        season,
+        week: targetWeek,
+        snapshotType: week ? "weekly" : "end_of_season",
+        standingsData: JSON.stringify(standingsData),
+      }]);
+    } catch (error) {
+      console.error("Error fetching historical standings from Sleeper:", error);
+      res.status(500).json({ error: "Failed to fetch historical standings" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical-sleeper/matchups", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season || !week) return res.status(400).json({ error: "season and week are required" });
+
+      const matchups = await getLeagueMatchups(leagueId, parseInt(week));
+      
+      // Format to match snapshot structure
+      res.json([{
+        leagueId,
+        season,
+        week: parseInt(week),
+        matchupData: JSON.stringify(matchups),
+      }]);
+    } catch (error) {
+      console.error("Error fetching historical matchups from Sleeper:", error);
+      res.status(500).json({ error: "Failed to fetch historical matchups" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical-sleeper/transactions", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season || !week) return res.status(400).json({ error: "season and week are required" });
+
+      const transactions = await getLeagueTransactions(leagueId, parseInt(week));
+      
+      // Format to match snapshot structure
+      res.json([{
+        leagueId,
+        season,
+        week: parseInt(week),
+        transactionData: JSON.stringify(transactions),
+      }]);
+    } catch (error) {
+      console.error("Error fetching historical transactions from Sleeper:", error);
+      res.status(500).json({ error: "Failed to fetch historical transactions" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical-sleeper/player-stats", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      const weekNum = week ? parseInt(week) : undefined;
+      const stats = await getPlayerStats(season, weekNum);
+      
+      // Format to match snapshot structure
+      const snapshots = Object.entries(stats).map(([playerId, statsData]) => ({
+        leagueId,
+        season,
+        week: weekNum || null,
+        playerId,
+        statsData: JSON.stringify(statsData),
+      }));
+
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching historical player stats from Sleeper:", error);
+      res.status(500).json({ error: "Failed to fetch historical player stats" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical-sleeper/team-stats", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season, week } = req.query as { season?: string; week?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      const [rosters, league] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeague(leagueId).catch(() => null),
+      ]);
+
+      const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
+      const regularSeasonWeeks = playoffWeekStart - 1;
+      const targetWeek = week ? parseInt(week) : regularSeasonWeeks;
+
+      const rosterTotals = new Map<number, { wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }>();
+      rosters.forEach(r => {
+        rosterTotals.set(r.roster_id, { wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0 });
+      });
+
+      // Fetch matchups up to target week
+      for (let w = 1; w <= targetWeek; w++) {
+        const matchups = await getLeagueMatchups(leagueId, w).catch(() => []);
+        const matchupGroups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) matchupGroups.set(m.matchup_id, []);
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const score1 = t1.points || 0;
+          const score2 = t2.points || 0;
+          const r1 = rosterTotals.get(t1.roster_id);
+          const r2 = rosterTotals.get(t2.roster_id);
+          if (!r1 || !r2) return;
+
+          r1.pointsFor += score1;
+          r1.pointsAgainst += score2;
+          r2.pointsFor += score2;
+          r2.pointsAgainst += score1;
+
+          if (score1 > score2) {
+            r1.wins += 1;
+            r2.losses += 1;
+          } else if (score2 > score1) {
+            r2.wins += 1;
+            r1.losses += 1;
+          } else if (score1 !== 0 || score2 !== 0) {
+            r1.ties += 1;
+            r2.ties += 1;
+          }
+        });
+      }
+
+      // Format to match snapshot structure
+      const snapshots = Array.from(rosterTotals.entries()).map(([rosterId, totals]) => ({
+        leagueId,
+        season,
+        week: targetWeek,
+        rosterId,
+        statsData: JSON.stringify(totals),
+      }));
+
+      res.json(snapshots);
+    } catch (error) {
+      console.error("Error fetching historical team stats from Sleeper:", error);
+      res.status(500).json({ error: "Failed to fetch historical team stats" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical-sleeper/drafts", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season } = req.query as { season?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+
+      const drafts = await getLeagueDrafts(leagueId);
+      const filteredDrafts = drafts.filter(d => d.season === season);
+      
+      // Format to match DraftInfo structure
+      const formattedDrafts = filteredDrafts.map(draft => ({
+        draftId: draft.draft_id,
+        leagueId: draft.league_id,
+        season: draft.season,
+        status: draft.status,
+        type: draft.type,
+        rounds: draft.settings.rounds,
+        startTime: draft.start_time,
+        created: draft.created,
+      }));
+
+      res.json(formattedDrafts);
+    } catch (error) {
+      console.error("Error fetching historical drafts from Sleeper:", error);
+      res.status(500).json({ error: "Failed to fetch historical drafts" });
     }
   });
 
