@@ -96,6 +96,8 @@ interface DraftOddsTeam {
   projectedWins?: number;
   status: "eliminated" | "clinched" | "bubble";
   isLocked?: boolean;
+  /** Playoff seed (1 = best), for ordering picks 6-12 */
+  rank?: number;
 }
 
 const positionColors: Record<string, string> = {
@@ -235,7 +237,7 @@ export default function Draft() {
     enabled: !!selectedDraftId,
   });
 
-  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[]; remainingWeeks: number; currentWeek: number }>({
+  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[]; remainingWeeks: number; currentWeek: number; seasonType?: string }>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
@@ -245,9 +247,18 @@ export default function Draft() {
     enabled: !!league?.leagueId,
   });
 
+  type BracketMatchup = {
+    round: number;
+    winner: number | null;
+    loser: number | null;
+    placement?: number;
+    team1?: { rosterId: number; seed?: number } | null;
+    team2?: { rosterId: number; seed?: number } | null;
+  };
+  type PlacementMatchup = BracketMatchup & { placement?: number };
   const { data: bracketData } = useQuery<{
-    matchups: Array<{ winner: number | null; loser: number | null }>;
-    consolationMatchups?: Array<{ winner: number | null; loser: number | null }>;
+    matchups: BracketMatchup[];
+    consolationMatchups?: PlacementMatchup[];
   }>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "bracket"],
     queryFn: async () => {
@@ -356,8 +367,9 @@ export default function Draft() {
       return Number(p.round || 0) <= totalRounds;
     })
     .filter((p) => {
-      // If showing rookies only for 2023 draft, filter to NFL rookies (yearsExp === 0)
+      // If showing rookies only for 2023 draft, filter to NFL rookies (yearsExp === 0); DEF never filtered out
       if (is2023Draft && showRookiesOnly) {
+        if ((p.position || "").toUpperCase() === "DEF") return true;
         return (p.yearsExp ?? 0) === 0;
       }
       return true;
@@ -372,7 +384,7 @@ export default function Draft() {
         avatar: null 
       };
       
-      const isNFLRookie = is2023Draft && (pick.yearsExp ?? 0) === 0;
+      const isNFLRookie = is2023Draft && (pick.yearsExp ?? 0) === 0 && (pick.position || "").toUpperCase() !== "DEF";
       
       return {
         round: Number(pick.round || 1),
@@ -413,55 +425,60 @@ export default function Draft() {
     const SIMULATIONS = 10000;
     const NON_PLAYOFF_PICKS = 5; // Picks 1-5 for non-playoff teams
     
-    // Determine if regular season has ended based on playoff_week_start from Sleeper settings
-    // Get playoff week start from league (defaults to 15 if not available)
-    // Regular season ends at week 14, playoffs run weeks 15-17
+    // Determine if regular season has ended: Sleeper season_type "post", or current week >= playoff start, or remainingWeeks === 0.
+    // Eliminated teams lock when regular season has ended (so picks 1-5 are fixed by Max PF).
     const playoffWeekStart = league?.playoffWeekStart || 15;
     const currentWeek = playoffPredictions?.currentWeek;
-    
-    // Regular season ends at week (playoff_week_start - 1)
-    // Regular season has ended if current week >= playoff_week_start
-    // Also check remainingWeeks === 0 as a fallback
-    const regularSeasonEnded = currentWeek !== undefined 
-      ? currentWeek >= playoffWeekStart 
-      : playoffPredictions?.remainingWeeks === 0;
+    const seasonType = playoffPredictions?.seasonType;
+    const regularSeasonEnded =
+      seasonType === "post" ||
+      (currentWeek !== undefined ? currentWeek >= playoffWeekStart : playoffPredictions?.remainingWeeks === 0);
 
     const predictionMap = new Map(
       (playoffPredictions?.predictions || []).map(p => [p.rosterId, p])
     );
 
-    // Helper function to determine which teams have locked odds
+    // Derive picks 6-12 from Sleeper placement (p): p:7 loser→6; p:5 loser→7, winner→8; p:3 loser→9, winner→10; p:1 loser→11, winner→12.
+    const getBracketPickAssignment = (): Map<number, number> => {
+      const assignment = new Map<number, number>();
+      const matchups = bracketData?.matchups ?? [];
+      const consolation = bracketData?.consolationMatchups ?? [];
+
+      // p:7 (from consolation): loser → pick 6 (index 5)
+      const p7 = consolation.find(m => m.placement === 7);
+      if (p7?.loser != null) assignment.set(p7.loser, NON_PLAYOFF_PICKS);
+
+      // p:5 (from consolation): loser → pick 7 (index 6), winner → pick 8 (index 7)
+      const p5 = consolation.find(m => m.placement === 5);
+      if (p5?.loser != null) assignment.set(p5.loser, NON_PLAYOFF_PICKS + 1);
+      if (p5?.winner != null) assignment.set(p5.winner, NON_PLAYOFF_PICKS + 2);
+
+      // p:3 (from consolation): loser → pick 9 (index 8), winner → pick 10 (index 9)
+      const p3 = consolation.find(m => m.placement === 3);
+      if (p3?.loser != null) assignment.set(p3.loser, NON_PLAYOFF_PICKS + 3);
+      if (p3?.winner != null) assignment.set(p3.winner, NON_PLAYOFF_PICKS + 4);
+
+      // p:1 championship (from main matchups): loser → pick 11 (index 10), winner → pick 12 (index 11)
+      const p1 = matchups.find(m => m.placement === 1);
+      if (p1?.loser != null) assignment.set(p1.loser, totalTeams - 2);
+      if (p1?.winner != null) assignment.set(p1.winner, totalTeams - 1);
+
+      return assignment;
+    };
+
+    const bracketPickAssignment = getBracketPickAssignment();
+
+    // Locked = eliminated (after reg season) + playoff rosters with a fixed pick from bracket.
     const getLockedTeams = (): Set<number> => {
       const locked = new Set<number>();
-      
-      // Eliminated teams lock after regular season ends
       if (regularSeasonEnded) {
         standings.forEach(team => {
           const prediction = predictionMap.get(team.rosterId);
           const makePlayoffsPct = prediction?.makePlayoffsPct ?? (team.rank <= playoffTeams ? 100 : 0);
-          if (makePlayoffsPct === 0) {
-            locked.add(team.rosterId);
-          }
+          if (makePlayoffsPct === 0) locked.add(team.rosterId);
         });
       }
-      
-      // Playoff teams lock after they lose in the playoffs
-      if (bracketData) {
-        // Check winners bracket
-        bracketData.matchups?.forEach(matchup => {
-          if (matchup.loser !== null) {
-            locked.add(matchup.loser);
-          }
-        });
-        
-        // Check losers bracket (consolation matchups)
-        bracketData.consolationMatchups?.forEach(matchup => {
-          if (matchup.loser !== null) {
-            locked.add(matchup.loser);
-          }
-        });
-      }
-      
+      bracketPickAssignment.forEach((_, rosterId) => locked.add(rosterId));
       return locked;
     };
 
@@ -486,10 +503,16 @@ export default function Draft() {
       }
       
       const isLocked = lockedTeams.has(team.rosterId);
+      const bracketPick = bracketPickAssignment.get(team.rosterId);
+      // If team is locked, use stored odds, or bracket-assigned pick, or zeros
+      const storedOdds = isLocked
+        ? (lockedOddsRef.current.get(team.rosterId) ?? (bracketPick !== undefined
+            ? (() => { const a = new Array(totalTeams).fill(0); a[bracketPick] = 100; return a; })()
+            : undefined))
+        : undefined;
       
-      // If team is locked, use previously stored odds if available
-      const storedOdds = isLocked ? lockedOddsRef.current.get(team.rosterId) : undefined;
-      
+      // Use Max PF when available (for picks 1-5 ordering); fallback to pointsFor
+      const maxPoints = (team as { maxPointsFor?: number }).maxPointsFor ?? pointsFor;
       return {
         rosterId: team.rosterId,
         name: team.name,
@@ -500,7 +523,7 @@ export default function Draft() {
         pointsFor,
         isPlayoffTeam: makePlayoffsPct >= 50,
         projectedFinish: undefined,
-        maxPoints: pointsFor,
+        maxPoints,
         pickOdds: storedOdds || new Array(totalTeams).fill(0),
         isUser: team.isUser,
         missPlayoffsPct: 100 - makePlayoffsPct,
@@ -508,6 +531,7 @@ export default function Draft() {
         projectedWins: prediction?.projectedWins ?? wins,
         status,
         isLocked,
+        rank: team.rank,
       };
     });
 
@@ -518,12 +542,60 @@ export default function Draft() {
     });
 
     // Bayesian smoothing function to prevent 0%/100% for playoff teams
-    // This accounts for upset potential in playoffs
     const smoothProbability = (successes: number, trials: number): number => {
-      // Bayesian smoothing: (successes + 1) / (trials + 2)
-      // 0/10000 becomes 0.01%, 10000/10000 becomes 99.99%
       const smoothed = (successes + 1) / (trials + 2);
-      return Math.round(smoothed * 1000) / 10; // Round to 1 decimal place
+      return Math.round(smoothed * 1000) / 10;
+    };
+
+    // Weighted random pick (better seed = higher weight). Used for playoff outcome simulation.
+    const weightedPick = <T,>(items: T[], getWeight: (t: T) => number): T => {
+      if (items.length === 0) throw new Error("weightedPick: empty");
+      const total = items.reduce((s, t) => s + getWeight(t), 0);
+      let r = Math.random() * total;
+      for (const t of items) {
+        r -= getWeight(t);
+        if (r <= 0) return t;
+      }
+      return items[items.length - 1];
+    };
+
+    // Simulate one playoff outcome: assign each team an exit round (champion → 12, runner-up → 11, SF → 9-10, QF → 6-8) with weights by seed.
+    const simulatePlayoffPicks = (playoffTeamsList: DraftOddsTeam[]): Map<number, number> => {
+      const assignment = new Map<number, number>();
+      let remaining = [...playoffTeamsList];
+      const weight = (t: DraftOddsTeam) => Math.max(1, (playoffTeams + 1) - (t.rank ?? 12));
+      const qfCount = Math.max(0, playoffTeams - 4);
+      const sfCount = 2;
+
+      // Champion → pick 12 (index 11)
+      if (remaining.length > 0) {
+        const champion = weightedPick(remaining, weight);
+        assignment.set(champion.rosterId, totalTeams - 1);
+        remaining = remaining.filter(t => t.rosterId !== champion.rosterId);
+      }
+      // Runner-up → pick 11 (index 10)
+      if (remaining.length > 0) {
+        const runnerUp = weightedPick(remaining, weight);
+        assignment.set(runnerUp.rosterId, totalTeams - 2);
+        remaining = remaining.filter(t => t.rosterId !== runnerUp.rosterId);
+      }
+      // SF losers → picks 9, 10 (indices 8, 9). Worse seed → pick 9.
+      if (remaining.length >= sfCount) {
+        const sf1 = weightedPick(remaining, weight);
+        const remainingAfterSf1 = remaining.filter(t => t.rosterId !== sf1.rosterId);
+        const sf2 = weightedPick(remainingAfterSf1, weight);
+        const sfLosers = [sf1, sf2].sort((a, b) => (b.rank ?? 99) - (a.rank ?? 99));
+        sfLosers.forEach((t, i) => assignment.set(t.rosterId, NON_PLAYOFF_PICKS + 2 + i));
+        remaining = remainingAfterSf1.filter(t => t.rosterId !== sf2.rosterId);
+      }
+      // QF losers → picks 6, 7, 8 (indices 5, 6, 7). Worse seed first.
+      if (remaining.length > 0) {
+        const qfSorted = remaining.sort((a, b) => (b.rank ?? 99) - (a.rank ?? 99));
+        qfSorted.forEach((t, i) => {
+          if (NON_PLAYOFF_PICKS + i < totalTeams) assignment.set(t.rosterId, NON_PLAYOFF_PICKS + i);
+        });
+      }
+      return assignment;
     };
 
     // If regular season has ended, lock eliminated teams into draft slots by points scored
@@ -534,10 +606,10 @@ export default function Draft() {
       const clinched = teamsWithData.filter(t => t.status === "clinched" && !t.isLocked);
       const lockedClinchedTeams = teamsWithData.filter(t => t.status === "clinched" && t.isLocked);
       
-      // Sort eliminated teams by points (lowest first = pick 1)
+      // Sort eliminated teams by Max PF ascending (lowest = pick 1)
       // Include locked eliminated teams in sorting to maintain correct order
       const allEliminatedTeams = teamsWithData.filter(t => t.status === "eliminated");
-      allEliminatedTeams.sort((a, b) => a.pointsFor - b.pointsFor);
+      allEliminatedTeams.sort((a, b) => a.maxPoints - b.maxPoints);
       
       // Assign 100% odds for eliminated teams (locked in - no uncertainty)
       // Only update odds for non-locked teams, locked teams already have their odds preserved
@@ -558,40 +630,31 @@ export default function Draft() {
           team.pickOdds[positionInAll] = 100;
         }
       });
+
+      // Assign picks 6-12 from bracket when round is complete (champion → 12, runner-up → 11, SF losers → 9-10, QF losers → 6-8)
+      bracketPickAssignment.forEach((pickIndex, rosterId) => {
+        const team = teamsWithData.find(t => t.rosterId === rosterId);
+        if (team && pickIndex >= NON_PLAYOFF_PICKS) {
+          team.pickOdds = new Array(totalTeams).fill(0);
+          team.pickOdds[pickIndex] = 100;
+        }
+      });
       
-      
-      // For non-locked playoff teams, run Monte Carlo for picks 6-12 based on playoff finish
+      // For non-locked playoff teams, run Monte Carlo with exit-round simulation (champion → 12, runner-up → 11, SF → 9-10, QF → 6-8)
       if (clinched.length > 0) {
         for (let sim = 0; sim < SIMULATIONS; sim++) {
-          // Sort clinched teams with random variance for playoff finish
-          const sortedClinched = [...clinched].sort((a, b) => {
-            const varianceA = (Math.random() - 0.5) * 2;
-            const varianceB = (Math.random() - 0.5) * 2;
-            const winsA = (a.projectedWins ?? a.wins) + varianceA;
-            const winsB = (b.projectedWins ?? b.wins) + varianceB;
-            if (Math.abs(winsA - winsB) > 0.1) return winsA - winsB;
-            return a.pointsFor - b.pointsFor;
-          });
-          
-          sortedClinched.forEach((team, index) => {
-            const pickPosition = NON_PLAYOFF_PICKS + index;
-            if (pickPosition < totalTeams) {
-              const counts = pickCounts.get(team.rosterId)!;
-              counts[pickPosition]++;
-            }
+          const outcome = simulatePlayoffPicks(clinched);
+          outcome.forEach((pickIndex, rosterId) => {
+            const counts = pickCounts.get(rosterId);
+            if (counts && pickIndex >= NON_PLAYOFF_PICKS) counts[pickIndex]++;
           });
         }
-        
-        // Convert counts to percentages with Bayesian smoothing for playoff teams
-        // This ensures no playoff team shows exactly 0% or 100% for any pick in their range
         clinched.forEach(team => {
           const counts = pickCounts.get(team.rosterId)!;
           team.pickOdds = counts.map((count, pickIndex) => {
-            // Only apply smoothing to picks 6-12 (playoff team range)
-            if (pickIndex >= NON_PLAYOFF_PICKS && pickIndex < totalTeams) {
+            if (pickIndex >= NON_PLAYOFF_PICKS && pickIndex < totalTeams)
               return smoothProbability(count, SIMULATIONS);
-            }
-            return 0; // Playoff teams have 0% chance at picks 1-5
+            return 0;
           });
         });
       }
@@ -659,20 +722,7 @@ export default function Draft() {
         return a.wins - b.wins;
       });
 
-      // Sort made playoff teams by projected finish (with random variance)
-      // Worst finish = Pick 6, Best finish (champion) = Pick 12
-      const sortedMade = [...madePlayoffs].sort((a, b) => {
-        // More variance for playoff finish since playoffs are more unpredictable
-        const varianceA = (Math.random() - 0.5) * 2; // +/- 1 win variance
-        const varianceB = (Math.random() - 0.5) * 2;
-        const winsA = (a.projectedWins ?? a.wins) + varianceA;
-        const winsB = (b.projectedWins ?? b.wins) + varianceB;
-        if (Math.abs(winsA - winsB) > 0.1) return winsA - winsB; // Fewer wins = earlier pick
-        return a.pointsFor - b.pointsFor;
-      });
-
-      // Assign picks for this simulation
-      // Non-playoff teams get picks 1-5
+      // Assign picks 1-5 for non-playoff teams (by Max PF ascending)
       sortedMissed.forEach((team, index) => {
         if (index < NON_PLAYOFF_PICKS) {
           const counts = pickCounts.get(team.rosterId)!;
@@ -680,14 +730,14 @@ export default function Draft() {
         }
       });
 
-      // Playoff teams get picks 6-12 (or 6 to totalTeams)
-      sortedMade.forEach((team, index) => {
-        const pickPosition = NON_PLAYOFF_PICKS + index;
-        if (pickPosition < totalTeams) {
-          const counts = pickCounts.get(team.rosterId)!;
-          counts[pickPosition]++;
-        }
-      });
+      // Playoff teams: simulate exit round (champion → 12, runner-up → 11, SF → 9-10, QF → 6-8) with weights by seed
+      if (madePlayoffs.length > 0) {
+        const outcome = simulatePlayoffPicks(madePlayoffs);
+        outcome.forEach((pickIndex, rosterId) => {
+          const counts = pickCounts.get(rosterId);
+          if (counts && pickIndex >= NON_PLAYOFF_PICKS) counts[pickIndex]++;
+        });
+      }
     }
 
     // Convert counts to percentages (preserve to thousandth place)
@@ -762,141 +812,130 @@ export default function Draft() {
 
   const draftOddsTeams = calculateDraftOdds();
 
-  const renderDraftByRound = (picks: DraftPick[]) => {
+  const renderDraftByRound = (picks: DraftPick[], is2023Draft: boolean) => {
     if (!picks || picks.length === 0) {
       return <p className="text-center text-muted-foreground py-8">No picks available</p>;
     }
-    
-    // Calculate max rounds from picks
-    const maxRounds = picks.length > 0 ? Math.max(...picks.map(p => p.round || 1)) : 1;
-    
-    // Group picks by round
-    const picksByRound = new Map<number, DraftPick[]>();
-    picks.forEach(pick => {
-      const round = pick.round || 1;
-      if (!picksByRound.has(round)) {
-        picksByRound.set(round, []);
+
+    const maxRounds = Math.max(...picks.map(p => p.round || 1), 1);
+
+    // For 2023 snake draft: odd rounds show 1.01..1.12, 3.01..3.12 left-to-right; even rounds
+    // show 2.01..2.12, 4.01..4.12 by reversing team order so each row reads in draft order.
+    // Pick lookup by (round, rosterId)
+    const pickMap = new Map<string, DraftPick>();
+    picks.forEach(p => {
+      const rid = p.rosterId ?? p.pick;
+      if (rid != null) pickMap.set(`${p.round}-${rid}`, p);
+    });
+
+    // Team column order = draft order in round 1 (by pick/draft slot)
+    const round1Picks = picks.filter(p => (p.round || 1) === 1).sort((a, b) => a.pick - b.pick);
+    const teamOrder: number[] = round1Picks.length > 0
+      ? round1Picks.map(p => p.rosterId ?? p.pick).filter((id): id is number => id != null && !isNaN(Number(id)))
+      : Array.from(new Set(picks.map(p => p.rosterId ?? p.pick).filter((id): id is number => id != null && !isNaN(Number(id))))).sort((a, b) => a - b);
+
+    const teamNames = new Map<number, string>();
+    picks.forEach(p => {
+      const rid = p.rosterId ?? p.pick;
+      if (rid != null && p.fantasyTeam) teamNames.set(rid, p.fantasyTeam);
+    });
+
+    const cellMinHeight = "min-h-[80px]";
+
+    const renderPickCard = (pick: DraftPick | undefined, key: string) => {
+      if (!pick) {
+        return <div key={key} className={`rounded-md border border-transparent ${cellMinHeight}`} />;
       }
-      picksByRound.get(round)!.push(pick);
-    });
-    
-    // Sort picks within each round by pick number
-    picksByRound.forEach((roundPicks, round) => {
-      roundPicks.sort((a, b) => a.pick - b.pick);
-    });
-    
-    // Find the maximum number of picks in any round to determine column height
-    const maxPicksInRound = Math.max(...Array.from(picksByRound.values()).map(p => p.length));
-    
+      return (
+        <div
+          key={key}
+          className={`p-2 rounded-md border border-border hover-elevate ${cellMinHeight} flex flex-col ${
+            pick.isUserPick ? "bg-primary/10 border-primary/30" : "bg-card"
+          }`}
+          data-testid={`pick-${pick.round}-${pick.pick}`}
+        >
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-muted-foreground">
+              {pick.round}.{String(pick.pick || "").padStart(2, "0")}
+            </span>
+          </div>
+          {pick.player ? (
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <Avatar className="w-8 h-8 shrink-0">
+                <AvatarImage src={`https://sleepercdn.com/content/nfl/players/${pick.player.id}.jpg`} alt={pick.player.name || ""} />
+                <AvatarFallback className="text-xs">
+                  {(pick.player.name || "").split(" ").map((n) => n[0]).join("")}
+                </AvatarFallback>
+              </Avatar>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium truncate">{pick.player.name || "Unknown"}</p>
+                <div className="flex items-center gap-1 flex-wrap">
+                  {pick.player.position && (
+                    <Badge className={`text-[10px] px-1.5 ${positionColors[pick.player.position] || "bg-muted"}`}>
+                      {pick.player.position}
+                    </Badge>
+                  )}
+                  {pick.isNFLRookie && (
+                    <Badge className="text-[10px] px-1 bg-green-500 text-white" title="NFL Rookie">R</Badge>
+                  )}
+                  {pick.player.team && (
+                    <span className="text-xs text-muted-foreground">{pick.player.team}</span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <Avatar className="w-8 h-8 shrink-0">
+                {pick.currentOwner?.avatar && (
+                  <AvatarImage src={pick.currentOwner.avatar} alt={pick.currentOwner?.name || ""} />
+                )}
+                <AvatarFallback className={`text-xs ${pick.isUserPick ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+                  {pick.currentOwner?.initials || "??"}
+                </AvatarFallback>
+              </Avatar>
+              <span className="text-sm text-muted-foreground truncate">{pick.currentOwner?.name || "Unknown Team"}</span>
+            </div>
+          )}
+        </div>
+      );
+    };
+
     return (
       <ScrollArea className="w-full">
         <div className="min-w-[600px]">
-          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${maxRounds}, minmax(180px, 1fr))` }}>
-            {Array.from({ length: maxRounds }, (_, i) => (
-              <div key={i} className="text-center font-medium text-sm p-2 bg-muted rounded-md">
-                Round {i + 1}
+          <div
+            className="grid gap-2"
+            style={{ gridTemplateColumns: `80px repeat(${teamOrder.length}, minmax(160px, 1fr))` }}
+          >
+            <div className="p-2 bg-muted rounded-md font-medium text-sm" />
+            {teamOrder.map(rid => (
+              <div key={rid} className="text-center font-medium text-sm p-2 bg-muted rounded-md truncate" title={teamNames.get(rid) || `Team ${rid}`}>
+                {teamNames.get(rid) || `T${rid}`}
               </div>
             ))}
           </div>
-
-          <div className="mt-2">
-            <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${maxRounds}, minmax(180px, 1fr))` }}>
-              {Array.from({ length: maxRounds }, (_, roundIndex) => {
-                const round = roundIndex + 1;
-                const roundPicks = picksByRound.get(round) || [];
-                
-                return (
-                  <div key={roundIndex} className="space-y-2">
-                    {Array.from({ length: maxPicksInRound }, (_, pickIndex) => {
-                      const pick = roundPicks[pickIndex];
-                      
-                      if (!pick) {
-                        return <div key={pickIndex} className="h-20" />;
-                      }
-                      
-                      return (
-                        <div
-                          key={pickIndex}
-                          className={`p-2 rounded-md border border-border hover-elevate ${
-                            pick.isUserPick ? "bg-primary/10 border-primary/30" : "bg-card"
-                          }`}
-                          data-testid={`pick-${pick.round}-${pick.pick}`}
-                        >
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-xs text-muted-foreground">
-                              {pick.round}.{String(pick.pick || "").padStart(2, "0")}
-                            </span>
-                            {pick.fantasyTeam && (
-                              <span className="text-[10px] text-muted-foreground truncate">
-                                {pick.fantasyTeam}
-                              </span>
-                            )}
-                          </div>
-
-                          {pick.player ? (
-                            <div className="flex items-center gap-2">
-                              <Avatar className="w-8 h-8">
-                                <AvatarImage 
-                                  src={`https://sleepercdn.com/content/nfl/players/${pick.player.id}.jpg`}
-                                  alt={pick.player.name || ""}
-                                />
-                                <AvatarFallback className="text-xs">
-                                  {(pick.player.name || "").split(" ").map((n) => n[0]).join("")}
-                                </AvatarFallback>
-                              </Avatar>
-                              <div className="min-w-0 flex-1">
-                                <p className="text-sm font-medium truncate">{pick.player.name || "Unknown"}</p>
-                                <div className="flex items-center gap-1 flex-wrap">
-                                  {pick.player.position && (
-                                    <Badge
-                                      className={`text-[10px] px-1.5 ${
-                                        positionColors[pick.player.position] || "bg-muted"
-                                      }`}
-                                    >
-                                      {pick.player.position}
-                                    </Badge>
-                                  )}
-                                  {pick.isNFLRookie && (
-                                    <Badge className="text-[10px] px-1.5 bg-green-500 text-white">
-                                      NFL Rookie
-                                    </Badge>
-                                  )}
-                                  {pick.player.team && (
-                                    <span className="text-xs text-muted-foreground">
-                                      {pick.player.team}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2">
-                              <Avatar className="w-8 h-8">
-                                {pick.currentOwner?.avatar && (
-                                  <AvatarImage src={pick.currentOwner.avatar} alt={pick.currentOwner?.name || ""} />
-                                )}
-                                <AvatarFallback
-                                  className={`text-xs ${
-                                    pick.isUserPick
-                                      ? "bg-primary text-primary-foreground"
-                                      : "bg-muted"
-                                  }`}
-                                >
-                                  {pick.currentOwner?.initials || "??"}
-                                </AvatarFallback>
-                              </Avatar>
-                              <span className="text-sm text-muted-foreground truncate">
-                                {pick.currentOwner?.name || "Unknown Team"}
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+          <div className="mt-2 space-y-2">
+            {Array.from({ length: maxRounds }, (_, roundIndex) => {
+              const round = roundIndex + 1;
+              const snakeEvenRound = is2023Draft && round % 2 === 0;
+              const orderForRow = snakeEvenRound ? [...teamOrder].reverse() : teamOrder;
+              return (
+                <div
+                  key={roundIndex}
+                  className="grid gap-2 items-stretch"
+                  style={{ gridTemplateColumns: `80px repeat(${teamOrder.length}, minmax(160px, 1fr))` }}
+                >
+                  <div className="flex items-center font-medium text-sm p-2 bg-muted/70 rounded-md">
+                    Round {round}
                   </div>
-                );
-              })}
-            </div>
+                  {orderForRow.map(rid => {
+                    const pick = pickMap.get(`${round}-${rid}`);
+                    return renderPickCard(pick, `${round}-${rid}`);
+                  })}
+                </div>
+              );
+            })}
           </div>
         </div>
         <ScrollBar orientation="horizontal" />
@@ -1026,8 +1065,8 @@ export default function Draft() {
                                 </Badge>
                               )}
                               {pick.isNFLRookie && (
-                                <Badge className="text-[10px] px-1.5 bg-green-500 text-white">
-                                  NFL Rookie
+                                <Badge className="text-[10px] px-1 bg-green-500 text-white" title="NFL Rookie">
+                                  R
                                 </Badge>
                               )}
                               {pick.player.team && (
@@ -1203,7 +1242,7 @@ export default function Draft() {
                           </div>
                         )}
                         {is2023Draft ? (
-                          renderDraftByRound(formattedHistoricalPicks)
+                          renderDraftByRound(formattedHistoricalPicks, is2023Draft)
                         ) : (
                           <>
                             <div className="flex items-center gap-4 mb-2 text-xs text-muted-foreground">

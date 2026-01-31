@@ -302,18 +302,53 @@ export async function registerRoutes(
         rosterTeamMap.set(r.roster_id, teamName);
       });
 
-      res.json(picks.map(pick => ({
-        round: pick.round,
-        rosterId: pick.roster_id,
-        playerId: pick.player_id,
-        pickedBy: pick.picked_by,
-        pickNo: pick.pick_no,
-        draftSlot: pick.draft_slot,
-        playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
-        position: pick.metadata.position,
-        team: pick.metadata.team,
-        fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
-      })));
+      // For historical drafts (2023/2024), compute yearsExp at draft time from current player data
+      const draftSeason = draft.season ? parseInt(String(draft.season)) : new Date().getFullYear();
+      const currentYear = new Date().getFullYear();
+      const yearsSinceDraft = currentYear - draftSeason;
+      const isHistoricalDraft = yearsSinceDraft >= 1 && (draftSeason === 2023 || draftSeason === 2024);
+
+      let currentPlayers: Record<string, SleeperPlayer> | null = null;
+      if (isHistoricalDraft) {
+        try {
+          currentPlayers = await getAllPlayers();
+        } catch (e) {
+          console.error("getAllPlayers failed for draft picks:", e);
+        }
+      }
+
+      res.json(picks.map(pick => {
+        let yearsExp: number;
+        if (isHistoricalDraft && currentPlayers) {
+          const p = currentPlayers[pick.player_id];
+          const currentExp = p?.years_exp;
+          if (currentExp !== undefined && currentExp !== null) {
+            const exp = typeof currentExp === "string" ? parseInt(currentExp, 10) : Number(currentExp);
+            yearsExp = Math.max(0, (isNaN(exp) ? 0 : exp) - yearsSinceDraft);
+          } else {
+            const meta = pick.metadata.years_exp;
+            const metaExp = meta ? parseInt(String(meta), 10) : 0;
+            yearsExp = metaExp >= yearsSinceDraft ? Math.max(0, metaExp - yearsSinceDraft) : (isNaN(metaExp) ? 0 : metaExp);
+          }
+        } else {
+          const meta = pick.metadata.years_exp;
+          yearsExp = meta ? parseInt(String(meta), 10) : 0;
+          if (isNaN(yearsExp)) yearsExp = 0;
+        }
+        return {
+          round: pick.round,
+          rosterId: pick.roster_id,
+          playerId: pick.player_id,
+          pickedBy: pick.picked_by,
+          pickNo: pick.pick_no,
+          draftSlot: pick.draft_slot,
+          playerName: `${pick.metadata.first_name} ${pick.metadata.last_name}`,
+          position: pick.metadata.position,
+          team: pick.metadata.team,
+          fantasyTeam: rosterTeamMap.get(pick.roster_id) || `Team ${pick.roster_id}`,
+          yearsExp,
+        };
+      }));
     } catch (error) {
       console.error("Error fetching draft picks:", error);
       res.status(500).json({ error: "Failed to fetch draft picks" });
@@ -2986,7 +3021,52 @@ export async function registerRoutes(
       const currentWeek = getEffectiveWeek(nflState, league);
       const regularSeasonWeeks = playoffWeekStart - 1;
       // Include current week in remaining weeks (e.g., week 12 with 14-week season = 3 weeks left including current)
-      const remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek + 1);
+      let remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek + 1);
+      // When Sleeper API says postseason, set remaining regular season weeks to 0
+      if (nflState.season_type === "post") {
+        remainingWeeks = 0;
+      }
+
+      // Check if we're in the postseason
+      const isPostseason = currentWeek >= playoffWeekStart;
+
+      // If in postseason, fetch bracket data to determine actual status
+      let bracket: Awaited<ReturnType<typeof getWinnersBracket>> | null = null;
+      let losersBracket: Awaited<ReturnType<typeof getLosersBracket>> | null = null;
+      let actualStandings: Array<{ rosterId: number; rank: number }> | null = null;
+
+      if (isPostseason) {
+        try {
+          [bracket, losersBracket] = await Promise.all([
+            getWinnersBracket(req.params.leagueId).catch(() => null),
+            getLosersBracket(req.params.leagueId).catch(() => null),
+          ]);
+          
+          // Calculate actual final standings from regular season
+          const finalStandings = rosters
+            .map((roster) => {
+              const wins = roster.settings.wins;
+              const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
+              return {
+                rosterId: roster.roster_id,
+                wins,
+                pointsFor,
+              };
+            })
+            .sort((a, b) => {
+              if (b.wins !== a.wins) return b.wins - a.wins;
+              return b.pointsFor - a.pointsFor;
+            })
+            .map((team, index) => ({
+              rosterId: team.rosterId,
+              rank: index + 1,
+            }));
+          
+          actualStandings = finalStandings;
+        } catch (error) {
+          console.error("Error fetching bracket data for postseason:", error);
+        }
+      }
 
       // Fetch all matchups to build head-to-head records
       const matchupPromises = [];
@@ -3216,6 +3296,60 @@ export async function registerRoutes(
         });
       }
 
+      // If in postseason, override simulation results with actual results
+      if (isPostseason && actualStandings) {
+        // Determine actual playoff teams from standings
+        const playoffTeamIds = new Set(
+          actualStandings.slice(0, playoffTeams).map(s => s.rosterId)
+        );
+        
+        // Determine 1-seed (first place in standings)
+        const oneSeedId = actualStandings[0]?.rosterId;
+        
+        // Determine division winners if applicable
+        const divisionWinners = new Map<number, number>(); // division -> rosterId
+        if (hasDivisions) {
+          divisions.forEach(div => {
+            const divTeams = actualStandings.filter(s => {
+              const team = teams.find(t => t.rosterId === s.rosterId);
+              return team?.division === div;
+            });
+            if (divTeams.length > 0) {
+              divisionWinners.set(div, divTeams[0].rosterId);
+            }
+          });
+        }
+        
+        // Override results for each team
+        teams.forEach(team => {
+          const r = results.get(team.rosterId)!;
+          
+          // Set playoff status (0 or 100)
+          if (playoffTeamIds.has(team.rosterId)) {
+            r.makePlayoffs = SIMULATIONS; // 100%
+          } else {
+            r.makePlayoffs = 0; // 0%
+          }
+          
+          // Set 1-seed status
+          if (team.rosterId === oneSeedId) {
+            r.oneSeed = SIMULATIONS; // 100%
+          } else {
+            r.oneSeed = 0; // 0%
+          }
+          
+          // Set division winner status
+          if (hasDivisions && team.division) {
+            const winnerId = divisionWinners.get(team.division);
+            if (team.rosterId === winnerId) {
+              r.divisionWinner = SIMULATIONS; // 100%
+            } else {
+              r.divisionWinner = 0; // 0%
+            }
+          }
+        });
+      }
+
       // Convert to percentages and format response
       // Apply Bayesian smoothing to prevent 0%/100% unless mathematically certain
       // This accounts for upset potential and uncertainty in remaining games
@@ -3228,9 +3362,9 @@ export async function registerRoutes(
         return Math.round(pct * 10) / 10;
       };
 
-      // Only apply smoothing if regular season hasn't ended
-      // If remainingWeeks === 0, use raw percentages (teams are clinched/eliminated)
-      const applySmoothing = remainingWeeks > 0;
+      // Only apply smoothing if regular season hasn't ended AND we're not in postseason
+      // If remainingWeeks === 0 or we're in postseason, use raw percentages (teams are clinched/eliminated)
+      const applySmoothing = remainingWeeks > 0 && !isPostseason;
 
       // Sort by same criteria as dashboard standings: record → points scored → H2H
       const predictions = teams
@@ -3297,6 +3431,7 @@ export async function registerRoutes(
         playoffTeams,
         remainingWeeks,
         currentWeek,
+        seasonType: nflState.season_type,
         hasDivisions,
         simulationCount: SIMULATIONS,
       });
@@ -3495,70 +3630,29 @@ export async function registerRoutes(
         return {};
       };
 
-      // First, identify Round 1 losers to determine which matchups are placement games
+      // Round 1 losers (by seed) so we can exclude 7th place game from main bracket when it has no p set.
       const round1Matchups = bracket.filter(m => m.r === 1);
       const round1Losers: Array<{ rosterId: number; seed: number }> = [];
-      
       round1Matchups.forEach(matchup => {
-        if (matchup.l) {
+        if (matchup.l != null) {
           const seed = seedMap.get(matchup.l);
-          if (seed !== undefined) {
-            round1Losers.push({ rosterId: matchup.l, seed });
-          }
+          if (seed !== undefined) round1Losers.push({ rosterId: matchup.l, seed });
         }
       });
-      
-      // Sort by seed (ascending - lower number = better seed)
       round1Losers.sort((a, b) => a.seed - b.seed);
-      
-      // Identify semifinal losers
-      const semifinalRound = maxRound - 1;
-      const semifinalMatchups = bracket.filter(m => m.r === semifinalRound);
-      const semifinalLosers: number[] = [];
-      
-      semifinalMatchups.forEach(matchup => {
-        if (matchup.l) {
-          semifinalLosers.push(matchup.l);
-        }
-      });
-      
-      // Identify teams involved in placement games
-      const lowestSeededLosers = round1Losers.length >= 2 ? round1Losers.slice(-2).map(l => l.rosterId) : [];
-      const highestSeededLoser = round1Losers.length >= 1 ? round1Losers[0].rosterId : null;
-      const uniqueSemifinalLosers = semifinalLosers.filter((id, index, self) => self.indexOf(id) === index);
+      const twoWorstRound1Losers = round1Losers.length >= 2 ? new Set(round1Losers.slice(-2).map(l => l.rosterId)) : new Set<number>();
+      const isSeventhPlaceGame = (m: typeof bracket[0]) =>
+        twoWorstRound1Losers.size === 2 &&
+        m.t1 != null &&
+        m.t2 != null &&
+        twoWorstRound1Losers.has(m.t1) &&
+        twoWorstRound1Losers.has(m.t2);
 
-      // Transform bracket matchups with team names and seeds
-      // Filter out placement games (3rd, 5th, 7th place) - they belong in consolation section
+      // Main bracket: include only non-placement games or championship (p:1). Exclude p:3, p:5, p:7 and 7th place by structure.
       const bracketWithNames = bracket
         .filter(matchup => {
-          // Exclude if it has placement value (except championship)
-          if (matchup.p && matchup.p !== 1) return false;
-          
-          // Exclude 7th place game: matchup between two lowest seeded Round 1 losers
-          // Check if this matchup involves both of the two lowest seeded Round 1 losers
-          // This game happens after round 1, so exclude it from winners bracket
-          if (lowestSeededLosers.length === 2 && 
-              matchup.t1 && matchup.t2 &&
-              lowestSeededLosers.includes(matchup.t1) && 
-              lowestSeededLosers.includes(matchup.t2)) {
-            // Both teams are the two lowest seeded Round 1 losers - this is the 7th place game
-            return false;
-          }
-          
-          // Exclude 5th place game: matchup involving highest seeded Round 1 loser (if it's not a regular playoff game)
-          // This is trickier - we'll check if it's a matchup that involves the highest seeded loser
-          // but isn't part of the normal bracket progression
-          // Actually, let's be more conservative - only exclude if we're sure it's a placement game
-          
-          // Exclude 3rd place game: matchup between two semifinal losers
-          if (uniqueSemifinalLosers.length >= 2 &&
-              matchup.t1 && matchup.t2 &&
-              uniqueSemifinalLosers.includes(matchup.t1) &&
-              uniqueSemifinalLosers.includes(matchup.t2) &&
-              matchup.r === maxRound) {
-            return false;
-          }
-          
+          if (matchup.p != null && matchup.p !== 1) return false; // exclude placement 3, 5, 7
+          if (isSeventhPlaceGame(matchup)) return false; // 7th place game even when p not set
           return true;
         })
         .map(matchup => {
@@ -3597,179 +3691,44 @@ export async function registerRoutes(
           };
         });
 
-      // Construct consolation/placement games
-      const consolationMatchups: Array<{
-        gameType?: string;
-        round: number;
-        matchupId: number;
-        team1: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
-        team2: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
-        winner: number | null;
-        loser: number | null;
-        placement?: number;
-        team1Score?: number;
-        team2Score?: number;
-      }> = [];
-
-      // Construct placement games based on bracket structure.
-      // Note: `round1Losers` + `semifinalLosers` were already computed above and are reused here.
-      let matchupIdCounter = 100;
-      
-      // Construct 7th place game: Two lowest seeded losers from Round 1
-      if (round1Losers.length >= 2) {
-        const lowestSeededLosers = round1Losers.slice(-2); // Two highest seed numbers (worst teams)
-        
-        if (lowestSeededLosers.length === 2) {
-          const team1Id = lowestSeededLosers[0].rosterId;
-          const team2Id = lowestSeededLosers[1].rosterId;
-          const team1Data = teamMap.get(team1Id);
-          const team2Data = teamMap.get(team2Id);
-          const team1Seed = seedMap.get(team1Id);
-          const team2Seed = seedMap.get(team2Id);
-          
-          // Check if this game exists in losers bracket
-          let seventhPlaceGame = losersBracket?.find(m => 
-            ((m.t1 === team1Id && m.t2 === team2Id) || (m.t1 === team2Id && m.t2 === team1Id)) &&
-            m.p === 7
-          );
-          
-          // Get scores for 7th place game (typically same week as semifinals or later)
-          const seventhPlaceRound = maxRound + 1;
-          const seventhPlaceScores = getMatchupScores(team1Id, team2Id, seventhPlaceRound);
-          
-          consolationMatchups.push({
-            gameType: "7",
-            round: seventhPlaceRound,
-            matchupId: seventhPlaceGame?.m || matchupIdCounter++,
-            team1: team1Data ? {
-              rosterId: team1Id,
-              name: team1Data.name,
-              initials: team1Data.initials,
-              avatar: team1Data.avatar,
-              seed: team1Seed,
-            } : null,
-            team2: team2Data ? {
-              rosterId: team2Id,
-              name: team2Data.name,
-              initials: team2Data.initials,
-              avatar: team2Data.avatar,
-              seed: team2Seed,
-            } : null,
-            winner: seventhPlaceGame?.w || null,
-            loser: seventhPlaceGame?.l || null,
-            placement: 7,
-            team1Score: seventhPlaceScores.team1Score,
-            team2Score: seventhPlaceScores.team2Score,
-          });
+      // Placement section: Sleeper named games p:3, p:5, p:7 only (championship p:1 stays in main bracket).
+      const placementFromBracket = (m: typeof bracket[0]) => {
+        const team1Data = m.t1 ? teamMap.get(m.t1) : null;
+        const team2Data = m.t2 ? teamMap.get(m.t2) : null;
+        const team1Seed = m.t1 ? seedMap.get(m.t1) : undefined;
+        const team2Seed = m.t2 ? seedMap.get(m.t2) : undefined;
+        const scores = getMatchupScores(m.t1, m.t2, m.r);
+        return {
+          gameType: String(m.p),
+          round: m.r,
+          matchupId: m.m,
+          team1: m.t1 && team1Data ? { rosterId: m.t1, name: team1Data.name, initials: team1Data.initials, avatar: team1Data.avatar, seed: team1Seed } : null,
+          team2: m.t2 && team2Data ? { rosterId: m.t2, name: team2Data.name, initials: team2Data.initials, avatar: team2Data.avatar, seed: team2Seed } : null,
+          winner: m.w ?? null,
+          loser: m.l ?? null,
+          placement: m.p,
+          team1Score: scores.team1Score,
+          team2Score: scores.team2Score,
+        };
+      };
+      const fromWinners = bracket.filter(m => m.p === 3 || m.p === 5 || m.p === 7).map(placementFromBracket);
+      const fromLosers = (losersBracket ?? []).filter(m => m.p === 7).map(placementFromBracket);
+      // One per placement (7, 5, 3); prefer winners bracket when both have same placement
+      const byPlacement = new Map<number, (typeof fromWinners)[0]>();
+      [...fromWinners, ...fromLosers].forEach(m => {
+        const p = m.placement ?? 99;
+        if (!byPlacement.has(p)) byPlacement.set(p, m);
+      });
+      // If p:7 not from API, add 7th place game by structure (two worst round 1 losers) so it appears in placement section
+      if (!byPlacement.has(7) && twoWorstRound1Losers.size === 2) {
+        const seventhPlaceGame =
+          bracket.find(isSeventhPlaceGame) ?? (losersBracket ?? []).find(isSeventhPlaceGame);
+        if (seventhPlaceGame) {
+          const entry = placementFromBracket(seventhPlaceGame);
+          byPlacement.set(7, { ...entry, placement: 7, gameType: "7" });
         }
       }
-      
-      // Construct 5th place game: Winner of 7th place game + Highest seeded loser from Round 1
-      if (round1Losers.length >= 1) {
-        const highestSeededLoser = round1Losers[0]; // Lowest seed number (best team that lost)
-        const seventhPlaceGame = consolationMatchups.find(m => m.placement === 7);
-        const seventhPlaceWinner = seventhPlaceGame?.winner || null; // May be null if game not played
-        
-        const team1Id = seventhPlaceWinner; // Winner of 7th place game (or null if not played)
-        const team2Id = highestSeededLoser.rosterId;
-        const team1Data = team1Id ? teamMap.get(team1Id) : null;
-        const team2Data = teamMap.get(team2Id);
-        const team1Seed = team1Id ? seedMap.get(team1Id) : undefined;
-        const team2Seed = seedMap.get(team2Id);
-        
-        // Check if this game exists in losers bracket
-        // Try to find by both teams if team1Id exists, otherwise just by team2Id and placement
-        let fifthPlaceGame = null;
-        if (team1Id) {
-          fifthPlaceGame = losersBracket?.find(m => 
-            ((m.t1 === team1Id && m.t2 === team2Id) || (m.t1 === team2Id && m.t2 === team1Id)) &&
-            m.p === 5
-          );
-        }
-        if (!fifthPlaceGame) {
-          fifthPlaceGame = losersBracket?.find(m => 
-            (m.t1 === team2Id || m.t2 === team2Id) && m.p === 5
-          );
-        }
-        
-        // Get scores for 5th place game (typically same week as semifinals or later)
-        const fifthPlaceRound = maxRound + 1;
-        const fifthPlaceScores = team1Id ? getMatchupScores(team1Id, team2Id, fifthPlaceRound) : {};
-        
-        consolationMatchups.push({
-          gameType: "5",
-          round: fifthPlaceRound,
-          matchupId: fifthPlaceGame?.m || matchupIdCounter++,
-          team1: team1Id && team1Data ? {
-            rosterId: team1Id,
-            name: team1Data.name,
-            initials: team1Data.initials,
-            avatar: team1Data.avatar,
-            seed: team1Seed,
-          } : null,
-          team2: team2Data ? {
-            rosterId: team2Id,
-            name: team2Data.name,
-            initials: team2Data.initials,
-            avatar: team2Data.avatar,
-            seed: team2Seed,
-          } : null,
-          winner: fifthPlaceGame?.w || null,
-          loser: fifthPlaceGame?.l || null,
-          placement: 5,
-          team1Score: fifthPlaceScores.team1Score,
-          team2Score: fifthPlaceScores.team2Score,
-        });
-      }
-      
-      // Construct 3rd place game: Two losers from Semifinals
-      if (semifinalLosers.length >= 2) {
-        const uniqueSemifinalLosers = semifinalLosers.filter((id, index, self) => self.indexOf(id) === index);
-        
-        if (uniqueSemifinalLosers.length >= 2) {
-          const team1Id = uniqueSemifinalLosers[0];
-          const team2Id = uniqueSemifinalLosers[1];
-          const team1Data = teamMap.get(team1Id);
-          const team2Data = teamMap.get(team2Id);
-          const team1Seed = seedMap.get(team1Id);
-          const team2Seed = seedMap.get(team2Id);
-          
-          // Check if this game exists in losers bracket
-          let thirdPlaceGame = losersBracket?.find(m => 
-            ((m.t1 === team1Id && m.t2 === team2Id) || (m.t1 === team2Id && m.t2 === team1Id)) &&
-            m.p === 3
-          );
-          
-          // Get scores for 3rd place game (typically same week as championship)
-          const thirdPlaceRound = maxRound;
-          const thirdPlaceScores = getMatchupScores(team1Id, team2Id, thirdPlaceRound);
-          
-          consolationMatchups.push({
-            gameType: "3",
-            round: thirdPlaceRound,
-            matchupId: thirdPlaceGame?.m || matchupIdCounter++,
-            team1: team1Data ? {
-              rosterId: team1Id,
-              name: team1Data.name,
-              initials: team1Data.initials,
-              avatar: team1Data.avatar,
-              seed: team1Seed,
-            } : null,
-            team2: team2Data ? {
-              rosterId: team2Id,
-              name: team2Data.name,
-              initials: team2Data.initials,
-              avatar: team2Data.avatar,
-              seed: team2Seed,
-            } : null,
-            winner: thirdPlaceGame?.w || null,
-            loser: thirdPlaceGame?.l || null,
-            placement: 3,
-            team1Score: thirdPlaceScores.team1Score,
-            team2Score: thirdPlaceScores.team2Score,
-          });
-        }
-      }
+      const consolationMatchups = [7, 5, 3].filter(p => byPlacement.has(p)).map(p => byPlacement.get(p)!);
 
       res.json({
         matchups: bracketWithNames,
@@ -7013,65 +6972,62 @@ export async function registerRoutes(
         });
 
         // Format picks to match Sleeper API format
-        // Check if years_exp in metadata appears to be current (high values) or historical (low values)
+        // For historical drafts, always fetch current player data and calculate backwards
+        // This is more reliable than relying on metadata which may be missing or incorrect
         const currentYear = new Date().getFullYear();
         const draftYear = parseInt(season);
         const yearsSinceDraft = currentYear - draftYear;
         
-        // Sample some picks to determine if metadata is historical or current
-        const sampleSize = Math.min(10, picks.length);
-        const sampleYearsExp = picks.slice(0, sampleSize)
-          .map(p => p.metadata.years_exp ? parseInt(p.metadata.years_exp) : 0)
-          .filter(exp => exp > 0); // Only non-zero values
-        
-        const avgYearsExp = sampleYearsExp.length > 0 
-          ? sampleYearsExp.reduce((a, b) => a + b, 0) / sampleYearsExp.length 
-          : 0;
-        
-        // If average is high (>= yearsSinceDraft), metadata is likely current, not historical
-        const metadataIsCurrent = avgYearsExp >= yearsSinceDraft;
-        
-        // Debug logging
-        if (season === "2023" && picks.length > 0) {
-          console.log(`[2023 Draft Debug] Years since draft: ${yearsSinceDraft}, Avg metadata years_exp: ${avgYearsExp.toFixed(1)}, Metadata appears: ${metadataIsCurrent ? 'CURRENT' : 'HISTORICAL'}`);
-          const samplePicks = picks.slice(0, Math.min(5, picks.length));
-          samplePicks.forEach((pick, idx) => {
-            const rawYearsExp = pick.metadata.years_exp;
-            const parsedYearsExp = rawYearsExp ? parseInt(rawYearsExp) : 0;
-            const finalYearsExp = metadataIsCurrent 
-              ? Math.max(0, parsedYearsExp - yearsSinceDraft)
-              : parsedYearsExp;
-            console.log(`[2023 Draft Debug] Pick ${idx + 1}: ${pick.metadata.first_name} ${pick.metadata.last_name} - Raw: "${rawYearsExp}", Final: ${finalYearsExp}`);
-          });
+        // Always fetch current player data for accurate years_exp calculation
+        let currentPlayers: Record<string, SleeperPlayer> | null = null;
+        try {
+          currentPlayers = await getAllPlayers();
+          console.log(`[${season} Draft] Fetched current player data for ${Object.keys(currentPlayers).length} players`);
+        } catch (error) {
+          console.error(`[${season} Draft] Failed to fetch current players, will use metadata fallback:`, error);
         }
         
-        // Fetch current player data if metadata appears to be current
-        let currentPlayers: Record<string, SleeperPlayer> | null = null;
-        if (metadataIsCurrent) {
-          try {
-            currentPlayers = await getAllPlayers();
-            console.log(`[2023 Draft Debug] Fetched current player data for ${Object.keys(currentPlayers).length} players`);
-          } catch (error) {
-            console.error(`[2023 Draft Debug] Failed to fetch current players, using metadata:`, error);
-          }
+        // Debug logging for 2023 draft
+        if (season === "2023" && picks.length > 0) {
+          console.log(`[2023 Draft Debug] Years since draft: ${yearsSinceDraft}`);
+          const samplePicks = picks.slice(0, Math.min(5, picks.length));
+          samplePicks.forEach((pick, idx) => {
+            const currentPlayer = currentPlayers?.[pick.player_id];
+            const currentYearsExp = currentPlayer?.years_exp ?? (pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : undefined);
+            const yearsExpAtDraft = currentYearsExp !== undefined ? Math.max(0, currentYearsExp - yearsSinceDraft) : 0;
+            console.log(`[2023 Draft Debug] Pick ${idx + 1}: ${pick.metadata.first_name} ${pick.metadata.last_name} - Current: ${currentYearsExp}, At Draft: ${yearsExpAtDraft}`);
+          });
         }
         
         const formattedPicks = picks.map(pick => {
           let yearsExp: number;
           
-          if (metadataIsCurrent && currentPlayers) {
-            // Metadata is current, fetch from current player data and calculate backwards
+          if (currentPlayers) {
+            // Use current player data and calculate backwards
             const currentPlayer = currentPlayers[pick.player_id];
             if (currentPlayer?.years_exp !== undefined) {
               yearsExp = Math.max(0, currentPlayer.years_exp - yearsSinceDraft);
             } else {
-              // Fallback to metadata calculation
+              // Fallback: try metadata, but assume it might be current if present
               const metadataExp = pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0;
-              yearsExp = Math.max(0, metadataExp - yearsSinceDraft);
+              // If metadata value is high, it's likely current; if low/missing, default to 0 (rookie)
+              if (metadataExp >= yearsSinceDraft) {
+                yearsExp = Math.max(0, metadataExp - yearsSinceDraft);
+              } else {
+                // Metadata is missing or appears historical, default to 0 (rookie) as fallback
+                yearsExp = 0;
+              }
             }
           } else {
-            // Metadata is historical, use directly
-            yearsExp = pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0;
+            // No current player data available, try to use metadata intelligently
+            const metadataExp = pick.metadata.years_exp ? parseInt(pick.metadata.years_exp) : 0;
+            // If metadata value is high (>= yearsSinceDraft), treat as current and calculate backwards
+            if (metadataExp >= yearsSinceDraft) {
+              yearsExp = Math.max(0, metadataExp - yearsSinceDraft);
+            } else {
+              // Metadata is missing or appears historical, use directly
+              yearsExp = metadataExp;
+            }
           }
           
           return {

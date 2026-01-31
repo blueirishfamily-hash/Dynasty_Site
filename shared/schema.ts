@@ -356,6 +356,7 @@ export const teamStandingSchema = z.object({
   ties: z.number().optional(),
   pointsFor: z.number(),
   pointsAgainst: z.number(),
+  maxPointsFor: z.number().optional(),
   streak: z.string().optional(),
   isUser: z.boolean().optional(),
 });
