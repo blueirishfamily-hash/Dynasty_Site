@@ -55,6 +55,7 @@ interface DraftPick {
   isUserPick?: boolean;
   isNFLRookie?: boolean;
   rosterId?: number;
+  rookieDraftPosition?: { round: number; pick: number };
 }
 
 interface TeamStanding {
@@ -160,38 +161,37 @@ export default function Draft() {
   const HISTORICAL_LEAGUE_2023 = "918240874625257472";
   const HISTORICAL_LEAGUE_2024 = "1048746932522405888";
 
-  const { data: historicalDrafts2023 } = useQuery<DraftInfo[]>({
+  const { data: historicalDrafts2023, error: error2023 } = useQuery<DraftInfo[]>({
     queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2023, "drafts"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2023}/drafts`);
-      if (!res.ok) throw new Error("Failed to fetch 2023 drafts");
-      return res.json();
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Failed to fetch 2023 drafts:", res.status, errorText);
+        throw new Error(`Failed to fetch 2023 drafts: ${res.status} ${errorText}`);
+      }
+      const data = await res.json();
+      console.log("2023 drafts fetched:", data?.length || 0, "drafts");
+      return data;
     },
+    retry: 1,
   });
 
-  const { data: historicalDrafts2024, isLoading: historicalDraftsLoading } = useQuery<DraftInfo[]>({
+  const { data: historicalDrafts2024, isLoading: historicalDraftsLoading, error: error2024 } = useQuery<DraftInfo[]>({
     queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2024, "drafts"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2024}/drafts`);
-      if (!res.ok) throw new Error("Failed to fetch 2024 drafts");
-      return res.json();
-    },
-  });
-
-  // Combine current league drafts with historical 2023 and 2024 drafts
-  const allDrafts = useMemo(() => {
-    const current = (drafts || []).filter((d) => d && d.draftId);
-    const historical2023 = (historicalDrafts2023 || []).filter((d) => d && d.draftId);
-    const historical2024 = (historicalDrafts2024 || []).filter((d) => d && d.draftId);
-    // Combine and deduplicate by draftId
-    const draftMap = new Map<string, DraftInfo>();
-    [...current, ...historical2023, ...historical2024].forEach(d => {
-      if (!draftMap.has(d.draftId)) {
-        draftMap.set(d.draftId, d);
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Failed to fetch 2024 drafts:", res.status, errorText);
+        throw new Error(`Failed to fetch 2024 drafts: ${res.status} ${errorText}`);
       }
-    });
-    return Array.from(draftMap.values());
-  }, [drafts, historicalDrafts2023, historicalDrafts2024]);
+      const data = await res.json();
+      console.log("2024 drafts fetched:", data?.length || 0, "drafts");
+      return data;
+    },
+    retry: 1,
+  });
 
   // Determine if selected draft is from 2023/2024 (fetch from Sleeper) or snapshot
   const selectedDraftInfo = useMemo(() => {
@@ -218,6 +218,42 @@ export default function Draft() {
     
     return { isSnapshot: false, leagueId: null, season: null };
   }, [selectedDraftId, historicalDrafts2023, historicalDrafts2024]);
+
+  // Fetch rosters and users from historical 2023 league for team display
+  const { data: historicalRosters2023 } = useQuery({
+    queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2023, "rosters"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2023}/rosters`);
+      if (!res.ok) throw new Error("Failed to fetch 2023 rosters");
+      return res.json();
+    },
+    enabled: selectedDraftInfo.season === "2023",
+  });
+
+  const { data: historicalUsers2023 } = useQuery({
+    queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2023, "users"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2023}/users`);
+      if (!res.ok) throw new Error("Failed to fetch 2023 users");
+      return res.json();
+    },
+    enabled: selectedDraftInfo.season === "2023",
+  });
+
+  // Combine current league drafts with historical 2023 and 2024 drafts
+  const allDrafts = useMemo(() => {
+    const current = (drafts || []).filter((d) => d && d.draftId);
+    const historical2023 = (historicalDrafts2023 || []).filter((d) => d && d.draftId);
+    const historical2024 = (historicalDrafts2024 || []).filter((d) => d && d.draftId);
+    // Combine and deduplicate by draftId
+    const draftMap = new Map<string, DraftInfo>();
+    [...current, ...historical2023, ...historical2024].forEach(d => {
+      if (!draftMap.has(d.draftId)) {
+        draftMap.set(d.draftId, d);
+      }
+    });
+    return Array.from(draftMap.values());
+  }, [drafts, historicalDrafts2023, historicalDrafts2024]);
 
   const { data: historicalPicks, isLoading: historicalLoading } = useQuery<DraftPickData[]>({
     queryKey: ["/api/draft", selectedDraftId, "picks", selectedDraftInfo.isSnapshot, selectedDraftInfo.leagueId, selectedDraftInfo.season],
@@ -367,9 +403,10 @@ export default function Draft() {
       return Number(p.round || 0) <= totalRounds;
     })
     .filter((p) => {
-      // If showing rookies only for 2023 draft, filter to NFL rookies (yearsExp === 0); DEF never filtered out
+      // If showing rookies only for 2023 draft, filter to NFL rookies (yearsExp === 0); exclude DEF
       if (is2023Draft && showRookiesOnly) {
-        if ((p.position || "").toUpperCase() === "DEF") return true;
+        // Exclude defenses when showing rookies only
+        if ((p.position || "").toUpperCase() === "DEF") return false;
         return (p.yearsExp ?? 0) === 0;
       }
       return true;
@@ -406,6 +443,35 @@ export default function Draft() {
     .sort((a: DraftPick, b: DraftPick) => {
       if (a.round !== b.round) return a.round - b.round;
       return a.pick - b.pick;
+    })
+    .map((pick, index, allPicks) => {
+      // Calculate rookie draft position if showing rookies only for 2023 draft
+      let rookieDraftPosition: { round: number; pick: number } | undefined = undefined;
+      if (is2023Draft && showRookiesOnly && pick.isNFLRookie) {
+        // Find all rookies and sort by original draft order
+        const allRookies = allPicks.filter(p => p.isNFLRookie);
+        const sortedRookies = [...allRookies].sort((a, b) => {
+          if (a.round !== b.round) return a.round - b.round;
+          return a.pick - b.pick;
+        });
+        
+        // Find this pick's index in the sorted rookies list
+        const rookieIndex = sortedRookies.findIndex(r => 
+          r.round === pick.round && r.pick === pick.pick && r.player?.id === pick.player?.id
+        );
+        
+        if (rookieIndex >= 0) {
+          // Calculate rookie position: round = Math.floor(index / 12) + 1, pick = (index % 12) + 1
+          const rookieRound = Math.floor(rookieIndex / 12) + 1;
+          const rookiePick = (rookieIndex % 12) + 1;
+          rookieDraftPosition = { round: rookieRound, pick: rookiePick };
+        }
+      }
+      
+      return {
+        ...pick,
+        rookieDraftPosition,
+      };
     });
 
   // Filter for completed drafts (for historical tab)
@@ -828,17 +894,76 @@ export default function Draft() {
       if (rid != null) pickMap.set(`${p.round}-${rid}`, p);
     });
 
-    // Team column order = draft order in round 1 (by pick/draft slot)
-    const round1Picks = picks.filter(p => (p.round || 1) === 1).sort((a, b) => a.pick - b.pick);
-    const teamOrder: number[] = round1Picks.length > 0
-      ? round1Picks.map(p => p.rosterId ?? p.pick).filter((id): id is number => id != null && !isNaN(Number(id)))
-      : Array.from(new Set(picks.map(p => p.rosterId ?? p.pick).filter((id): id is number => id != null && !isNaN(Number(id))))).sort((a, b) => a - b);
+    // Get all unique rosterIds from all picks (across all rounds)
+    const allPicksRosterIds = Array.from(new Set(
+      picks.map(p => p.rosterId ?? p.pick).filter((id): id is number => id != null && !isNaN(Number(id)))
+    ));
 
+    // For 2023 draft, use historical rosters to get all 12 teams
+    let allTeamRosterIds: number[] = [];
+    if (is2023Draft && historicalRosters2023 && Array.isArray(historicalRosters2023)) {
+      // Get all rosterIds from historical rosters
+      allTeamRosterIds = historicalRosters2023
+        .map((r: any) => r.roster_id)
+        .filter((id: any): id is number => id != null && !isNaN(Number(id)))
+        .sort((a: number, b: number) => a - b);
+    } else {
+      // Fallback: use all unique rosterIds from picks
+      allTeamRosterIds = [...allPicksRosterIds].sort((a, b) => a - b);
+    }
+
+    // Team column order = draft order in round 1 (by pick/draft slot)
+    // Sort round 1 picks by pick number to get draft order
+    const round1Picks = picks.filter(p => (p.round || 1) === 1).sort((a, b) => a.pick - b.pick);
+    const round1RosterIds = round1Picks
+      .map(p => p.rosterId ?? p.pick)
+      .filter((id): id is number => id != null && !isNaN(Number(id)));
+
+    // Build team order: start with round 1 order, then add any missing teams
+    const teamOrder: number[] = [];
+    const usedRosterIds = new Set<number>();
+    
+    // First, add teams in round 1 draft order
+    round1RosterIds.forEach(rid => {
+      if (!usedRosterIds.has(rid)) {
+        teamOrder.push(rid);
+        usedRosterIds.add(rid);
+      }
+    });
+    
+    // Then, add any remaining teams from allTeamRosterIds that weren't in round 1
+    allTeamRosterIds.forEach(rid => {
+      if (!usedRosterIds.has(rid)) {
+        teamOrder.push(rid);
+        usedRosterIds.add(rid);
+      }
+    });
+
+    // Build team names map from picks first
     const teamNames = new Map<number, string>();
     picks.forEach(p => {
       const rid = p.rosterId ?? p.pick;
       if (rid != null && p.fantasyTeam) teamNames.set(rid, p.fantasyTeam);
     });
+
+    // For 2023 draft, supplement team names from historical users if available
+    if (is2023Draft && historicalUsers2023 && historicalRosters2023 && Array.isArray(historicalUsers2023) && Array.isArray(historicalRosters2023)) {
+      const userMap = new Map<string, any>();
+      historicalUsers2023.forEach((u: any) => {
+        if (u.user_id) userMap.set(u.user_id, u);
+      });
+
+      historicalRosters2023.forEach((r: any) => {
+        const rosterId = r.roster_id;
+        if (rosterId != null && !teamNames.has(rosterId)) {
+          const user = userMap.get(r.owner_id);
+          if (user) {
+            const teamName = user.metadata?.team_name || user.display_name || `Team ${rosterId}`;
+            teamNames.set(rosterId, teamName);
+          }
+        }
+      });
+    }
 
     const cellMinHeight = "min-h-[80px]";
 
@@ -849,7 +974,7 @@ export default function Draft() {
       return (
         <div
           key={key}
-          className={`p-2 rounded-md border border-border hover-elevate ${cellMinHeight} flex flex-col ${
+          className={`p-2 rounded-md border border-border hover-elevate ${cellMinHeight} flex flex-col relative ${
             pick.isUserPick ? "bg-primary/10 border-primary/30" : "bg-card"
           }`}
           data-testid={`pick-${pick.round}-${pick.pick}`}
@@ -858,6 +983,11 @@ export default function Draft() {
             <span className="text-xs text-muted-foreground">
               {pick.round}.{String(pick.pick || "").padStart(2, "0")}
             </span>
+            {showRookiesOnly && pick.rookieDraftPosition && (
+              <span className="text-xs font-semibold text-yellow-500">
+                {pick.rookieDraftPosition.round}.{String(pick.rookieDraftPosition.pick).padStart(2, "0")}
+              </span>
+            )}
           </div>
           {pick.player ? (
             <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -1034,11 +1164,18 @@ export default function Draft() {
                         <span className="text-xs text-muted-foreground">
                           {pick.round}.{String(pick.pick || "").padStart(2, "0")}
                         </span>
-                        {isTraded && !showPlayers && pick.originalOwner?.initials && (
-                          <Badge variant="outline" className="text-[10px] px-1">
-                            via {pick.originalOwner.initials}
-                          </Badge>
-                        )}
+                        <div className="flex items-center gap-1">
+                          {showRookiesOnly && pick.rookieDraftPosition && (
+                            <span className="text-xs font-semibold text-yellow-500">
+                              {pick.rookieDraftPosition.round}.{String(pick.rookieDraftPosition.pick).padStart(2, "0")}
+                            </span>
+                          )}
+                          {isTraded && !showPlayers && pick.originalOwner?.initials && (
+                            <Badge variant="outline" className="text-[10px] px-1">
+                              via {pick.originalOwner.initials}
+                            </Badge>
+                          )}
+                        </div>
                       </div>
 
                       {pick.player ? (
@@ -1281,10 +1418,20 @@ export default function Draft() {
               ) : (
                 <div className="text-center text-muted-foreground py-8">
                   <p>No historical drafts found.</p>
-                  {drafts && drafts.length > 0 && (
+                  {(error2023 || error2024) && (
+                    <p className="text-xs mt-2 text-destructive">
+                      Error fetching historical drafts: {error2023?.message || error2024?.message}
+                    </p>
+                  )}
+                  {allDrafts && allDrafts.length > 0 && (
                     <p className="text-xs mt-2">
-                      Found {drafts.length} total drafts. 
-                      Completed drafts: {drafts.filter((d: any) => isDraftComplete(d.status)).length}
+                      Found {allDrafts.length} total drafts ({historicalDrafts2023?.length || 0} from 2023, {historicalDrafts2024?.length || 0} from 2024, {drafts?.length || 0} from current league). 
+                      Completed drafts: {completedDrafts.length}
+                    </p>
+                  )}
+                  {(!historicalDrafts2023 && !historicalDrafts2024 && !draftsLoading && !historicalDraftsLoading) && (
+                    <p className="text-xs mt-2">
+                      Historical draft queries completed but returned no data.
                     </p>
                   )}
                 </div>

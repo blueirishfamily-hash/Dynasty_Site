@@ -360,16 +360,17 @@ export async function registerRoutes(
     try {
       const { leagueId, playerId } = req.params;
       
-      // Get all completed drafts for the league, sorted by season descending
+      // Get all completed drafts for the league, sorted by season descending.
+      // Include rookie, linear, and snake types (Sleeper uses order type, not "rookie" for many leagues).
       const drafts = await getLeagueDrafts(leagueId);
       const completedDrafts = drafts
-        .filter(d => d.status === "complete" && d.type === "rookie")
+        .filter(d => d.status === "complete" && ["rookie", "linear", "snake"].includes(d.type))
         .sort((a, b) => parseInt(b.season) - parseInt(a.season));
       
       // Search through drafts from most recent to oldest
       for (const draft of completedDrafts) {
         const picks = await getDraftPicks(draft.draft_id);
-        const playerPick = picks.find(p => p.player_id === playerId);
+        const playerPick = picks.find(p => String(p.player_id) === String(playerId));
         
         if (playerPick) {
           return res.json({
@@ -1614,28 +1615,35 @@ export async function registerRoutes(
         getAllPlayers(),
       ]);
       
-      const season = league.season || nflState.season || new Date().getFullYear().toString();
-      
-      const [seasonStats] = await Promise.all([
-        getPlayerStats(season),
-      ]);
+      const season = league.season || nflState?.season || new Date().getFullYear().toString();
+
+      let seasonStats: Record<string, Record<string, number>> = {};
+      try {
+        const [stats] = await Promise.all([getPlayerStats(season)]);
+        seasonStats = stats || {};
+      } catch (statsErr) {
+        console.warn("[Roster Endpoint] Player stats unavailable, using zeros:", (statsErr as Error)?.message);
+      }
 
       const userRoster = rosters.find(r => r.owner_id === req.params.userId);
       if (!userRoster) {
         return res.status(404).json({ error: "Roster not found" });
       }
 
+      // Normalize player ID for lookup (Sleeper may use string or number in different places)
+      const playerById = (pid: string) => players[pid] ?? players[String(pid)];
+      const statsById = (pid: string) => seasonStats[pid] ?? seasonStats[String(pid)];
+
       const positionStats: Record<string, number[]> = {};
 
       // Collect all player stats by position across the league
       rosters.forEach(roster => {
         (roster.players || []).forEach(pid => {
-          const player = players[pid];
+          const player = playerById(pid);
           if (!player) return;
           const pos = player.position;
           if (!["QB", "RB", "WR", "TE"].includes(pos)) return;
-          
-          const stats = seasonStats[pid];
+          const stats = statsById(pid);
           const points = stats?.pts_ppr || stats?.pts_std || 0;
           if (!positionStats[pos]) positionStats[pos] = [];
           positionStats[pos].push(points);
@@ -1654,46 +1662,62 @@ export async function registerRoutes(
 
       // Calculate position ranks
       const positionRanks: Record<string, Map<string, number>> = {};
-      Object.entries(positionStats).forEach(([pos, pointsArr]) => {
+      Object.entries(positionStats).forEach(([pos]) => {
         const sortedWithIds = rosters
           .flatMap(r => (r.players || []).map(pid => {
-            const player = players[pid];
+            const player = playerById(pid);
             if (!player || player.position !== pos) return null;
-            const stats = seasonStats[pid];
-            return { pid, points: stats?.pts_ppr || stats?.pts_std || 0 };
+            const stats = statsById(pid);
+            return { pid: String(pid), points: stats?.pts_ppr || stats?.pts_std || 0 };
           }))
           .filter((x): x is { pid: string; points: number } => x !== null)
           .sort((a, b) => b.points - a.points);
-        
         positionRanks[pos] = new Map(sortedWithIds.map((item, idx) => [item.pid, idx + 1]));
       });
 
       const getStatus = (pid: string): "starter" | "bench" | "taxi" | "ir" => {
-        if (userRoster.starters?.includes(pid)) return "starter";
-        if (userRoster.taxi?.includes(pid)) return "taxi";
-        if (userRoster.reserve?.includes(pid)) return "ir";
+        const p = String(pid);
+        const starters = (userRoster.starters || []).map(String);
+        const taxi = (userRoster.taxi || []).map(String);
+        const reserve = (userRoster.reserve || []).map(String);
+        if (starters.includes(p)) return "starter";
+        if (taxi.includes(p)) return "taxi";
+        if (reserve.includes(p)) return "ir";
         return "bench";
       };
 
       // Use effective week to handle offseason correctly
       const effectiveWeek = getEffectiveWeek(nflState, league);
-      const weeksPlayed = Math.max(1, effectiveWeek); // Ensure at least 1 to avoid division by zero
-      
-      // Debug logging for troubleshooting
-      console.log(`[Roster Endpoint] Effective week: ${effectiveWeek}, NFL week: ${nflState?.week}, League season: ${league?.season}, NFL season: ${nflState?.season}, Season type: ${nflState?.season_type}, Weeks played: ${weeksPlayed}`);
-      
-      const rosterPlayers = (userRoster.players || [])
+      const weeksPlayed = Math.max(1, effectiveWeek);
+
+      const rosterPlayerIds = (userRoster.players || []).map(String);
+      const rosterPlayers = rosterPlayerIds
         .map(pid => {
-          const player = players[pid];
-          if (!player) return null;
-          
-          const stats = seasonStats[pid];
+          const player = playerById(pid);
+          const stats = statsById(pid);
           const points = stats?.pts_ppr || stats?.pts_std || 0;
-          
+
+          if (!player) {
+            // Still include roster slot so My Team shows something when player cache misses
+            return {
+              id: pid,
+              name: `Player ${pid.slice(0, 8)}`,
+              position: "FLEX" as Position,
+              team: null,
+              age: undefined,
+              yearsExp: undefined,
+              injuryStatus: null,
+              status: getStatus(pid),
+              seasonPoints: points,
+              weeklyAvg: weeksPlayed > 0 ? points / weeksPlayed : 0,
+              positionRank: 999,
+            };
+          }
+
           return {
             id: pid,
-            name: player.full_name || `${player.first_name} ${player.last_name}`,
-            position: player.position as Position,
+            name: player.full_name || `${player.first_name || ""} ${player.last_name || ""}`.trim() || "Unknown",
+            position: (player.position || "FLEX") as Position,
             team: player.team,
             age: player.age,
             yearsExp: player.years_exp,
@@ -1704,7 +1728,6 @@ export async function registerRoutes(
             positionRank: positionRanks[player.position]?.get(pid) || 999,
           };
         })
-        .filter((p) => p !== null)
         .sort((a, b) => b.seasonPoints - a.seasonPoints);
 
       res.json(rosterPlayers);
@@ -2533,13 +2556,13 @@ export async function registerRoutes(
                 return;
               }
               
-              // Q1 = $16, Q2 = $12, Q3 = $8, Q4 = $4 (stored as 160, 120, 80, 40)
+              // Q1 = $20, Q2 = $15, Q3 = $10, Q4 = $5 (stored as 200, 150, 100, 50)
               // Note: getQuartile returns 1 for top quartile (highest points), 4 for bottom quartile
               const salaryMap: Record<1 | 2 | 3 | 4, number> = {
-                1: 160, // $16 - Top quartile
-                2: 120, // $12 - Second quartile
-                3: 80,  // $8 - Third quartile
-                4: 40,  // $4 - Bottom quartile
+                1: 200, // $20 - Top quartile
+                2: 150, // $15 - Second quartile
+                3: 100, // $10 - Third quartile
+                4: 50,  // $5 - Bottom quartile
               };
               const salary = salaryMap[quartile];
               
@@ -2547,6 +2570,11 @@ export async function registerRoutes(
                 console.warn(`[Assign Contracts] Invalid salary for quartile ${quartile} for player ${player.playerId} (${player.name})`);
                 return;
               }
+              
+              // Rookies are included in quartile rankings (GET player-rankings) but must not be assigned contracts by this feature
+              const playerData = players[player.playerId];
+              const yearsExp = typeof playerData?.years_exp === 'string' ? parseInt(playerData.years_exp, 10) : playerData?.years_exp;
+              if (yearsExp == null || yearsExp < 3) return;
               
               contractsToAssign.push({
                 rosterId: Number(player.rosterId),

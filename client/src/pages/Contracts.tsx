@@ -2239,12 +2239,12 @@ function ManageTeamContractsTab({
       const player = (position as any).players?.find((p: any) => p.playerId === playerId);
       if (player) {
         const quartile = player.quartile;
-        // Quartile salary map: Q1=$16M, Q2=$12M, Q3=$8M, Q4=$4M (in tenths: 160, 120, 80, 40)
+        // Quartile salary map: Q1=$20M, Q2=$15M, Q3=$10M, Q4=$5M (in tenths: 200, 150, 100, 50)
         const salaryMap: Record<number, number> = {
-          1: 160, // $16M
-          2: 120, // $12M
-          3: 80,  // $8M
-          4: 40,  // $4M
+          1: 200, // $20M
+          2: 150, // $15M
+          3: 100, // $10M
+          4: 50,  // $5M
         };
         return { quartile, salary: salaryMap[quartile] || null };
       }
@@ -6115,6 +6115,138 @@ export default function Contracts() {
     },
   });
 
+  // Handler for "Assign Rookies" button - sets rookie toggle for players with yearsExp < 4
+  const handleAssignRookies = () => {
+    if (!rosters || !playerMap) {
+      toast({
+        title: "Error",
+        description: "Unable to load rosters or players. Please refresh the page.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let count = 0;
+    rosters.forEach((roster: any) => {
+      const rosterId = roster.roster_id.toString();
+      (roster.players || []).forEach((playerId: string) => {
+        const player = playerMap[playerId];
+        const isDef = (player?.position || "").toUpperCase() === "DEF";
+        if (player && (player.yearsExp ?? 0) < 4 && !isDef) {
+          const yearsExp = player.yearsExp ?? 0;
+          const remainingYears = 4 - yearsExp;
+          
+          // Set rookie contract flag
+          handleContractChange(rosterId, playerId, "isRookieContract", true);
+          // Set remaining contract years
+          handleContractChange(rosterId, playerId, "originalContractYears", remainingYears);
+          count++;
+        }
+      });
+    });
+
+    toast({
+      title: "Rookies Assigned",
+      description: `Successfully assigned rookie contract designation to ${count} players with less than 4 years of NFL experience.`,
+    });
+  };
+
+  // Handler for "Assign Rookie Contracts" button - applies rookie pay scale
+  const handleAssignRookieContracts = async () => {
+    if (!league?.leagueId || !rosters || !playerMap) {
+      toast({
+        title: "Error",
+        description: "Unable to load league, rosters, or players. Please refresh the page.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    const playersToProcess: Array<{rosterId: string; playerId: string; yearsExp: number}> = [];
+    
+    // Collect all players with rookie toggle ON (exclude defenses)
+    rosters.forEach((roster: any) => {
+      const rosterId = roster.roster_id.toString();
+      (roster.players || []).forEach((playerId: string) => {
+        const contract = contractData[rosterId]?.[playerId];
+        const player = playerMap[playerId];
+        const isDef = (player?.position || "").toUpperCase() === "DEF";
+        if (contract?.isRookieContract && !isDef) {
+          playersToProcess.push({
+            rosterId,
+            playerId,
+            yearsExp: player?.yearsExp ?? 0
+          });
+        }
+      });
+    });
+
+    if (playersToProcess.length === 0) {
+      toast({
+        title: "No Players Found",
+        description: "No players with rookie contract designation found. Please use 'Assign Rookies' first.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    let assignedCount = 0;
+    let errorCount = 0;
+
+    // Fetch draft positions and apply salaries
+    for (const {rosterId, playerId, yearsExp} of playersToProcess) {
+      try {
+        // Fetch draft position
+        const res = await fetch(`/api/league/${league.leagueId}/player/${playerId}/draft-position`);
+        if (!res.ok) {
+          errorCount++;
+          continue;
+        }
+
+        const draftPos = await res.json();
+        const contract = contractData[rosterId]?.[playerId];
+        const remainingYears = contract?.originalContractYears || (4 - yearsExp);
+        
+        let salary = 0;
+        if (draftPos && draftPos.round != null && draftPos.draftSlot != null) {
+          // If round 4 or 5, use 3.12 salary ($2M)
+          if (draftPos.round >= 4) {
+            salary = getRookieSalary(3, 12); // $2M
+          } else {
+            salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
+          }
+        } else {
+          // No draft position (undrafted or not in league draft) - use default rookie salary ($2M)
+          salary = getRookieSalary(3, 12);
+        }
+        
+        // Apply salary to remaining years
+        const salaries: Record<number, number> = {};
+        for (let i = 0; i < remainingYears; i++) {
+          salaries[CURRENT_YEAR + i] = salary;
+        }
+        handleContractChange(rosterId, playerId, "salaries", salaries);
+        assignedCount++;
+      } catch (error) {
+        console.error(`Error processing player ${playerId}:`, error);
+        errorCount++;
+      }
+    }
+
+    if (assignedCount > 0) {
+      toast({
+        title: "Rookie Contracts Assigned",
+        description: `Successfully assigned rookie contracts to ${assignedCount} player${assignedCount !== 1 ? 's' : ''}.${errorCount > 0 ? ` ${errorCount} player${errorCount !== 1 ? 's' : ''} could not be processed.` : ''}`,
+      });
+    } else {
+      toast({
+        title: "No Contracts Assigned",
+        description: `Unable to assign contracts. ${errorCount > 0 ? `${errorCount} player${errorCount !== 1 ? 's' : ''} had errors.` : 'No draft positions found for eligible players.'}`,
+        variant: "destructive",
+      });
+    }
+  };
+
   const handleSave = async () => {
     if (!league?.leagueId) return;
 
@@ -6533,7 +6665,7 @@ export default function Contracts() {
                       <h3 className="font-semibold mb-1">Assign Contracts by Quartile</h3>
                       <p className="text-sm text-muted-foreground mb-2">
                         Automatically assign 2-year contracts to players with 3+ years of NFL experience based on their 
-                        fantasy point quartile rankings (Q1: $16M, Q2: $12M, Q3: $8M, Q4: $4M per year).
+                        fantasy point quartile rankings (Q1: $20M, Q2: $15M, Q3: $10M, Q4: $5M per year).
                       </p>
                       <p className="text-xs text-amber-600 font-medium">
                         This will assign contracts to all eligible players. Existing contracts will be updated.
@@ -6581,26 +6713,38 @@ export default function Contracts() {
                     <div className="flex-1">
                       <h3 className="font-semibold mb-1">Assign Rookie Contracts</h3>
                       <p className="text-sm text-muted-foreground mb-2">
-                        Assign rookie contracts based on draft position. Rookies drafted in rounds 1-3 will receive 
-                        contracts based on the rookie pay scale (Round 1: $6-12M, Round 2: $4M, Round 3: $2M per year for 3 years).
+                        Step 1: Use "Assign Rookies" to automatically identify players with less than 4 years of NFL experience and set their rookie contract designation. Step 2: Use "Assign Rookie Contracts" to apply the rookie pay scale based on draft position.
                       </p>
-                      <p className="text-xs text-amber-600 font-medium">
-                        This will only assign contracts to rookies with draft positions in the most recent completed draft.
+                      <p className="text-xs text-amber-600 font-medium mb-2">
+                        Rookies drafted in rounds 1-3 receive contracts based on the rookie pay scale (Round 1: $6-12M, Round 2: $4M, Round 3: $2M per year). Rounds 4-5 use the same pay scale as 3.12 ($2M).
                       </p>
                     </div>
-                    <Button
-                      variant="outline"
-                      onClick={() => {
-                        toast({
-                          title: "Coming Soon",
-                          description: "Rookie contract assignment feature is being developed. Use the Contract Input tab to manually assign rookie contracts.",
-                        });
-                      }}
-                      className="whitespace-nowrap"
-                    >
-                      <UserPlus className="w-4 h-4 mr-2" />
-                      Assign Rookies
-                    </Button>
+                    <div className="flex flex-col gap-2">
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          if (confirm("This will set the rookie contract designation for all players with less than 4 years of NFL experience. Continue?")) {
+                            handleAssignRookies();
+                          }
+                        }}
+                        className="whitespace-nowrap"
+                      >
+                        <UserPlus className="w-4 h-4 mr-2" />
+                        Assign Rookies
+                      </Button>
+                      <Button
+                        variant="default"
+                        onClick={() => {
+                          if (confirm("This will assign rookie contract salaries based on draft position to all players with the rookie contract designation. Continue?")) {
+                            handleAssignRookieContracts();
+                          }
+                        }}
+                        className="whitespace-nowrap"
+                      >
+                        <DollarSign className="w-4 h-4 mr-2" />
+                        Assign Rookie Contracts
+                      </Button>
+                    </div>
                   </div>
                 </div>
               </CardContent>
