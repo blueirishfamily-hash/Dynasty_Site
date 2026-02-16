@@ -779,11 +779,27 @@ export class DatabaseStorage implements IStorage {
           const [updated] = await db
             .update(playerContractsTable)
             .set(retryUpdateData)
-        .where(eq(playerContractsTable.id, existing.id))
-        .returning();
+            .where(eq(playerContractsTable.id, existing.id))
+            .returning();
+          return updated;
+        }
 
-      return updated;
-    }
+        // Handle not-null violation (23502) for has_been_extended / has_been_franchise_tagged
+        const isNotNullError = errorCode === '23502' &&
+          (errorMessage.includes('has_been_extended') || errorMessage.includes('has_been_franchise_tagged'));
+        if (isNotNullError) {
+          const retryUpdateData = {
+            ...updateData,
+            hasBeenExtended: updateData.hasBeenExtended ?? existing.hasBeenExtended ?? 0,
+            hasBeenFranchiseTagged: updateData.hasBeenFranchiseTagged ?? existing.hasBeenFranchiseTagged ?? 0,
+          };
+          const [updated] = await db
+            .update(playerContractsTable)
+            .set(retryUpdateData)
+            .where(eq(playerContractsTable.id, existing.id))
+            .returning();
+          return updated;
+        }
 
         // Re-throw if it's not a column error or if retry didn't work
         throw error;
@@ -840,7 +856,16 @@ export class DatabaseStorage implements IStorage {
         delete retryInsertData.hasBeenFranchiseTagged;
         
         const [inserted] = await db.insert(playerContractsTable).values(retryInsertData).returning();
-    return inserted;
+        return inserted;
+      }
+
+      // Handle not-null violation (23502) for has_been_extended / has_been_franchise_tagged
+      const isNotNullError = errorCode === '23502' &&
+        (errorMessage.includes('has_been_extended') || errorMessage.includes('has_been_franchise_tagged'));
+      if (isNotNullError) {
+        const retryInsertData = { ...insertData, hasBeenExtended: 0, hasBeenFranchiseTagged: 0 };
+        const [inserted] = await db.insert(playerContractsTable).values(retryInsertData).returning();
+        return inserted;
       }
       
       // Re-throw if it's not a column error or if retry didn't work

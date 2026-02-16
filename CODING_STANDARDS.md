@@ -6,7 +6,7 @@ This document outlines the coding structure, patterns, and conventions used in t
 
 ### Tech Stack
 - **Frontend**: React 18.3 with TypeScript, Wouter for routing, TanStack Query for data fetching
-- **Backend**: Express.js with TypeScript, Neon PostgreSQL via Drizzle ORM
+- **Backend**: Express.js with TypeScript, Supabase PostgreSQL via Drizzle ORM
 - **UI**: Radix UI components with Tailwind CSS, shadcn/ui pattern
 - **Build**: Vite for development, esbuild for production
 - **Deployment**: Replit with autoscale deployment
@@ -56,14 +56,17 @@ This document outlines the coding structure, patterns, and conventions used in t
 When the server is not running, use the following process to start the server in a new PowerShell window **with database connection** and open the preview browser:
 
 1. **Start the server in a new PowerShell window with database connection**:
+   - Ensure `.env` in the project root contains `DATABASE_URL` (your Supabase connection string).
+   - Then run:
    ```powershell
-   Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'C:\Users\elwth\OneDrive\Desktop\Dynasty Site Original\Dynasty_Site' ; `$env:DATABASE_URL='postgresql://neondb_owner:npg_6jNhWviYx5su@ep-summer-meadow-aeij97oi.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require' ; `$env:NODE_ENV='development' ; `$env:PORT='5000' ; npm run dev"
+   Start-Process powershell -ArgumentList "-NoExit", "-Command", "cd 'C:\path\to\Dynasty_Site' ; `$env:NODE_ENV='development' ; `$env:PORT='5000' ; npm run dev"
    ```
+   (Or use `.\start-server.ps1` from the project directory; it loads from `.env` via dotenv.)
 
    This command:
    - Opens a new PowerShell window that stays open (`-NoExit`)
    - Changes to the project directory
-   - **Sets `DATABASE_URL` environment variable** (required for database connection)
+   - **`DATABASE_URL` is loaded from `.env`** (Supabase connection string)
    - Sets required environment variables (`NODE_ENV`, `PORT`)
    - Runs `npm run dev` to start the development server
    - **Database connection is automatically established on server start**
@@ -88,12 +91,12 @@ When the server is not running, use the following process to start the server in
    - **Database is already connected** - no additional connection steps needed
 
 **Alternative: Using the PowerShell script** (Recommended):
-The `start-server.ps1` script automatically sets all required environment variables including `DATABASE_URL`:
+The `start-server.ps1` script sets `NODE_ENV` and `PORT`; `DATABASE_URL` is loaded from `.env` (Supabase connection string) when the server starts:
 ```powershell
 .\start-server.ps1
 ```
 
-This is the **preferred method** as it ensures database connection is always established.
+This is the **preferred method** as long as `.env` contains your Supabase `DATABASE_URL`.
 
 **Note**: 
 - The server **MUST** be running with `DATABASE_URL` set before the preview browser can connect and use database features
@@ -104,22 +107,22 @@ This is the **preferred method** as it ensures database connection is always est
 ### Database Connection Requirements
 
 **Overview**:
-- The application uses **Neon PostgreSQL** (serverless) for all database operations
+- The application uses **Supabase PostgreSQL** for all database operations
 - Database connection is established automatically when the server starts (if `DATABASE_URL` is set)
 - **No manual connection setup is required** - the connection is handled by `server/db.ts`
 
 **Connection Process**:
 1. Server starts and loads `server/db.ts`
 2. `DATABASE_URL` environment variable is checked (throws error if not set)
-3. Connection pool is created using Neon serverless client
+3. Connection pool is created using `pg.Pool` (node-postgres)
 4. Database connection is established automatically
 5. All database operations use the established connection pool
 
 **Required Environment Variable**:
-- **`DATABASE_URL`**: PostgreSQL connection string
-  - Format: `postgresql://username:password@host:port/database?sslmode=require`
-  - Example: `postgresql://neondb_owner:password@ep-summer-meadow-aeij97oi.c-2.us-east-2.aws.neon.tech/neondb?sslmode=require`
-  - **Must be set before starting the server**
+- **`DATABASE_URL`**: PostgreSQL connection string (Supabase)
+  - Format: `postgresql://username:password@host:port/database` (append `?sslmode=require` if needed)
+  - Example (Supabase): `postgresql://postgres:[password]@db.[project-ref].supabase.co:5432/postgres`
+  - Set in `.env` in the project root, or in your environment before starting the server
 
 **Database Connection Verification**:
 
@@ -136,12 +139,11 @@ To verify the database connection is working:
 
 **Testing Database Connection**:
 
-If you need to test the database connection independently:
+If you need to test the database connection independently (ensure `.env` is loaded or set `DATABASE_URL` first):
 
 ```powershell
-# Set DATABASE_URL and run test
-$env:DATABASE_URL="postgresql://neondb_owner:password@host/database?sslmode=require"
-node -e "import('@neondatabase/serverless').then(({ Pool, neonConfig }) => { neonConfig.webSocketConstructor = require('ws'); const pool = new Pool({ connectionString: process.env.DATABASE_URL }); pool.query('SELECT 1').then(() => { console.log('✅ Database connection successful'); process.exit(0); }).catch(err => { console.error('❌ Connection failed:', err.message); process.exit(1); }); })"
+# With DATABASE_URL in environment (e.g. from .env), run:
+node -e "import('pg').then(({ default: pg }) => { const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL }); pool.query('SELECT 1').then(() => { console.log('✅ Database connection successful'); process.exit(0); }).catch(err => { console.error('❌ Connection failed:', err.message); process.exit(1); }); });"
 ```
 
 **Troubleshooting Database Connection Issues**:
@@ -880,11 +882,11 @@ async getResourceByUniqueKey(leagueId: string, uniqueKey: string): Promise<Resou
 - ❌ Don't add extensive logging (keep it minimal)
 - ❌ Don't validate input (validate at route level)
 
-## Database Connection Pattern (Replit/Neon PostgreSQL)
+## Database Connection Pattern (Supabase PostgreSQL)
 
 ### Overview
 
-This project uses **Neon Serverless PostgreSQL** with **Drizzle ORM** for database connections. The connection pattern is designed specifically for Replit's serverless environment and must be followed for all database operations.
+This project uses **Supabase PostgreSQL** with **Drizzle ORM** for database connections. The connection pattern uses standard PostgreSQL via `pg.Pool` and must be followed for all database operations.
 
 **⚠️ IMPORTANT: This pattern is based on the League Awards implementation** (`award_nominations` and `award_ballots` tables). All new database connections should follow this exact pattern:
 - **Storage methods**: Simple, focused, no extensive error handling
@@ -899,31 +901,22 @@ This project uses **Neon Serverless PostgreSQL** with **Drizzle ORM** for databa
 The database connection is established in a single file that exports a shared `db` instance:
 
 ```typescript
-import { drizzle } from "drizzle-orm/neon-serverless";
-import { Pool, neonConfig } from "@neondatabase/serverless";
-import ws from "ws";
+import { drizzle } from "drizzle-orm/node-postgres";
+import pg from "pg";
 
-// Configure WebSocket for Neon compatibility (required for Replit)
-neonConfig.webSocketConstructor = ws;
-
-// Validate DATABASE_URL is set
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set. Did you forget to provision a database?");
 }
 
-// Create connection pool
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-
-// Export single db instance for use throughout application
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
 export const db = drizzle(pool);
 ```
 
 **Key Points**:
 - **Single connection file**: All database connections go through `server/db.ts`
-- **Environment variable**: Requires `DATABASE_URL` (automatically provided by Replit when database is provisioned)
-- **Neon Serverless**: Uses `@neondatabase/serverless` package for serverless compatibility
-- **WebSocket configuration**: Required for Neon to work in Replit environment
-- **Connection pooling**: Uses `Pool` for efficient connection management
+- **Environment variable**: Requires `DATABASE_URL` (set in `.env` or environment; use your Supabase connection string)
+- **PostgreSQL**: Uses `pg` (node-postgres) with Drizzle ORM; works with Supabase and any PostgreSQL provider
+- **Connection pooling**: Uses `pg.Pool` for efficient connection management
 - **Single export**: Only one `db` instance is created and exported
 
 ### 2. Drizzle Configuration
@@ -1501,10 +1494,10 @@ export default function YourPage() {
 
 ### 7. Environment Requirements
 
-**Replit Setup**:
-1. **Provision Database**: Create a PostgreSQL database in Replit (automatically sets `DATABASE_URL`)
-2. **Environment Variable**: `DATABASE_URL` is automatically set by Replit when database is provisioned
-3. **No manual configuration needed**: Replit handles connection string automatically
+**Supabase Setup**:
+1. **Create a Supabase project** at [Supabase Dashboard](https://supabase.com/dashboard) and obtain your connection string.
+2. **Set `DATABASE_URL`**: Put the connection string in `.env` in the project root (e.g. `DATABASE_URL=postgresql://postgres:[password]@db.[project-ref].supabase.co:5432/postgres`), or set it in your environment or hosting secrets (e.g. Replit Secrets).
+3. **Local development**: Run `.\start-server.ps1` or `npm run dev`; `dotenv` loads `.env` so `DATABASE_URL` is available.
 
 **Migration Process**:
 1. **Define tables** in `shared/schema.ts`

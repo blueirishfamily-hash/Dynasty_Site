@@ -7,6 +7,7 @@ interface SleeperContextType {
   currentWeek: number;
   season: string;
   isLoading: boolean;
+  isOffseason: boolean;
   error: string | null;
   setUser: (user: UserInfo | null) => void;
   setLeague: (league: LeagueInfo | null) => void;
@@ -24,6 +25,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
   const [currentWeek, setCurrentWeek] = useState(1);
   const [season, setSeason] = useState(new Date().getFullYear().toString());
   const [isLoading, setIsLoading] = useState(true);
+  const [isOffseason, setIsOffseason] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,10 +55,18 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // Fetch NFL state and active league in parallel
+        // Fetch NFL state and active league in parallel (with timeout so we don't hang forever)
+        const fetchWithTimeout = (url: string, ms = 10000) =>
+          Promise.race([
+            fetch(url),
+            new Promise<Response>((_, reject) =>
+              setTimeout(() => reject(new Error("Request timeout")), ms)
+            ),
+          ]).catch(() => null);
+
         const [nflStateRes, activeLeagueRes] = await Promise.all([
-          fetch("/api/sleeper/nfl-state").catch(() => null),
-          fetch("/api/league/active").catch(() => null),
+          fetchWithTimeout("/api/sleeper/nfl-state"),
+          fetchWithTimeout("/api/league/active"),
         ]);
 
         // Get NFL state
@@ -65,8 +75,9 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
           if (nflStateRes?.ok) {
             nflState = await nflStateRes.json();
             // Check if NFL is in offseason
-            const isOffseason = nflState.seasonType === "off" || nflState.seasonType === "post";
-            if (isOffseason) {
+            const offseason = nflState.seasonType === "off" || nflState.seasonType === "post";
+            setIsOffseason(offseason);
+            if (offseason) {
               setCurrentWeek(18);
             } else {
               setCurrentWeek(nflState.week || 1);
@@ -210,6 +221,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         currentWeek,
         season,
         isLoading,
+        isOffseason,
         error,
         setUser,
         setLeague,

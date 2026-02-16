@@ -78,6 +78,39 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+
+  // Helper: extract a useful error message for API responses
+  function dbErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+      const code = (error as any).code;
+      if (code === "ENOTFOUND") return "Database host unreachable (DNS). Is the Supabase project active?";
+      if (code === "ECONNREFUSED") return "Database connection refused. Check DATABASE_URL.";
+      if (code === "3D000") return "Database does not exist. Check DATABASE_URL.";
+      if (code === "42P01") return "Table does not exist. Run 'npm run db:push' to create tables.";
+      if (code === "42703") return "Column does not exist. Run 'npm run db:push' to sync schema.";
+      if (code === "28P01") return "Database authentication failed. Check password in DATABASE_URL.";
+      return error.message;
+    }
+    return String(error);
+  }
+
+  // ── Health check endpoint ──
+  app.get("/api/health/db", async (_req, res) => {
+    try {
+      const { db } = await import("./db");
+      const { sql } = await import("drizzle-orm");
+      await db.execute(sql`SELECT 1 AS ok`);
+      res.json({ status: "connected", timestamp: new Date().toISOString() });
+    } catch (error: any) {
+      console.error("[Health] DB connectivity check failed:", error);
+      res.status(503).json({
+        status: "error",
+        message: dbErrorMessage(error),
+        code: error?.code || null,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  });
   
   // Helper function to get effective week - handles offseason detection and capping
   const getEffectiveWeek = (nflState: SleeperNFLState, league: any): number => {
@@ -1975,7 +2008,82 @@ export async function registerRoutes(
     return 4; // Bottom quartile
   }
 
-  // Get player rankings with box plot data by position
+  // ── Shared PPG helpers (used by player-rankings, assign-contracts, and rookie-extension) ──
+
+  type WeeklyStatsCache = Record<string, Record<string, number>>[];
+
+  async function fetchAllWeeklyStats(season: string): Promise<WeeklyStatsCache> {
+    const promises: Promise<Record<string, Record<string, number>>>[] = [];
+    for (let w = 1; w <= 18; w++) {
+      promises.push(getPlayerStats(season, w).catch(() => ({})));
+    }
+    return Promise.all(promises);
+  }
+
+  function extractPlayerGamesFromCache(
+    playerId: string,
+    season: string,
+    weeklyStats: WeeklyStatsCache
+  ): { week: number; season: string; pts: number }[] {
+    const games: { week: number; season: string; pts: number }[] = [];
+    for (let w = 0; w < weeklyStats.length; w++) {
+      const stats = weeklyStats[w][playerId];
+      if (stats) {
+        const pts = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
+        if (pts > 0) {
+          games.push({ week: w + 1, season, pts });
+        }
+      }
+    }
+    return games;
+  }
+
+  function computeAdjustedPPGFromGames(
+    currentSeasonGames: { week: number; season: string; pts: number }[],
+    previousSeasonGames: { week: number; season: string; pts: number }[]
+  ): { adjustedPPG: number; gamesUsed: number; recent15PPG: number; previous15PPG: number; formulaUsed: string } | null {
+    const allGames = [
+      ...currentSeasonGames.sort((a, b) => b.week - a.week),
+      ...previousSeasonGames.sort((a, b) => b.week - a.week),
+    ].slice(0, 30);
+
+    if (allGames.length === 0) return null;
+
+    const recent15 = allGames.slice(0, Math.min(15, allGames.length));
+    const previous15 = allGames.slice(recent15.length);
+
+    const avg = (arr: { pts: number }[]) =>
+      arr.length > 0 ? arr.reduce((s, g) => s + g.pts, 0) / arr.length : 0;
+
+    const recent15PPG = avg(recent15);
+    const previous15PPG = avg(previous15);
+
+    let adjustedPPG: number;
+    let formulaUsed: string;
+    if (previous15.length === 0 || recent15PPG >= previous15PPG) {
+      adjustedPPG = recent15PPG;
+      formulaUsed = "recent15";
+    } else {
+      adjustedPPG = avg(allGames);
+      formulaUsed = "all30avg";
+    }
+
+    return { adjustedPPG, gamesUsed: allGames.length, recent15PPG, previous15PPG, formulaUsed };
+  }
+
+  function computeAdjustedPPGForPlayer(
+    playerId: string,
+    currentSeason: string,
+    previousSeason: string,
+    currentWeeklyStats: WeeklyStatsCache,
+    previousWeeklyStats: WeeklyStatsCache
+  ): { adjustedPPG: number; gamesUsed: number; recent15PPG: number; previous15PPG: number; formulaUsed: string } | null {
+    const currentGames = extractPlayerGamesFromCache(playerId, currentSeason, currentWeeklyStats);
+    const previousGames = extractPlayerGamesFromCache(playerId, previousSeason, previousWeeklyStats);
+    return computeAdjustedPPGFromGames(currentGames, previousGames);
+  }
+
+  // Get player rankings with box plot data by position (uses adjusted PPG: 30 games across 2 seasons)
   app.get("/api/sleeper/league/:leagueId/player-rankings", async (req, res) => {
     try {
       const { leagueId } = req.params;
@@ -1986,66 +2094,24 @@ export async function registerRoutes(
         getLeague(leagueId),
       ]);
 
-      const season = league.season || nflState.season;
-      const currentWeek = getEffectiveWeek(nflState, league);
+      const currentSeason = league.season || nflState.season;
+      const previousSeason = String(parseInt(currentSeason) - 1);
       
-      console.log(`[Player Rankings] Fetching stats for season ${season}, current week ${currentWeek}`);
-      
-      // Try to get season totals first (Sleeper API may return season totals when called without week)
-      let playerTotalPoints: Map<string, number> = new Map();
-      
-      try {
-        const seasonStats = await getPlayerStats(season);
-        // Check if we got meaningful data (not just empty object)
-        if (seasonStats && Object.keys(seasonStats).length > 0) {
-          Object.entries(seasonStats).forEach(([playerId, stats]) => {
-            const points = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
-            if (points > 0) {
-              playerTotalPoints.set(playerId, points);
-            }
-          });
-          console.log(`[Player Rankings] Got season totals from API: ${playerTotalPoints.size} players`);
-        } else {
-          throw new Error("Season stats returned empty, will sum weekly stats");
-        }
-      } catch (err) {
-        console.log(`[Player Rankings] Season stats not available, summing weekly stats...`);
-        // Fallback: Fetch all weeks and sum them up to get season totals
-        const weeklyStatsPromises = [];
-        for (let week = 1; week <= currentWeek; week++) {
-          weeklyStatsPromises.push(
-            getPlayerStats(season, week).catch((err) => {
-              console.warn(`[Player Rankings] Error fetching week ${week} stats:`, err.message);
-              return {};
-            })
-          );
-        }
-        
-        const weeklyStatsResults = await Promise.all(weeklyStatsPromises);
-        
-        // Aggregate points per player across all weeks
-        weeklyStatsResults.forEach((weekStats) => {
-          Object.entries(weekStats).forEach(([playerId, stats]) => {
-            const points = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
-            if (points > 0) {
-              const currentTotal = playerTotalPoints.get(playerId) || 0;
-              playerTotalPoints.set(playerId, currentTotal + points);
-            }
-          });
-        });
-        console.log(`[Player Rankings] Summed weekly stats: ${playerTotalPoints.size} players with points`);
-      }
-      
-      if (playerTotalPoints.size === 0) {
-        console.warn(`[Player Rankings] No player points found! This might indicate the season hasn't started or stats aren't available yet.`);
-      }
+      console.log(`[Player Rankings] Computing adjusted PPG for seasons ${currentSeason} + ${previousSeason}`);
 
-      // Collect all players in the league with their total points
+      // Fetch weekly stats for both seasons upfront (shared across all players)
+      const [currentWeeklyStats, previousWeeklyStats] = await Promise.all([
+        fetchAllWeeklyStats(currentSeason),
+        fetchAllWeeklyStats(previousSeason),
+      ]);
+
+      // Collect all rostered players by position with their adjusted PPG
       const positionPlayers: Record<string, Array<{
         playerId: string;
         name: string;
         team: string;
-        totalPoints: number;
+        adjustedPPG: number;
+        gamesUsed: number;
       }>> = {};
 
       rosters.forEach(roster => {
@@ -2056,16 +2122,9 @@ export async function registerRoutes(
           const pos = player.position;
           if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos)) return;
           
-          // Include ALL players (including rookies) for quartile calculations
-          // Rookies need quartile assignments for extension purposes
-          // Only exclude players with 0 points
-          
-          // Get total points for the season from our aggregated map
-          const totalPoints = playerTotalPoints.get(pid) || 0;
-          
-          // Exclude players with 0 points
-          if (totalPoints === 0) return;
-          
+          const ppgResult = computeAdjustedPPGForPlayer(pid, currentSeason, previousSeason, currentWeeklyStats, previousWeeklyStats);
+          if (!ppgResult) return; // no games played
+
           if (!positionPlayers[pos]) {
             positionPlayers[pos] = [];
           }
@@ -2074,20 +2133,22 @@ export async function registerRoutes(
             playerId: pid,
             name: player.full_name || `${player.first_name} ${player.last_name}`,
             team: player.team || "",
-            totalPoints,
+            adjustedPPG: Math.round(ppgResult.adjustedPPG * 10) / 10,
+            gamesUsed: ppgResult.gamesUsed,
           });
         });
       });
       
       console.log(`[Player Rankings] Position breakdown:`, Object.keys(positionPlayers).map(pos => `${pos}: ${positionPlayers[pos].length}`).join(", "));
 
-      // Calculate quartiles and assign values for each position
+      // Calculate quartiles on adjusted PPG values for each position
       const positions: Record<string, {
         players: Array<{
           playerId: string;
           name: string;
           team: string;
-          totalPoints: number;
+          adjustedPPG: number;
+          gamesUsed: number;
           quartile: 1 | 2 | 3 | 4;
           value: string;
         }>;
@@ -2102,24 +2163,18 @@ export async function registerRoutes(
       }> = {};
 
       Object.entries(positionPlayers).forEach(([position, playerList]) => {
-        // Sort by points descending
-        const sortedPlayers = [...playerList].sort((a, b) => b.totalPoints - a.totalPoints);
-        const points = sortedPlayers.map(p => p.totalPoints);
+        const sortedPlayers = [...playerList].sort((a, b) => b.adjustedPPG - a.adjustedPPG);
+        const ppgValues = sortedPlayers.map(p => p.adjustedPPG);
         
-        // Calculate quartiles
-        const quartiles = calculateQuartiles(points);
+        const quartiles = calculateQuartiles(ppgValues);
         
-        // Calculate IQR for outlier detection
         const iqr = quartiles.q3 - quartiles.q1;
         const lowerBound = quartiles.q1 - 1.5 * iqr;
         const upperBound = quartiles.q3 + 1.5 * iqr;
+        const outliers = ppgValues.filter(p => p < lowerBound || p > upperBound);
         
-        // Find outliers
-        const outliers = points.filter(p => p < lowerBound || p > upperBound);
-        
-        // Assign quartile to each player
         const playersWithQuartiles = sortedPlayers.map(player => {
-          const quartile = getQuartile(player.totalPoints, quartiles.q1, quartiles.median, quartiles.q3);
+          const quartile = getQuartile(player.adjustedPPG, quartiles.q1, quartiles.median, quartiles.q3);
           return {
             ...player,
             quartile,
@@ -2143,7 +2198,7 @@ export async function registerRoutes(
       console.log(`[Player Rankings] Returning data for ${Object.keys(positions).length} positions`);
       
       res.json({
-        season,
+        season: currentSeason,
         positions: positions || {},
       });
     } catch (error: any) {
@@ -2318,63 +2373,42 @@ export async function registerRoutes(
       
       console.log(`[Assign Contracts] Processing contracts for season ${season}, current year: ${currentYearNum}, next year: ${nextYearNum}`);
       
-      // Get player stats (reuse logic from player rankings)
-      let playerTotalPoints: Map<string, number> = new Map();
+      // Fetch weekly stats for current + previous season to compute adjusted PPG
+      const previousSeason = String(currentYearNum - 1);
+      console.log(`[Assign Contracts] --- STATS RETRIEVAL (Adjusted PPG) ---`);
+      console.log(`[Assign Contracts] Fetching weekly stats for seasons ${season} + ${previousSeason}`);
       
-      // Stats Retrieval Logging
-      console.log(`[Assign Contracts] --- STATS RETRIEVAL ---`);
-      console.log(`[Assign Contracts] Attempting to fetch stats for season: ${season}`);
-      
-      try {
-        const seasonStats = await getPlayerStats(season);
-        if (seasonStats && Object.keys(seasonStats).length > 0) {
-          console.log(`[Assign Contracts] Stats source: SEASON TOTALS`);
-          console.log(`[Assign Contracts] Loaded season stats for ${Object.keys(seasonStats).length} players`);
-          Object.entries(seasonStats).forEach(([playerId, stats]) => {
-            const points = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
-            if (points > 0) {
-              playerTotalPoints.set(playerId, points);
-            }
-          });
-          console.log(`[Assign Contracts] Total players with stats: ${playerTotalPoints.size}`);
-        } else {
-          throw new Error("Season stats returned empty, will sum weekly stats");
+      const [currentWeeklyStats, previousWeeklyStats] = await Promise.all([
+        fetchAllWeeklyStats(season),
+        fetchAllWeeklyStats(previousSeason),
+      ]);
+
+      // Build adjusted PPG map for all rostered players
+      const playerAdjustedPPG: Map<string, number> = new Map();
+      const allRosteredPids = new Set<string>();
+      rosters.forEach(roster => {
+        (roster.players || []).forEach(pid => allRosteredPids.add(pid));
+      });
+      for (const pid of Array.from(allRosteredPids)) {
+        const ppgResult = computeAdjustedPPGForPlayer(pid, season, previousSeason, currentWeeklyStats, previousWeeklyStats);
+        if (ppgResult) {
+          playerAdjustedPPG.set(pid, Math.round(ppgResult.adjustedPPG * 10) / 10);
         }
-      } catch (err) {
-        console.log(`[Assign Contracts] Stats source: WEEKLY AGGREGATION`);
-        console.log(`[Assign Contracts] Season stats unavailable, fetching weekly stats for weeks 1-${currentWeek}`);
-        const weeklyStatsPromises = [];
-        for (let week = 1; week <= currentWeek; week++) {
-          weeklyStatsPromises.push(
-            getPlayerStats(season, week).catch(() => ({}))
-          );
-        }
-        const weeklyStatsResults = await Promise.all(weeklyStatsPromises);
-        weeklyStatsResults.forEach((weekStats) => {
-          Object.entries(weekStats).forEach(([playerId, stats]) => {
-            const points = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
-            if (points > 0) {
-              const currentTotal = playerTotalPoints.get(playerId) || 0;
-              playerTotalPoints.set(playerId, currentTotal + points);
-            }
-          });
-        });
-        console.log(`[Assign Contracts] Total players with stats (from weekly): ${playerTotalPoints.size}`);
       }
+      console.log(`[Assign Contracts] Computed adjusted PPG for ${playerAdjustedPPG.size} players`);
       
       // Stats Distribution Logging
-      if (playerTotalPoints.size > 0) {
-        const pointsArray = Array.from(playerTotalPoints.values());
-        const minPoints = Math.min(...pointsArray);
-        const maxPoints = Math.max(...pointsArray);
-        const avgPoints = pointsArray.reduce((a, b) => a + b, 0) / pointsArray.length;
-        const zeroPointsCount = Array.from(rosters || []).flatMap(r => r.players || []).filter(pid => !playerTotalPoints.has(pid) || playerTotalPoints.get(pid) === 0).length;
+      if (playerAdjustedPPG.size > 0) {
+        const ppgArray = Array.from(playerAdjustedPPG.values());
+        const minPPG = Math.min(...ppgArray);
+        const maxPPG = Math.max(...ppgArray);
+        const avgPPG = ppgArray.reduce((a, b) => a + b, 0) / ppgArray.length;
+        const zeroCount = Array.from(allRosteredPids).filter(pid => !playerAdjustedPPG.has(pid)).length;
         
-        console.log(`[Assign Contracts] Stats distribution: min=${minPoints.toFixed(1)}, max=${maxPoints.toFixed(1)}, avg=${avgPoints.toFixed(1)}, zero_points=${zeroPointsCount}`);
+        console.log(`[Assign Contracts] PPG distribution: min=${minPPG.toFixed(1)}, max=${maxPPG.toFixed(1)}, avg=${avgPPG.toFixed(1)}, no_games=${zeroCount}`);
         
-        // Sample of player stats
-        const sampleStats = Array.from(playerTotalPoints.entries()).slice(0, 10);
-        console.log(`[Assign Contracts] Sample player stats: ${sampleStats.map(([pid, pts]) => `${pid.substring(0, 8)}=${pts.toFixed(1)}`).join(', ')}`);
+        const sampleStats = Array.from(playerAdjustedPPG.entries()).slice(0, 10);
+        console.log(`[Assign Contracts] Sample player PPG: ${sampleStats.map(([pid, ppg]) => `${pid.substring(0, 8)}=${ppg.toFixed(1)}`).join(', ')}`);
       } else {
         console.warn(`[Assign Contracts] WARNING: No player stats found!`);
       }
@@ -2387,12 +2421,12 @@ export async function registerRoutes(
         });
       });
 
-      // Collect players with 3+ years experience and their quartiles
+      // Collect players with 3+ years experience and their adjusted PPG
       const positionPlayers: Record<string, Array<{
         playerId: string;
         name: string;
         team: string;
-        totalPoints: number;
+        adjustedPPG: number;
         rosterId: number;
       }>> = {};
 
@@ -2444,21 +2478,20 @@ export async function registerRoutes(
             return;
           }
           
-          const totalPoints = playerTotalPoints.get(pid) || 0;
-          if (totalPoints === 0) {
+          const ppg = playerAdjustedPPG.get(pid);
+          if (!ppg || ppg === 0) {
             filterStats.zeroPoints++;
-            const reason = "Zero fantasy points";
+            const reason = "No games played (zero PPG)";
             const existingReason = teamStats.filtered.find(r => r.reason === reason);
             if (existingReason) {
               existingReason.count++;
             } else {
               teamStats.filtered.push({ reason, count: 1 });
             }
-            // Log first few zero-point players per team for debugging
             const zeroPointReason = teamStats.filtered.find(r => r.reason === reason);
             if (zeroPointReason && zeroPointReason.count <= 3) {
               const playerName = player.full_name || `${player.first_name} ${player.last_name}`;
-              console.log(`[Assign Contracts] ${teamName}: ${playerName} (${pos}, ${yearsExp} yrs) excluded - zero points`);
+              console.log(`[Assign Contracts] ${teamName}: ${playerName} (${pos}, ${yearsExp} yrs) excluded - no games/zero PPG`);
             }
             return;
           }
@@ -2475,7 +2508,7 @@ export async function registerRoutes(
             playerId: pid,
             name: player.full_name || `${player.first_name} ${player.last_name}`,
             team: player.team || "",
-            totalPoints,
+            adjustedPPG: ppg,
             rosterId: roster.roster_id,
           });
         });
@@ -2510,9 +2543,9 @@ export async function registerRoutes(
         // Validate player data
         const validPlayers = playerList.filter(p => 
           p && 
-          typeof p.totalPoints === 'number' && 
-          !isNaN(p.totalPoints) && 
-          isFinite(p.totalPoints) &&
+          typeof p.adjustedPPG === 'number' && 
+          !isNaN(p.adjustedPPG) && 
+          isFinite(p.adjustedPPG) &&
           p.playerId &&
           typeof p.rosterId === 'number'
         );
@@ -2522,16 +2555,16 @@ export async function registerRoutes(
           return;
         }
         
-        const sortedPlayers = [...validPlayers].sort((a, b) => b.totalPoints - a.totalPoints);
-        const points = sortedPlayers.map(p => p.totalPoints).filter(p => typeof p === 'number' && !isNaN(p) && isFinite(p));
+        const sortedPlayers = [...validPlayers].sort((a, b) => b.adjustedPPG - a.adjustedPPG);
+        const ppgValues = sortedPlayers.map(p => p.adjustedPPG).filter(p => typeof p === 'number' && !isNaN(p) && isFinite(p));
         
-        if (points.length === 0) {
-          console.warn(`[Assign Contracts] ${position} has no valid points after filtering`);
+        if (ppgValues.length === 0) {
+          console.warn(`[Assign Contracts] ${position} has no valid PPG values after filtering`);
           return;
         }
         
         try {
-          const quartiles = calculateQuartiles(points);
+          const quartiles = calculateQuartiles(ppgValues);
           
           // Validate quartile values
           if (isNaN(quartiles.q1) || isNaN(quartiles.median) || isNaN(quartiles.q3)) {
@@ -2539,16 +2572,15 @@ export async function registerRoutes(
             return;
           }
           
-          console.log(`[Assign Contracts] ${position} quartiles:`, quartiles);
-          // Safety check: ensure points array is not empty before calling Math.min/Max
-          const pointsRange = points.length > 0 
-            ? `[${Math.min(...points).toFixed(1)}, ${Math.max(...points).toFixed(1)}]`
-            : `[N/A - no valid points]`;
-          console.log(`[Assign Contracts] ${position} processing: ${sortedPlayers.length} players, points range ${pointsRange}`);
+          console.log(`[Assign Contracts] ${position} PPG quartiles:`, quartiles);
+          const ppgRange = ppgValues.length > 0 
+            ? `[${Math.min(...ppgValues).toFixed(1)}, ${Math.max(...ppgValues).toFixed(1)}]`
+            : `[N/A - no valid PPG]`;
+          console.log(`[Assign Contracts] ${position} processing: ${sortedPlayers.length} players, PPG range ${ppgRange}`);
           
           sortedPlayers.forEach(player => {
             try {
-              const quartile = getQuartile(player.totalPoints, quartiles.q1, quartiles.median, quartiles.q3);
+              const quartile = getQuartile(player.adjustedPPG, quartiles.q1, quartiles.median, quartiles.q3);
               
               // Validate quartile is 1-4
               if (quartile < 1 || quartile > 4 || !Number.isInteger(quartile)) {
@@ -2665,8 +2697,8 @@ export async function registerRoutes(
             extensionYear: null,
             extensionSalary: null,
             extensionType: null,
-            // Note: hasBeenExtended and hasBeenFranchiseTagged are not set here
-            // The storage layer will handle these fields with defaults if the database columns exist
+            hasBeenExtended: 0,
+            hasBeenFranchiseTagged: 0,
           };
 
           // Validate salary is a valid integer
@@ -2746,7 +2778,7 @@ export async function registerRoutes(
       console.log(`[Assign Contracts] Players processed: ${filterStats.totalPlayers}`);
       console.log(`[Assign Contracts] Players included: ${filterStats.included}`);
       console.log(`[Assign Contracts] Contracts assigned: ${results.length}/${contractsToAssign.length}`);
-      console.log(`[Assign Contracts] Stats source: ${playerTotalPoints.size > 0 ? 'available' : 'missing'}`);
+      console.log(`[Assign Contracts] PPG stats: ${playerAdjustedPPG.size > 0 ? 'available' : 'missing'}`);
       console.log(`[Assign Contracts] Existing contracts: ${existingContracts.length}`);
       if (results.length < contractsToAssign.length) {
         console.warn(`[Assign Contracts] WARNING: ${contractsToAssign.length - results.length} contract(s) failed to assign. Check error logs above for details.`);
@@ -2811,21 +2843,32 @@ export async function registerRoutes(
       // Ensure we always return valid JSON with helpful error messages
       try {
         let userFriendlyMessage = error?.message || String(error) || "Unknown error occurred while assigning contracts";
-        
-        // Provide more specific error messages for common issues
-        if (userFriendlyMessage.includes('year') || userFriendlyMessage.includes('2025') || userFriendlyMessage.includes('2029')) {
+        const errMsg = userFriendlyMessage.toLowerCase();
+
+        // PostgreSQL error code 3D000 = database does not exist
+        if ((error as any)?.code === "3D000" || (errMsg.includes("database") && errMsg.includes("does not exist"))) {
+          userFriendlyMessage = "Database not found. Check that DATABASE_URL uses the correct database name (e.g. postgres for Supabase) and that the database exists.";
+        }
+        // PostgreSQL error code 42P01 = table does not exist
+        else if ((error as any)?.code === "42P01" || (errMsg.includes("relation") && errMsg.includes("does not exist"))) {
+          userFriendlyMessage = "Database tables are missing. Run 'npm run db:push' from the project root to create the required tables.";
+        }
+        // Provide more specific error messages for other common issues
+        else if (userFriendlyMessage.includes('year') || userFriendlyMessage.includes('2025') || userFriendlyMessage.includes('2029')) {
           userFriendlyMessage = `Year range error: ${userFriendlyMessage}. Contracts can only be assigned for years 2025-2029.`;
         } else if (userFriendlyMessage.includes('salary') || userFriendlyMessage.includes('contract')) {
           userFriendlyMessage = `Contract assignment error: ${userFriendlyMessage}. Please check that all contract data is valid.`;
         } else if (userFriendlyMessage.includes('database') || userFriendlyMessage.includes('db')) {
           userFriendlyMessage = `Database error: ${userFriendlyMessage}. Please try again or contact support if the issue persists.`;
         }
-        
+
         const errorResponse = {
           success: false,
           error: "Failed to assign contracts by quartile",
           message: userFriendlyMessage,
-          details: process.env.NODE_ENV === "development" ? error?.stack : undefined,
+          details: process.env.NODE_ENV === "development"
+            ? (error?.stack || ((error as any)?.code ? `PostgreSQL code: ${(error as any).code}` : undefined))
+            : undefined,
           deviceId,
           timestamp: new Date().toISOString(),
         };
@@ -5445,7 +5488,7 @@ export async function registerRoutes(
       res.json({ enabled: value === "true" || value === undefined || value === null });
     } catch (error) {
       console.error("Error fetching dead cap enabled setting:", error);
-      res.status(500).json({ error: "Failed to fetch dead cap enabled setting" });
+      res.status(500).json({ error: "Failed to fetch dead cap enabled setting", message: dbErrorMessage(error) });
     }
   });
 
@@ -5517,7 +5560,7 @@ export async function registerRoutes(
       res.json(contracts);
     } catch (error) {
       console.error("Error fetching contracts:", error);
-      res.status(500).json({ error: "Failed to fetch contracts" });
+      res.status(500).json({ error: "Failed to fetch contracts", message: dbErrorMessage(error) });
     }
   });
 
@@ -5611,7 +5654,7 @@ export async function registerRoutes(
       res.json({ saved: results.length, contracts: results });
     } catch (error) {
       console.error("Error saving contracts:", error);
-      res.status(500).json({ error: "Failed to save contracts" });
+      res.status(500).json({ error: "Failed to save contracts", message: dbErrorMessage(error) });
     }
   });
 
@@ -5667,13 +5710,206 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== ROOKIE EXTENSION SALARY CALCULATION ====================
+  // Calculate the PPG-based extension salary for a rookie contract player
+  app.post("/api/league/:leagueId/rookie-extension-salary", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { playerId, rosterId } = req.body;
+
+      if (!playerId || !rosterId) {
+        return res.status(400).json({ error: "playerId and rosterId are required" });
+      }
+
+      // Validate player contract is a rookie contract in its final year
+      const allContracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = allContracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      if (!playerContract) {
+        return res.status(404).json({ error: "Player contract not found" });
+      }
+      if (playerContract.isRookieContract !== 1) {
+        return res.status(400).json({ error: "Player does not have a rookie contract" });
+      }
+
+      const [players, nflState, league] = await Promise.all([
+        getAllPlayers(),
+        getNFLState(),
+        getLeague(leagueId),
+      ]);
+
+      const player = players[playerId];
+      if (!player) {
+        return res.status(404).json({ error: "Player not found in Sleeper data" });
+      }
+      const position = player.position;
+      if (!position) {
+        return res.status(400).json({ error: "Player has no position data" });
+      }
+
+      const currentSeason = league?.season || nflState.season || new Date().getFullYear().toString();
+      const currentSeasonNum = parseInt(currentSeason);
+      const previousSeason = String(currentSeasonNum - 1);
+
+      // Check the player is in the final year of their contract
+      const contractSalaries: Record<string, number> = (() => {
+        try {
+          return typeof (playerContract as any).salaries === "string"
+            ? JSON.parse((playerContract as any).salaries || "{}")
+            : (playerContract as any).salaries || {};
+        } catch { return {}; }
+      })();
+      const salaryEntries = Object.entries(contractSalaries)
+        .map(([year, value]) => ({ year: Number(year), value: Number(value) }))
+        .filter(e => !isNaN(e.year) && e.value > 0)
+        .sort((a, b) => a.year - b.year);
+      const lastPaidYear = salaryEntries.length > 0 ? salaryEntries[salaryEntries.length - 1].year : 0;
+      if (lastPaidYear !== currentSeasonNum) {
+        return res.status(400).json({ error: "Player is not in the final year of their contract" });
+      }
+
+      // ── Compute adjusted PPG for the rookie using shared helpers ──
+      const [currentWeeklyStats, previousWeeklyStats] = await Promise.all([
+        fetchAllWeeklyStats(currentSeason),
+        fetchAllWeeklyStats(previousSeason),
+      ]);
+
+      const rookiePPGResult = computeAdjustedPPGForPlayer(playerId, currentSeason, previousSeason, currentWeeklyStats, previousWeeklyStats);
+      if (!rookiePPGResult) {
+        return res.status(400).json({ error: "Player has no games played — cannot calculate PPG" });
+      }
+
+      const { adjustedPPG, gamesUsed: rookieGamesUsed, recent15PPG, previous15PPG, formulaUsed } = rookiePPGResult;
+
+      // ── Gather all same-position active players across league rosters ──
+      const rosters = await getLeagueRosters(leagueId);
+      const positionPlayerIds = new Set<string>();
+      for (const roster of rosters) {
+        for (const pid of roster.players || []) {
+          const p = players[pid];
+          if (p && p.position === position) {
+            positionPlayerIds.add(pid);
+          }
+        }
+      }
+
+      // Build adjusted PPG for each position player using shared helpers
+      const playerPPGMap = new Map<string, { ppg: number; gamesPlayed: number }>();
+      for (const pid of Array.from(positionPlayerIds)) {
+        const ppgResult = computeAdjustedPPGForPlayer(pid, currentSeason, previousSeason, currentWeeklyStats, previousWeeklyStats);
+        if (ppgResult) {
+          playerPPGMap.set(pid, { ppg: ppgResult.adjustedPPG, gamesPlayed: ppgResult.gamesUsed });
+        }
+      }
+
+      // Sort all players by PPG descending
+      const rankedPlayers = Array.from(playerPPGMap.entries())
+        .map(([pid, data]) => {
+          const p = players[pid];
+          const contract = allContracts.find(c => c.playerId === pid);
+          const salaries: Record<string, number> = (() => {
+            try {
+              return typeof (contract as any)?.salaries === "string"
+                ? JSON.parse((contract as any).salaries || "{}")
+                : (contract as any)?.salaries || {};
+            } catch { return {}; }
+          })();
+          const currentYearSalary = Number(salaries[currentSeason]) || 0;
+          return {
+            playerId: pid,
+            name: p?.full_name || p?.first_name + " " + p?.last_name || pid,
+            ppg: data.ppg,
+            gamesPlayed: data.gamesPlayed,
+            currentYearSalary,
+          };
+        })
+        .sort((a, b) => b.ppg - a.ppg);
+
+      // Find the rookie's rank
+      const rookieIndex = rankedPlayers.findIndex(p => p.playerId === playerId);
+      if (rookieIndex === -1) {
+        return res.status(400).json({ error: "Could not rank player among position peers" });
+      }
+
+      const rank = rookieIndex + 1;
+      const totalPlayers = rankedPlayers.length;
+
+      // Find neighbors with a valid salary (skip those with 0 salary)
+      let neighborAbove: { name: string; salary: number; ppg: number } | null = null;
+      let neighborBelow: { name: string; salary: number; ppg: number } | null = null;
+
+      // Look above (lower index = higher rank)
+      for (let i = rookieIndex - 1; i >= 0; i--) {
+        if (rankedPlayers[i].currentYearSalary > 0) {
+          neighborAbove = {
+            name: rankedPlayers[i].name,
+            salary: rankedPlayers[i].currentYearSalary,
+            ppg: rankedPlayers[i].ppg,
+          };
+          break;
+        }
+      }
+
+      // Look below (higher index = lower rank)
+      for (let i = rookieIndex + 1; i < rankedPlayers.length; i++) {
+        if (rankedPlayers[i].currentYearSalary > 0) {
+          neighborBelow = {
+            name: rankedPlayers[i].name,
+            salary: rankedPlayers[i].currentYearSalary,
+            ppg: rankedPlayers[i].ppg,
+          };
+          break;
+        }
+      }
+
+      // Determine extension salary
+      let extensionSalary: number;
+      if (neighborAbove && neighborBelow) {
+        extensionSalary = Math.round((neighborAbove.salary + neighborBelow.salary) / 2);
+      } else if (neighborAbove) {
+        // Rookie is ranked last among salaried players — use highest salary at position
+        const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
+        extensionSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50; // fallback $5M
+      } else if (neighborBelow) {
+        // Rookie is ranked first — use highest salary at position
+        const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
+        extensionSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50;
+      } else {
+        // No salaried neighbors at all — minimum
+        extensionSalary = 50; // $5M fallback
+      }
+
+      // Ensure minimum salary of $5M (50 tenths)
+      extensionSalary = Math.max(extensionSalary, 50);
+
+      console.log(`[Rookie Extension] ${player.full_name || playerId} (${position}): adjustedPPG=${adjustedPPG.toFixed(1)}, rank=${rank}/${totalPlayers}, salary=${extensionSalary/10}M`);
+
+      res.json({
+        adjustedPPG: Math.round(adjustedPPG * 10) / 10,
+        gamesUsed: rookieGamesUsed,
+        recent15PPG: Math.round(recent15PPG * 10) / 10,
+        previous15PPG: Math.round(previous15PPG * 10) / 10,
+        formulaUsed,
+        rank,
+        totalPlayersAtPosition: totalPlayers,
+        position,
+        neighborAbove,
+        neighborBelow,
+        extensionSalary,
+        extensionSalaryMillions: extensionSalary / 10,
+      });
+    } catch (error: any) {
+      console.error("Error calculating rookie extension salary:", error);
+      res.status(500).json({ error: "Failed to calculate rookie extension salary", message: error?.message || String(error) });
+    }
+  });
+
   // Apply an extension to a player
   // Extension types: 1 = 1-year at 1.2x, 2 = 2-year at 1.5x, 3 = 3-year at 1.8x, 4 = 4-year at 2.0x (all rounded up)
-  // For rookie contracts (isRookieContract = 1), extensions must use quartile-based pricing instead of multipliers
+  // For rookie contracts (isRookieContract = 1), extensions use PPG-based pricing calculated server-side
   app.post("/api/league/:leagueId/extensions", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { rosterId, playerId, playerName, currentSalary, extensionType, extensionYear, isQuartileBased, quartileSalary } = req.body;
+      const { rosterId, playerId, playerName, currentSalary, extensionType, extensionYear, isPPGBased, ppgSalary } = req.body;
       let { season } = req.body;
       
       if (!rosterId || !season || !playerId || !playerName || !extensionType || !extensionYear) {
@@ -5727,14 +5963,23 @@ export async function registerRoutes(
 
       const isRookieContract = playerContract.isRookieContract === 1;
 
-      // If rookie contract, must use quartile-based pricing
-      if (isRookieContract && !isQuartileBased) {
-        return res.status(400).json({ error: "Rookie contracts require quartile-based extension pricing" });
+      // Rookie contracts: must be offseason and use PPG-based pricing
+      if (isRookieContract) {
+        // Validate offseason: rookie extensions only allowed after season ends
+        const nflState = await getNFLState();
+        const seasonType = nflState.season_type || (nflState as any).seasonType;
+        if (seasonType !== "off" && seasonType !== "post") {
+          return res.status(400).json({ error: "Rookie extensions are only available after the season has ended (offseason)" });
+        }
+        // Validate extension type: rookies can only do 3-year or 4-year
+        if (extensionType !== 3 && extensionType !== 4) {
+          return res.status(400).json({ error: "Rookie contracts can only be extended for 3 or 4 years" });
+        }
       }
 
-      // If not rookie contract, must use multiplier-based pricing
-      if (!isRookieContract && isQuartileBased) {
-        return res.status(400).json({ error: "Non-rookie contracts cannot use quartile-based pricing" });
+      // If not rookie contract, cannot use PPG-based pricing
+      if (!isRookieContract && isPPGBased) {
+        return res.status(400).json({ error: "Non-rookie contracts cannot use PPG-based pricing" });
       }
 
       // Calculate extension salaries based on type
@@ -5743,13 +5988,18 @@ export async function registerRoutes(
       let extensionSalary3: number | null = null;
       let extensionSalary4: number | null = null;
 
-      if (isQuartileBased && quartileSalary) {
-        // Quartile-based extension (for rookie contracts)
-        // quartileSalary is already in tenths (e.g., 160 = $16.0M)
-        extensionSalary1 = quartileSalary;
-        if (extensionType >= 2) extensionSalary2 = quartileSalary;
-        if (extensionType >= 3) extensionSalary3 = quartileSalary;
-        if (extensionType >= 4) extensionSalary4 = quartileSalary;
+      if (isRookieContract) {
+        // PPG-based extension for rookie contracts
+        // The client passes ppgSalary from the rookie-extension-salary endpoint
+        // We trust it here (it was already calculated server-side)
+        const salary = ppgSalary;
+        if (!salary || salary <= 0) {
+          return res.status(400).json({ error: "PPG-based salary is required for rookie extensions. Calculate it first." });
+        }
+        extensionSalary1 = salary;
+        if (extensionType >= 2) extensionSalary2 = salary;
+        if (extensionType >= 3) extensionSalary3 = salary;
+        if (extensionType >= 4) extensionSalary4 = salary;
       } else {
         // Multiplier-based extension (for non-rookie contracts)
         // currentSalary is already in tenths (e.g., 230 = $23.0M)
@@ -6160,7 +6410,7 @@ export async function registerRoutes(
       res.json(entries);
     } catch (error) {
       console.error("Error fetching dead cap entries:", error);
-      res.status(500).json({ error: "Failed to fetch dead cap entries" });
+      res.status(500).json({ error: "Failed to fetch dead cap entries", message: dbErrorMessage(error) });
     }
   });
 
@@ -6248,7 +6498,7 @@ export async function registerRoutes(
       res.json(drafts);
     } catch (error) {
       console.error("Error fetching contract drafts:", error);
-      res.status(500).json({ error: "Failed to fetch contract drafts" });
+      res.status(500).json({ error: "Failed to fetch contract drafts", message: dbErrorMessage(error) });
     }
   });
 
@@ -6295,7 +6545,7 @@ export async function registerRoutes(
       res.json({ saved: results.length, drafts: results });
     } catch (error) {
       console.error("Error saving contract drafts:", error);
-      res.status(500).json({ error: "Failed to save contract drafts" });
+      res.status(500).json({ error: "Failed to save contract drafts", message: dbErrorMessage(error) });
     }
   });
 
@@ -6363,7 +6613,7 @@ export async function registerRoutes(
       res.json(request);
     } catch (error) {
       console.error("Error submitting for approval:", error);
-      res.status(500).json({ error: "Failed to submit for approval" });
+      res.status(500).json({ error: "Failed to submit for approval", message: dbErrorMessage(error) });
     }
   });
 
@@ -6426,7 +6676,7 @@ export async function registerRoutes(
       res.json(request);
     } catch (error) {
       console.error("Error updating approval request:", error);
-      res.status(500).json({ error: "Failed to update approval request" });
+      res.status(500).json({ error: "Failed to update approval request", message: dbErrorMessage(error) });
     }
   });
 
@@ -6474,7 +6724,7 @@ export async function registerRoutes(
       return res.status(404).json({ error: "No active league configured" });
     } catch (error) {
       console.error("Error fetching active league:", error);
-      res.status(500).json({ error: "Failed to fetch active league" });
+      res.status(500).json({ error: "Failed to fetch active league", message: dbErrorMessage(error) });
     }
   });
 

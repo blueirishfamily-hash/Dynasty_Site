@@ -1603,7 +1603,7 @@ function ManageTeamContractsTab({
   deadCapEnabled = true
 }: ManageTeamContractsTabProps) {
   const { toast } = useToast();
-  const { user, league, season } = useSleeper();
+  const { user, league, season, isOffseason } = useSleeper();
   
   // Check if current user is the commissioner
   const isCommissioner = !!(user?.userId && league && (
@@ -1630,6 +1630,44 @@ function ManageTeamContractsTab({
   const [playerTypeFilter, setPlayerTypeFilter] = useState<string>("ALL");
   const [activeView, setActiveView] = useState<"contracts" | "salary-breakdown">("contracts");
   const [openExtensionPopover, setOpenExtensionPopover] = useState<string | null>(null);
+  const [ppgSalaryData, setPpgSalaryData] = useState<Record<string, {
+    loading: boolean;
+    error: string | null;
+    data: {
+      adjustedPPG: number;
+      gamesUsed: number;
+      recent15PPG: number;
+      previous15PPG: number;
+      formulaUsed: string;
+      rank: number;
+      totalPlayersAtPosition: number;
+      position: string;
+      neighborAbove: { name: string; salary: number; ppg: number } | null;
+      neighborBelow: { name: string; salary: number; ppg: number } | null;
+      extensionSalary: number;
+      extensionSalaryMillions: number;
+    } | null;
+  }>>({});
+
+  const fetchPPGSalary = async (playerId: string) => {
+    if (ppgSalaryData[playerId]?.data || ppgSalaryData[playerId]?.loading) return;
+    setPpgSalaryData(prev => ({ ...prev, [playerId]: { loading: true, error: null, data: null } }));
+    try {
+      const res = await fetch(`/api/league/${leagueId}/rookie-extension-salary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId, rosterId: userTeam?.rosterId }),
+      });
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}));
+        throw new Error(errBody.error || "Failed to calculate salary");
+      }
+      const data = await res.json();
+      setPpgSalaryData(prev => ({ ...prev, [playerId]: { loading: false, error: null, data } }));
+    } catch (err: any) {
+      setPpgSalaryData(prev => ({ ...prev, [playerId]: { loading: false, error: err.message || "Error", data: null } }));
+    }
+  };
   
   // Track if we're currently loading drafts to prevent auto-save during load
   const isLoadingDraftsRef = useRef(false);
@@ -1695,28 +1733,18 @@ function ManageTeamContractsTab({
     console.error("Error fetching extension status:", extensionStatusError);
   }
 
-  // Query for player rankings (for quartile-based extensions)
-  const { data: playerRankingsData } = useQuery({
-    queryKey: ["/api/sleeper/league", leagueId, "player-rankings"],
-    queryFn: async () => {
-      const res = await fetch(`/api/sleeper/league/${leagueId}/player-rankings`);
-      if (!res.ok) throw new Error("Failed to fetch player rankings");
-      return res.json();
-    },
-    enabled: !!leagueId,
-  });
+  // Player rankings query removed — rookie extensions now use PPG-based pricing from /rookie-extension-salary endpoint
 
-  // Extension mutation - now supports 1-year (1.2x), 2-year (1.5x), 3-year (1.8x), or 4-year (2x) extensions
-  // For rookie contracts, uses quartile-based pricing instead of multipliers
+  // Extension mutation - supports multiplier-based (non-rookie) and PPG-based (rookie) extensions
   const applyExtensionMutation = useMutation({
     mutationFn: async (data: {
       playerId: string;
       playerName: string;
-      currentSalary: number; // Current salary in tenths (e.g., 230 = $23.0M)
-      extensionType: 1 | 2 | 3 | 4; // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x, 3 = 3-year at 1.8x, 4 = 4-year at 2x
+      currentSalary: number;
+      extensionType: 1 | 2 | 3 | 4;
       extensionYear: number;
-      isQuartileBased?: boolean; // For rookie contracts
-      quartileSalary?: number; // Quartile-based salary in tenths
+      isPPGBased?: boolean;
+      ppgSalary?: number;
     }) => {
       return apiRequest("POST", `/api/league/${leagueId}/extensions`, {
         rosterId: userTeam?.rosterId,
@@ -1725,8 +1753,8 @@ function ManageTeamContractsTab({
       });
     },
     onSuccess: (_, variables) => {
-      const extensionTypeText = variables.isQuartileBased
-        ? `${variables.extensionType} additional year${variables.extensionType > 1 ? 's' : ''} at quartile-based salary`
+      const extensionTypeText = variables.isPPGBased
+        ? `${variables.extensionType} additional year${variables.extensionType > 1 ? 's' : ''} at PPG-based salary ($${((variables.ppgSalary || 0) / 10).toFixed(1)}M/yr)`
         : variables.extensionType === 1 
           ? "1 additional year at 1.2x salary" 
           : variables.extensionType === 2
@@ -2108,6 +2136,7 @@ function ManageTeamContractsTab({
     fourYearSalary: number; // 2.0x rounded up
     isRookieContract: boolean;
     requiresQuartilePricing: boolean;
+    requiresPPGPricing: boolean;
   }
 
   const isPlayerEligibleForExtension = (playerId: string): ExtensionEligibility => {
@@ -2127,6 +2156,7 @@ function ManageTeamContractsTab({
       fourYearSalary: 0,
       isRookieContract: false,
       requiresQuartilePricing: false,
+      requiresPPGPricing: false,
     };
 
     const contract = dbContracts.find(c => c.playerId === playerId && c.rosterId === userTeam?.rosterId);
@@ -2146,7 +2176,6 @@ function ManageTeamContractsTab({
 
     // Check if player has rookie contract designation
     const isRookieContract = contract.isRookieContract === 1;
-    const requiresQuartilePricing = isRookieContract;
 
     const salaries = contract.salaries || {};
     const salaryEntries = Object.entries(salaries)
@@ -2162,26 +2191,35 @@ function ManageTeamContractsTab({
     const lastYearSalary = lastEntry?.value || 0;
     const secondToLastYearSalary = secondLastEntry?.value || 0;
 
-    // Must be in last year OR second-to-last year of contract
     const isInLastYear = lastYearWithSalary === CURRENT_YEAR;
     const isInSecondToLastYear = secondToLastYearWithSalary === CURRENT_YEAR;
-    
-    if (!isInLastYear && !isInSecondToLastYear) {
-      return { ...defaultResult, reason: "Player is not in the final or second-to-last year of their contract" };
+
+    // Rookie contracts: must be in the FINAL year only, and the season must be over (offseason)
+    if (isRookieContract) {
+      if (!isInLastYear) {
+        return { ...defaultResult, isRookieContract: true, requiresPPGPricing: true, reason: "Player is not in the final year of their rookie contract" };
+      }
+      if (!isOffseason) {
+        return { ...defaultResult, isRookieContract: true, requiresPPGPricing: true, reason: "Rookie extensions are only available after the season has ended (offseason)" };
+      }
+    } else {
+      // Non-rookie: must be in last year OR second-to-last year of contract
+      if (!isInLastYear && !isInSecondToLastYear) {
+        return { ...defaultResult, reason: "Player is not in the final or second-to-last year of their contract" };
+      }
     }
 
     // Use the salary from the year we're extending from
-    // If in second-to-last year, use that year's salary; otherwise use last year's salary
-    const salaryToUse = isInSecondToLastYear ? secondToLastYearSalary : lastYearSalary;
+    const salaryToUse = (!isRookieContract && isInSecondToLastYear) ? secondToLastYearSalary : lastYearSalary;
 
     // Calculate extension year (starts after the last year with salary)
     const extensionYear = lastYearWithSalary + 1;
     
-    // Calculate salary options (only if not rookie contract - rookie contracts use quartile pricing)
-    const oneYearSalary = requiresQuartilePricing ? 0 : Math.ceil(salaryToUse * 1.2); // 1.2x rounded up
-    const twoYearSalary = requiresQuartilePricing ? 0 : Math.ceil(salaryToUse * 1.5); // 1.5x rounded up
-    const threeYearSalary = requiresQuartilePricing ? 0 : Math.ceil(salaryToUse * 1.8); // 1.8x rounded up
-    const fourYearSalary = requiresQuartilePricing ? 0 : Math.ceil(salaryToUse * 2.0); // 2.0x rounded up
+    // Calculate salary options (only for non-rookie contracts — rookies use PPG-based pricing from server)
+    const oneYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 1.2);
+    const twoYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 1.5);
+    const threeYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 1.8);
+    const fourYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 2.0);
     
     // Check if we can do each extension type (max year is option year)
     const maxYear = OPTION_YEAR;
@@ -2191,65 +2229,40 @@ function ManageTeamContractsTab({
     const canDo4Year = extensionYear + 3 <= maxYear;
 
     return {
-      eligible: canDo1Year || canDo2Year || canDo3Year || canDo4Year,
-      reason: requiresQuartilePricing 
-        ? "Eligible for quartile-based extension (rookie contract)" 
+      eligible: isRookieContract ? (canDo3Year || canDo4Year) : (canDo1Year || canDo2Year || canDo3Year || canDo4Year),
+      reason: isRookieContract
+        ? "Eligible for PPG-based extension (rookie contract — offseason)"
         : (canDo1Year || canDo2Year || canDo3Year || canDo4Year) 
           ? "Eligible for extension" 
           : `Cannot extend - would exceed ${maxYear}`,
       extensionYear,
       currentSalary: salaryToUse,
       currentSalaryTenths: Math.round(salaryToUse * 10),
-      // For rookie contracts, only 3-year and 4-year extensions are available (via quartile pricing)
-      // For non-rookie contracts, all extension types are available
-      canDo1Year: requiresQuartilePricing ? false : canDo1Year,
-      canDo2Year: requiresQuartilePricing ? false : canDo2Year,
-      canDo3Year: canDo3Year, // Available for both rookie and non-rookie contracts
-      canDo4Year: canDo4Year, // Available for both rookie and non-rookie contracts
+      canDo1Year: isRookieContract ? false : canDo1Year,
+      canDo2Year: isRookieContract ? false : canDo2Year,
+      canDo3Year,
+      canDo4Year,
       oneYearSalary,
       twoYearSalary,
       threeYearSalary,
       fourYearSalary,
       isRookieContract,
-      requiresQuartilePricing,
+      requiresQuartilePricing: false, // Deprecated — kept for interface compat
+      requiresPPGPricing: isRookieContract,
     };
   };
 
   // Handle applying extension with type selection
-  const handleApplyExtension = (playerId: string, playerName: string, extensionYear: number, currentSalaryTenths: number, extensionType: 1 | 2 | 3 | 4, isQuartileBased: boolean = false, quartileSalary?: number) => {
+  const handleApplyExtension = (playerId: string, playerName: string, extensionYear: number, currentSalaryTenths: number, extensionType: 1 | 2 | 3 | 4, isPPGBased: boolean = false, ppgSalary?: number) => {
     applyExtensionMutation.mutate({
       playerId,
       playerName,
       currentSalary: currentSalaryTenths,
       extensionType,
       extensionYear,
-      isQuartileBased,
-      quartileSalary,
+      isPPGBased,
+      ppgSalary,
     });
-  };
-
-  // Get player's quartile for quartile-based extensions
-  const getPlayerQuartile = (playerId: string): { quartile: number | null; salary: number | null } => {
-    if (!playerRankingsData?.positions) {
-      return { quartile: null, salary: null };
-    }
-
-    // Find player in rankings
-    for (const position of Object.values(playerRankingsData.positions)) {
-      const player = (position as any).players?.find((p: any) => p.playerId === playerId);
-      if (player) {
-        const quartile = player.quartile;
-        // Quartile salary map: Q1=$20M, Q2=$15M, Q3=$10M, Q4=$5M (in tenths: 200, 150, 100, 50)
-        const salaryMap: Record<number, number> = {
-          1: 200, // $20M
-          2: 150, // $15M
-          3: 100, // $10M
-          4: 50,  // $5M
-        };
-        return { quartile, salary: salaryMap[quartile] || null };
-      }
-    }
-    return { quartile: null, salary: null };
   };
 
   const freeAgentResults = useMemo(() => {
@@ -3199,7 +3212,6 @@ function ManageTeamContractsTab({
                   <TableHead className="text-center w-[60px]">Team</TableHead>
                   <TableHead className="text-center w-[55px]">Len</TableHead>
                   <TableHead className="text-center w-[55px]">Rem</TableHead>
-                  <TableHead className="text-center w-[50px]">Type</TableHead>
                   {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
                     <TableHead key={year} className="text-center w-[100px]">
                       {idx === 4 ? `${year} (Ext)` : year}
@@ -3272,14 +3284,6 @@ function ManageTeamContractsTab({
                             </span>
                           );
                         })()}
-                      </TableCell>
-                      <TableCell className="text-center">
-                        <Badge 
-                          variant={player.isFreeAgent ? "secondary" : "outline"}
-                          className="text-[10px]"
-                        >
-                          {player.isFreeAgent ? "FA+" : isModified ? "Mod" : "Roster"}
-                        </Badge>
                       </TableCell>
                       {[...CONTRACT_YEARS, OPTION_YEAR].map((year, yearIndex) => {
                         const leagueSalary = player.isRosterPlayer ? getLeagueSalary(player.playerId, year) : 0;
@@ -3458,6 +3462,9 @@ function ManageTeamContractsTab({
                           return (
                             <Popover open={openExtensionPopover === player.playerId} onOpenChange={(open) => {
                               setOpenExtensionPopover(open ? player.playerId : null);
+                              if (open && extensionEligibility.requiresPPGPricing) {
+                                fetchPPGSalary(player.playerId);
+                              }
                             }}>
                               <Tooltip>
                                 <TooltipTrigger asChild>
@@ -3527,12 +3534,12 @@ function ManageTeamContractsTab({
                                   })()}
                                 </TooltipContent>
                               </Tooltip>
-                              <PopoverContent className="w-72 p-3" align="end">
+                              <PopoverContent className="w-80 p-3" align="end">
                                 <div className="space-y-3">
                                   <div className="text-sm font-medium">Extend {player.name}</div>
-                                  {extensionEligibility.requiresQuartilePricing ? (
+                                  {extensionEligibility.requiresPPGPricing ? (
                                     <div className="text-xs text-amber-600 font-medium">
-                                      Rookie contract - Quartile-based pricing required
+                                      Rookie contract — PPG-based pricing
                                     </div>
                                   ) : (
                                     <div className="text-xs text-muted-foreground">
@@ -3540,20 +3547,54 @@ function ManageTeamContractsTab({
                                     </div>
                                   )}
                                   <div className="space-y-2">
-                                    {extensionEligibility.requiresQuartilePricing ? (
-                                      // Quartile-based extensions for rookie contracts
+                                    {extensionEligibility.requiresPPGPricing ? (
+                                      // PPG-based extensions for rookie contracts
                                       (() => {
-                                        const quartileInfo = getPlayerQuartile(player.playerId);
-                                        if (!quartileInfo.quartile || !quartileInfo.salary) {
+                                        const ppgInfo = ppgSalaryData[player.playerId];
+                                        if (!ppgInfo || ppgInfo.loading) {
                                           return (
-                                            <div className="text-xs text-muted-foreground">
-                                              Quartile data not available. Player rankings may not be calculated yet.
+                                            <div className="text-xs text-muted-foreground py-2">
+                                              Calculating PPG-based salary...
                                             </div>
                                           );
                                         }
-                                        const quartileSalaryInMillions = quartileInfo.salary / 10;
+                                        if (ppgInfo.error) {
+                                          return (
+                                            <div className="text-xs text-destructive py-2">
+                                              {ppgInfo.error}
+                                            </div>
+                                          );
+                                        }
+                                        if (!ppgInfo.data) return null;
+                                        const d = ppgInfo.data;
                                         return (
                                           <>
+                                            <div className="text-xs space-y-1 bg-muted/50 rounded p-2">
+                                              <div className="flex justify-between">
+                                                <span className="text-muted-foreground">Adj. PPG:</span>
+                                                <span className="font-medium">{d.adjustedPPG.toFixed(1)} ({d.formulaUsed === "recent15" ? "recent 15" : "30-game avg"})</span>
+                                              </div>
+                                              <div className="flex justify-between">
+                                                <span className="text-muted-foreground">Position Rank:</span>
+                                                <span className="font-medium">#{d.rank} of {d.totalPlayersAtPosition} {d.position}s</span>
+                                              </div>
+                                              <div className="flex justify-between">
+                                                <span className="text-muted-foreground">Games Used:</span>
+                                                <span className="font-medium">{d.gamesUsed}</span>
+                                              </div>
+                                              {d.neighborAbove && (
+                                                <div className="flex justify-between">
+                                                  <span className="text-muted-foreground">Above:</span>
+                                                  <span className="font-medium">{d.neighborAbove.name} (${(d.neighborAbove.salary / 10).toFixed(1)}M)</span>
+                                                </div>
+                                              )}
+                                              {d.neighborBelow && (
+                                                <div className="flex justify-between">
+                                                  <span className="text-muted-foreground">Below:</span>
+                                                  <span className="font-medium">{d.neighborBelow.name} (${(d.neighborBelow.salary / 10).toFixed(1)}M)</span>
+                                                </div>
+                                              )}
+                                            </div>
                                             {extensionEligibility.canDo3Year && (
                                               <Button
                                                 size="sm"
@@ -3567,15 +3608,15 @@ function ManageTeamContractsTab({
                                                     extensionEligibility.currentSalaryTenths,
                                                     3,
                                                     true,
-                                                    quartileInfo.salary || undefined
+                                                    d.extensionSalary
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
                                                 disabled={applyExtensionMutation.isPending || teamUsed3Year}
-                                                data-testid={`button-extend-3yr-quartile-${player.playerId}`}
+                                                data-testid={`button-extend-3yr-ppg-${player.playerId}`}
                                               >
                                                 <span>3-Year Extension</span>
-                                                <span className="text-emerald-600 font-medium">${quartileSalaryInMillions.toFixed(1)}M/yr (Q{quartileInfo.quartile})</span>
+                                                <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(1)}M/yr</span>
                                               </Button>
                                             )}
                                             {extensionEligibility.canDo4Year && (
@@ -3591,15 +3632,15 @@ function ManageTeamContractsTab({
                                                     extensionEligibility.currentSalaryTenths,
                                                     4,
                                                     true,
-                                                    quartileInfo.salary || undefined
+                                                    d.extensionSalary
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
                                                 disabled={applyExtensionMutation.isPending || teamUsed4Year}
-                                                data-testid={`button-extend-4yr-quartile-${player.playerId}`}
+                                                data-testid={`button-extend-4yr-ppg-${player.playerId}`}
                                               >
                                                 <span>4-Year Extension</span>
-                                                <span className="text-emerald-600 font-medium">${quartileSalaryInMillions.toFixed(1)}M/yr (Q{quartileInfo.quartile})</span>
+                                                <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(1)}M/yr</span>
                                               </Button>
                                             )}
                                             {!extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
@@ -3711,9 +3752,9 @@ function ManageTeamContractsTab({
                                   </div>
                                   <div className="text-xs text-muted-foreground border-t pt-2">
                                     Each team can use 1 of each extension type per season (1-year, 2-year, 3-year, 4-year).
-                                    {extensionEligibility.requiresQuartilePricing && (
+                                    {extensionEligibility.requiresPPGPricing && (
                                       <div className="mt-1 text-amber-600">
-                                        Rookie contracts require quartile-based pricing.
+                                        Rookie contracts use PPG-based pricing (offseason only).
                                       </div>
                                     )}
                                   </div>
@@ -4785,7 +4826,8 @@ interface PlayerRankingData {
       playerId: string;
       name: string;
       team: string;
-      totalPoints: number;
+      adjustedPPG: number;
+      gamesUsed: number;
       quartile: 1 | 2 | 3 | 4;
       value: string;
     }>;
@@ -4874,7 +4916,7 @@ function PlayerRankingsTab({ leagueId }: PlayerRankingsTabProps) {
         <CardHeader>
           <CardTitle>Player Rankings - {rankingsData.season} Season</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Box and whisker plots showing fantasy point distributions by position. Players are assigned quartile values (Q1-Q4) based on their total points.
+            Box and whisker plots showing adjusted PPG distributions by position (30-game, 2-season formula). Players are assigned quartile values (Q1-Q4) based on their adjusted PPG.
           </p>
         </CardHeader>
         <CardContent className="space-y-6">
@@ -4926,7 +4968,7 @@ function PlayerRankingsTab({ leagueId }: PlayerRankingsTabProps) {
                         <TableRow>
                           <TableHead>Player</TableHead>
                           <TableHead>Team</TableHead>
-                          <TableHead className="text-right">Total Points</TableHead>
+                          <TableHead className="text-right">Adj. PPG</TableHead>
                           <TableHead className="text-center">Quartile</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -4936,7 +4978,7 @@ function PlayerRankingsTab({ leagueId }: PlayerRankingsTabProps) {
                             <TableCell className="font-medium">{player.name}</TableCell>
                             <TableCell>{player.team || "—"}</TableCell>
                             <TableCell className="text-right tabular-nums">
-                              {player.totalPoints.toFixed(1)}
+                              {player.adjustedPPG.toFixed(1)}
                             </TableCell>
                             <TableCell className="text-center">
                               <Badge className={quartileColors[player.quartile]}>
@@ -6105,11 +6147,11 @@ export default function Contracts() {
       });
       setHasChanges(false);
     },
-    onError: (error) => {
+    onError: (error: any) => {
       console.error("Error saving contracts:", error);
       toast({
-        title: "Error",
-        description: "Failed to save contracts. Please try again.",
+        title: "Error Saving Contracts",
+        description: error?.message || "Failed to save contracts. Please try again.",
         variant: "destructive",
       });
     },

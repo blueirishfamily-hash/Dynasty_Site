@@ -38,5 +38,14 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
+# Dependencies
+node_modules/
+
 # Environment variables
 .env
+
+# Debug logs
+debug.log
+
+# Temp files
+temp_*
