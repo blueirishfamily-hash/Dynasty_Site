@@ -90,11 +90,8 @@ app.use((req, res, next) => {
   // Bind to all interfaces so both IPv4 (127.0.0.1) and localhost work consistently.
   // Can be overridden via HOST env var.
   const host = process.env.HOST || "0.0.0.0";
-  const listenOptions = process.platform === "win32" 
-    ? { port, host }
-    : { port, host, reusePort: true };
   httpServer.listen(
-    listenOptions,
+    { port, host },
     () => {
       log(`serving on port ${port}`);
     },
