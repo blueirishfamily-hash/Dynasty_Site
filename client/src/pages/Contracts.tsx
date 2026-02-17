@@ -7,15 +7,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2, PieChart as PieChartIcon, BarChart } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
-import { DialogFooter } from "@/components/ui/dialog";
-import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip } from "recharts";
+import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip, BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine } from "recharts";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
+  DialogTrigger,
 } from "@/components/ui/dialog";
 import {
   Table,
@@ -121,6 +122,23 @@ interface HypotheticalPlayer {
 interface HypotheticalContractData {
   salaryOverrides: Record<string, Record<number, number>>;
   addedFreeAgents: HypotheticalPlayer[];
+}
+
+interface PlayerBid {
+  id: string;
+  leagueId: string;
+  rosterId: number;
+  playerId: string;
+  playerName: string;
+  playerPosition: string;
+  playerTeam: string | null;
+  bidAmount: number;
+  maxBid: number | null;
+  contractYears: number;
+  notes: string | null;
+  status: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 const positionColors: Record<string, string> = {
@@ -1710,6 +1728,7 @@ function ManageTeamContractsTab({
     extensionYear: number;
     extensionType: number; // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
     extensionSalary2: number | null;
+    isRookieExtension: number; // 0 = regular, 1 = rookie
     createdAt: number;
   }
 
@@ -1719,6 +1738,9 @@ function ManageTeamContractsTab({
     hasUsed2Year: boolean;
     hasUsed3Year: boolean;
     hasUsed4Year: boolean;
+    hasUsedNonRookieExtension: boolean;
+    rookieExtensionCount: number;
+    rookieHas4Year: boolean;
     extensions: TeamExtension[];
   }
 
@@ -2413,7 +2435,49 @@ function ManageTeamContractsTab({
     return true;
   });
 
-  const allHypotheticalPlayers = [...rosterPlayers, ...filteredFreeAgents];
+  // Fetch user's active bids to include in salary breakdown
+  const { data: userBids = [] } = useQuery<PlayerBid[]>({
+    queryKey: ['/api/league', leagueId, 'bids', userTeam?.rosterId],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${leagueId}/bids/${userTeam!.rosterId}`);
+      if (!res.ok) throw new Error("Failed to fetch bids");
+      return res.json();
+    },
+    enabled: !!leagueId && !!userTeam,
+  });
+
+  const bidHypotheticalPlayers = useMemo(() => {
+    const activeBids = userBids.filter(b => b.status === "active");
+    if (activeBids.length === 0) return [];
+
+    const existingPlayerIds = new Set([
+      ...rosterPlayers.map(p => p.playerId),
+      ...filteredFreeAgents.map(p => p.playerId),
+    ]);
+
+    return activeBids
+      .filter(b => !existingPlayerIds.has(b.playerId))
+      .map(bid => {
+        const player = playerMap[bid.playerId];
+        const hypotheticalSalaries: Record<number, number> = {};
+        const bidStartYear = CURRENT_YEAR + 1;
+        for (let y = bidStartYear; y < bidStartYear + bid.contractYears; y++) {
+          hypotheticalSalaries[y] = bid.bidAmount;
+        }
+        return {
+          playerId: bid.playerId,
+          name: player?.name || bid.playerName,
+          position: player?.position || bid.playerPosition || "NA",
+          nflTeam: player?.team || bid.playerTeam || null,
+          yearsExp: player?.yearsExp ?? 0,
+          hypotheticalSalaries,
+          isRosterPlayer: false,
+          isFreeAgent: true,
+        } as HypotheticalPlayer;
+      });
+  }, [userBids, rosterPlayers, filteredFreeAgents, playerMap, CURRENT_YEAR]);
+
+  const allHypotheticalPlayers = [...rosterPlayers, ...filteredFreeAgents, ...bidHypotheticalPlayers];
 
   // Auto-save hypothetical changes with debouncing
   useEffect(() => {
@@ -3436,24 +3500,33 @@ function ManageTeamContractsTab({
                       <TableCell className="text-center">
                         {player.isRosterPlayer && !player.isFreeAgent && (() => {
                           const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
-                          // Check if specific extension types have been used
-                          const teamUsed1Year = extensionStatus?.hasUsed1Year || false;
-                          const teamUsed2Year = extensionStatus?.hasUsed2Year || false;
-                          const teamUsed3Year = extensionStatus?.hasUsed3Year || false;
-                          const teamUsed4Year = extensionStatus?.hasUsed4Year || false;
+                          // Separate rookie and non-rookie extension limits
+                          const hasUsedNonRookieExt = extensionStatus?.hasUsedNonRookieExtension || false;
+                          const rookieExtCount = extensionStatus?.rookieExtensionCount || 0;
+                          const rookieUsed4Year = extensionStatus?.rookieHas4Year || false;
                           
                           // Check if this specific player has an extension
                           const thisPlayerHasExtension = (extensionStatus?.extensions && Array.isArray(extensionStatus.extensions)) 
                             ? extensionStatus.extensions.some(e => e.playerId === player.playerId) 
                             : false;
                           
+                          // Determine if the player's extension options are exhausted
+                          const isRookiePlayer = extensionEligibility.isRookieContract;
+                          let allOptionsExhausted = false;
+                          if (isRookiePlayer) {
+                            // Rookie: exhausted if 3 rookie extensions used, or if only 4-year left but 4-year already used
+                            const can3YrRookie = extensionEligibility.canDo3Year && rookieExtCount < 3;
+                            const can4YrRookie = extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year;
+                            allOptionsExhausted = !can3YrRookie && !can4YrRookie;
+                          } else {
+                            // Non-rookie: exhausted if team already used their one non-rookie extension
+                            allOptionsExhausted = hasUsedNonRookieExt;
+                          }
+
                           // For commissioners: only disable during mutations
-                          // For non-commissioners: disable if can't apply extension (team used that type, not eligible, or mutation in progress)
+                          // For non-commissioners: disable if can't apply extension or all options exhausted
                           const isApplyingDisabled = !extensionEligibility.eligible || 
-                            (extensionEligibility.canDo1Year && teamUsed1Year) ||
-                            (extensionEligibility.canDo2Year && teamUsed2Year) ||
-                            (extensionEligibility.canDo3Year && teamUsed3Year) ||
-                            (extensionEligibility.canDo4Year && teamUsed4Year) ||
+                            allOptionsExhausted ||
                             applyExtensionMutation.isPending;
                           const toggleDisabled = isCommissioner 
                             ? (applyExtensionMutation.isPending || deleteExtensionMutation.isPending)
@@ -3477,12 +3550,7 @@ function ManageTeamContractsTab({
                                           if (checked) {
                                             // Open popover to show extension options when checked
                                             // Check if any extension type is available
-                                            const hasAvailableExtension = 
-                                              (extensionEligibility.canDo1Year && !teamUsed1Year) ||
-                                              (extensionEligibility.canDo2Year && !teamUsed2Year) ||
-                                              (extensionEligibility.canDo3Year && !teamUsed3Year) ||
-                                              (extensionEligibility.canDo4Year && !teamUsed4Year);
-                                            if (extensionEligibility.eligible && hasAvailableExtension) {
+                                            if (extensionEligibility.eligible && !allOptionsExhausted) {
                                               setOpenExtensionPopover(player.playerId);
                                             }
                                           } else {
@@ -3505,18 +3573,32 @@ function ManageTeamContractsTab({
                                     
                                     // Determine which extension types are available
                                     const availableTypes: string[] = [];
-                                    if (extensionEligibility.canDo1Year && !teamUsed1Year) availableTypes.push("1-year");
-                                    if (extensionEligibility.canDo2Year && !teamUsed2Year) availableTypes.push("2-year");
-                                    if (extensionEligibility.canDo3Year && !teamUsed3Year) availableTypes.push("3-year");
-                                    if (extensionEligibility.canDo4Year && !teamUsed4Year) availableTypes.push("4-year");
+                                    if (isRookiePlayer) {
+                                      if (extensionEligibility.canDo3Year && rookieExtCount < 3) availableTypes.push("3-year");
+                                      if (extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year) availableTypes.push("4-year");
+                                    } else {
+                                      if (extensionEligibility.canDo1Year && !hasUsedNonRookieExt) availableTypes.push("1-year");
+                                      if (extensionEligibility.canDo2Year && !hasUsedNonRookieExt) availableTypes.push("2-year");
+                                      if (extensionEligibility.canDo3Year && !hasUsedNonRookieExt) availableTypes.push("3-year");
+                                      if (extensionEligibility.canDo4Year && !hasUsedNonRookieExt) availableTypes.push("4-year");
+                                    }
                                     
                                     let mainText = "";
                                     if (isCommissioner && thisPlayerHasExtension) {
                                       mainText = "This player has an extension. Click to remove and allow the team to use that extension type again.";
                                     } else if (availableTypes.length === 0 && extensionEligibility.eligible) {
-                                      mainText = `Team has already used all available extension types for ${CURRENT_YEAR}`;
+                                      if (isRookiePlayer) {
+                                        mainText = rookieExtCount >= 3
+                                          ? `Team has used all 3 rookie extensions for ${CURRENT_YEAR}`
+                                          : `Team has already used their 4-year rookie extension for ${CURRENT_YEAR}`;
+                                      } else {
+                                        mainText = `Team has already used their extension for ${CURRENT_YEAR}`;
+                                      }
                                     } else if (extensionEligibility.eligible) {
-                                      mainText = `Click to choose extension type (Available: ${availableTypes.join(", ")})`;
+                                      const limitInfo = isRookiePlayer 
+                                        ? ` (${rookieExtCount}/3 rookie extensions used)`
+                                        : "";
+                                      mainText = `Click to choose extension type (Available: ${availableTypes.join(", ")})${limitInfo}`;
                                     } else {
                                       mainText = extensionEligibility.reason;
                                     }
@@ -3612,7 +3694,7 @@ function ManageTeamContractsTab({
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
-                                                disabled={applyExtensionMutation.isPending || teamUsed3Year}
+                                                disabled={applyExtensionMutation.isPending || rookieExtCount >= 3}
                                                 data-testid={`button-extend-3yr-ppg-${player.playerId}`}
                                               >
                                                 <span>3-Year Extension</span>
@@ -3636,7 +3718,7 @@ function ManageTeamContractsTab({
                                                   );
                                                   setOpenExtensionPopover(null);
                                                 }}
-                                                disabled={applyExtensionMutation.isPending || teamUsed4Year}
+                                                disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || rookieUsed4Year}
                                                 data-testid={`button-extend-4yr-ppg-${player.playerId}`}
                                               >
                                                 <span>4-Year Extension</span>
@@ -3669,7 +3751,7 @@ function ManageTeamContractsTab({
                                               );
                                               setOpenExtensionPopover(null);
                                             }}
-                                            disabled={applyExtensionMutation.isPending}
+                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
                                             data-testid={`button-extend-1yr-${player.playerId}`}
                                           >
                                             <span>1-Year Extension</span>
@@ -3691,7 +3773,7 @@ function ManageTeamContractsTab({
                                               );
                                               setOpenExtensionPopover(null);
                                             }}
-                                            disabled={applyExtensionMutation.isPending}
+                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
                                             data-testid={`button-extend-2yr-${player.playerId}`}
                                           >
                                             <span>2-Year Extension</span>
@@ -3713,7 +3795,7 @@ function ManageTeamContractsTab({
                                               );
                                               setOpenExtensionPopover(null);
                                             }}
-                                            disabled={applyExtensionMutation.isPending}
+                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
                                             data-testid={`button-extend-3yr-${player.playerId}`}
                                           >
                                             <span>3-Year Extension</span>
@@ -3735,7 +3817,7 @@ function ManageTeamContractsTab({
                                               );
                                               setOpenExtensionPopover(null);
                                             }}
-                                            disabled={applyExtensionMutation.isPending || teamUsed4Year}
+                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
                                             data-testid={`button-extend-4yr-${player.playerId}`}
                                           >
                                             <span>4-Year Extension</span>
@@ -3826,26 +3908,10 @@ interface PlayerBiddingTabProps {
   rosterPlayerIds: string[];
   teamContracts: Record<string, PlayerContractData>;
   teamCapData: TeamCapData[];
+  expiringPlayerIds: Set<string>;
 }
 
-interface PlayerBid {
-  id: string;
-  leagueId: string;
-  rosterId: number;
-  playerId: string;
-  playerName: string;
-  playerPosition: string;
-  playerTeam: string | null;
-  bidAmount: number;
-  maxBid: number | null;
-  contractYears: number;
-  notes: string | null;
-  status: string;
-  createdAt: number;
-  updatedAt: number;
-}
-
-function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts, teamCapData }: PlayerBiddingTabProps) {
+function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts, teamCapData, expiringPlayerIds }: PlayerBiddingTabProps) {
   const { league, user } = useSleeper();
   const leagueId = league?.leagueId;
   const { toast } = useToast();
@@ -3865,10 +3931,13 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   const [freeAgentSearch, setFreeAgentSearch] = useState("");
   const [selectedPlayer, setSelectedPlayer] = useState<SleeperPlayerData | null>(null);
   const [bidAmount, setBidAmount] = useState("");
-  const [maxBid, setMaxBid] = useState("");
   const [contractYears, setContractYears] = useState<string>("1");
   const [notes, setNotes] = useState("");
   const [editingBid, setEditingBid] = useState<PlayerBid | null>(null);
+  const [bidCardOpen, setBidCardOpen] = useState(false);
+  const [filterPosition, setFilterPosition] = useState<string>("all");
+  const [filterNflTeam, setFilterNflTeam] = useState<string>("all");
+  const [filterFavoritesOnly, setFilterFavoritesOnly] = useState(false);
 
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
@@ -4040,28 +4109,70 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   const resetForm = () => {
     setSelectedPlayer(null);
     setBidAmount("");
-    setMaxBid("");
     setContractYears("1");
     setNotes("");
     setFreeAgentSearch("");
   };
 
+  // Favorites query for quick bidding on favorited expiring players
+  const { data: favorites = [] } = useQuery<Array<{ id: string; playerId: string }>>({
+    queryKey: ['/api/league', leagueId, 'favorites', userTeam.rosterId],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${leagueId}/favorites/${userTeam.rosterId}`);
+      if (!res.ok) throw new Error("Failed to fetch favorites");
+      return res.json();
+    },
+    enabled: !!leagueId && !!userTeam,
+  });
+
+  const favoritePlayerIds = useMemo(() => new Set(favorites.map(f => f.playerId)), [favorites]);
+
+  const favoriteFreeAgents = useMemo(() => {
+    if (!favorites.length) return [];
+    const biddedPlayerIds = new Set(bids.map(b => b.playerId));
+    return favorites
+      .map(fav => allPlayers.find(p => p.id === fav.playerId))
+      .filter((p): p is SleeperPlayerData =>
+        !!p &&
+        (!allRosterPlayerIdsSet.has(p.id) || expiringPlayerIds.has(p.id)) &&
+        !biddedPlayerIds.has(p.id)
+      );
+  }, [favorites, allPlayers, allRosterPlayerIdsSet, bids, expiringPlayerIds]);
+
+  const nflTeams = useMemo(() => {
+    const teams = new Set<string>();
+    allPlayers.forEach(p => {
+      if (p.team && ["QB", "RB", "WR", "TE", "K"].includes(p.position)) {
+        teams.add(p.team);
+      }
+    });
+    return Array.from(teams).sort();
+  }, [allPlayers]);
+
   const freeAgentResults = useMemo(() => {
-    if (!freeAgentSearch.trim() || freeAgentSearch.length < 2) return [];
-    
+    const hasSearch = freeAgentSearch.trim().length >= 2;
+    const showingFavoritesOnly = filterFavoritesOnly && !hasSearch;
+
+    if (!hasSearch && !filterFavoritesOnly) return [];
+
     const searchLower = freeAgentSearch.toLowerCase();
     const biddedPlayerIds = new Set(bids.map(b => b.playerId));
-    
+
     return allPlayers
       .filter(player => {
         if (!player.name || !player.position) return false;
+        if (!player.team) return false;
         if (!["QB", "RB", "WR", "TE", "K"].includes(player.position)) return false;
-        if (allRosterPlayerIdsSet.has(player.id)) return false;
+        if (allRosterPlayerIdsSet.has(player.id) && !expiringPlayerIds.has(player.id)) return false;
         if (biddedPlayerIds.has(player.id)) return false;
-        return player.name.toLowerCase().includes(searchLower);
+        if (hasSearch && !player.name.toLowerCase().includes(searchLower)) return false;
+        if (filterPosition !== "all" && player.position !== filterPosition) return false;
+        if (filterNflTeam !== "all" && player.team !== filterNflTeam) return false;
+        if (filterFavoritesOnly && !favoritePlayerIds.has(player.id)) return false;
+        return true;
       })
-      .slice(0, 10);
-  }, [freeAgentSearch, allPlayers, allRosterPlayerIdsSet, bids]);
+      .slice(0, showingFavoritesOnly ? 50 : 10);
+  }, [freeAgentSearch, allPlayers, allRosterPlayerIdsSet, bids, filterPosition, filterNflTeam, filterFavoritesOnly, favoritePlayerIds, expiringPlayerIds]);
 
   const handleSubmitBid = () => {
     if (!selectedPlayer || !bidAmount) return;
@@ -4072,8 +4183,8 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       playerName: selectedPlayer.name,
       playerPosition: selectedPlayer.position,
       playerTeam: selectedPlayer.team || null,
-      bidAmount: parseFloat(bidAmount),
-      maxBid: maxBid ? parseFloat(maxBid) : null,
+      bidAmount: parseInt(bidAmount),
+      maxBid: null,
       contractYears: isRookieBid ? 3 : parseInt(contractYears),
       isRookieContract: isRookieBid ? 1 : 0,
       notes: notes || null,
@@ -4095,7 +4206,6 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       team: bid.playerTeam,
     });
     setBidAmount(bid.bidAmount.toString());
-    setMaxBid(bid.maxBid?.toString() || "");
     // Check if this is a rookie bid (contractYears = 3 and isRookieContract flag)
     const isRookieBid = bid.contractYears === 3 && (bid as any).isRookieContract === 1;
     setContractYears(isRookieBid ? "R" : bid.contractYears.toString());
@@ -4108,6 +4218,22 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   };
 
   const activeBids = bids.filter(b => b.status === "active");
+
+  const capProjection = useMemo(() => {
+    const seasonYear = parseInt(league?.season || "") || new Date().getFullYear();
+    const years = [seasonYear, seasonYear + 1, seasonYear + 2, seasonYear + 3];
+    return years.map(year => {
+      const existingSalary = Object.values(teamContracts).reduce(
+        (sum, c) => sum + (c.salaries[year] || 0), 0
+      );
+      const bidSalary = activeBids.reduce((sum, b) => {
+        const bidStartYear = seasonYear + 1;
+        const bidEndYear = bidStartYear + b.contractYears - 1;
+        return sum + (year >= bidStartYear && year <= bidEndYear ? b.bidAmount : 0);
+      }, 0);
+      return { year, existingSalary, bidSalary, total: existingSalary + bidSalary };
+    });
+  }, [teamContracts, activeBids, league?.season]);
 
   // Count active bids by contract years (including rookie contracts)
   // Note: Rookie bids are stored as contractYears = 3 with a special marker
@@ -4262,53 +4388,112 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
         </CardContent>
       </Card>
 
+      <Dialog open={bidCardOpen} onOpenChange={setBidCardOpen}>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
+        <DialogTrigger asChild>
+          <Card className="cursor-pointer select-none hover:bg-muted/50 transition-colors">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <UserPlus className="w-5 h-5" />
+                {editingBid ? "Edit Bid" : "Place New Bid"}
+                <span className="ml-auto text-xs text-muted-foreground font-normal">Click to open</span>
+              </CardTitle>
+            </CardHeader>
+          </Card>
+        </DialogTrigger>
+
+        <DialogContent className="max-w-[95vw] w-full h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
               <UserPlus className="w-5 h-5" />
               {editingBid ? "Edit Bid" : "Place New Bid"}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4">
             {!selectedPlayer ? (
-              <div className="space-y-2">
-                <Label>Search Free Agents</Label>
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                  <Input
-                    placeholder="Search for a player..."
-                    value={freeAgentSearch}
-                    onChange={(e) => setFreeAgentSearch(e.target.value)}
-                    className="pl-9"
-                    data-testid="input-bid-search"
-                  />
+              <div className="space-y-3">
+                <div className="flex flex-wrap gap-2">
+                  <Select value={filterPosition} onValueChange={setFilterPosition}>
+                    <SelectTrigger className="w-[100px] h-8 text-xs">
+                      <SelectValue placeholder="Position" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Pos</SelectItem>
+                      <SelectItem value="QB">QB</SelectItem>
+                      <SelectItem value="RB">RB</SelectItem>
+                      <SelectItem value="WR">WR</SelectItem>
+                      <SelectItem value="TE">TE</SelectItem>
+                      <SelectItem value="K">K</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <Select value={filterNflTeam} onValueChange={setFilterNflTeam}>
+                    <SelectTrigger className="w-[110px] h-8 text-xs">
+                      <SelectValue placeholder="NFL Team" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Teams</SelectItem>
+                      {nflTeams.map(team => (
+                        <SelectItem key={team} value={team}>{team}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    size="sm"
+                    variant={filterFavoritesOnly ? "default" : "outline"}
+                    className="h-8 px-2 text-xs gap-1"
+                    onClick={() => setFilterFavoritesOnly(!filterFavoritesOnly)}
+                  >
+                    <Star className={`w-3.5 h-3.5 ${filterFavoritesOnly ? "fill-yellow-400 text-yellow-400" : ""}`} />
+                    Favorites
+                  </Button>
                 </div>
-                {freeAgentResults.length > 0 && (
-                  <div className="border rounded-md max-h-60 overflow-auto">
-                    {freeAgentResults.map(player => (
-                      <div
-                        key={player.id}
-                        className="p-3 hover-elevate cursor-pointer flex items-center justify-between border-b last:border-b-0"
-                        onClick={() => {
-                          setSelectedPlayer(player);
-                          setFreeAgentSearch("");
-                        }}
-                        data-testid={`player-option-${player.id}`}
-                      >
-                        <div className="flex items-center gap-2">
-                          <Badge className={positionColors[player.position] || "bg-gray-500"}>
-                            {player.position}
-                          </Badge>
-                          <span className="font-medium">{player.name}</span>
-                        </div>
-                        <span className="text-sm text-muted-foreground">
-                          {player.team || "FA"}
-                        </span>
-                      </div>
-                    ))}
+
+                <div className="space-y-2">
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                    <Input
+                      placeholder="Search for a player..."
+                      value={freeAgentSearch}
+                      onChange={(e) => setFreeAgentSearch(e.target.value)}
+                      className="pl-9 h-8 text-sm"
+                      data-testid="input-bid-search"
+                    />
                   </div>
-                )}
+                  {freeAgentResults.length > 0 && (
+                    <div className="border rounded-md max-h-60 overflow-auto">
+                      {freeAgentResults.map(player => (
+                        <div
+                          key={player.id}
+                          className="p-2.5 hover-elevate cursor-pointer flex items-center justify-between border-b last:border-b-0"
+                          onClick={() => {
+                            setSelectedPlayer(player);
+                            setFreeAgentSearch("");
+                          }}
+                          data-testid={`player-option-${player.id}`}
+                        >
+                          <div className="flex items-center gap-2">
+                            {favoritePlayerIds.has(player.id) && (
+                              <Star className="w-3 h-3 fill-yellow-400 text-yellow-400 flex-shrink-0" />
+                            )}
+                            <Badge className={`${positionColors[player.position] || "bg-gray-500"} text-[10px] px-1.5 py-0`}>
+                              {player.position}
+                            </Badge>
+                            <span className="font-medium text-sm">{player.name}</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground">
+                            {player.team || "FA"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {freeAgentResults.length === 0 && filterFavoritesOnly && !freeAgentSearch.trim() && (
+                    <p className="text-xs text-muted-foreground text-center py-3">
+                      No favorited free agents available. Star players on the Expiring tab.
+                    </p>
+                  )}
+                </div>
               </div>
             ) : (
               <>
@@ -4334,31 +4519,17 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                   )}
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Bid Amount Per Year ($M)</Label>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      placeholder="e.g., 15.5"
-                      value={bidAmount}
-                      onChange={(e) => setBidAmount(e.target.value)}
-                      data-testid="input-bid-amount"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Max Bid Per Year ($M)</Label>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      placeholder="Optional"
-                      value={maxBid}
-                      onChange={(e) => setMaxBid(e.target.value)}
-                      data-testid="input-max-bid"
-                    />
-                  </div>
+                <div className="space-y-2">
+                  <Label>Bid Amount Per Year ($M)</Label>
+                  <Input
+                    type="number"
+                    step="1"
+                    min="1"
+                    placeholder="e.g., 15"
+                    value={bidAmount}
+                    onChange={(e) => setBidAmount(e.target.value)}
+                    data-testid="input-bid-amount"
+                  />
                 </div>
 
                 <div className="space-y-2">
@@ -4420,8 +4591,73 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                 </div>
               </>
             )}
-          </CardContent>
-        </Card>
+
+            <Separator />
+
+            <div className="space-y-2">
+              <Label className="flex items-center gap-1.5 text-xs">
+                <DollarSign className="w-3.5 h-3.5" />
+                Cap Projection (If All Bids Win)
+              </Label>
+              <svg width={0} height={0} style={{ position: "absolute" }}>
+                <defs>
+                  <pattern id="diagonalGreen" patternUnits="userSpaceOnUse" width={8} height={8}>
+                    <rect width={8} height={8} fill="#22c55e" />
+                    <path d="M-2,2 l4,-4 M0,8 l8,-8 M6,10 l4,-4" stroke="#16a34a" strokeWidth={2} />
+                  </pattern>
+                  <pattern id="diagonalRed" patternUnits="userSpaceOnUse" width={8} height={8}>
+                    <rect width={8} height={8} fill="#ef4444" />
+                    <path d="M-2,2 l4,-4 M0,8 l8,-8 M6,10 l4,-4" stroke="#dc2626" strokeWidth={2} />
+                  </pattern>
+                </defs>
+              </svg>
+              <div className="border rounded-md p-2">
+                <ResponsiveContainer width="100%" height={200}>
+                  <RechartsBarChart data={capProjection} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} opacity={0.3} />
+                    <XAxis dataKey="year" tick={{ fontSize: 11 }} />
+                    <YAxis tick={{ fontSize: 11 }} tickFormatter={(v: number) => `$${v}M`} width={55} domain={[0, (dataMax: number) => Math.max(dataMax, TOTAL_CAP + 10)]} />
+                    <RechartsTooltip
+                      formatter={(value: number, name: string) => [`$${value.toFixed(1)}M`, name === "existingSalary" ? "Committed" : "Bids"]}
+                      labelFormatter={(label: string) => `Year: ${label}`}
+                    />
+                    <ReferenceLine y={TOTAL_CAP} stroke="#ef4444" strokeDasharray="6 3" strokeWidth={2} label={{ value: `Cap: $${TOTAL_CAP}M`, position: "right", fontSize: 10, fill: "#ef4444" }} />
+                    <Bar dataKey="existingSalary" stackId="cap" name="Committed" radius={[0, 0, 0, 0]}>
+                      {capProjection.map((row, index) => (
+                        <Cell key={`committed-${index}`} fill={row.total > TOTAL_CAP ? "#ef4444" : "#22c55e"} />
+                      ))}
+                    </Bar>
+                    <Bar dataKey="bidSalary" stackId="cap" name="Bids" radius={[4, 4, 0, 0]}>
+                      {capProjection.map((row, index) => (
+                        <Cell key={`bids-${index}`} fill={row.total > TOTAL_CAP ? "url(#diagonalRed)" : "url(#diagonalGreen)"} />
+                      ))}
+                    </Bar>
+                  </RechartsBarChart>
+                </ResponsiveContainer>
+                <div className="flex items-center justify-center gap-4 mt-1 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: "#22c55e" }} />
+                    <span>Committed</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <svg width={12} height={12} className="rounded-sm">
+                      <rect width={12} height={12} fill="url(#diagonalGreen)" />
+                    </svg>
+                    <span>Bids</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-3 h-0.5" style={{ backgroundColor: "#ef4444" }} />
+                    <span>Salary Cap</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: "#ef4444" }} />
+                    <span>Over Cap</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
 
         <Card>
           <CardHeader>
@@ -4491,15 +4727,9 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                         <div>
                           <span className="text-muted-foreground">Total Value:</span>{" "}
                           <span className="font-medium" style={{ color: COLORS.salaries }}>
-                            ${(bid.bidAmount * bid.contractYears).toFixed(1)}M
+                            ${bid.bidAmount * bid.contractYears}M
                           </span>
                         </div>
-                        {bid.maxBid && (
-                          <div>
-                            <span className="text-muted-foreground">Max/Yr:</span>{" "}
-                            <span className="font-medium">${bid.maxBid}M</span>
-                          </div>
-                        )}
                       </div>
                       {bid.notes && (
                         <p className="text-sm text-muted-foreground italic">
@@ -4514,6 +4744,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
           </CardContent>
         </Card>
       </div>
+      </Dialog>
 
           <Card>
             <CardContent className="pt-6">
@@ -5006,6 +5237,8 @@ interface ExpiringContractsTabProps {
   contractData: ContractDataStore;
   leagueUsers: any[];
   deadCapEnabled?: boolean;
+  leagueId?: string;
+  userRosterId?: number;
 }
 
 interface ExpiringPlayer {
@@ -5021,9 +5254,60 @@ interface ExpiringPlayer {
   rosterId: number;
 }
 
-function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, deadCapEnabled = true }: ExpiringContractsTabProps) {
+function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, deadCapEnabled = true, leagueId, userRosterId }: ExpiringContractsTabProps) {
   const { season } = useSleeper();
+  const { toast } = useToast();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
+
+  // Favorites query
+  const { data: favorites = [] } = useQuery<Array<{ id: string; playerId: string }>>({
+    queryKey: ['/api/league', leagueId, 'favorites', userRosterId],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${leagueId}/favorites/${userRosterId}`);
+      if (!res.ok) throw new Error("Failed to fetch favorites");
+      return res.json();
+    },
+    enabled: !!leagueId && !!userRosterId,
+  });
+
+  const favoritePlayerIds = useMemo(() => new Set(favorites.map(f => f.playerId)), [favorites]);
+
+  const addFavoriteMutation = useMutation({
+    mutationFn: async (playerId: string) => {
+      const res = await apiRequest("POST", `/api/league/${leagueId}/favorites`, {
+        rosterId: userRosterId,
+        playerId,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'favorites', userRosterId] });
+    },
+    onError: () => {
+      toast({ title: "Failed to add favorite", variant: "destructive" });
+    },
+  });
+
+  const removeFavoriteMutation = useMutation({
+    mutationFn: async (playerId: string) => {
+      const res = await apiRequest("DELETE", `/api/league/${leagueId}/favorites/${playerId}/${userRosterId}`, {});
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'favorites', userRosterId] });
+    },
+    onError: () => {
+      toast({ title: "Failed to remove favorite", variant: "destructive" });
+    },
+  });
+
+  const toggleFavorite = (playerId: string) => {
+    if (favoritePlayerIds.has(playerId)) {
+      removeFavoriteMutation.mutate(playerId);
+    } else {
+      addFavoriteMutation.mutate(playerId);
+    }
+  };
   
   // Build a map of playerId -> team info for roster players
   const playerTeamMap = useMemo(() => {
@@ -5146,6 +5430,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, dea
             <Table>
               <TableHeader>
                 <TableRow>
+                  {!!userRosterId && <TableHead className="w-[40px]"></TableHead>}
                   <TableHead className="w-[180px]">Player</TableHead>
                   <TableHead className="text-center w-[60px]">Pos</TableHead>
                   <TableHead className="text-center w-[60px]">NFL</TableHead>
@@ -5161,6 +5446,23 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, dea
                   
                   return (
                     <TableRow key={`${player.rosterId}-${player.playerId}`} data-testid={`row-expiring-${player.playerId}`}>
+                      {!!userRosterId && (
+                        <TableCell className="px-2">
+                          <button
+                            onClick={() => toggleFavorite(player.playerId)}
+                            className="p-1 rounded hover:bg-muted transition-colors"
+                            title={favoritePlayerIds.has(player.playerId) ? "Remove from favorites" : "Add to favorites"}
+                          >
+                            <Star
+                              className={`w-4 h-4 ${
+                                favoritePlayerIds.has(player.playerId)
+                                  ? "fill-yellow-400 text-yellow-400"
+                                  : "text-muted-foreground"
+                              }`}
+                            />
+                          </button>
+                        </TableCell>
+                      )}
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <Avatar className="h-9 w-9">
@@ -5218,7 +5520,7 @@ function ExpiringContractsTab({ teams, playerMap, contractData, leagueUsers, dea
                 })}
                 {expiringPlayers.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={7} className="text-center text-muted-foreground py-8">
+                    <TableCell colSpan={userRosterId ? 8 : 7} className="text-center text-muted-foreground py-8">
                       No players with expiring contracts found
                     </TableCell>
                   </TableRow>
@@ -5969,6 +6271,27 @@ export default function Contracts() {
     return rosters.flatMap((roster: any) => roster.players || []);
   }, [rosters]);
 
+  const expiringPlayerIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const rosterId of Object.keys(contractData)) {
+      const teamContracts = contractData[rosterId];
+      for (const playerId of Object.keys(teamContracts)) {
+        const contract = teamContracts[playerId];
+        if (!contract) continue;
+        const salaryEntries = Object.entries(contract.salaries || {})
+          .map(([year, value]) => ({ year: Number(year), value: Number(value) }))
+          .filter(entry => !isNaN(entry.year) && entry.value > 0);
+        const lastPaidYear = salaryEntries.length > 0
+          ? Math.max(...salaryEntries.map(entry => entry.year))
+          : 0;
+        if (lastPaidYear === CURRENT_YEAR && (contract.salaries[CURRENT_YEAR] || 0) > 0) {
+          ids.add(playerId);
+        }
+      }
+    }
+    return ids;
+  }, [contractData, CURRENT_YEAR]);
+
   const rosterPlayerMap = useMemo(() => {
     if (!rosters) return new Map<number, Set<string>>();
     const map = new Map<number, Set<string>>();
@@ -6488,6 +6811,8 @@ export default function Contracts() {
               contractData={contractData}
               leagueUsers={leagueUsers || []}
               deadCapEnabled={deadCapEnabled}
+              leagueId={league?.leagueId}
+              userRosterId={userTeam?.rosterId}
             />
           )}
         </TabsContent>
@@ -6515,6 +6840,7 @@ export default function Contracts() {
               rosterPlayerIds={allRosterPlayerIds}
               teamContracts={contractData[userTeam.rosterId.toString()] || {}}
               teamCapData={teamCapData}
+              expiringPlayerIds={expiringPlayerIds}
             />
           )}
         </TabsContent>

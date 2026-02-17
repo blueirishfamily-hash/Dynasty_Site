@@ -5690,11 +5690,20 @@ export async function registerRoutes(
       const allExtensions = await storage.getTeamExtensions(leagueId, parseInt(season));
       const teamExtensions = allExtensions.filter(e => e.rosterId === parseInt(rosterId));
       
-      // Check which extension types have been used
-      const hasUsed1Year = teamExtensions.some(e => e.extensionType === 1);
-      const hasUsed2Year = teamExtensions.some(e => e.extensionType === 2);
-      const hasUsed3Year = teamExtensions.some(e => e.extensionType === 3);
-      const hasUsed4Year = teamExtensions.some(e => e.extensionType === 4);
+      // Separate rookie and non-rookie extensions
+      const rookieExtensions = teamExtensions.filter(e => e.isRookieExtension === 1);
+      const nonRookieExtensions = teamExtensions.filter(e => e.isRookieExtension !== 1);
+      
+      // Non-rookie: check which extension types have been used (legacy per-type flags)
+      const hasUsed1Year = nonRookieExtensions.some(e => e.extensionType === 1);
+      const hasUsed2Year = nonRookieExtensions.some(e => e.extensionType === 2);
+      const hasUsed3Year = nonRookieExtensions.some(e => e.extensionType === 3);
+      const hasUsed4Year = nonRookieExtensions.some(e => e.extensionType === 4);
+      const hasUsedNonRookieExtension = nonRookieExtensions.length > 0;
+      
+      // Rookie: count total and check for 4-year usage
+      const rookieExtensionCount = rookieExtensions.length;
+      const rookieHas4Year = rookieExtensions.some(e => e.extensionType === 4);
       
       res.json({ 
         hasUsedExtension: teamExtensions.length > 0, // Legacy field for backwards compatibility
@@ -5702,6 +5711,9 @@ export async function registerRoutes(
         hasUsed2Year,
         hasUsed3Year,
         hasUsed4Year,
+        hasUsedNonRookieExtension,
+        rookieExtensionCount,
+        rookieHas4Year,
         extensions: teamExtensions // Return all extensions for this team/season
       });
     } catch (error) {
@@ -5927,20 +5939,6 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Extension type must be 1 (1-year), 2 (2-year), 3 (3-year), or 4 (4-year)" });
       }
 
-      // Check if team already used their extension this season
-      const existingExtension = await storage.getTeamExtensionByRoster(
-        leagueId, 
-        rosterId, 
-        season
-      );
-      
-      if (existingExtension) {
-        return res.status(400).json({ 
-          error: "Team has already used their extension for this season",
-          existingExtension 
-        });
-      }
-
       // Validate player contract exists and check if it's a rookie contract
       const playerContracts = await storage.getPlayerContracts(leagueId);
       const playerContract = playerContracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
@@ -5962,6 +5960,34 @@ export async function registerRoutes(
       }
 
       const isRookieContract = playerContract.isRookieContract === 1;
+
+      // Check extension limits (rookie and non-rookie have independent limits)
+      const allTeamExtensions = await storage.getTeamExtensions(leagueId, season);
+      const teamExtensionsForRoster = allTeamExtensions.filter(e => e.rosterId === rosterId);
+
+      if (isRookieContract) {
+        // Rookie extensions: max 3 per season, max 1 can be 4-year
+        const rookieExts = teamExtensionsForRoster.filter(e => e.isRookieExtension === 1);
+        if (rookieExts.length >= 3) {
+          return res.status(400).json({ 
+            error: "Team has already used all 3 rookie extensions for this season" 
+          });
+        }
+        if (extensionType === 4 && rookieExts.some(e => e.extensionType === 4)) {
+          return res.status(400).json({ 
+            error: "Team has already used their one 4-year rookie extension for this season" 
+          });
+        }
+      } else {
+        // Non-rookie extensions: max 1 per season
+        const nonRookieExts = teamExtensionsForRoster.filter(e => e.isRookieExtension !== 1);
+        if (nonRookieExts.length > 0) {
+          return res.status(400).json({ 
+            error: "Team has already used their non-rookie extension for this season",
+            existingExtension: nonRookieExts[0]
+          });
+        }
+      }
 
       // Rookie contracts: must be offseason and use PPG-based pricing
       if (isRookieContract) {
@@ -6083,6 +6109,7 @@ export async function registerRoutes(
         extensionYear,
         extensionType,
         extensionSalary2: extensionType >= 2 ? extensionSalary2 : null,
+        isRookieExtension: isRookieContract ? 1 : 0,
       });
 
       // Update the player's contract with extension info
@@ -6400,6 +6427,52 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error updating bidding status:", error);
       res.status(500).json({ error: "Failed to update bidding status" });
+    }
+  });
+
+  // Get favorite expiring players for a team
+  app.get("/api/league/:leagueId/favorites/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, rosterId } = req.params;
+      const favorites = await storage.getFavoriteExpiringPlayers(leagueId, parseInt(rosterId));
+      res.json(favorites);
+    } catch (error) {
+      console.error("Error fetching favorite expiring players:", error);
+      res.status(500).json({ error: "Failed to fetch favorites" });
+    }
+  });
+
+  // Add a favorite expiring player
+  app.post("/api/league/:leagueId/favorites", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { rosterId, playerId } = req.body;
+
+      if (!rosterId || !playerId) {
+        return res.status(400).json({ error: "Missing required fields: rosterId, playerId" });
+      }
+
+      const favorite = await storage.addFavoriteExpiringPlayer({
+        leagueId,
+        rosterId,
+        playerId,
+      });
+      res.json(favorite);
+    } catch (error) {
+      console.error("Error adding favorite expiring player:", error);
+      res.status(500).json({ error: "Failed to add favorite" });
+    }
+  });
+
+  // Remove a favorite expiring player
+  app.delete("/api/league/:leagueId/favorites/:playerId/:rosterId", async (req, res) => {
+    try {
+      const { leagueId, playerId, rosterId } = req.params;
+      await storage.removeFavoriteExpiringPlayer(leagueId, parseInt(rosterId), playerId);
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error removing favorite expiring player:", error);
+      res.status(500).json({ error: "Failed to remove favorite" });
     }
   });
 

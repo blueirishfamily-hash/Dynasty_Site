@@ -94,6 +94,7 @@ export const teamExtensionsTable = pgTable("team_extensions", {
   extensionYear: integer("extension_year").notNull(),
   extensionType: integer("extension_type").notNull().default(1), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
   extensionSalary2: integer("extension_salary_2"), // Second year salary for 2-year extensions
+  isRookieExtension: integer("is_rookie_extension").notNull().default(0), // 0 = regular, 1 = rookie extension
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -249,6 +250,15 @@ export const contractApprovalRequestsTable = pgTable("contract_approval_requests
   reviewerNotes: text("reviewer_notes"),
 });
 
+// Favorite expiring players - users can star expiring-contract players for quick bidding
+export const favoriteExpiringPlayersTable = pgTable("favorite_expiring_players", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
@@ -270,6 +280,7 @@ export const insertTeamStatsSnapshotDbSchema = createInsertSchema(teamStatsSnaps
 export const insertDraftSnapshotDbSchema = createInsertSchema(draftSnapshotsTable).omit({ id: true, createdAt: true });
 export const insertMatchupSnapshotDbSchema = createInsertSchema(matchupSnapshotsTable).omit({ id: true, createdAt: true });
 export const insertTransactionSnapshotDbSchema = createInsertSchema(transactionSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertFavoriteExpiringPlayerDbSchema = createInsertSchema(favoriteExpiringPlayersTable).omit({ id: true, createdAt: true });
 
 // Player Contract types
 export type PlayerContract = typeof playerContractsTable.$inferSelect;
@@ -312,6 +323,10 @@ export type MatchupSnapshot = typeof matchupSnapshotsTable.$inferSelect;
 export type InsertMatchupSnapshot = z.infer<typeof insertMatchupSnapshotDbSchema>;
 export type TransactionSnapshot = typeof transactionSnapshotsTable.$inferSelect;
 export type InsertTransactionSnapshot = z.infer<typeof insertTransactionSnapshotDbSchema>;
+
+// Favorite Expiring Player types
+export type FavoriteExpiringPlayer = typeof favoriteExpiringPlayersTable.$inferSelect;
+export type InsertFavoriteExpiringPlayer = z.infer<typeof insertFavoriteExpiringPlayerDbSchema>;
 
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;

@@ -22,6 +22,7 @@ import {
   draftSnapshotsTable,
   matchupSnapshotsTable,
   transactionSnapshotsTable,
+  favoriteExpiringPlayersTable,
 } from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -43,7 +44,8 @@ import type {
   TeamStatsSnapshot, InsertTeamStatsSnapshot,
   DraftSnapshot, InsertDraftSnapshot,
   MatchupSnapshot, InsertMatchupSnapshot,
-  TransactionSnapshot, InsertTransactionSnapshot
+  TransactionSnapshot, InsertTransactionSnapshot,
+  FavoriteExpiringPlayer, InsertFavoriteExpiringPlayer,
 } from "../shared/schema";
 
 export interface UserSession {
@@ -137,6 +139,11 @@ export interface IStorage {
   // Bidding reset
   deleteAllPlayerBids(leagueId: string): Promise<void>;
   
+  // Favorite expiring players
+  getFavoriteExpiringPlayers(leagueId: string, rosterId: number): Promise<FavoriteExpiringPlayer[]>;
+  addFavoriteExpiringPlayer(data: InsertFavoriteExpiringPlayer): Promise<FavoriteExpiringPlayer>;
+  removeFavoriteExpiringPlayer(leagueId: string, rosterId: number, playerId: string): Promise<void>;
+
   // Database inspection methods
   getTableList(): Promise<Array<{ name: string; rowCount: number }>>;
   getTableSchema(tableName: string): Promise<Array<{ column: string; type: string; nullable: boolean; default: string | null }>>;
@@ -1195,6 +1202,7 @@ export class DatabaseStorage implements IStorage {
       extensionYear: data.extensionYear,
       extensionType: data.extensionType || 1,
       extensionSalary2: data.extensionSalary2 || null,
+      isRookieExtension: data.isRookieExtension || 0,
       createdAt: now,
     }).returning();
 
@@ -1696,6 +1704,60 @@ export class DatabaseStorage implements IStorage {
       console.error(`[Storage] Error getting row count for table ${tableName}:`, error);
       throw new Error(`Failed to get table row count: ${error.message}`);
     }
+  }
+
+  // Favorite expiring players
+
+  async getFavoriteExpiringPlayers(leagueId: string, rosterId: number): Promise<FavoriteExpiringPlayer[]> {
+    return db
+      .select()
+      .from(favoriteExpiringPlayersTable)
+      .where(
+        and(
+          eq(favoriteExpiringPlayersTable.leagueId, leagueId),
+          eq(favoriteExpiringPlayersTable.rosterId, rosterId)
+        )
+      );
+  }
+
+  async addFavoriteExpiringPlayer(data: InsertFavoriteExpiringPlayer): Promise<FavoriteExpiringPlayer> {
+    const id = randomUUID();
+    const now = Date.now();
+
+    // Check if already exists to avoid duplicates
+    const existing = await db
+      .select()
+      .from(favoriteExpiringPlayersTable)
+      .where(
+        and(
+          eq(favoriteExpiringPlayersTable.leagueId, data.leagueId),
+          eq(favoriteExpiringPlayersTable.rosterId, data.rosterId),
+          eq(favoriteExpiringPlayersTable.playerId, data.playerId)
+        )
+      );
+
+    if (existing.length > 0) {
+      return existing[0];
+    }
+
+    const [inserted] = await db
+      .insert(favoriteExpiringPlayersTable)
+      .values({ id, ...data, createdAt: now })
+      .returning();
+
+    return inserted;
+  }
+
+  async removeFavoriteExpiringPlayer(leagueId: string, rosterId: number, playerId: string): Promise<void> {
+    await db
+      .delete(favoriteExpiringPlayersTable)
+      .where(
+        and(
+          eq(favoriteExpiringPlayersTable.leagueId, leagueId),
+          eq(favoriteExpiringPlayersTable.rosterId, rosterId),
+          eq(favoriteExpiringPlayersTable.playerId, playerId)
+        )
+      );
   }
 }
 
