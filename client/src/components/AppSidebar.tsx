@@ -43,13 +43,13 @@ const baseNavItems = [
   { title: "League Hub", url: "/hub", icon: MessageSquare },
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
+  { title: "Contracts", url: "/contracts", icon: FileText },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Historical", url: "/historical", icon: Database },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
 const commissionerNavItems = [
-  { title: "Contracts", url: "/contracts", icon: FileText },
   { title: "Database Viewer", url: "/admin/database", icon: Database },
 ];
 
