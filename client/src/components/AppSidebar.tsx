@@ -20,7 +20,6 @@ import {
   BarChart3,
   Settings,
   Zap,
-  MessageSquare,
   Swords,
   Sparkles,
   Medal,
@@ -40,17 +39,12 @@ const baseNavItems = [
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "Trophy Room", url: "/trophies", icon: Medal },
-  { title: "League Hub", url: "/hub", icon: MessageSquare },
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Contracts", url: "/contracts", icon: FileText },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Historical", url: "/historical", icon: Database },
   { title: "Settings", url: "/settings", icon: Settings },
-];
-
-const commissionerNavItems = [
-  { title: "Database Viewer", url: "/admin/database", icon: Database },
 ];
 
 interface DraftPick {
@@ -76,9 +70,9 @@ export default function AppSidebar({
     COMMISSIONER_USER_IDS.includes(user.userId)
   ));
 
-  const navItems = isCommissioner 
-    ? [...baseNavItems, ...commissionerNavItems]
-    : baseNavItems;
+  const navItems = isCommissioner
+    ? baseNavItems
+    : baseNavItems.filter((item) => item.title !== "Settings");
 
   const getRoundColor = (round: number) => {
     if (round === 1) return "bg-primary text-primary-foreground";

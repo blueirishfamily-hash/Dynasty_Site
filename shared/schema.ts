@@ -15,6 +15,7 @@ export const ruleSuggestionsTable = pgTable("rule_suggestions", {
   status: varchar("status", { length: 16 }).notNull().default("pending"),
   voteType: varchar("vote_type", { length: 16 }).notNull().default("binary"),
   options: text("options"), // JSON array of option strings when voteType === "multi_choice"
+  season: varchar("season", { length: 8 }), // league season when rule was created; used for archiving on year advance
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 

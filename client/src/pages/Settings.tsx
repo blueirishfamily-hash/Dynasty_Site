@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "wouter";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -19,9 +20,21 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { RefreshCw, Check, Bell, User, Database } from "lucide-react";
 
+const COMMISSIONER_USER_IDS = ["900186363130503168"];
+
 export default function Settings() {
   const { user, league, clearSession } = useSleeper();
+  const [, setLocation] = useLocation();
   const { toast } = useToast();
+
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  ));
+
+  useEffect(() => {
+    if (user && league && !isCommissioner) setLocation("/");
+  }, [user, league, isCommissioner, setLocation]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [advanceLeagueId, setAdvanceLeagueId] = useState("");
   const [manualLeagueId, setManualLeagueId] = useState("");
@@ -107,8 +120,6 @@ export default function Settings() {
     window.location.reload();
   };
 
-  const isCommissioner = !!(user?.userId && league?.commissionerId && user.userId === league.commissionerId);
-
   const knownLeagueOptions = useMemo(() => ([
     { leagueId: "918240874625257472", season: "2023" },
     { leagueId: "1048746932522405888", season: "2024" },
@@ -188,6 +199,8 @@ export default function Settings() {
       setManualLeagueId(selectedLeagueId);
     }
   }, [selectedLeagueId]);
+
+  if (user && league && !isCommissioner) return null;
 
   const handleAdvanceLeagueYear = async () => {
     if (!advanceLeagueId.trim() || !user?.userId) return;

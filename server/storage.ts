@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { eq, and, desc, asc, sql, isNull } from "drizzle-orm";
+import { eq, and, or, ne, desc, asc, sql, isNull } from "drizzle-orm";
 import { db } from "./db";
 import {
   ruleSuggestionsTable,
@@ -63,7 +63,8 @@ export interface IStorage {
   updateSessionLeague(sessionId: string, leagueId: string): Promise<UserSession | undefined>;
   deleteSession(id: string): Promise<void>;
   
-  getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]>;
+  getRuleSuggestions(leagueId: string, currentSeason?: string | null): Promise<RuleSuggestion[]>;
+  archiveRuleSuggestions(leagueId: string): Promise<void>;
   getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined>;
   createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion>;
   updateRuleSuggestion(id: string, data: { title?: string; description?: string; voteType?: "binary" | "multi_choice"; options?: string[] | null }): Promise<RuleSuggestion | undefined>;
@@ -195,12 +196,19 @@ export class DatabaseStorage implements IStorage {
     this.sessions.delete(id);
   }
 
-  async getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]> {
+  async getRuleSuggestions(leagueId: string, currentSeason?: string | null): Promise<RuleSuggestion[]> {
     try {
+      const conditions = [
+        eq(ruleSuggestionsTable.leagueId, leagueId),
+        ne(ruleSuggestionsTable.status, "archived"),
+      ];
+      if (currentSeason != null && currentSeason !== "") {
+        conditions.push(or(isNull(ruleSuggestionsTable.season), eq(ruleSuggestionsTable.season, currentSeason)) as any);
+      }
       const rows = await db
         .select()
         .from(ruleSuggestionsTable)
-        .where(eq(ruleSuggestionsTable.leagueId, leagueId))
+        .where(and(...conditions))
         .orderBy(desc(ruleSuggestionsTable.createdAt));
 
       return rows.map(row => ({
@@ -214,6 +222,7 @@ export class DatabaseStorage implements IStorage {
         status: row.status as "pending" | "approved" | "rejected",
         voteType: (row as any).voteType ?? "binary",
         options: (row as any).options ? JSON.parse((row as any).options as string) as string[] : null,
+        season: (row as any).season ?? undefined,
         upvotes: [],
         downvotes: [],
         createdAt: row.createdAt,
@@ -243,6 +252,7 @@ export class DatabaseStorage implements IStorage {
     const id = randomUUID();
     const createdAt = Date.now();
 
+    const season = (data as any).season ?? null;
     await db.insert(ruleSuggestionsTable).values({
       id,
       leagueId: data.leagueId,
@@ -254,6 +264,7 @@ export class DatabaseStorage implements IStorage {
       status: "pending",
       voteType,
       options: options ? JSON.stringify(options) : null,
+      season: season ?? undefined,
       createdAt,
     });
 
@@ -267,6 +278,13 @@ export class DatabaseStorage implements IStorage {
       downvotes: [],
       createdAt,
     };
+  }
+
+  async archiveRuleSuggestions(leagueId: string): Promise<void> {
+    await db
+      .update(ruleSuggestionsTable)
+      .set({ status: "archived" })
+      .where(eq(ruleSuggestionsTable.leagueId, leagueId));
   }
 
   async getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined> {

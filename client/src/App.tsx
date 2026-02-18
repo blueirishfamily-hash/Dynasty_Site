@@ -14,14 +14,12 @@ import Team from "@/pages/Team";
 import Trades from "@/pages/Trades";
 import Draft from "@/pages/Draft";
 import Matchup from "@/pages/Matchup";
-import LeagueHub from "@/pages/LeagueHub";
 import Standings from "@/pages/Standings";
 import Metrics from "@/pages/Metrics";
 import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
 import RuleChanges from "@/pages/RuleChanges";
-import DatabaseViewer from "@/pages/DatabaseViewer";
 import Historical from "@/pages/Historical";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
@@ -38,6 +36,8 @@ import {
 import { Search, Bell, ChevronDown, LogOut, Settings as SettingsIcon, User, RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
+const COMMISSIONER_USER_IDS = ["900186363130503168"];
+
 function Router() {
   return (
     <Switch>
@@ -46,7 +46,6 @@ function Router() {
       <Route path="/matchup" component={Matchup} />
       <Route path="/trades" component={Trades} />
       <Route path="/draft" component={Draft} />
-      <Route path="/hub" component={LeagueHub} />
       <Route path="/rule-changes" component={RuleChanges} />
       <Route path="/standings" component={Standings} />
       <Route path="/metrics" component={Metrics} />
@@ -54,7 +53,6 @@ function Router() {
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
       <Route path="/historical" component={Historical} />
-      <Route path="/admin/database" component={DatabaseViewer} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -64,6 +62,11 @@ function AppContent() {
   const { user, league, clearSession, season, isLoading, error } = useSleeper();
   const [showSetup, setShowSetup] = useState(false);
   const [, setLocation] = useLocation();
+
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  ));
 
   const { data: draftPicks } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "draft-picks"],
@@ -203,10 +206,12 @@ function AppContent() {
                       <User className="w-4 h-4 mr-2" />
                       Profile
                     </DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => setLocation("/settings")} data-testid="menu-item-settings">
-                      <SettingsIcon className="w-4 h-4 mr-2" />
-                      Settings
-                    </DropdownMenuItem>
+                    {isCommissioner && (
+                      <DropdownMenuItem onClick={() => setLocation("/settings")} data-testid="menu-item-settings">
+                        <SettingsIcon className="w-4 h-4 mr-2" />
+                        Settings
+                      </DropdownMenuItem>
+                    )}
                     <DropdownMenuItem onClick={() => setShowSetup(true)} data-testid="menu-item-select-team">
                       <RefreshCw className="w-4 h-4 mr-2" />
                       Select Your Team
@@ -224,15 +229,20 @@ function AppContent() {
               <div className="bg-yellow-500/10 border-b border-yellow-500/20 px-4 py-2">
                 <div className="flex items-center justify-between max-w-7xl mx-auto">
                   <p className="text-sm text-yellow-700 dark:text-yellow-400">
-                    <strong>No league configured.</strong> Please go to Settings to set up a league ID.
+                    <strong>No league configured.</strong>{" "}
+                    {isCommissioner
+                      ? "Please go to Settings to set up a league ID."
+                      : "Contact your commissioner to set up the league."}
                   </p>
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => setLocation("/settings")}
-                  >
-                    Go to Settings
-                  </Button>
+                  {isCommissioner && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setLocation("/settings")}
+                    >
+                      Go to Settings
+                    </Button>
+                  )}
                 </div>
               </div>
             )}

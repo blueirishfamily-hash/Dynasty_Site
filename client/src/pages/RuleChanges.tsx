@@ -47,8 +47,6 @@ import {
   AlertCircle,
   Edit,
   Trash2,
-  Database,
-  ExternalLink,
 } from "lucide-react";
 import type { RuleSuggestion, RuleVote } from "@shared/schema";
 
@@ -119,7 +117,7 @@ export default function RuleChanges() {
     COMMISSIONER_USER_IDS.includes(user.userId)
   ));
 
-  const { data: ruleSuggestions, isLoading: rulesLoading, isError: rulesError, error: rulesErrorDetails, refetch: refetchRules } = useQuery<RuleSuggestionWithVoting[]>({
+  const { data: rulesData, isLoading: rulesLoading, isError: rulesError, error: rulesErrorDetails, refetch: refetchRules } = useQuery<{ suggestions: RuleSuggestionWithVoting[]; votingMasterEnabled: boolean }>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
@@ -135,6 +133,8 @@ export default function RuleChanges() {
     },
     enabled: !!league?.leagueId && !!user?.userId,
   });
+  const ruleSuggestions = rulesData?.suggestions ?? [];
+  const votingMasterEnabled = rulesData?.votingMasterEnabled ?? false;
 
   // Create rule suggestion mutation
   const createRuleMutation = useMutation({
@@ -185,7 +185,33 @@ export default function RuleChanges() {
     },
   });
 
-  // Toggle voting mutation
+  // Master voting switch (commissioner only)
+  const setVotingMasterMutation = useMutation({
+    mutationFn: async (enabled: boolean) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/rule-voting-master`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user?.userId, enabled }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to set voting state");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Toggle voting mutation (kept for backward compat; UI uses master switch only)
   const toggleVotingMutation = useMutation({
     mutationFn: async ({ ruleId, enabled }: { ruleId: string; enabled: boolean }) => {
       const res = await fetch(`/api/rule-suggestions/${ruleId}/toggle-voting`, {
@@ -507,20 +533,20 @@ export default function RuleChanges() {
           </div>
           <div className="flex items-center gap-2">
             {isCommissioner && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  // Navigate to database viewer for rule_suggestions table
-                  window.open(`/admin/database?table=rule_suggestions&leagueId=${league?.leagueId}`, '_blank');
-                }}
-                title="View rule_suggestions table in Database Viewer"
-              >
-                <Database className="w-4 h-4 mr-2" />
-                View in Database
-                <ExternalLink className="w-3 h-3 ml-2" />
-              </Button>
+              <div className="flex items-center gap-2">
+                <Switch
+                  checked={votingMasterEnabled}
+                  onCheckedChange={(checked) => setVotingMasterMutation.mutate(checked)}
+                  disabled={setVotingMasterMutation.isPending}
+                />
+                <span className="text-sm text-muted-foreground">
+                  Voting {votingMasterEnabled ? "open" : "closed"}
+                </span>
+              </div>
             )}
+            {votingMasterEnabled && !isCommissioner ? (
+              <p className="text-sm text-muted-foreground">Suggestions are closed while voting is open.</p>
+            ) : (
             <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
             <DialogTrigger asChild>
               <Button
@@ -635,6 +661,7 @@ export default function RuleChanges() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+            )}
         </div>
         </div>
 
@@ -657,7 +684,7 @@ export default function RuleChanges() {
           </Card>
         )}
 
-        {rulesError && !ruleSuggestions && (
+        {rulesError && (
           <Alert variant="destructive">
             <AlertCircle className="h-4 w-4" />
             <AlertTitle>Error Loading Rule Suggestions</AlertTitle>
@@ -707,14 +734,12 @@ export default function RuleChanges() {
           </Alert>
         )}
 
-        {!rulesLoading && !rulesError && ruleSuggestions !== undefined && (
+        {!rulesLoading && !rulesError && rulesData !== undefined && (
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <FileText className="w-4 h-4" />
               <span>
-                {Array.isArray(ruleSuggestions) 
-                  ? `${ruleSuggestions.length} rule${ruleSuggestions.length !== 1 ? 's' : ''} found`
-                  : 'Loading rule count...'}
+                {`${ruleSuggestions.length} rule${ruleSuggestions.length !== 1 ? 's' : ''} found`}
                 {isCommissioner && (
                   <span className="ml-2 text-xs">
                     (from rule_suggestions table)
@@ -722,20 +747,6 @@ export default function RuleChanges() {
                 )}
               </span>
             </div>
-            {isCommissioner && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  // Verify connection by checking database viewer
-                  window.open(`/admin/database?table=rule_suggestions&leagueId=${league?.leagueId}`, '_blank');
-                }}
-                className="text-xs"
-              >
-                <Database className="w-3 h-3 mr-1" />
-                Verify Connection
-              </Button>
-            )}
           </div>
         )}
 
@@ -753,7 +764,7 @@ export default function RuleChanges() {
               </Card>
             ))}
           </div>
-        ) : !rulesError && Array.isArray(ruleSuggestions) ? (
+        ) : !rulesError ? (
           ruleSuggestions.length > 0 ? (
             <div className="space-y-4">
               {ruleSuggestions.map((rule) => {
@@ -770,11 +781,9 @@ export default function RuleChanges() {
                     hasSelectedTeam={hasSelectedTeam}
                     isCommissioner={isCommissioner}
                     userId={user?.userId}
+                    votingMasterEnabled={votingMasterEnabled}
                     onVote={(vote) => voteMutation.mutate({ ruleId: rule.id, vote })}
                     onVoteRanked={(points) => voteMutation.mutate({ ruleId: rule.id, points })}
-                    onToggleVoting={(enabled) =>
-                      toggleVotingMutation.mutate({ ruleId: rule.id, enabled })
-                    }
                     onEdit={() => handleEditRule(rule)}
                     onDelete={() => handleDeleteRule(rule.id)}
                     leagueId={league.leagueId}
@@ -930,9 +939,9 @@ function RuleCard({
   hasSelectedTeam,
   isCommissioner,
   userId,
+  votingMasterEnabled,
   onVote,
   onVoteRanked,
-  onToggleVoting,
   onEdit,
   onDelete,
   leagueId,
@@ -942,9 +951,9 @@ function RuleCard({
   hasSelectedTeam: boolean;
   isCommissioner: boolean;
   userId?: string;
+  votingMasterEnabled: boolean;
   onVote: (vote: "approve" | "reject") => void;
   onVoteRanked: (points: number[]) => void;
-  onToggleVoting: (enabled: boolean) => void;
   onEdit: () => void;
   onDelete: () => void;
   leagueId: string;
@@ -986,7 +995,7 @@ function RuleCard({
     enabled: !!userRosterId && !!rule.id,
   });
 
-  const votingEnabled = rule.votingEnabled !== false; // Default to true if not set
+  const votingEnabled = votingMasterEnabled;
   const approveCount = votesData?.approveCount ?? 0;
   const rejectCount = votesData?.rejectCount ?? 0;
   const currentUserVote = !isMultiChoice && userVoteData && "vote" in userVoteData ? userVoteData.vote : undefined;
@@ -1111,18 +1120,6 @@ function RuleCard({
                 </Button>
               </>
             )}
-            {isCommissioner && (
-              <div className="flex items-center gap-2 ml-2">
-                <Switch
-                  checked={votingEnabled}
-                  onCheckedChange={onToggleVoting}
-                  id={`voting-toggle-${rule.id}`}
-                />
-                <Label htmlFor={`voting-toggle-${rule.id}`} className="text-sm">
-                  Voting {votingEnabled ? "On" : "Off"}
-                </Label>
-              </div>
-            )}
           </div>
         </div>
       </CardHeader>
@@ -1140,6 +1137,9 @@ function RuleCard({
           </div>
         )}
 
+        {!votingEnabled && (
+          <p className="text-sm text-muted-foreground pt-4 border-t">Voting is closed.</p>
+        )}
         {votingEnabled && !isMultiChoice && (
           <div className="flex items-center gap-4 pt-4 border-t">
             <div className="flex items-center gap-2">

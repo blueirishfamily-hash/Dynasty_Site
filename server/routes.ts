@@ -5006,8 +5006,15 @@ export async function registerRoutes(
         return res.status(400).json({ error: "League ID is required" });
       }
 
-      const suggestions = await storage.getRuleSuggestions(leagueId);
-      
+      let currentSeason: string | null = null;
+      try {
+        const league = await getLeague(leagueId);
+        currentSeason = league?.season ?? null;
+      } catch {
+        // league may not exist; still return suggestions
+      }
+      const suggestions = await storage.getRuleSuggestions(leagueId, currentSeason);
+
       // Get voting status for each rule (only if there are suggestions)
       const suggestionsWithVoting = suggestions.length > 0
         ? await Promise.all(
@@ -5023,8 +5030,9 @@ export async function registerRoutes(
             })
           )
         : [];
-      
-      res.json(suggestionsWithVoting);
+
+      const votingMasterEnabled = (await storage.getLeagueSetting(leagueId, "rule_voting_master")) === "true";
+      res.json({ suggestions: suggestionsWithVoting, votingMasterEnabled });
     } catch (error: any) {
       console.error("Error fetching rule suggestions:", error);
       const errorMessage = error?.message || "Unknown error";
@@ -5044,6 +5052,35 @@ export async function registerRoutes(
         details: errorMessage,
         code: errorCode
       });
+    }
+  });
+
+  app.get("/api/league/:leagueId/rule-voting-master", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      if (!leagueId) return res.status(400).json({ error: "League ID is required" });
+      const votingMasterEnabled = (await storage.getLeagueSetting(leagueId, "rule_voting_master")) === "true";
+      res.json({ votingMasterEnabled });
+    } catch (error) {
+      console.error("Error fetching rule voting master:", error);
+      res.status(500).json({ error: "Failed to fetch voting state" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/rule-voting-master", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, enabled } = req.body;
+      if (!leagueId || userId == null) return res.status(400).json({ error: "League ID and userId are required" });
+      const isUserCommissioner = await isCommissioner(userId, leagueId);
+      if (!isUserCommissioner) {
+        return res.status(403).json({ error: "Only the commissioner can change the voting state." });
+      }
+      await storage.setLeagueSetting(leagueId, "rule_voting_master", enabled ? "true" : "false");
+      res.json({ votingMasterEnabled: !!enabled });
+    } catch (error) {
+      console.error("Error setting rule voting master:", error);
+      res.status(500).json({ error: "Failed to set voting state" });
     }
   });
 
@@ -5086,6 +5123,22 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Invalid roster ID. Please select your team again." });
       }
 
+      const votingMaster = await storage.getLeagueSetting(leagueId, "rule_voting_master");
+      const authorIsCommissioner = await isCommissioner(authorId, leagueId);
+      if (votingMaster === "true" && !authorIsCommissioner) {
+        return res.status(403).json({
+          error: "Suggestions are closed while voting is open. Only the commissioner can suggest during this time.",
+        });
+      }
+
+      let season: string | undefined;
+      try {
+        const league = await getLeague(leagueId);
+        season = league?.season;
+      } catch {
+        // leave season undefined for legacy behavior
+      }
+
       const suggestion = await storage.createRuleSuggestion({
         leagueId,
         authorId,
@@ -5093,6 +5146,7 @@ export async function registerRoutes(
         rosterId: parsedRosterId,
         title: title.trim(),
         description: description.trim(),
+        ...(season != null && { season }),
         ...(resolvedVoteType === "multi_choice" && { voteType: "multi_choice", options: options.map((o: string) => String(o).trim()) }),
       });
       
@@ -5271,9 +5325,9 @@ export async function registerRoutes(
         if (!valid) {
           return res.status(400).json({ error: "Points must be a permutation of 1 to N (one rank per option)." });
         }
-        const votingEnabled = await storage.getLeagueSetting(leagueId, `rule_voting_enabled_${ruleId}`);
-        if (votingEnabled !== "true") {
-          return res.status(403).json({ error: "Voting is disabled for this rule" });
+        const votingMaster = await storage.getLeagueSetting(leagueId, "rule_voting_master");
+        if (votingMaster !== "true") {
+          return res.status(403).json({ error: "Voting is currently closed." });
         }
         await storage.castRuleRankedVote(ruleId, parseInt(rosterId), voterName, points.map((p: number) => Number(p)));
         return res.json({ success: true });
@@ -5286,9 +5340,9 @@ export async function registerRoutes(
       if (vote !== "approve" && vote !== "reject") {
         return res.status(400).json({ error: "Invalid vote type" });
       }
-      const votingEnabled = await storage.getLeagueSetting(leagueId, `rule_voting_enabled_${ruleId}`);
-      if (votingEnabled !== "true") {
-        return res.status(403).json({ error: "Voting is disabled for this rule" });
+      const votingMaster = await storage.getLeagueSetting(leagueId, "rule_voting_master");
+      if (votingMaster !== "true") {
+        return res.status(403).json({ error: "Voting is currently closed." });
       }
       const ruleVote = await storage.castRuleVote({
         ruleId,
@@ -7490,6 +7544,9 @@ export async function registerRoutes(
 
       // Reset bidding
       await storage.deleteAllPlayerBids(oldLeagueId);
+
+      // Archive rule suggestions for the old league (they stay in DB but no longer show on Rule Changes tab)
+      await storage.archiveRuleSuggestions(oldLeagueId);
 
       await storage.deactivateLeague(oldLeagueId);
       await storage.upsertActiveLeague({
