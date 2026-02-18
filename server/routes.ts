@@ -5700,21 +5700,23 @@ export async function registerRoutes(
       const hasUsed3Year = nonRookieExtensions.some(e => e.extensionType === 3);
       const hasUsed4Year = nonRookieExtensions.some(e => e.extensionType === 4);
       const hasUsedNonRookieExtension = nonRookieExtensions.length > 0;
+      const nonRookieExtensionCount = nonRookieExtensions.length;
       
       // Rookie: count total and check for 4-year usage
       const rookieExtensionCount = rookieExtensions.length;
       const rookieHas4Year = rookieExtensions.some(e => e.extensionType === 4);
       
       res.json({ 
-        hasUsedExtension: teamExtensions.length > 0, // Legacy field for backwards compatibility
+        hasUsedExtension: teamExtensions.length > 0,
         hasUsed1Year,
         hasUsed2Year,
         hasUsed3Year,
         hasUsed4Year,
         hasUsedNonRookieExtension,
+        nonRookieExtensionCount,
         rookieExtensionCount,
         rookieHas4Year,
-        extensions: teamExtensions // Return all extensions for this team/season
+        extensions: teamExtensions
       });
     } catch (error) {
       console.error("Error checking extension status:", error);
@@ -5915,8 +5917,172 @@ export async function registerRoutes(
     }
   });
 
+  // Calculate the PPG-based extension salary for a non-rookie contract player
+  app.post("/api/league/:leagueId/non-rookie-extension-salary", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { playerId, rosterId } = req.body;
+
+      if (!playerId || !rosterId) {
+        return res.status(400).json({ error: "playerId and rosterId are required" });
+      }
+
+      const allContracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = allContracts.find(c => c.playerId === playerId && c.rosterId === rosterId);
+      if (!playerContract) {
+        return res.status(404).json({ error: "Player contract not found" });
+      }
+
+      const [players, nflState, league] = await Promise.all([
+        getAllPlayers(),
+        getNFLState(),
+        getLeague(leagueId),
+      ]);
+
+      const player = players[playerId];
+      if (!player) {
+        return res.status(404).json({ error: "Player not found in Sleeper data" });
+      }
+      const position = player.position;
+      if (!position) {
+        return res.status(400).json({ error: "Player has no position data" });
+      }
+
+      const currentSeason = league?.season || nflState.season || new Date().getFullYear().toString();
+      const currentSeasonNum = parseInt(currentSeason);
+      const previousSeason = String(currentSeasonNum - 1);
+
+      const [currentWeeklyStats, previousWeeklyStats] = await Promise.all([
+        fetchAllWeeklyStats(currentSeason),
+        fetchAllWeeklyStats(previousSeason),
+      ]);
+
+      const ppgResult = computeAdjustedPPGForPlayer(playerId, currentSeason, previousSeason, currentWeeklyStats, previousWeeklyStats);
+      if (!ppgResult) {
+        return res.status(400).json({ error: "Player has no games played — cannot calculate PPG" });
+      }
+
+      const { adjustedPPG, gamesUsed, recent15PPG, previous15PPG, formulaUsed } = ppgResult;
+
+      const rosters = await getLeagueRosters(leagueId);
+      const positionPlayerIds = new Set<string>();
+      for (const roster of rosters) {
+        for (const pid of roster.players || []) {
+          const p = players[pid];
+          if (p && p.position === position) {
+            positionPlayerIds.add(pid);
+          }
+        }
+      }
+
+      const playerPPGMap = new Map<string, { ppg: number; gamesPlayed: number }>();
+      for (const pid of Array.from(positionPlayerIds)) {
+        const pidResult = computeAdjustedPPGForPlayer(pid, currentSeason, previousSeason, currentWeeklyStats, previousWeeklyStats);
+        if (pidResult) {
+          playerPPGMap.set(pid, { ppg: pidResult.adjustedPPG, gamesPlayed: pidResult.gamesUsed });
+        }
+      }
+
+      const rankedPlayers = Array.from(playerPPGMap.entries())
+        .map(([pid, data]) => {
+          const p = players[pid];
+          const contract = allContracts.find(c => c.playerId === pid);
+          const salaries: Record<string, number> = (() => {
+            try {
+              return typeof (contract as any)?.salaries === "string"
+                ? JSON.parse((contract as any).salaries || "{}")
+                : (contract as any)?.salaries || {};
+            } catch { return {}; }
+          })();
+          const currentYearSalary = Number(salaries[currentSeason]) || 0;
+          return {
+            playerId: pid,
+            name: p?.full_name || p?.first_name + " " + p?.last_name || pid,
+            ppg: data.ppg,
+            gamesPlayed: data.gamesPlayed,
+            currentYearSalary,
+          };
+        })
+        .sort((a, b) => b.ppg - a.ppg);
+
+      const playerIndex = rankedPlayers.findIndex(p => p.playerId === playerId);
+      if (playerIndex === -1) {
+        return res.status(400).json({ error: "Could not rank player among position peers" });
+      }
+
+      const rank = playerIndex + 1;
+      const totalPlayers = rankedPlayers.length;
+
+      let neighborAbove: { name: string; salary: number; ppg: number } | null = null;
+      let neighborBelow: { name: string; salary: number; ppg: number } | null = null;
+
+      for (let i = playerIndex - 1; i >= 0; i--) {
+        if (rankedPlayers[i].currentYearSalary > 0) {
+          neighborAbove = { name: rankedPlayers[i].name, salary: rankedPlayers[i].currentYearSalary, ppg: rankedPlayers[i].ppg };
+          break;
+        }
+      }
+
+      for (let i = playerIndex + 1; i < rankedPlayers.length; i++) {
+        if (rankedPlayers[i].currentYearSalary > 0) {
+          neighborBelow = { name: rankedPlayers[i].name, salary: rankedPlayers[i].currentYearSalary, ppg: rankedPlayers[i].ppg };
+          break;
+        }
+      }
+
+      let baseSalary: number;
+      if (neighborAbove && neighborBelow) {
+        baseSalary = Math.round((neighborAbove.salary + neighborBelow.salary) / 2);
+      } else if (neighborAbove) {
+        const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
+        baseSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50;
+      } else if (neighborBelow) {
+        const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
+        baseSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50;
+      } else {
+        baseSalary = 50;
+      }
+
+      baseSalary = Math.max(baseSalary, 50);
+
+      const baseSalaryMillions = baseSalary / 10;
+      const salary1Year = Math.ceil(baseSalaryMillions * 0.8) * 10;
+      const salary2Year = Math.ceil(baseSalaryMillions * 0.9) * 10;
+      const salary3Year = Math.ceil(baseSalaryMillions * 1.0) * 10;
+      const salary4Year = Math.ceil(baseSalaryMillions * 1.1) * 10;
+
+      console.log(`[Non-Rookie Extension] ${player.full_name || playerId} (${position}): adjustedPPG=${adjustedPPG.toFixed(1)}, rank=${rank}/${totalPlayers}, baseSalary=${baseSalary/10}M`);
+
+      res.json({
+        adjustedPPG: Math.round(adjustedPPG * 10) / 10,
+        gamesUsed,
+        recent15PPG: Math.round(recent15PPG * 10) / 10,
+        previous15PPG: Math.round(previous15PPG * 10) / 10,
+        formulaUsed,
+        rank,
+        totalPlayersAtPosition: totalPlayers,
+        position,
+        neighborAbove,
+        neighborBelow,
+        extensionSalary: baseSalary,
+        extensionSalaryMillions: baseSalary / 10,
+        salary1Year,
+        salary1YearMillions: salary1Year / 10,
+        salary2Year,
+        salary2YearMillions: salary2Year / 10,
+        salary3Year,
+        salary3YearMillions: salary3Year / 10,
+        salary4Year,
+        salary4YearMillions: salary4Year / 10,
+      });
+    } catch (error: any) {
+      console.error("Error calculating non-rookie extension salary:", error);
+      res.status(500).json({ error: "Failed to calculate extension salary", message: error?.message || String(error) });
+    }
+  });
+
   // Apply an extension to a player
-  // Extension types: 1 = 1-year at 1.2x, 2 = 2-year at 1.5x, 3 = 3-year at 1.8x, 4 = 4-year at 2.0x (all rounded up)
+  // For non-rookie contracts, extensions use PPG-based pricing with 80/90/100/110% multipliers
   // For rookie contracts (isRookieContract = 1), extensions use PPG-based pricing calculated server-side
   app.post("/api/league/:leagueId/extensions", async (req, res) => {
     try {
@@ -5988,11 +6154,11 @@ export async function registerRoutes(
           });
         }
       } else {
-        // Non-rookie extensions: max 1 per season
+        // Non-rookie extensions: max 2 per season
         const nonRookieExts = teamExtensionsForRoster.filter(e => e.isRookieExtension !== 1);
-        if (nonRookieExts.length > 0) {
+        if (nonRookieExts.length >= 2) {
           return res.status(400).json({ 
-            error: "Team has already used their non-rookie extension for this season",
+            error: "Team has already used both non-rookie extensions for this season",
             existingExtension: nonRookieExts[0]
           });
         }
@@ -6012,56 +6178,34 @@ export async function registerRoutes(
         }
       }
 
-      // If not rookie contract, cannot use PPG-based pricing
-      if (!isRookieContract && isPPGBased) {
-        return res.status(400).json({ error: "Non-rookie contracts cannot use PPG-based pricing" });
-      }
-
       // Calculate extension salaries based on type
       let extensionSalary1 = 0;
       let extensionSalary2: number | null = null;
       let extensionSalary3: number | null = null;
       let extensionSalary4: number | null = null;
 
+      // Both rookie and non-rookie extensions use PPG-based pricing
+      const salary = ppgSalary;
+      if (!salary || salary <= 0) {
+        return res.status(400).json({ error: "PPG-based salary is required for extensions. Calculate it first." });
+      }
+
       if (isRookieContract) {
-        // PPG-based extension for rookie contracts
-        // The client passes ppgSalary from the rookie-extension-salary endpoint
-        // We trust it here (it was already calculated server-side)
-        const salary = ppgSalary;
-        if (!salary || salary <= 0) {
-          return res.status(400).json({ error: "PPG-based salary is required for rookie extensions. Calculate it first." });
-        }
+        // Rookie extensions: flat PPG salary for all years
         extensionSalary1 = salary;
         if (extensionType >= 2) extensionSalary2 = salary;
         if (extensionType >= 3) extensionSalary3 = salary;
         if (extensionType >= 4) extensionSalary4 = salary;
       } else {
-        // Multiplier-based extension (for non-rookie contracts)
-        // currentSalary is already in tenths (e.g., 230 = $23.0M)
-        const currentSalaryInMillions = currentSalary / 10;
-        
-        if (extensionType === 1) {
-          // 1-year extension at 1.2x, rounded up to nearest whole number (then multiply by 10 for storage)
-          extensionSalary1 = Math.ceil(currentSalaryInMillions * 1.2) * 10;
-        } else if (extensionType === 2) {
-          // 2-year extension at 1.5x, rounded up to nearest whole number (then multiply by 10 for storage)
-          const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.5) * 10;
-          extensionSalary1 = salaryPerYear;
-          extensionSalary2 = salaryPerYear;
-        } else if (extensionType === 3) {
-          // 3-year extension at 1.8x, rounded up to nearest whole number (then multiply by 10 for storage)
-          const salaryPerYear = Math.ceil(currentSalaryInMillions * 1.8) * 10;
-          extensionSalary1 = salaryPerYear;
-          extensionSalary2 = salaryPerYear;
-          extensionSalary3 = salaryPerYear;
-        } else if (extensionType === 4) {
-          // 4-year extension at 2.0x, rounded up to nearest whole number (then multiply by 10 for storage)
-          const salaryPerYear = Math.ceil(currentSalaryInMillions * 2.0) * 10;
-          extensionSalary1 = salaryPerYear;
-          extensionSalary2 = salaryPerYear;
-          extensionSalary3 = salaryPerYear;
-          extensionSalary4 = salaryPerYear;
-        }
+        // Non-rookie extensions: PPG-based with percentage multipliers
+        // 1-yr = 80%, 2-yr = 90%, 3-yr = 100%, 4-yr = 110%
+        const baseSalaryMillions = salary / 10;
+        const percentages: Record<number, number> = { 1: 0.8, 2: 0.9, 3: 1.0, 4: 1.1 };
+        const salaryPerYear = Math.ceil(baseSalaryMillions * percentages[extensionType]) * 10;
+        extensionSalary1 = salaryPerYear;
+        if (extensionType >= 2) extensionSalary2 = salaryPerYear;
+        if (extensionType >= 3) extensionSalary3 = salaryPerYear;
+        if (extensionType >= 4) extensionSalary4 = salaryPerYear;
       }
 
       // Validate extension year(s) are within supported range (current season to season+4)

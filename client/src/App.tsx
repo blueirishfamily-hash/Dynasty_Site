@@ -117,13 +117,33 @@ function AppContent() {
     "--sidebar-width-icon": "3rem",
   };
 
-  // Show loading state while league is being fetched
+  // Show loading state while league is being fetched (inline styles so it's visible even if CSS fails)
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-background">
-        <div className="text-center">
-          <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4" />
-          <p className="text-muted-foreground">Connecting to league...</p>
+      <div
+        className="flex items-center justify-center h-screen bg-background"
+        style={{
+          minHeight: "100vh",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          background: "hsl(215 25% 95%)",
+        }}
+      >
+        <div style={{ textAlign: "center" }}>
+          <div
+            className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full mx-auto mb-4"
+            style={{
+              width: 32,
+              height: 32,
+              border: "4px solid hsl(160 84% 39%)",
+              borderTopColor: "transparent",
+              borderRadius: "50%",
+              margin: "0 auto 1rem",
+              animation: "spin 0.8s linear infinite",
+            }}
+          />
+          <p style={{ color: "hsl(215 15% 45%)", margin: 0 }}>Connecting to league...</p>
         </div>
       </div>
     );

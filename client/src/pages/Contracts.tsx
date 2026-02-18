@@ -1740,14 +1740,25 @@ function ManageTeamContractsTab({
       neighborBelow: { name: string; salary: number; ppg: number } | null;
       extensionSalary: number;
       extensionSalaryMillions: number;
+      salary1Year?: number;
+      salary1YearMillions?: number;
+      salary2Year?: number;
+      salary2YearMillions?: number;
+      salary3Year?: number;
+      salary3YearMillions?: number;
+      salary4Year?: number;
+      salary4YearMillions?: number;
     } | null;
   }>>({});
 
-  const fetchPPGSalary = async (playerId: string) => {
+  const fetchPPGSalary = async (playerId: string, isRookie: boolean) => {
     if (ppgSalaryData[playerId]?.data || ppgSalaryData[playerId]?.loading) return;
     setPpgSalaryData(prev => ({ ...prev, [playerId]: { loading: true, error: null, data: null } }));
     try {
-      const res = await fetch(`/api/league/${leagueId}/rookie-extension-salary`, {
+      const endpoint = isRookie
+        ? `/api/league/${leagueId}/rookie-extension-salary`
+        : `/api/league/${leagueId}/non-rookie-extension-salary`;
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ playerId, rosterId: userTeam?.rosterId }),
@@ -1802,7 +1813,7 @@ function ManageTeamContractsTab({
     playerName: string;
     extensionSalary: number;
     extensionYear: number;
-    extensionType: number; // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
+    extensionType: number; // 1-4 year extension
     extensionSalary2: number | null;
     isRookieExtension: number; // 0 = regular, 1 = rookie
     status: "pending" | "confirmed";
@@ -1810,12 +1821,13 @@ function ManageTeamContractsTab({
   }
 
   interface ExtensionStatus {
-    hasUsedExtension: boolean; // Legacy field
+    hasUsedExtension: boolean;
     hasUsed1Year: boolean;
     hasUsed2Year: boolean;
     hasUsed3Year: boolean;
     hasUsed4Year: boolean;
     hasUsedNonRookieExtension: boolean;
+    nonRookieExtensionCount: number;
     rookieExtensionCount: number;
     rookieHas4Year: boolean;
     extensions: TeamExtension[];
@@ -1834,7 +1846,7 @@ function ManageTeamContractsTab({
 
   // Player rankings query removed — rookie extensions now use PPG-based pricing from /rookie-extension-salary endpoint
 
-  // Extension mutation - supports multiplier-based (non-rookie) and PPG-based (rookie) extensions
+  // Extension mutation - all extensions use PPG-based pricing
   const applyExtensionMutation = useMutation({
     mutationFn: async (data: {
       playerId: string;
@@ -2260,22 +2272,23 @@ function ManageTeamContractsTab({
   };
 
   // Check if player is eligible for extension
-  // Eligible if: 1) In last year of contract, 2) Has a valid contract
-  // Extension types: 1 = 1-year at 1.2x salary, 2 = 2-year at 1.5x salary (both rounded up)
+  // Both rookie and non-rookie extensions use PPG-based pricing
   interface ExtensionEligibility {
     eligible: boolean;
     reason: string;
     extensionYear: number;
-    currentSalary: number; // In millions (display format)
-    currentSalaryTenths: number; // In tenths for API
+    currentSalary: number;
+    currentSalaryTenths: number;
     canDo1Year: boolean;
     canDo2Year: boolean;
     canDo3Year: boolean;
     canDo4Year: boolean;
-    oneYearSalary: number; // 1.2x rounded up
-    twoYearSalary: number; // 1.5x rounded up
-    threeYearSalary: number; // 1.8x rounded up
-    fourYearSalary: number; // 2.0x rounded up
+    /** True when non-rookie 4-year would exceed OPTION_YEAR (button shown but disabled) */
+    wouldExceedMaxYearFor4Year?: boolean;
+    oneYearSalary: number;
+    twoYearSalary: number;
+    threeYearSalary: number;
+    fourYearSalary: number;
     isRookieContract: boolean;
     requiresQuartilePricing: boolean;
     requiresPPGPricing: boolean;
@@ -2357,25 +2370,30 @@ function ManageTeamContractsTab({
     // Calculate extension year (starts after the last year with salary)
     const extensionYear = lastYearWithSalary + 1;
     
-    // Calculate salary options (only for non-rookie contracts — rookies use PPG-based pricing from server)
-    const oneYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 1.2);
-    const twoYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 1.5);
-    const threeYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 1.8);
-    const fourYearSalary = isRookieContract ? 0 : Math.ceil(salaryToUse * 2.0);
+    // All extensions now use PPG-based pricing from server endpoints
+    // Salary values will come from ppgSalaryData when the popover opens
+    const oneYearSalary = 0;
+    const twoYearSalary = 0;
+    const threeYearSalary = 0;
+    const fourYearSalary = 0;
     
     // Check if we can do each extension type (max year is option year)
     const maxYear = OPTION_YEAR;
     const canDo1Year = extensionYear <= maxYear;
     const canDo2Year = extensionYear + 1 <= maxYear;
     const canDo3Year = extensionYear + 2 <= maxYear;
-    const canDo4Year = extensionYear + 3 <= maxYear;
+    // Rookie: 4-year only when it fits within option year. Non-rookie: show 4-year whenever eligible
+    const canDo4Year = isRookieContract
+      ? extensionYear + 3 <= maxYear
+      : (isInLastYear || isInSecondToLastYear);
+    const wouldExceedMaxYearFor4Year = !isRookieContract && canDo4Year && extensionYear + 3 > maxYear;
 
     return {
       eligible: isRookieContract ? (canDo3Year || canDo4Year) : (canDo1Year || canDo2Year || canDo3Year || canDo4Year),
       reason: isRookieContract
         ? "Eligible for PPG-based extension (rookie contract — offseason)"
         : (canDo1Year || canDo2Year || canDo3Year || canDo4Year) 
-          ? "Eligible for extension" 
+          ? "Eligible for PPG-based extension" 
           : `Cannot extend - would exceed ${maxYear}`,
       extensionYear,
       currentSalary: salaryToUse,
@@ -2384,13 +2402,14 @@ function ManageTeamContractsTab({
       canDo2Year: isRookieContract ? false : canDo2Year,
       canDo3Year,
       canDo4Year,
+      wouldExceedMaxYearFor4Year: wouldExceedMaxYearFor4Year || undefined,
       oneYearSalary,
       twoYearSalary,
       threeYearSalary,
       fourYearSalary,
       isRookieContract,
-      requiresQuartilePricing: false, // Deprecated — kept for interface compat
-      requiresPPGPricing: isRookieContract,
+      requiresQuartilePricing: false,
+      requiresPPGPricing: true,
     };
   };
 
@@ -3640,7 +3659,7 @@ function ManageTeamContractsTab({
                         {player.isRosterPlayer && !player.isFreeAgent && (() => {
                           const extensionEligibility = isPlayerEligibleForExtension(player.playerId);
                           // Separate rookie and non-rookie extension limits
-                          const hasUsedNonRookieExt = extensionStatus?.hasUsedNonRookieExtension || false;
+                          const nonRookieExtCount = extensionStatus?.nonRookieExtensionCount || 0;
                           const rookieExtCount = extensionStatus?.rookieExtensionCount || 0;
                           const rookieUsed4Year = extensionStatus?.rookieHas4Year || false;
                           
@@ -3661,8 +3680,8 @@ function ManageTeamContractsTab({
                             const can4YrRookie = extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year;
                             allOptionsExhausted = !can3YrRookie && !can4YrRookie;
                           } else {
-                            // Non-rookie: exhausted if team already used their one non-rookie extension
-                            allOptionsExhausted = hasUsedNonRookieExt;
+                            // Non-rookie: exhausted if team already used both non-rookie extensions (2 per season)
+                            allOptionsExhausted = nonRookieExtCount >= 2;
                           }
 
                           // For commissioners: only disable during mutations
@@ -3682,7 +3701,7 @@ function ManageTeamContractsTab({
                             <Popover open={openExtensionPopover === player.playerId} onOpenChange={(open) => {
                               setOpenExtensionPopover(open ? player.playerId : null);
                               if (open && extensionEligibility.requiresPPGPricing) {
-                                fetchPPGSalary(player.playerId);
+                                fetchPPGSalary(player.playerId, extensionEligibility.isRookieContract);
                               }
                             }}>
                               <Tooltip>
@@ -3753,10 +3772,10 @@ function ManageTeamContractsTab({
                                       if (extensionEligibility.canDo3Year && rookieExtCount < 3) availableTypes.push("3-year");
                                       if (extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year) availableTypes.push("4-year");
                                     } else {
-                                      if (extensionEligibility.canDo1Year && !hasUsedNonRookieExt) availableTypes.push("1-year");
-                                      if (extensionEligibility.canDo2Year && !hasUsedNonRookieExt) availableTypes.push("2-year");
-                                      if (extensionEligibility.canDo3Year && !hasUsedNonRookieExt) availableTypes.push("3-year");
-                                      if (extensionEligibility.canDo4Year && !hasUsedNonRookieExt) availableTypes.push("4-year");
+                                      if (extensionEligibility.canDo1Year && nonRookieExtCount < 2) availableTypes.push("1-year");
+                                      if (extensionEligibility.canDo2Year && nonRookieExtCount < 2) availableTypes.push("2-year");
+                                      if (extensionEligibility.canDo3Year && nonRookieExtCount < 2) availableTypes.push("3-year");
+                                      if (extensionEligibility.canDo4Year && nonRookieExtCount < 2) availableTypes.push("4-year");
                                     }
                                     
                                     let mainText = "";
@@ -3770,12 +3789,12 @@ function ManageTeamContractsTab({
                                           ? `Team has used all 3 rookie extensions for ${CURRENT_YEAR}`
                                           : `Team has already used their 4-year rookie extension for ${CURRENT_YEAR}`;
                                       } else {
-                                        mainText = `Team has already used their extension for ${CURRENT_YEAR}`;
+                                        mainText = `Team has already used both non-rookie extensions for ${CURRENT_YEAR} (${nonRookieExtCount}/2)`;
                                       }
                                     } else if (extensionEligibility.eligible) {
                                       const limitInfo = isRookiePlayer 
                                         ? ` (${rookieExtCount}/3 rookie extensions used)`
-                                        : "";
+                                        : ` (${nonRookieExtCount}/2 non-rookie extensions used)`;
                                       mainText = `Click to choose extension type (Available: ${availableTypes.join(", ")})${limitInfo}`;
                                     } else {
                                       mainText = extensionEligibility.reason;
@@ -3849,226 +3868,225 @@ function ManageTeamContractsTab({
                                 ) : (
                                 <div className="space-y-3">
                                   <div className="text-sm font-medium">Extend {player.name}</div>
-                                  {extensionEligibility.requiresPPGPricing ? (
-                                    <div className="text-xs text-amber-600 font-medium">
-                                      Rookie contract — PPG-based pricing
-                                    </div>
-                                  ) : (
-                                    <div className="text-xs text-muted-foreground">
-                                      Current salary: ${extensionEligibility.currentSalary.toFixed(1)}M
-                                    </div>
-                                  )}
+                                  <div className="text-xs text-amber-600 font-medium">
+                                    {isRookiePlayer ? "Rookie contract" : "Non-rookie contract"} — PPG-based pricing
+                                  </div>
                                   <div className="space-y-2">
-                                    {extensionEligibility.requiresPPGPricing ? (
-                                      // PPG-based extensions for rookie contracts
-                                      (() => {
-                                        const ppgInfo = ppgSalaryData[player.playerId];
-                                        if (!ppgInfo || ppgInfo.loading) {
-                                          return (
-                                            <div className="text-xs text-muted-foreground py-2">
-                                              Calculating PPG-based salary...
-                                            </div>
-                                          );
-                                        }
-                                        if (ppgInfo.error) {
-                                          return (
-                                            <div className="text-xs text-destructive py-2">
-                                              {ppgInfo.error}
-                                            </div>
-                                          );
-                                        }
-                                        if (!ppgInfo.data) return null;
-                                        const d = ppgInfo.data;
+                                    {(() => {
+                                      const ppgInfo = ppgSalaryData[player.playerId];
+                                      if (!ppgInfo || ppgInfo.loading) {
                                         return (
-                                          <>
-                                            <div className="text-xs space-y-1 bg-muted/50 rounded p-2">
-                                              <div className="flex justify-between">
-                                                <span className="text-muted-foreground">Adj. PPG:</span>
-                                                <span className="font-medium">{d.adjustedPPG.toFixed(1)} ({d.formulaUsed === "recent15" ? "recent 15" : "30-game avg"})</span>
-                                              </div>
-                                              <div className="flex justify-between">
-                                                <span className="text-muted-foreground">Position Rank:</span>
-                                                <span className="font-medium">#{d.rank} of {d.totalPlayersAtPosition} {d.position}s</span>
-                                              </div>
-                                              <div className="flex justify-between">
-                                                <span className="text-muted-foreground">Games Used:</span>
-                                                <span className="font-medium">{d.gamesUsed}</span>
-                                              </div>
-                                              {d.neighborAbove && (
-                                                <div className="flex justify-between">
-                                                  <span className="text-muted-foreground">Above:</span>
-                                                  <span className="font-medium">{d.neighborAbove.name} (${(d.neighborAbove.salary / 10).toFixed(1)}M)</span>
-                                                </div>
-                                              )}
-                                              {d.neighborBelow && (
-                                                <div className="flex justify-between">
-                                                  <span className="text-muted-foreground">Below:</span>
-                                                  <span className="font-medium">{d.neighborBelow.name} (${(d.neighborBelow.salary / 10).toFixed(1)}M)</span>
-                                                </div>
-                                              )}
-                                            </div>
-                                            {extensionEligibility.canDo3Year && (
-                                              <Button
-                                                size="sm"
-                                                variant="outline"
-                                                className="w-full justify-between"
-                                                onClick={() => {
-                                                  handleApplyExtension(
-                                                    player.playerId,
-                                                    player.name,
-                                                    extensionEligibility.extensionYear,
-                                                    extensionEligibility.currentSalaryTenths,
-                                                    3,
-                                                    true,
-                                                    d.extensionSalary
-                                                  );
-                                                  setOpenExtensionPopover(null);
-                                                }}
-                                                disabled={applyExtensionMutation.isPending || rookieExtCount >= 3}
-                                                data-testid={`button-extend-3yr-ppg-${player.playerId}`}
-                                              >
-                                                <span>3-Year Extension</span>
-                                                <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(1)}M/yr</span>
-                                              </Button>
-                                            )}
-                                            {extensionEligibility.canDo4Year && (
-                                              <Button
-                                                size="sm"
-                                                variant="outline"
-                                                className="w-full justify-between"
-                                                onClick={() => {
-                                                  handleApplyExtension(
-                                                    player.playerId,
-                                                    player.name,
-                                                    extensionEligibility.extensionYear,
-                                                    extensionEligibility.currentSalaryTenths,
-                                                    4,
-                                                    true,
-                                                    d.extensionSalary
-                                                  );
-                                                  setOpenExtensionPopover(null);
-                                                }}
-                                                disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || rookieUsed4Year}
-                                                data-testid={`button-extend-4yr-ppg-${player.playerId}`}
-                                              >
-                                                <span>4-Year Extension</span>
-                                                <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(1)}M/yr</span>
-                                              </Button>
-                                            )}
-                                            {!extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
-                                              <div className="text-xs text-muted-foreground italic">
-                                                Extension unavailable (would exceed {CURRENT_YEAR + 4})
-                                              </div>
-                                            )}
-                                          </>
-                                        );
-                                      })()
-                                    ) : (
-                                      // Standard multiplier-based extensions
-                                      <>
-                                        {extensionEligibility.canDo1Year && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="w-full justify-between"
-                                            onClick={() => {
-                                              handleApplyExtension(
-                                                player.playerId,
-                                                player.name,
-                                                extensionEligibility.extensionYear,
-                                                extensionEligibility.currentSalaryTenths,
-                                                1
-                                              );
-                                              setOpenExtensionPopover(null);
-                                            }}
-                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
-                                            data-testid={`button-extend-1yr-${player.playerId}`}
-                                          >
-                                            <span>1-Year Extension</span>
-                                            <span className="text-emerald-600 font-medium">${extensionEligibility.oneYearSalary}M (1.2x)</span>
-                                          </Button>
-                                        )}
-                                        {extensionEligibility.canDo2Year && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="w-full justify-between"
-                                            onClick={() => {
-                                              handleApplyExtension(
-                                                player.playerId,
-                                                player.name,
-                                                extensionEligibility.extensionYear,
-                                                extensionEligibility.currentSalaryTenths,
-                                                2
-                                              );
-                                              setOpenExtensionPopover(null);
-                                            }}
-                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
-                                            data-testid={`button-extend-2yr-${player.playerId}`}
-                                          >
-                                            <span>2-Year Extension</span>
-                                            <span className="text-emerald-600 font-medium">${extensionEligibility.twoYearSalary}M/yr (1.5x)</span>
-                                          </Button>
-                                        )}
-                                        {extensionEligibility.canDo3Year && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="w-full justify-between"
-                                            onClick={() => {
-                                              handleApplyExtension(
-                                                player.playerId,
-                                                player.name,
-                                                extensionEligibility.extensionYear,
-                                                extensionEligibility.currentSalaryTenths,
-                                                3
-                                              );
-                                              setOpenExtensionPopover(null);
-                                            }}
-                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
-                                            data-testid={`button-extend-3yr-${player.playerId}`}
-                                          >
-                                            <span>3-Year Extension</span>
-                                            <span className="text-emerald-600 font-medium">${extensionEligibility.threeYearSalary}M/yr (1.8x)</span>
-                                          </Button>
-                                        )}
-                                        {extensionEligibility.canDo4Year && (
-                                          <Button
-                                            size="sm"
-                                            variant="outline"
-                                            className="w-full justify-between"
-                                            onClick={() => {
-                                              handleApplyExtension(
-                                                player.playerId,
-                                                player.name,
-                                                extensionEligibility.extensionYear,
-                                                extensionEligibility.currentSalaryTenths,
-                                                4
-                                              );
-                                              setOpenExtensionPopover(null);
-                                            }}
-                                            disabled={applyExtensionMutation.isPending || hasUsedNonRookieExt}
-                                            data-testid={`button-extend-4yr-${player.playerId}`}
-                                          >
-                                            <span>4-Year Extension</span>
-                                            <span className="text-emerald-600 font-medium">${extensionEligibility.fourYearSalary}M/yr (2.0x)</span>
-                                          </Button>
-                                        )}
-                                        {!extensionEligibility.canDo1Year && !extensionEligibility.canDo2Year && !extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
-                                          <div className="text-xs text-muted-foreground italic">
-                                            Extension unavailable (would exceed {CURRENT_YEAR + 4})
+                                          <div className="text-xs text-muted-foreground py-2">
+                                            Calculating PPG-based salary...
                                           </div>
-                                        )}
-                                      </>
-                                    )}
+                                        );
+                                      }
+                                      if (ppgInfo.error) {
+                                        return (
+                                          <div className="text-xs text-destructive py-2">
+                                            {ppgInfo.error}
+                                          </div>
+                                        );
+                                      }
+                                      if (!ppgInfo.data) return null;
+                                      const d = ppgInfo.data;
+                                      return (
+                                        <>
+                                          <div className="text-xs space-y-1 bg-muted/50 rounded p-2">
+                                            <div className="flex justify-between">
+                                              <span className="text-muted-foreground">Adj. PPG:</span>
+                                              <span className="font-medium">{d.adjustedPPG.toFixed(1)} ({d.formulaUsed === "recent15" ? "recent 15" : "30-game avg"})</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                              <span className="text-muted-foreground">Position Rank:</span>
+                                              <span className="font-medium">#{d.rank} of {d.totalPlayersAtPosition} {d.position}s</span>
+                                            </div>
+                                            <div className="flex justify-between">
+                                              <span className="text-muted-foreground">Games Used:</span>
+                                              <span className="font-medium">{d.gamesUsed}</span>
+                                            </div>
+                                            {d.neighborAbove && (
+                                              <div className="flex justify-between">
+                                                <span className="text-muted-foreground">Above:</span>
+                                                <span className="font-medium">{d.neighborAbove.name} (${(d.neighborAbove.salary / 10).toFixed(1)}M)</span>
+                                              </div>
+                                            )}
+                                            {d.neighborBelow && (
+                                              <div className="flex justify-between">
+                                                <span className="text-muted-foreground">Below:</span>
+                                                <span className="font-medium">{d.neighborBelow.name} (${(d.neighborBelow.salary / 10).toFixed(1)}M)</span>
+                                              </div>
+                                            )}
+                                            <div className="flex justify-between font-medium border-t pt-1 mt-1">
+                                              <span className="text-muted-foreground">Base PPG Salary:</span>
+                                              <span>${d.extensionSalaryMillions.toFixed(1)}M</span>
+                                            </div>
+                                          </div>
+                                          {isRookiePlayer ? (
+                                            <>
+                                              {extensionEligibility.canDo3Year && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="w-full justify-between"
+                                                  onClick={() => {
+                                                    handleApplyExtension(
+                                                      player.playerId,
+                                                      player.name,
+                                                      extensionEligibility.extensionYear,
+                                                      extensionEligibility.currentSalaryTenths,
+                                                      3,
+                                                      true,
+                                                      d.extensionSalary
+                                                    );
+                                                    setOpenExtensionPopover(null);
+                                                  }}
+                                                  disabled={applyExtensionMutation.isPending || rookieExtCount >= 3}
+                                                >
+                                                  <span>3-Year Extension</span>
+                                                  <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(0)}M/yr</span>
+                                                </Button>
+                                              )}
+                                              {extensionEligibility.canDo4Year && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="w-full justify-between"
+                                                  onClick={() => {
+                                                    handleApplyExtension(
+                                                      player.playerId,
+                                                      player.name,
+                                                      extensionEligibility.extensionYear,
+                                                      extensionEligibility.currentSalaryTenths,
+                                                      4,
+                                                      true,
+                                                      d.extensionSalary
+                                                    );
+                                                    setOpenExtensionPopover(null);
+                                                  }}
+                                                  disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || rookieUsed4Year}
+                                                >
+                                                  <span>4-Year Extension</span>
+                                                  <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(0)}M/yr</span>
+                                                </Button>
+                                              )}
+                                              {!extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
+                                                <div className="text-xs text-muted-foreground italic">
+                                                  Extension unavailable (would exceed {CURRENT_YEAR + 4})
+                                                </div>
+                                              )}
+                                            </>
+                                          ) : (
+                                            <>
+                                              {extensionEligibility.canDo1Year && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="w-full justify-between"
+                                                  onClick={() => {
+                                                    handleApplyExtension(
+                                                      player.playerId,
+                                                      player.name,
+                                                      extensionEligibility.extensionYear,
+                                                      extensionEligibility.currentSalaryTenths,
+                                                      1,
+                                                      true,
+                                                      d.extensionSalary
+                                                    );
+                                                    setOpenExtensionPopover(null);
+                                                  }}
+                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2}
+                                                >
+                                                  <span>1-Year (80%)</span>
+                                                  <span className="text-emerald-600 font-medium">${(d.salary1YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.8)).toFixed(0)}M/yr</span>
+                                                </Button>
+                                              )}
+                                              {extensionEligibility.canDo2Year && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="w-full justify-between"
+                                                  onClick={() => {
+                                                    handleApplyExtension(
+                                                      player.playerId,
+                                                      player.name,
+                                                      extensionEligibility.extensionYear,
+                                                      extensionEligibility.currentSalaryTenths,
+                                                      2,
+                                                      true,
+                                                      d.extensionSalary
+                                                    );
+                                                    setOpenExtensionPopover(null);
+                                                  }}
+                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2}
+                                                >
+                                                  <span>2-Year (90%)</span>
+                                                  <span className="text-emerald-600 font-medium">${(d.salary2YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.9)).toFixed(0)}M/yr</span>
+                                                </Button>
+                                              )}
+                                              {extensionEligibility.canDo3Year && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="w-full justify-between"
+                                                  onClick={() => {
+                                                    handleApplyExtension(
+                                                      player.playerId,
+                                                      player.name,
+                                                      extensionEligibility.extensionYear,
+                                                      extensionEligibility.currentSalaryTenths,
+                                                      3,
+                                                      true,
+                                                      d.extensionSalary
+                                                    );
+                                                    setOpenExtensionPopover(null);
+                                                  }}
+                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2}
+                                                >
+                                                  <span>3-Year (100%)</span>
+                                                  <span className="text-emerald-600 font-medium">${(d.salary3YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.0)).toFixed(0)}M/yr</span>
+                                                </Button>
+                                              )}
+                                              {extensionEligibility.canDo4Year && (
+                                                <Button
+                                                  size="sm"
+                                                  variant="outline"
+                                                  className="w-full justify-between"
+                                                  onClick={() => {
+                                                    handleApplyExtension(
+                                                      player.playerId,
+                                                      player.name,
+                                                      extensionEligibility.extensionYear,
+                                                      extensionEligibility.currentSalaryTenths,
+                                                      4,
+                                                      true,
+                                                      d.extensionSalary
+                                                    );
+                                                    setOpenExtensionPopover(null);
+                                                  }}
+                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || extensionEligibility.wouldExceedMaxYearFor4Year}
+                                                  title={extensionEligibility.wouldExceedMaxYearFor4Year ? `4-year extension would exceed max contract year (${OPTION_YEAR}). Use 3-year or less.` : undefined}
+                                                >
+                                                  <span>4-Year (110%)</span>
+                                                  <span className="text-emerald-600 font-medium">${(d.salary4YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.1)).toFixed(0)}M/yr</span>
+                                                </Button>
+                                              )}
+                                              {!extensionEligibility.canDo1Year && !extensionEligibility.canDo2Year && !extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
+                                                <div className="text-xs text-muted-foreground italic">
+                                                  Extension unavailable (would exceed {CURRENT_YEAR + 4})
+                                                </div>
+                                              )}
+                                            </>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
                                   </div>
                                   <div className="text-xs text-muted-foreground border-t pt-2">
-                                    Each team can use 1 of each extension type per season (1-year, 2-year, 3-year, 4-year).
-                                    {extensionEligibility.requiresPPGPricing && (
-                                      <div className="mt-1 text-amber-600">
-                                        Rookie contracts use PPG-based pricing (offseason only).
-                                      </div>
-                                    )}
+                                    {isRookiePlayer
+                                      ? `Rookie extensions: ${rookieExtCount}/3 used this season. PPG-based pricing (offseason only).`
+                                      : `Non-rookie extensions: ${nonRookieExtCount}/2 used this season. PPG-based pricing (80-110%).`
+                                    }
                                   </div>
                                 </div>
                                 )}
@@ -4124,7 +4142,7 @@ function ManageTeamContractsTab({
             </p>
             <p className="flex items-center gap-2">
               <ArrowRightLeft className="w-4 h-4" />
-              <span>Extension options: 1-year at 1.2x, 2-year at 1.5x, 3-year at 1.8x, or 4-year at 2.0x salary (rounded up). Only for players in final contract year who were originally signed to multi-year deals. Each team can use 1 of each extension type per season.</span>
+              <span>Extensions use PPG-based pricing. Non-rookies: 1-year (80%), 2-year (90%), 3-year (100%), 4-year (110%) of adjusted PPG salary. Rookies: 3 or 4-year at full PPG salary (offseason only). Each team gets up to 2 non-rookie and 3 rookie extensions per season.</span>
             </p>
           </div>
         </CardContent>

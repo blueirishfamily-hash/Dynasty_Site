@@ -4,7 +4,13 @@ import { type Server } from "http";
 import viteConfig from "../vite.config";
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { nanoid } from "nanoid";
+
+const __dirname =
+  typeof import.meta.dirname === "string"
+    ? import.meta.dirname
+    : path.dirname(fileURLToPath(import.meta.url));
 
 const viteLogger = createLogger();
 
@@ -36,7 +42,7 @@ export async function setupVite(server: Server, app: Express) {
 
     try {
       const clientTemplate = path.resolve(
-        import.meta.dirname,
+        __dirname,
         "..",
         "client",
         "index.html",
