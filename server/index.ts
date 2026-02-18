@@ -14,6 +14,29 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
+function findAvailablePort(host: string, startPort: number, maxTries = 10): Promise<number> {
+  return new Promise((resolve, reject) => {
+    let port = startPort;
+    const tryNext = () => {
+      if (port > startPort + maxTries - 1) {
+        reject(new Error(`No available port in range ${startPort}-${startPort + maxTries - 1}`));
+        return;
+      }
+      const probe = createServer();
+      probe.once("error", (err: NodeJS.ErrnoException) => {
+        if (err.code === "EADDRINUSE") {
+          port++;
+          tryNext();
+        } else reject(err);
+      });
+      probe.listen(port, host, () => {
+        probe.close(() => resolve(port));
+      });
+    };
+    tryNext();
+  });
+}
+
 console.log("[startup] All imports loaded successfully");
 
 const app = express();
@@ -74,6 +97,17 @@ app.use((req, res, next) => {
 
 (async () => {
   try {
+    const host = process.env.HOST || "0.0.0.0";
+    const requestedPort = parseInt(process.env.PORT || "5000", 10);
+
+    if (process.env.NODE_ENV !== "production") {
+      const port = await findAvailablePort(host, requestedPort);
+      if (port !== requestedPort) {
+        console.log(`[startup] Port ${requestedPort} in use, using ${port} instead.`);
+        process.env.PORT = String(port);
+      }
+    }
+
     console.log("[startup] Registering routes...");
     await registerRoutes(httpServer, app);
     console.log("[startup] Routes registered successfully");
@@ -96,15 +130,11 @@ app.use((req, res, next) => {
     }
 
     const port = parseInt(process.env.PORT || "5000", 10);
-    const host = process.env.HOST || "0.0.0.0";
-    console.log(`[startup] Attempting to listen on ${host}:${port}...`);
-    httpServer.listen(
-      { port, host },
-      () => {
-        log(`serving on port ${port}`);
-        console.log(`=== SERVER READY on ${host}:${port} ===`);
-      },
-    );
+    console.log(`[startup] Listening on ${host}:${port}...`);
+    httpServer.listen({ port, host }, () => {
+      log(`serving on port ${port}`);
+      console.log(`=== SERVER READY at http://localhost:${port} ===`);
+    });
   } catch (err: any) {
     console.error("=== SERVER STARTUP FAILED ===");
     console.error("Error name:", err?.name);

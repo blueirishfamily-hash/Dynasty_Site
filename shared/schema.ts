@@ -13,6 +13,8 @@ export const ruleSuggestionsTable = pgTable("rule_suggestions", {
   title: varchar("title", { length: 256 }).notNull(),
   description: text("description").notNull(),
   status: varchar("status", { length: 16 }).notNull().default("pending"),
+  voteType: varchar("vote_type", { length: 16 }).notNull().default("binary"),
+  options: text("options"), // JSON array of option strings when voteType === "multi_choice"
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -22,6 +24,16 @@ export const ruleVotesTable = pgTable("rule_votes", {
   rosterId: integer("roster_id").notNull(),
   voterName: varchar("voter_name", { length: 128 }).notNull(),
   vote: varchar("vote", { length: 16 }).notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const ruleRankedVotesTable = pgTable("rule_ranked_votes", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  ruleId: varchar("rule_id", { length: 36 }).notNull(),
+  rosterId: integer("roster_id").notNull(),
+  voterName: varchar("voter_name", { length: 128 }).notNull(),
+  optionIndex: integer("option_index").notNull(),
+  points: integer("points").notNull(),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
@@ -263,6 +275,7 @@ export const favoriteExpiringPlayersTable = pgTable("favorite_expiring_players",
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
+export const insertRuleRankedVoteDbSchema = createInsertSchema(ruleRankedVotesTable).omit({ id: true, createdAt: true });
 export const insertAwardNominationDbSchema = createInsertSchema(awardNominationsTable).omit({ id: true, createdAt: true });
 export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).omit({ id: true, createdAt: true });
 export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTable).omit({ id: true, updatedAt: true });
@@ -484,6 +497,8 @@ export const ruleSuggestionSchema = z.object({
   title: z.string(),
   description: z.string(),
   status: z.enum(["pending", "approved", "rejected"]),
+  voteType: z.enum(["binary", "multi_choice"]).optional().default("binary"),
+  options: z.array(z.string()).nullable().optional(),
   upvotes: z.array(z.string()),
   downvotes: z.array(z.string()),
   createdAt: z.number(),
@@ -498,6 +513,23 @@ export const insertRuleSuggestionSchema = ruleSuggestionSchema.omit({
   status: true,
 });
 export type InsertRuleSuggestion = z.infer<typeof insertRuleSuggestionSchema>;
+
+export const ruleRankedVoteSchema = z.object({
+  id: z.string(),
+  ruleId: z.string(),
+  rosterId: z.number(),
+  voterName: z.string(),
+  optionIndex: z.number(),
+  points: z.number(),
+  createdAt: z.number(),
+});
+export type RuleRankedVote = z.infer<typeof ruleRankedVoteSchema>;
+
+export const insertRuleRankedVoteSchema = ruleRankedVoteSchema.omit({
+  id: true,
+  createdAt: true,
+});
+export type InsertRuleRankedVote = z.infer<typeof insertRuleRankedVoteSchema>;
 
 export const awardNominationSchema = z.object({
   id: z.string(),

@@ -29,6 +29,11 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    // Safety: never stay on loading screen longer than 8s (e.g. preview browser, slow network)
+    const forceDoneTimer = setTimeout(() => {
+      setIsLoading(false);
+    }, 8000);
+
     const initializeApp = async () => {
       try {
         // Load stored league first (faster, works offline)
@@ -181,11 +186,13 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         console.error("Failed to initialize app:", err);
         setError(`Failed to initialize: ${err?.message || "Unknown error"}`);
       } finally {
+        clearTimeout(forceDoneTimer);
         setIsLoading(false);
       }
     };
 
     initializeApp();
+    return () => clearTimeout(forceDoneTimer);
   }, []);
 
   const setUser = (newUser: UserInfo | null) => {

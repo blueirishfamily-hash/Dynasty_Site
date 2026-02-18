@@ -1,9 +1,10 @@
 import { randomUUID } from "crypto";
-import { eq, and, desc, sql, isNull } from "drizzle-orm";
+import { eq, and, desc, asc, sql, isNull } from "drizzle-orm";
 import { db } from "./db";
 import {
   ruleSuggestionsTable,
   ruleVotesTable,
+  ruleRankedVotesTable,
   awardNominationsTable,
   awardBallotsTable,
   leagueSettingsTable,
@@ -65,13 +66,16 @@ export interface IStorage {
   getRuleSuggestions(leagueId: string): Promise<RuleSuggestion[]>;
   getRuleSuggestionById(id: string): Promise<RuleSuggestion | undefined>;
   createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion>;
-  updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined>;
+  updateRuleSuggestion(id: string, data: { title?: string; description?: string; voteType?: "binary" | "multi_choice"; options?: string[] | null }): Promise<RuleSuggestion | undefined>;
   updateRuleSuggestionStatus(id: string, status: "pending" | "approved" | "rejected"): Promise<RuleSuggestion | undefined>;
   deleteRuleSuggestion(id: string): Promise<void>;
   
   getRuleVotes(ruleId: string): Promise<RuleVote[]>;
   castRuleVote(data: InsertRuleVote): Promise<RuleVote>;
   getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined>;
+  castRuleRankedVote(ruleId: string, rosterId: number, voterName: string, pointsByOption: number[]): Promise<void>;
+  getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; voterCount: number }>;
+  getRuleRankedVoteByRoster(ruleId: string, rosterId: number): Promise<number[] | undefined>;
   
   getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]>;
   createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination>;
@@ -208,6 +212,8 @@ export class DatabaseStorage implements IStorage {
         title: row.title,
         description: row.description,
         status: row.status as "pending" | "approved" | "rejected",
+        voteType: (row as any).voteType ?? "binary",
+        options: (row as any).options ? JSON.parse((row as any).options as string) as string[] : null,
         upvotes: [],
         downvotes: [],
         createdAt: row.createdAt,
@@ -227,6 +233,13 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createRuleSuggestion(data: InsertRuleSuggestion): Promise<RuleSuggestion> {
+    const voteType = (data as any).voteType ?? "binary";
+    const options = (data as any).options ?? null;
+    if (voteType === "multi_choice") {
+      if (!Array.isArray(options) || options.length < 3) {
+        throw new Error("Multi-choice rules require at least 3 options.");
+      }
+    }
     const id = randomUUID();
     const createdAt = Date.now();
 
@@ -239,6 +252,8 @@ export class DatabaseStorage implements IStorage {
       title: data.title,
       description: data.description,
       status: "pending",
+      voteType,
+      options: options ? JSON.stringify(options) : null,
       createdAt,
     });
 
@@ -246,6 +261,8 @@ export class DatabaseStorage implements IStorage {
       id,
       ...data,
       status: "pending",
+      voteType: voteType as "binary" | "multi_choice",
+      options: Array.isArray(options) ? options : null,
       upvotes: [],
       downvotes: [],
       createdAt,
@@ -275,6 +292,8 @@ export class DatabaseStorage implements IStorage {
         title: row.title,
         description: row.description,
         status: row.status as "pending" | "approved" | "rejected",
+        voteType: (row as any).voteType ?? "binary",
+        options: (row as any).options ? JSON.parse((row as any).options as string) as string[] : null,
         upvotes: [],
         downvotes: [],
         createdAt: row.createdAt,
@@ -288,12 +307,22 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async updateRuleSuggestion(id: string, data: { title?: string; description?: string }): Promise<RuleSuggestion | undefined> {
+  async updateRuleSuggestion(id: string, data: { title?: string; description?: string; voteType?: "binary" | "multi_choice"; options?: string[] | null }): Promise<RuleSuggestion | undefined> {
     try {
       console.log("[Storage] Updating rule_suggestions table for rule ID:", id);
-      const updateData: { title?: string; description?: string } = {};
+      const updateData: { title?: string; description?: string; voteType?: string; options?: string | null } = {};
       if (data.title !== undefined) updateData.title = data.title;
       if (data.description !== undefined) updateData.description = data.description;
+      if (data.voteType !== undefined) updateData.voteType = data.voteType;
+      if (data.options !== undefined) {
+        if (data.voteType === "multi_choice" && (!Array.isArray(data.options) || data.options.length < 3)) {
+          throw new Error("Multi-choice rules require at least 3 options.");
+        }
+        updateData.options = Array.isArray(data.options) ? JSON.stringify(data.options) : null;
+      }
+      if (data.voteType === "multi_choice" && updateData.options === undefined) {
+        throw new Error("Multi-choice rules require at least 3 options.");
+      }
 
       if (Object.keys(updateData).length === 0) {
         // No updates to make, just return the existing rule
@@ -302,7 +331,7 @@ export class DatabaseStorage implements IStorage {
 
       const [updated] = await db
         .update(ruleSuggestionsTable)
-        .set(updateData)
+        .set(updateData as any)
         .where(eq(ruleSuggestionsTable.id, id))
         .returning();
 
@@ -321,6 +350,8 @@ export class DatabaseStorage implements IStorage {
         title: updated.title,
         description: updated.description,
         status: updated.status as "pending" | "approved" | "rejected",
+        voteType: (updated as any).voteType ?? "binary",
+        options: (updated as any).options ? JSON.parse((updated as any).options as string) as string[] : null,
         upvotes: [],
         downvotes: [],
         createdAt: updated.createdAt,
@@ -352,6 +383,8 @@ export class DatabaseStorage implements IStorage {
       title: updated.title,
       description: updated.description,
       status: updated.status as "pending" | "approved" | "rejected",
+      voteType: (updated as any).voteType ?? "binary",
+      options: (updated as any).options ? JSON.parse((updated as any).options as string) as string[] : null,
       upvotes: [],
       downvotes: [],
       createdAt: updated.createdAt,
@@ -362,10 +395,13 @@ export class DatabaseStorage implements IStorage {
     try {
       console.log("[Storage] Deleting from rule_suggestions table. Rule ID:", id);
       
-      // First delete all associated votes
+      // First delete all associated votes (binary and ranked)
       await db
         .delete(ruleVotesTable)
         .where(eq(ruleVotesTable.ruleId, id));
+      await db
+        .delete(ruleRankedVotesTable)
+        .where(eq(ruleRankedVotesTable.ruleId, id));
       
       // Then delete the rule suggestion
       await db
@@ -456,6 +492,54 @@ export class DatabaseStorage implements IStorage {
       vote: row.vote as "approve" | "reject",
       createdAt: row.createdAt,
     };
+  }
+
+  async castRuleRankedVote(ruleId: string, rosterId: number, voterName: string, pointsByOption: number[]): Promise<void> {
+    await db.delete(ruleRankedVotesTable).where(and(
+      eq(ruleRankedVotesTable.ruleId, ruleId),
+      eq(ruleRankedVotesTable.rosterId, rosterId)
+    ));
+    const createdAt = Date.now();
+    for (let optionIndex = 0; optionIndex < pointsByOption.length; optionIndex++) {
+      const points = pointsByOption[optionIndex];
+      await db.insert(ruleRankedVotesTable).values({
+        id: randomUUID(),
+        ruleId,
+        rosterId,
+        voterName,
+        optionIndex,
+        points,
+        createdAt,
+      });
+    }
+  }
+
+  async getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; voterCount: number }> {
+    const rows = await db
+      .select()
+      .from(ruleRankedVotesTable)
+      .where(eq(ruleRankedVotesTable.ruleId, ruleId));
+    const rosterIds = new Set(rows.map(r => r.rosterId));
+    const voterCount = rosterIds.size;
+    const maxIndex = rows.length ? Math.max(...rows.map(r => r.optionIndex)) : -1;
+    const pointsByOption: number[] = Array.from({ length: maxIndex + 1 }, () => 0);
+    for (const row of rows) {
+      pointsByOption[row.optionIndex] += row.points;
+    }
+    return { pointsByOption, voterCount };
+  }
+
+  async getRuleRankedVoteByRoster(ruleId: string, rosterId: number): Promise<number[] | undefined> {
+    const rows = await db
+      .select()
+      .from(ruleRankedVotesTable)
+      .where(and(
+        eq(ruleRankedVotesTable.ruleId, ruleId),
+        eq(ruleRankedVotesTable.rosterId, rosterId)
+      ))
+      .orderBy(asc(ruleRankedVotesTable.optionIndex));
+    if (rows.length === 0) return undefined;
+    return rows.map(r => r.points);
   }
 
   async getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]> {
@@ -1594,6 +1678,7 @@ export class DatabaseStorage implements IStorage {
       const tableMap: Record<string, any> = {
         rule_suggestions: ruleSuggestionsTable,
         rule_votes: ruleVotesTable,
+        rule_ranked_votes: ruleRankedVotesTable,
         award_nominations: awardNominationsTable,
         award_ballots: awardBallotsTable,
         league_settings: leagueSettingsTable,
@@ -1668,6 +1753,7 @@ export class DatabaseStorage implements IStorage {
       const tableMap: Record<string, any> = {
         rule_suggestions: ruleSuggestionsTable,
         rule_votes: ruleVotesTable,
+        rule_ranked_votes: ruleRankedVotesTable,
         award_nominations: awardNominationsTable,
         award_ballots: awardBallotsTable,
         league_settings: leagueSettingsTable,

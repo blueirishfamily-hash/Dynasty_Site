@@ -5,7 +5,6 @@ import viteConfig from "../vite.config";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { nanoid } from "nanoid";
 
 const __dirname =
   typeof import.meta.dirname === "string"
@@ -31,7 +30,10 @@ export async function setupVite(server: Server, app: Express) {
         process.exit(1);
       },
     },
-    server: serverOptions,
+    server: {
+      ...serverOptions,
+      origin: process.env.ORIGIN || `http://localhost:${process.env.PORT || "5000"}`,
+    },
     appType: "custom",
   });
 
@@ -39,6 +41,17 @@ export async function setupVite(server: Server, app: Express) {
 
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
+    const pathname = url.split("?")[0];
+
+    // Never serve HTML for script, Vite internal, API, or asset requests
+    if (
+      pathname.startsWith("/src/") ||
+      pathname.startsWith("/@vite/") ||
+      pathname.startsWith("/api/") ||
+      /\.(js|tsx?|css|ico|png|jpg|jpeg|gif|svg|woff2?|ttf|eot)(\?|$)/i.test(pathname)
+    ) {
+      return next();
+    }
 
     try {
       const clientTemplate = path.resolve(
@@ -48,12 +61,7 @@ export async function setupVite(server: Server, app: Express) {
         "index.html",
       );
 
-      // always reload the index.html file from disk incase it changes
-      let template = await fs.promises.readFile(clientTemplate, "utf-8");
-      template = template.replace(
-        `src="/src/main.tsx"`,
-        `src="/src/main.tsx?v=${nanoid()}"`,
-      );
+      const template = await fs.promises.readFile(clientTemplate, "utf-8");
       const page = await vite.transformIndexHtml(url, template);
       res.status(200).set({ "Content-Type": "text/html" }).end(page);
     } catch (e) {

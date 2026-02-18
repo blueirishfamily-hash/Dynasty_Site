@@ -5050,7 +5050,7 @@ export async function registerRoutes(
   app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const { authorId, authorName, rosterId, title, description } = req.body;
+      const { authorId, authorName, rosterId, title, description, voteType, options } = req.body;
       
       if (!leagueId) {
         return res.status(400).json({ error: "League ID is required" });
@@ -5070,6 +5070,16 @@ export async function registerRoutes(
       if (!description || description.trim() === "") {
         return res.status(400).json({ error: "Description is required" });
       }
+      const resolvedVoteType = voteType === "multi_choice" ? "multi_choice" : "binary";
+      if (resolvedVoteType === "multi_choice") {
+        if (!Array.isArray(options) || options.length < 3) {
+          return res.status(400).json({ error: "Multi-choice rules require at least 3 options." });
+        }
+        const validOptions = options.filter((o: unknown) => typeof o === "string" && o.trim() !== "");
+        if (validOptions.length < 3) {
+          return res.status(400).json({ error: "Multi-choice rules require at least 3 non-empty options." });
+        }
+      }
 
       const parsedRosterId = parseInt(String(rosterId), 10);
       if (isNaN(parsedRosterId) || parsedRosterId <= 0) {
@@ -5083,6 +5093,7 @@ export async function registerRoutes(
         rosterId: parsedRosterId,
         title: title.trim(),
         description: description.trim(),
+        ...(resolvedVoteType === "multi_choice" && { voteType: "multi_choice", options: options.map((o: string) => String(o).trim()) }),
       });
       
       // Default voting to enabled for new rules
@@ -5103,15 +5114,18 @@ export async function registerRoutes(
   app.put("/api/league/:leagueId/rule-suggestions/:id", async (req, res) => {
     try {
       const { leagueId, id } = req.params;
-      const { userId, title, description } = req.body;
+      const { userId, title, description, voteType, options } = req.body;
       
       console.log("[API] PUT /api/league/:leagueId/rule-suggestions/:id - Updating rule in rule_suggestions table. ID:", id);
       
       if (!userId) {
         return res.status(400).json({ error: "Missing userId" });
       }
-      if (!title && !description) {
-        return res.status(400).json({ error: "Must provide title or description to update" });
+      if (title === undefined && description === undefined && voteType === undefined && options === undefined) {
+        return res.status(400).json({ error: "Must provide title, description, voteType, or options to update" });
+      }
+      if (voteType === "multi_choice" && (!Array.isArray(options) || options.length < 3)) {
+        return res.status(400).json({ error: "Multi-choice rules require at least 3 options." });
       }
 
       // Get the rule suggestion to check authorization
@@ -5136,9 +5150,11 @@ export async function registerRoutes(
       }
 
       // Update the rule suggestion
-      const updateData: { title?: string; description?: string } = {};
+      const updateData: { title?: string; description?: string; voteType?: "binary" | "multi_choice"; options?: string[] | null } = {};
       if (title !== undefined) updateData.title = title;
       if (description !== undefined) updateData.description = description;
+      if (voteType !== undefined) updateData.voteType = voteType;
+      if (options !== undefined) updateData.options = Array.isArray(options) ? options.map((o: string) => String(o).trim()) : null;
 
       const updated = await storage.updateRuleSuggestion(id, updateData);
       if (!updated) {
@@ -5229,9 +5245,40 @@ export async function registerRoutes(
     }
   });
 
-  // Cast vote on a rule (1 vote per team per rule)
+  // Cast vote on a rule (1 vote per team per rule; binary or ranked for multi-choice)
   app.post("/api/rule-suggestions/:id/vote", async (req, res) => {
     try {
+      const ruleId = req.params.id;
+      const rule = await storage.getRuleSuggestionById(ruleId);
+      if (!rule) {
+        return res.status(404).json({ error: "Rule suggestion not found" });
+      }
+      const voteType = (rule as any).voteType ?? "binary";
+      const options = (rule as any).options as string[] | null | undefined;
+      const N = Array.isArray(options) ? options.length : 0;
+
+      if (voteType === "multi_choice") {
+        const { rosterId, voterName, leagueId, points } = req.body;
+        if (!rosterId || !voterName || !leagueId || !Array.isArray(points)) {
+          return res.status(400).json({ error: "Missing required fields: rosterId, voterName, leagueId, points" });
+        }
+        if (points.length !== N) {
+          return res.status(400).json({ error: "Points array length must match number of options." });
+        }
+        const expected = new Set(Array.from({ length: N }, (_, i) => i + 1));
+        const given = new Set(points.map((p: number) => Number(p)));
+        const valid = expected.size === given.size && [...expected].every((v) => given.has(v));
+        if (!valid) {
+          return res.status(400).json({ error: "Points must be a permutation of 1 to N (one rank per option)." });
+        }
+        const votingEnabled = await storage.getLeagueSetting(leagueId, `rule_voting_enabled_${ruleId}`);
+        if (votingEnabled !== "true") {
+          return res.status(403).json({ error: "Voting is disabled for this rule" });
+        }
+        await storage.castRuleRankedVote(ruleId, parseInt(rosterId), voterName, points.map((p: number) => Number(p)));
+        return res.json({ success: true });
+      }
+
       const { rosterId, voterName, vote, leagueId } = req.body;
       if (!rosterId || !voterName || !vote || !leagueId) {
         return res.status(400).json({ error: "Missing required fields" });
@@ -5239,18 +5286,12 @@ export async function registerRoutes(
       if (vote !== "approve" && vote !== "reject") {
         return res.status(400).json({ error: "Invalid vote type" });
       }
-      
-      // Check if voting is enabled for this rule
-      const votingEnabled = await storage.getLeagueSetting(
-        leagueId,
-        `rule_voting_enabled_${req.params.id}`
-      );
+      const votingEnabled = await storage.getLeagueSetting(leagueId, `rule_voting_enabled_${ruleId}`);
       if (votingEnabled !== "true") {
         return res.status(403).json({ error: "Voting is disabled for this rule" });
       }
-      
       const ruleVote = await storage.castRuleVote({
-        ruleId: req.params.id,
+        ruleId,
         rosterId: parseInt(rosterId),
         voterName,
         vote,
@@ -5265,7 +5306,14 @@ export async function registerRoutes(
   // Get votes for a specific rule
   app.get("/api/rule-suggestions/:id/votes", async (req, res) => {
     try {
-      const votes = await storage.getRuleVotes(req.params.id);
+      const ruleId = req.params.id;
+      const rule = await storage.getRuleSuggestionById(ruleId);
+      const voteType = rule ? (rule as any).voteType ?? "binary" : "binary";
+      if (voteType === "multi_choice") {
+        const { pointsByOption, voterCount } = await storage.getRuleRankedVotes(ruleId);
+        return res.json({ ranked: true, pointsByOption, voterCount });
+      }
+      const votes = await storage.getRuleVotes(ruleId);
       const approveCount = votes.filter(v => v.vote === "approve").length;
       const rejectCount = votes.filter(v => v.vote === "reject").length;
       res.json({ votes, approveCount, rejectCount });
@@ -5278,7 +5326,15 @@ export async function registerRoutes(
   // Get user's vote on a rule
   app.get("/api/rule-suggestions/:id/votes/:rosterId", async (req, res) => {
     try {
-      const vote = await storage.getRuleVoteByRoster(req.params.id, parseInt(req.params.rosterId));
+      const ruleId = req.params.id;
+      const rosterId = parseInt(req.params.rosterId);
+      const rule = await storage.getRuleSuggestionById(ruleId);
+      const voteType = rule ? (rule as any).voteType ?? "binary" : "binary";
+      if (voteType === "multi_choice") {
+        const pointsByOption = await storage.getRuleRankedVoteByRoster(ruleId, rosterId);
+        return res.json(pointsByOption != null ? { pointsByOption } : null);
+      }
+      const vote = await storage.getRuleVoteByRoster(ruleId, rosterId);
       res.json(vote || null);
     } catch (error) {
       console.error("Error fetching user vote:", error);

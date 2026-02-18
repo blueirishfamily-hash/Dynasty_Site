@@ -9,10 +9,13 @@ const __dirname =
     ? import.meta.dirname
     : path.dirname(fileURLToPath(import.meta.url));
 
+// Only use Replit overlay on Replit (avoids blank preview in Cursor/external browsers)
+const isReplit = process.env.REPL_ID !== undefined;
+
 export default defineConfig({
   plugins: [
     react(),
-    runtimeErrorOverlay(),
+    ...(isReplit ? [runtimeErrorOverlay()] : []),
     ...(process.env.NODE_ENV !== "production" &&
     process.env.REPL_ID !== undefined
       ? [

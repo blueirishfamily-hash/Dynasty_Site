@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -61,9 +61,12 @@ interface RuleSuggestionWithVoting extends RuleSuggestion {
 }
 
 interface RuleVoteData {
-  votes: RuleVote[];
-  approveCount: number;
-  rejectCount: number;
+  votes?: RuleVote[];
+  approveCount?: number;
+  rejectCount?: number;
+  ranked?: boolean;
+  pointsByOption?: number[];
+  voterCount?: number;
 }
 
 function formatTimeAgo(timestamp: number): string {
@@ -84,10 +87,14 @@ export default function RuleChanges() {
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
   const [ruleTitle, setRuleTitle] = useState("");
   const [ruleDescription, setRuleDescription] = useState("");
+  const [ruleVoteType, setRuleVoteType] = useState<"binary" | "multi_choice">("binary");
+  const [ruleOptions, setRuleOptions] = useState<string[]>(["", "", ""]);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<RuleSuggestionWithVoting | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editDescription, setEditDescription] = useState("");
+  const [editVoteType, setEditVoteType] = useState<"binary" | "multi_choice">("binary");
+  const [editOptions, setEditOptions] = useState<string[]>(["", "", ""]);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [deletingRuleId, setDeletingRuleId] = useState<string | null>(null);
 
@@ -131,20 +138,25 @@ export default function RuleChanges() {
 
   // Create rule suggestion mutation
   const createRuleMutation = useMutation({
-    mutationFn: async (data: { title: string; description: string }) => {
+    mutationFn: async (data: { title: string; description: string; voteType?: "binary" | "multi_choice"; options?: string[] }) => {
       if (!hasSelectedTeam) {
         throw new Error("Please select your team first");
+      }
+      const body: Record<string, unknown> = {
+        authorId: user?.userId,
+        authorName: user?.displayName || user?.username || "Unknown",
+        rosterId: userRosterId,
+        title: data.title,
+        description: data.description,
+      };
+      if (data.voteType === "multi_choice" && data.options?.length) {
+        body.voteType = "multi_choice";
+        body.options = data.options.filter((o) => o.trim() !== "");
       }
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          authorId: user?.userId,
-          authorName: user?.displayName || user?.username || "Unknown",
-          rosterId: userRosterId,
-          title: data.title,
-          description: data.description,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const error = await res.json();
@@ -160,6 +172,8 @@ export default function RuleChanges() {
       setRuleDialogOpen(false);
       setRuleTitle("");
       setRuleDescription("");
+      setRuleVoteType("binary");
+      setRuleOptions(["", "", ""]);
       queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
     },
     onError: (error: Error) => {
@@ -200,21 +214,28 @@ export default function RuleChanges() {
     },
   });
 
-  // Vote mutation
+  // Vote mutation (binary or ranked)
   const voteMutation = useMutation({
-    mutationFn: async ({ ruleId, vote }: { ruleId: string; vote: "approve" | "reject" }) => {
+    mutationFn: async ({ ruleId, vote, points }: { ruleId: string; vote?: "approve" | "reject"; points?: number[] }) => {
       if (!hasSelectedTeam) {
         throw new Error("Please select your team first");
+      }
+      const body: Record<string, unknown> = {
+        rosterId: userRosterId,
+        voterName: user?.displayName || user?.username || "Unknown",
+        leagueId: league?.leagueId,
+      };
+      if (points != null) {
+        body.points = points;
+      } else if (vote != null) {
+        body.vote = vote;
+      } else {
+        throw new Error("Either vote or points is required");
       }
       const res = await fetch(`/api/rule-suggestions/${ruleId}/vote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          rosterId: userRosterId,
-          voterName: user?.displayName || user?.username || "Unknown",
-          vote,
-          leagueId: league?.leagueId,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const error = await res.json();
@@ -237,15 +258,18 @@ export default function RuleChanges() {
 
   // Update rule mutation
   const updateRuleMutation = useMutation({
-    mutationFn: async ({ ruleId, title, description }: { ruleId: string; title: string; description: string }) => {
+    mutationFn: async ({ ruleId, title, description, voteType, options }: { ruleId: string; title: string; description: string; voteType?: "binary" | "multi_choice"; options?: string[] }) => {
+      const body: Record<string, unknown> = {
+        userId: user?.userId,
+        title,
+        description,
+      };
+      if (voteType !== undefined) body.voteType = voteType;
+      if (options !== undefined) body.options = options;
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions/${ruleId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          userId: user?.userId,
-          title,
-          description,
-        }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) {
         const error = await res.json();
@@ -262,6 +286,8 @@ export default function RuleChanges() {
       setEditingRule(null);
       setEditTitle("");
       setEditDescription("");
+      setEditVoteType("binary");
+      setEditOptions(["", "", ""]);
       queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
     },
     onError: (error: Error) => {
@@ -370,10 +396,23 @@ export default function RuleChanges() {
       return;
     }
 
-    // All validations passed, submit the rule
+    if (ruleVoteType === "multi_choice") {
+      const opts = ruleOptions.map((o) => o.trim()).filter(Boolean);
+      if (opts.length < 3) {
+        toast({
+          title: "Validation Error",
+          description: "Multi-choice rules require at least 3 options.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+
     createRuleMutation.mutate({
       title: ruleTitle.trim(),
       description: ruleDescription.trim(),
+      voteType: ruleVoteType,
+      options: ruleVoteType === "multi_choice" ? ruleOptions.map((o) => o.trim()).filter(Boolean) : undefined,
     });
   };
 
@@ -381,6 +420,10 @@ export default function RuleChanges() {
     setEditingRule(rule);
     setEditTitle(rule.title);
     setEditDescription(rule.description);
+    const rv = (rule as any).voteType ?? "binary";
+    setEditVoteType(rv);
+    const opts = (rule as any).options;
+    setEditOptions(Array.isArray(opts) && opts.length >= 3 ? [...opts] : ["", "", ""]);
     setEditDialogOpen(true);
   };
 
@@ -394,11 +437,25 @@ export default function RuleChanges() {
       });
       return;
     }
-    updateRuleMutation.mutate({
+    if (editVoteType === "multi_choice") {
+      const opts = editOptions.map((o) => o.trim()).filter(Boolean);
+      if (opts.length < 3) {
+        toast({
+          title: "Validation Error",
+          description: "Multi-choice rules require at least 3 options.",
+          variant: "destructive",
+        });
+        return;
+      }
+    }
+    const payload: { ruleId: string; title: string; description: string; voteType?: "binary" | "multi_choice"; options?: string[] | null } = {
       ruleId: editingRule.id,
       title: editTitle.trim(),
       description: editDescription.trim(),
-    });
+      voteType: editVoteType,
+      options: editVoteType === "multi_choice" ? editOptions.map((o) => o.trim()).filter(Boolean) : null,
+    };
+    updateRuleMutation.mutate(payload);
   };
 
   const handleDeleteRule = (ruleId: string) => {
@@ -506,6 +563,67 @@ export default function RuleChanges() {
                     rows={6}
                   />
                 </div>
+                <div className="space-y-2">
+                  <Label>Vote type</Label>
+                  <div className="flex gap-4">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="rule-vote-type"
+                        checked={ruleVoteType === "binary"}
+                        onChange={() => setRuleVoteType("binary")}
+                        className="rounded-full"
+                      />
+                      <span className="text-sm">Binary (Approve / Reject)</span>
+                    </label>
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="rule-vote-type"
+                        checked={ruleVoteType === "multi_choice"}
+                        onChange={() => setRuleVoteType("multi_choice")}
+                        className="rounded-full"
+                      />
+                      <span className="text-sm">Multi-choice (ranked)</span>
+                    </label>
+                  </div>
+                </div>
+                {ruleVoteType === "multi_choice" && (
+                  <div className="space-y-2">
+                    <Label>Options (min 3; voters rank 1st to last)</Label>
+                    {ruleOptions.map((opt, i) => (
+                      <div key={i} className="flex gap-2">
+                        <Input
+                          placeholder={`Option ${i + 1}`}
+                          value={opt}
+                          onChange={(e) => {
+                            const next = [...ruleOptions];
+                            next[i] = e.target.value;
+                            setRuleOptions(next);
+                          }}
+                        />
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => ruleOptions.length > 3 && setRuleOptions(ruleOptions.filter((_, j) => j !== i))}
+                          disabled={ruleOptions.length <= 3}
+                          className="shrink-0"
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setRuleOptions([...ruleOptions, ""])}
+                    >
+                      Add option
+                    </Button>
+                  </div>
+                )}
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setRuleDialogOpen(false)}>
@@ -653,6 +771,7 @@ export default function RuleChanges() {
                     isCommissioner={isCommissioner}
                     userId={user?.userId}
                     onVote={(vote) => voteMutation.mutate({ ruleId: rule.id, vote })}
+                    onVoteRanked={(points) => voteMutation.mutate({ ruleId: rule.id, points })}
                     onToggleVoting={(enabled) =>
                       toggleVotingMutation.mutate({ ruleId: rule.id, enabled })
                     }
@@ -705,6 +824,67 @@ export default function RuleChanges() {
                   rows={6}
                 />
               </div>
+              <div className="space-y-2">
+                <Label>Vote type</Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="edit-vote-type"
+                      checked={editVoteType === "binary"}
+                      onChange={() => setEditVoteType("binary")}
+                      className="rounded-full"
+                    />
+                    <span className="text-sm">Binary (Approve / Reject)</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="radio"
+                      name="edit-vote-type"
+                      checked={editVoteType === "multi_choice"}
+                      onChange={() => setEditVoteType("multi_choice")}
+                      className="rounded-full"
+                    />
+                    <span className="text-sm">Multi-choice (ranked)</span>
+                  </label>
+                </div>
+              </div>
+              {editVoteType === "multi_choice" && (
+                <div className="space-y-2">
+                  <Label>Options (min 3)</Label>
+                  {editOptions.map((opt, i) => (
+                    <div key={i} className="flex gap-2">
+                      <Input
+                        placeholder={`Option ${i + 1}`}
+                        value={opt}
+                        onChange={(e) => {
+                          const next = [...editOptions];
+                          next[i] = e.target.value;
+                          setEditOptions(next);
+                        }}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => editOptions.length > 3 && setEditOptions(editOptions.filter((_, j) => j !== i))}
+                        disabled={editOptions.length <= 3}
+                        className="shrink-0"
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setEditOptions([...editOptions, ""])}
+                  >
+                    Add option
+                  </Button>
+                </div>
+              )}
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setEditDialogOpen(false)}>
@@ -751,6 +931,7 @@ function RuleCard({
   isCommissioner,
   userId,
   onVote,
+  onVoteRanked,
   onToggleVoting,
   onEdit,
   onDelete,
@@ -762,12 +943,19 @@ function RuleCard({
   isCommissioner: boolean;
   userId?: string;
   onVote: (vote: "approve" | "reject") => void;
+  onVoteRanked: (points: number[]) => void;
   onToggleVoting: (enabled: boolean) => void;
   onEdit: () => void;
   onDelete: () => void;
   leagueId: string;
 }) {
   const { toast } = useToast();
+  const voteType = (rule as any).voteType ?? "binary";
+  const options: string[] = Array.isArray((rule as any).options) ? (rule as any).options : [];
+  const isMultiChoice = voteType === "multi_choice" && options.length >= 3;
+
+  // Ranked vote: selectedOrder[rankIndex] = optionIndex (0-based rank -> option index)
+  const [rankedSelection, setRankedSelection] = useState<number[]>(() => options.map((_, i) => i));
 
   // Validate rule object early
   if (!rule || !rule.id || !rule.title) {
@@ -786,8 +974,8 @@ function RuleCard({
     enabled: !!rule.id,
   });
 
-  // Fetch user's vote
-  const { data: userVoteData } = useQuery<RuleVote | null>({
+  // Fetch user's vote (binary returns RuleVote; ranked returns { pointsByOption } or null)
+  const { data: userVoteData } = useQuery<RuleVote | { pointsByOption: number[] } | null>({
     queryKey: ["/api/rule-suggestions", rule.id, "votes", userRosterId],
     queryFn: async () => {
       if (!userRosterId) return null;
@@ -799,9 +987,22 @@ function RuleCard({
   });
 
   const votingEnabled = rule.votingEnabled !== false; // Default to true if not set
-  const approveCount = votesData?.approveCount || 0;
-  const rejectCount = votesData?.rejectCount || 0;
-  const currentUserVote = userVoteData?.vote;
+  const approveCount = votesData?.approveCount ?? 0;
+  const rejectCount = votesData?.rejectCount ?? 0;
+  const currentUserVote = !isMultiChoice && userVoteData && "vote" in userVoteData ? userVoteData.vote : undefined;
+  const currentUserRankedVote = isMultiChoice && userVoteData && "pointsByOption" in userVoteData ? (userVoteData as { pointsByOption: number[] }).pointsByOption : undefined;
+  const pointsByOption = votesData?.ranked ? (votesData.pointsByOption ?? []) : [];
+  const voterCount = votesData?.voterCount ?? 0;
+
+  useEffect(() => {
+    if (isMultiChoice && currentUserRankedVote && currentUserRankedVote.length === options.length) {
+      const order = options
+        .map((_, i) => ({ i, p: currentUserRankedVote[i] ?? 0 }))
+        .sort((a, b) => b.p - a.p)
+        .map((x) => x.i);
+      setRankedSelection(order);
+    }
+  }, [isMultiChoice, currentUserRankedVote, options.length]);
 
   // Check if user can edit/delete this rule
   const isAuthor = rule.authorId === userId;
@@ -825,6 +1026,31 @@ function RuleCard({
       return;
     }
     onVote(vote);
+  };
+
+  const handleSubmitRankedVote = () => {
+    if (!hasSelectedTeam) {
+      toast({
+        title: "Team Selection Required",
+        description: "Please select your team before voting.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (!votingEnabled) {
+      toast({
+        title: "Voting Disabled",
+        description: "Voting has been disabled for this rule by the commissioner.",
+        variant: "destructive",
+      });
+      return;
+    }
+    const N = options.length;
+    const points = new Array<number>(N).fill(0);
+    for (let r = 0; r < N; r++) {
+      points[rankedSelection[r]] = N - r;
+    }
+    onVoteRanked(points);
   };
 
   const getStatusBadge = () => {
@@ -903,7 +1129,18 @@ function RuleCard({
       <CardContent className="space-y-4">
         <p className="text-sm whitespace-pre-wrap">{rule.description}</p>
 
-        {votingEnabled && (
+        {isMultiChoice && (
+          <div className="pt-4 border-t space-y-2">
+            <p className="text-sm font-medium text-muted-foreground">Options (ranked choice: 1st = most points)</p>
+            <ul className="list-decimal list-inside text-sm space-y-1">
+              {options.map((opt, i) => (
+                <li key={i}>{opt}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {votingEnabled && !isMultiChoice && (
           <div className="flex items-center gap-4 pt-4 border-t">
             <div className="flex items-center gap-2">
               <Button
@@ -929,6 +1166,62 @@ function RuleCard({
               <Badge variant="secondary" className="ml-auto">
                 You voted {currentUserVote === "approve" ? "Approve" : "Reject"}
               </Badge>
+            )}
+          </div>
+        )}
+
+        {votingEnabled && isMultiChoice && (
+          <div className="pt-4 border-t space-y-3">
+            <p className="text-sm font-medium">Your ranking (1st = most preferred)</p>
+            <div className="flex flex-wrap gap-2">
+              {options.map((_, rankIndex) => (
+                <div key={rankIndex} className="flex items-center gap-1">
+                  <Label className="text-xs whitespace-nowrap">{rankIndex === 0 ? "1st" : rankIndex === 1 ? "2nd" : `${rankIndex + 1}th`}</Label>
+                  <select
+                    className="border rounded px-2 py-1 text-sm bg-background"
+                    value={rankedSelection[rankIndex]}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      const next = [...rankedSelection];
+                      const prevIdx = next.indexOf(val);
+                      if (prevIdx >= 0) next[prevIdx] = next[rankIndex];
+                      next[rankIndex] = val;
+                      setRankedSelection(next);
+                    }}
+                  >
+                    {options.map((opt, i) => (
+                      <option key={i} value={i}>{opt}</option>
+                    ))}
+                  </select>
+                </div>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                onClick={handleSubmitRankedVote}
+                disabled={!hasSelectedTeam}
+              >
+                <Vote className="w-4 h-4 mr-1" />
+                Submit vote
+              </Button>
+              {currentUserRankedVote && (
+                <Badge variant="secondary">You voted</Badge>
+              )}
+            </div>
+            {pointsByOption.length > 0 && (
+              <div className="pt-2 space-y-1">
+                <p className="text-sm font-medium text-muted-foreground">Results ({voterCount} voter{voterCount !== 1 ? "s" : ""})</p>
+                {options
+                  .map((opt, i) => ({ opt, points: pointsByOption[i] ?? 0, index: i }))
+                  .sort((a, b) => b.points - a.points)
+                  .map(({ opt, points }, idx) => (
+                    <div key={idx} className="flex justify-between text-sm">
+                      <span>{idx + 1}. {opt}</span>
+                      <span className="font-medium">{points} pts</span>
+                    </div>
+                  ))}
+              </div>
             )}
           </div>
         )}
