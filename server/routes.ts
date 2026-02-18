@@ -5947,9 +5947,18 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Player contract not found" });
       }
 
-      // Check if extension already applied
+      // Check if extension already applied (confirmed)
       if (playerContract.extensionApplied === 1) {
         return res.status(400).json({ error: "Extension already applied to this player" });
+      }
+
+      // Check if there's already a pending extension for this player
+      const allExtensionsForSeason = await storage.getTeamExtensions(leagueId, season);
+      const existingPendingForPlayer = allExtensionsForSeason.find(
+        e => e.playerId === playerId && e.rosterId === rosterId && e.status === "pending"
+      );
+      if (existingPendingForPlayer) {
+        return res.status(400).json({ error: "This player already has a pending extension. Confirm or cancel it first." });
       }
 
       // Check if player has been extended before on this roster
@@ -5962,8 +5971,8 @@ export async function registerRoutes(
       const isRookieContract = playerContract.isRookieContract === 1;
 
       // Check extension limits (rookie and non-rookie have independent limits)
-      const allTeamExtensions = await storage.getTeamExtensions(leagueId, season);
-      const teamExtensionsForRoster = allTeamExtensions.filter(e => e.rosterId === rosterId);
+      // Reuse allExtensionsForSeason fetched earlier for the duplicate-pending check
+      const teamExtensionsForRoster = allExtensionsForSeason.filter(e => e.rosterId === rosterId);
 
       if (isRookieContract) {
         // Rookie extensions: max 3 per season, max 1 can be 4-year
@@ -6097,8 +6106,7 @@ export async function registerRoutes(
         }
       }
 
-      // Create the extension record
-      // Note: extensionSalary2 is used for 2-year extensions, but for 3-year and 4-year we store all salaries in the contract
+      // Create the extension record as pending (contract is NOT modified yet)
       const extension = await storage.createTeamExtension({
         leagueId,
         rosterId,
@@ -6112,49 +6120,221 @@ export async function registerRoutes(
         isRookieExtension: isRookieContract ? 1 : 0,
       });
 
+      // Store computed salaries in the response so the client can preview them
+      res.json({ 
+        success: true, 
+        extension,
+        previewSalaries: {
+          salary1: extensionSalary1,
+          salary2: extensionSalary2,
+          salary3: extensionSalary3,
+          salary4: extensionSalary4,
+        }
+      });
+    } catch (error) {
+      console.error("Error creating pending extension:", error);
+      res.status(500).json({ error: "Failed to create pending extension" });
+    }
+  });
+
+  // Confirm a pending extension (applies salary changes to the contract)
+  app.put("/api/league/:leagueId/extensions/:extensionId/confirm", async (req, res) => {
+    try {
+      const { leagueId, extensionId } = req.params;
+      const { rosterId } = req.body;
+
+      if (!rosterId) {
+        return res.status(400).json({ error: "Missing rosterId" });
+      }
+
+      // Look up the extension
+      const extension = await storage.getTeamExtensionById(extensionId);
+      if (!extension) {
+        return res.status(404).json({ error: "Extension not found" });
+      }
+
+      // Verify it belongs to this league and roster
+      if (extension.leagueId !== leagueId || extension.rosterId !== rosterId) {
+        return res.status(403).json({ error: "Extension does not belong to this team" });
+      }
+
+      // Verify it's pending
+      if (extension.status !== "pending") {
+        return res.status(400).json({ error: "Extension is already confirmed" });
+      }
+
+      // Re-fetch the player contract to apply salary changes
+      const playerContracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = playerContracts.find(c => c.playerId === extension.playerId && c.rosterId === rosterId);
+
+      if (!playerContract) {
+        return res.status(400).json({ error: "Player contract not found" });
+      }
+
+      // Parse existing salaries
+      const existingSalaries = (() => {
+        try {
+          if (typeof (playerContract as any).salaries === "string") {
+            return JSON.parse((playerContract as any).salaries || "{}");
+          }
+          return (playerContract as any).salaries || {};
+        } catch {
+          return {};
+        }
+      })();
+
+      // Recalculate extension salaries from the stored extension record
+      const extensionSalary1 = extension.extensionSalary;
+      const extensionSalary2 = extension.extensionSalary2;
+      // For 3-year and 4-year, salary per year equals extensionSalary (same rate each year)
+      const extensionSalary3 = extension.extensionType >= 3 ? extensionSalary1 : null;
+      const extensionSalary4 = extension.extensionType >= 4 ? extensionSalary1 : null;
+
       // Update the player's contract with extension info
       const updatedSalaries: Record<string, number> = { ...existingSalaries };
       const salaryUpdates: any = {
         leagueId,
         rosterId,
-        playerId,
+        playerId: extension.playerId,
         salaries: JSON.stringify(updatedSalaries),
         fifthYearOption: playerContract.fifthYearOption,
         franchiseTagUsed: playerContract.franchiseTagUsed,
         franchiseTagYear: playerContract.franchiseTagYear,
         originalContractYears: playerContract.originalContractYears,
         extensionApplied: 1,
-        extensionYear,
+        extensionYear: extension.extensionYear,
         extensionSalary: extensionSalary1,
-        extensionType,
-        hasBeenExtended: 1, // Mark that player has been extended on this roster
-        hasBeenFranchiseTagged: (playerContract as any).hasBeenFranchiseTagged ?? 0, // Preserve existing value
+        extensionType: extension.extensionType,
+        hasBeenExtended: 1,
+        hasBeenFranchiseTagged: (playerContract as any).hasBeenFranchiseTagged ?? 0,
       };
-      
+
       // Set the extension year salary(s) for all extension years
       const setYearSalary = (year: number, salary: number) => {
         updatedSalaries[String(year)] = salary;
         salaryUpdates.salaries = JSON.stringify(updatedSalaries);
       };
-      
-      // Set salaries for all extension years
-      setYearSalary(extensionYear, extensionSalary1);
-      if (extensionType >= 2 && extensionSalary2 !== null) {
-        setYearSalary(extensionYear + 1, extensionSalary2);
+
+      setYearSalary(extension.extensionYear, extensionSalary1);
+      if (extension.extensionType >= 2 && extensionSalary2 !== null) {
+        setYearSalary(extension.extensionYear + 1, extensionSalary2);
       }
-      if (extensionType >= 3 && extensionSalary3 !== null) {
-        setYearSalary(extensionYear + 2, extensionSalary3);
+      if (extension.extensionType >= 3 && extensionSalary3 !== null) {
+        setYearSalary(extension.extensionYear + 2, extensionSalary3);
       }
-      if (extensionType >= 4 && extensionSalary4 !== null) {
-        setYearSalary(extensionYear + 3, extensionSalary4);
+      if (extension.extensionType >= 4 && extensionSalary4 !== null) {
+        setYearSalary(extension.extensionYear + 3, extensionSalary4);
       }
-      
+
       await storage.upsertPlayerContract(salaryUpdates);
 
-      res.json({ success: true, extension });
+      // Update extension status to confirmed
+      const updatedExtension = await storage.updateTeamExtensionStatus(extensionId, "confirmed");
+
+      res.json({ success: true, extension: updatedExtension });
     } catch (error) {
-      console.error("Error applying extension:", error);
-      res.status(500).json({ error: "Failed to apply extension" });
+      console.error("Error confirming extension:", error);
+      res.status(500).json({ error: "Failed to confirm extension" });
+    }
+  });
+
+  // Cancel a pending extension (user can cancel their own; no contract revert needed)
+  app.delete("/api/league/:leagueId/extensions/pending/:extensionId", async (req, res) => {
+    try {
+      const { leagueId, extensionId } = req.params;
+      const rosterId = parseInt(req.query.rosterId as string);
+
+      if (isNaN(rosterId)) {
+        return res.status(400).json({ error: "Missing or invalid rosterId" });
+      }
+
+      const extension = await storage.getTeamExtensionById(extensionId);
+      if (!extension) {
+        return res.status(404).json({ error: "Extension not found" });
+      }
+
+      if (extension.leagueId !== leagueId || extension.rosterId !== rosterId) {
+        return res.status(403).json({ error: "Extension does not belong to this team" });
+      }
+
+      if (extension.status !== "pending") {
+        return res.status(400).json({ error: "Only pending extensions can be cancelled by the user. Contact a commissioner to remove confirmed extensions." });
+      }
+
+      // Delete the pending extension (no contract revert needed since contract was never modified)
+      await storage.deleteTeamExtensionById(extensionId);
+
+      res.json({ success: true, message: "Pending extension cancelled" });
+    } catch (error) {
+      console.error("Error cancelling pending extension:", error);
+      res.status(500).json({ error: "Failed to cancel pending extension" });
+    }
+  });
+
+  // Undo a specific confirmed extension by ID (commissioner only)
+  app.delete("/api/league/:leagueId/extensions/:extensionId/undo", async (req, res) => {
+    try {
+      const { leagueId, extensionId } = req.params;
+
+      const extension = await storage.getTeamExtensionById(extensionId);
+      if (!extension) {
+        return res.status(404).json({ error: "Extension not found" });
+      }
+      if (extension.leagueId !== leagueId) {
+        return res.status(403).json({ error: "Extension does not belong to this league" });
+      }
+      if (extension.status !== "confirmed") {
+        return res.status(400).json({ error: "Only confirmed extensions can be undone. Use the cancel route for pending extensions." });
+      }
+
+      const contracts = await storage.getPlayerContracts(leagueId);
+      const playerContract = contracts.find(c => c.playerId === extension.playerId && c.rosterId === extension.rosterId);
+
+      if (playerContract) {
+        const existingSalaries = (() => {
+          try {
+            if (typeof (playerContract as any).salaries === "string") {
+              return JSON.parse((playerContract as any).salaries || "{}");
+            }
+            return (playerContract as any).salaries || {};
+          } catch {
+            return {};
+          }
+        })();
+
+        const updatedSalaries: Record<string, number> = { ...existingSalaries };
+        const clearYearSalary = (year: number) => {
+          updatedSalaries[String(year)] = 0;
+        };
+
+        for (let i = 0; i < extension.extensionType; i++) {
+          clearYearSalary(extension.extensionYear + i);
+        }
+
+        await storage.upsertPlayerContract({
+          leagueId,
+          rosterId: extension.rosterId,
+          playerId: extension.playerId,
+          salaries: JSON.stringify(updatedSalaries),
+          fifthYearOption: playerContract.fifthYearOption,
+          franchiseTagUsed: playerContract.franchiseTagUsed,
+          franchiseTagYear: playerContract.franchiseTagYear,
+          originalContractYears: playerContract.originalContractYears,
+          extensionApplied: 0,
+          extensionYear: null,
+          extensionSalary: null,
+          extensionType: null,
+          hasBeenExtended: (playerContract as any).hasBeenExtended ?? 0,
+          hasBeenFranchiseTagged: (playerContract as any).hasBeenFranchiseTagged ?? 0,
+        });
+      }
+
+      await storage.deleteTeamExtensionById(extensionId);
+
+      res.json({ success: true, message: "Extension undone successfully" });
+    } catch (error) {
+      console.error("Error undoing extension:", error);
+      res.status(500).json({ error: "Failed to undo extension" });
     }
   });
 
@@ -6217,10 +6397,8 @@ export async function registerRoutes(
           salaryUpdates.salaries = JSON.stringify(updatedSalaries);
         };
 
-        clearYearSalary(extension.extensionYear);
-        // For 2-year extensions, also clear the second year
-        if (extension.extensionType === 2) {
-          clearYearSalary(extension.extensionYear + 1);
+        for (let i = 0; i < extension.extensionType; i++) {
+          clearYearSalary(extension.extensionYear + i);
         }
 
         await storage.upsertPlayerContract(salaryUpdates);

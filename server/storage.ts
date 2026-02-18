@@ -109,6 +109,9 @@ export interface IStorage {
   getTeamExtensionByRoster(leagueId: string, rosterId: number, season: number): Promise<TeamExtension | undefined>;
   createTeamExtension(data: InsertTeamExtension): Promise<TeamExtension>;
   deleteTeamExtension(leagueId: string, rosterId: number, season: number): Promise<void>;
+  updateTeamExtensionStatus(extensionId: string, status: string): Promise<TeamExtension | undefined>;
+  deleteTeamExtensionById(extensionId: string): Promise<void>;
+  getTeamExtensionById(extensionId: string): Promise<TeamExtension | undefined>;
 
   // Active league tracking
   getActiveLeague(): Promise<ActiveLeague | undefined>;
@@ -1217,6 +1220,27 @@ export class DatabaseStorage implements IStorage {
         eq(teamExtensionsTable.rosterId, rosterId),
         eq(teamExtensionsTable.season, season)
       ));
+  }
+
+  async updateTeamExtensionStatus(extensionId: string, status: string): Promise<TeamExtension | undefined> {
+    const [updated] = await db
+      .update(teamExtensionsTable)
+      .set({ status })
+      .where(eq(teamExtensionsTable.id, extensionId))
+      .returning();
+    return updated;
+  }
+
+  async deleteTeamExtensionById(extensionId: string): Promise<void> {
+    await db.delete(teamExtensionsTable).where(eq(teamExtensionsTable.id, extensionId));
+  }
+
+  async getTeamExtensionById(extensionId: string): Promise<TeamExtension | undefined> {
+    const [row] = await db
+      .select()
+      .from(teamExtensionsTable)
+      .where(eq(teamExtensionsTable.id, extensionId));
+    return row;
   }
 
   async getActiveLeague(): Promise<ActiveLeague | undefined> {

@@ -95,6 +95,7 @@ export const teamExtensionsTable = pgTable("team_extensions", {
   extensionType: integer("extension_type").notNull().default(1), // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
   extensionSalary2: integer("extension_salary_2"), // Second year salary for 2-year extensions
   isRookieExtension: integer("is_rookie_extension").notNull().default(0), // 0 = regular, 1 = rookie extension
+  status: varchar("status", { length: 16 }).notNull().default("pending"), // "pending" or "confirmed"
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 

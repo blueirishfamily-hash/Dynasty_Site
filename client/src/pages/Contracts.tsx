@@ -5,7 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2, PieChart as PieChartIcon, BarChart } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2, PieChart as PieChartIcon, BarChart, Check, X, Undo2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip, BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine } from "recharts";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -26,7 +26,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Select,
@@ -539,6 +539,48 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   const { data: savedDrafts } = useQuery<SavedDraft[]>({
     queryKey: ['/api/league', league?.leagueId, 'contract-drafts', selectedRosterId],
     enabled: !!league?.leagueId && !!selectedRosterId,
+  });
+
+  interface CommissionerExtension {
+    id: string;
+    playerId: string;
+    playerName: string;
+    extensionType: number;
+    extensionYear: number;
+    extensionSalary: number;
+    extensionSalary2: number | null;
+    isRookieExtension: number;
+    status: string;
+  }
+
+  const { data: teamExtensionsData } = useQuery<{ extensions: CommissionerExtension[] }>({
+    queryKey: ['/api/league', league?.leagueId, 'extensions', CURRENT_YEAR, selectedRosterId],
+    enabled: !!league?.leagueId && !!selectedRosterId,
+  });
+
+  const confirmedExtensions = useMemo(() => {
+    return (teamExtensionsData?.extensions || []).filter(e => e.status === "confirmed");
+  }, [teamExtensionsData]);
+
+  const undoExtensionMutation = useMutation({
+    mutationFn: async (extensionId: string) => {
+      return apiRequest("DELETE", `/api/league/${league?.leagueId}/extensions/${extensionId}/undo`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Extension Undone",
+        description: "The extension has been reverted and the team can use their extension again.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', league?.leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', league?.leagueId, 'contracts'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to Undo Extension",
+        description: error.message || "Failed to undo extension",
+        variant: "destructive",
+      });
+    },
   });
 
   const selectedTeam = teams.find(t => t.rosterId.toString() === selectedRosterId);
@@ -1229,6 +1271,9 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     ))}
                     <TableHead className="text-center w-[80px]">Total</TableHead>
                     <TableHead className="text-center w-[80px]">Remaining</TableHead>
+                    {confirmedExtensions.length > 0 && (
+                      <TableHead className="text-center w-[70px]">Ext</TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1504,7 +1549,11 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           const deadCapValue = deadCapEnabled ? (salaryValue * deadCapPercent) : 0;
                           const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
                           const isVetOnlyYear = year === OPTION_YEAR;
-                          const canEditYear = !isVetOnlyYear || !isRookie;
+                          const hasExtensionCoveringYear = confirmedExtensions.some(
+                            e => e.playerId === player.playerId &&
+                              year >= e.extensionYear && year < e.extensionYear + e.extensionType
+                          );
+                          const canEditYear = !isVetOnlyYear || !isRookie || hasExtensionCoveringYear || salaryValue > 0;
 
                           return (
                             <TableCell key={year} className="text-center">
@@ -1579,18 +1628,45 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             ) : "-";
                           })()}
                         </TableCell>
+                        {confirmedExtensions.length > 0 && (
+                          <TableCell className="text-center">
+                            {(() => {
+                              const ext = confirmedExtensions.find(e => e.playerId === player.playerId);
+                              if (!ext) return "-";
+                              return (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                      onClick={() => undoExtensionMutation.mutate(ext.id)}
+                                      disabled={undoExtensionMutation.isPending}
+                                    >
+                                      <Undo2 className="h-4 w-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>Undo {ext.extensionType}-year {ext.isRookieExtension ? "rookie " : ""}extension</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              );
+                            })()}
+                          </TableCell>
+                        )}
                       </TableRow>
                     );
                   })}
                   {playerInputs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={12} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={confirmedExtensions.length > 0 ? 13 : 12} className="text-center text-muted-foreground py-8">
                         No players on this roster
                       </TableCell>
                     </TableRow>
                   )}
                 </TableBody>
               </Table>
+              <ScrollBar orientation="horizontal" />
             </ScrollArea>
           </CardContent>
         </Card>
@@ -1729,6 +1805,7 @@ function ManageTeamContractsTab({
     extensionType: number; // 1 = 1-year at 1.2x, 2 = 2-year at 1.5x
     extensionSalary2: number | null;
     isRookieExtension: number; // 0 = regular, 1 = rookie
+    status: "pending" | "confirmed";
     createdAt: number;
   }
 
@@ -1775,28 +1852,18 @@ function ManageTeamContractsTab({
       });
     },
     onSuccess: (_, variables) => {
-      const extensionTypeText = variables.isPPGBased
-        ? `${variables.extensionType} additional year${variables.extensionType > 1 ? 's' : ''} at PPG-based salary ($${((variables.ppgSalary || 0) / 10).toFixed(1)}M/yr)`
-        : variables.extensionType === 1 
-          ? "1 additional year at 1.2x salary" 
-          : variables.extensionType === 2
-            ? "2 additional years at 1.5x salary"
-            : variables.extensionType === 3
-              ? "3 additional years at 1.8x salary"
-              : "4 additional years at 2x salary";
       toast({
-        title: "Extension Applied",
-        description: `The player's contract has been extended for ${extensionTypeText}.`,
+        title: "Extension Pending",
+        description: `Extension created for ${variables.playerName}. Click Confirm to finalize or Cancel to remove.`,
       });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
       queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId] });
-      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
       setOpenExtensionPopover(null);
     },
     onError: (error: Error) => {
       toast({
         title: "Extension Failed",
-        description: error.message || "Failed to apply extension",
+        description: error.message || "Failed to create extension",
         variant: "destructive",
       });
     },
@@ -1823,6 +1890,59 @@ function ManageTeamContractsTab({
       toast({
         title: "Failed to Remove Extension",
         description: error.message || "Failed to remove extension",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Confirm a pending extension (applies salary changes permanently)
+  const confirmExtensionMutation = useMutation({
+    mutationFn: async (extensionId: string) => {
+      if (!userTeam?.rosterId) {
+        throw new Error("Team not found");
+      }
+      return apiRequest("PUT", `/api/league/${leagueId}/extensions/${extensionId}/confirm`, {
+        rosterId: userTeam.rosterId,
+      });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Extension Confirmed",
+        description: "The extension has been finalized and applied to the contract.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contracts'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to Confirm Extension",
+        description: error.message || "Failed to confirm extension",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Cancel a pending extension (user can cancel their own pending extensions)
+  const cancelPendingExtensionMutation = useMutation({
+    mutationFn: async (extensionId: string) => {
+      if (!userTeam?.rosterId) {
+        throw new Error("Team not found");
+      }
+      return apiRequest("DELETE", `/api/league/${leagueId}/extensions/pending/${extensionId}?rosterId=${userTeam.rosterId}`);
+    },
+    onSuccess: () => {
+      toast({
+        title: "Extension Cancelled",
+        description: "The pending extension has been cancelled.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions'] });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'extensions', CURRENT_YEAR, userTeam?.rosterId] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to Cancel Extension",
+        description: error.message || "Failed to cancel pending extension",
         variant: "destructive",
       });
     },
@@ -2367,6 +2487,18 @@ function ManageTeamContractsTab({
       [...CONTRACT_YEARS, OPTION_YEAR].forEach(year => {
         hypotheticalSalaries[year] = getEffectiveSalary(id, year);
       });
+
+      const pendingExt = extensionStatus?.extensions?.find(
+        e => e.playerId === id && e.status === "pending"
+      );
+      if (pendingExt) {
+        for (let i = 0; i < pendingExt.extensionType; i++) {
+          const extYear = pendingExt.extensionYear + i;
+          if ((hypotheticalSalaries[extYear] || 0) === 0) {
+            hypotheticalSalaries[extYear] = pendingExt.extensionSalary / 10;
+          }
+        }
+      }
 
       return {
         playerId: id,
@@ -3353,6 +3485,10 @@ function ManageTeamContractsTab({
                         const leagueSalary = player.isRosterPlayer ? getLeagueSalary(player.playerId, year) : 0;
                         const currentValue = player.hypotheticalSalaries[year] || 0;
                         const isDifferent = player.isRosterPlayer && currentValue !== leagueSalary;
+                        const isPendingExtYear = extensionStatus?.extensions?.some(
+                          e => e.playerId === player.playerId && e.status === "pending" &&
+                            year >= e.extensionYear && year < e.extensionYear + e.extensionType
+                        ) && leagueSalary === 0;
                         // Find contract end year (last year with salary > 0)
                         const contractEndYear = [...CONTRACT_YEARS, OPTION_YEAR]
                           .filter(y => (player.hypotheticalSalaries[y] || 0) > 0)
@@ -3373,7 +3509,7 @@ function ManageTeamContractsTab({
                                   type="number"
                                   step="0.1"
                                   min="0"
-                                  className={`h-7 w-16 text-center tabular-nums text-sm ${isDifferent ? "border-primary" : ""}`}
+                                  className={`h-7 w-16 text-center tabular-nums text-sm ${isPendingExtYear ? "border-amber-400 border-dashed" : isDifferent ? "border-primary" : ""}`}
                                   placeholder="0"
                                   value={currentValue || ""}
                                   onChange={(e) => {
@@ -3387,6 +3523,9 @@ function ManageTeamContractsTab({
                                 />
                                 <span className="text-xs text-muted-foreground">M</span>
                               </div>
+                              {isPendingExtYear && (
+                                <span className="text-[10px] text-amber-600 italic">pending ext.</span>
+                              )}
                               {deadCapEnabled && currentValue > 0 && deadCapPercent > 0 && (
                                 <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
                                   DC: ${Math.ceil(deadCapValue)}M ({Math.round(deadCapPercent * 100)}%)
@@ -3505,10 +3644,13 @@ function ManageTeamContractsTab({
                           const rookieExtCount = extensionStatus?.rookieExtensionCount || 0;
                           const rookieUsed4Year = extensionStatus?.rookieHas4Year || false;
                           
-                          // Check if this specific player has an extension
-                          const thisPlayerHasExtension = (extensionStatus?.extensions && Array.isArray(extensionStatus.extensions)) 
-                            ? extensionStatus.extensions.some(e => e.playerId === player.playerId) 
-                            : false;
+                          // Check if this specific player has an extension (and its status)
+                          const thisPlayerExtension = (extensionStatus?.extensions && Array.isArray(extensionStatus.extensions))
+                            ? extensionStatus.extensions.find(e => e.playerId === player.playerId)
+                            : undefined;
+                          const thisPlayerHasExtension = !!thisPlayerExtension;
+                          const isPendingExtension = thisPlayerExtension?.status === "pending";
+                          const isConfirmedExtension = thisPlayerExtension?.status === "confirmed";
                           
                           // Determine if the player's extension options are exhausted
                           const isRookiePlayer = extensionEligibility.isRookieContract;
@@ -3525,12 +3667,16 @@ function ManageTeamContractsTab({
 
                           // For commissioners: only disable during mutations
                           // For non-commissioners: disable if can't apply extension or all options exhausted
+                          // Exception: if user has a pending extension, they can always toggle it off (cancel)
+                          const anyMutationPending = applyExtensionMutation.isPending || confirmExtensionMutation.isPending || cancelPendingExtensionMutation.isPending || deleteExtensionMutation.isPending;
                           const isApplyingDisabled = !extensionEligibility.eligible || 
                             allOptionsExhausted ||
-                            applyExtensionMutation.isPending;
-                          const toggleDisabled = isCommissioner 
-                            ? (applyExtensionMutation.isPending || deleteExtensionMutation.isPending)
-                            : isApplyingDisabled;
+                            anyMutationPending;
+                          const toggleDisabled = isPendingExtension
+                            ? anyMutationPending
+                            : isCommissioner 
+                              ? anyMutationPending
+                              : isApplyingDisabled;
                           
                           return (
                             <Popover open={openExtensionPopover === player.playerId} onOpenChange={(open) => {
@@ -3542,26 +3688,56 @@ function ManageTeamContractsTab({
                               <Tooltip>
                                 <TooltipTrigger asChild>
                                   <PopoverTrigger asChild>
-                                    <div>
+                                    <div className="flex items-center gap-1">
                                       <Switch
                                         checked={thisPlayerHasExtension}
                                         disabled={toggleDisabled}
+                                        className={isPendingExtension ? "data-[state=checked]:bg-amber-500" : ""}
                                         onCheckedChange={(checked) => {
                                           if (checked) {
-                                            // Open popover to show extension options when checked
-                                            // Check if any extension type is available
                                             if (extensionEligibility.eligible && !allOptionsExhausted) {
                                               setOpenExtensionPopover(player.playerId);
                                             }
                                           } else {
-                                            // Remove extension when unchecked (commissioner only, and only if this player has the extension)
-                                            if (isCommissioner && thisPlayerHasExtension) {
+                                            if (isPendingExtension && thisPlayerExtension) {
+                                              cancelPendingExtensionMutation.mutate(thisPlayerExtension.id);
+                                            } else if (isCommissioner && isConfirmedExtension) {
                                               deleteExtensionMutation.mutate();
                                             }
                                           }
                                         }}
                                         data-testid={`switch-extend-${player.playerId}`}
                                       />
+                                      {isPendingExtension && thisPlayerExtension && (
+                                        <div className="flex gap-0.5">
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 w-6 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              confirmExtensionMutation.mutate(thisPlayerExtension.id);
+                                            }}
+                                            disabled={confirmExtensionMutation.isPending}
+                                            title="Confirm extension"
+                                          >
+                                            <Check className="h-3.5 w-3.5" />
+                                          </Button>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            className="h-6 w-6 p-0 text-red-500 hover:text-red-600 hover:bg-red-50"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              cancelPendingExtensionMutation.mutate(thisPlayerExtension.id);
+                                            }}
+                                            disabled={cancelPendingExtensionMutation.isPending}
+                                            title="Cancel pending extension"
+                                          >
+                                            <X className="h-3.5 w-3.5" />
+                                          </Button>
+                                        </div>
+                                      )}
                                     </div>
                                   </PopoverTrigger>
                                 </TooltipTrigger>
@@ -3584,8 +3760,10 @@ function ManageTeamContractsTab({
                                     }
                                     
                                     let mainText = "";
-                                    if (isCommissioner && thisPlayerHasExtension) {
-                                      mainText = "This player has an extension. Click to remove and allow the team to use that extension type again.";
+                                    if (isPendingExtension) {
+                                      mainText = `Extension pending (${thisPlayerExtension?.extensionType}-year). Click ✓ to confirm or ✕ to cancel.`;
+                                    } else if (isCommissioner && isConfirmedExtension) {
+                                      mainText = "This player has a confirmed extension. Click to remove and allow the team to use that extension type again.";
                                     } else if (availableTypes.length === 0 && extensionEligibility.eligible) {
                                       if (isRookiePlayer) {
                                         mainText = rookieExtCount >= 3
@@ -3617,6 +3795,58 @@ function ManageTeamContractsTab({
                                 </TooltipContent>
                               </Tooltip>
                               <PopoverContent className="w-80 p-3" align="end">
+                                {isPendingExtension && thisPlayerExtension ? (
+                                  <div className="space-y-3">
+                                    <div className="text-sm font-medium flex items-center gap-2">
+                                      <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+                                      Pending Extension — {player.name}
+                                    </div>
+                                    <div className="text-xs bg-amber-50 border border-amber-200 rounded p-2 space-y-1">
+                                      <div className="flex justify-between">
+                                        <span className="text-muted-foreground">Type:</span>
+                                        <span className="font-medium">{thisPlayerExtension.extensionType}-year extension</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span className="text-muted-foreground">Salary:</span>
+                                        <span className="font-medium">${(thisPlayerExtension.extensionSalary / 10).toFixed(1)}M/yr</span>
+                                      </div>
+                                      <div className="flex justify-between">
+                                        <span className="text-muted-foreground">Starts:</span>
+                                        <span className="font-medium">{thisPlayerExtension.extensionYear}</span>
+                                      </div>
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      This extension is pending. The contract has not been modified yet.
+                                    </div>
+                                    <div className="flex gap-2">
+                                      <Button
+                                        size="sm"
+                                        className="flex-1 bg-emerald-600 hover:bg-emerald-700"
+                                        onClick={() => {
+                                          confirmExtensionMutation.mutate(thisPlayerExtension.id);
+                                          setOpenExtensionPopover(null);
+                                        }}
+                                        disabled={confirmExtensionMutation.isPending}
+                                      >
+                                        <Check className="h-4 w-4 mr-1" />
+                                        Confirm Extension
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="flex-1 text-red-600 border-red-200 hover:bg-red-50"
+                                        onClick={() => {
+                                          cancelPendingExtensionMutation.mutate(thisPlayerExtension.id);
+                                          setOpenExtensionPopover(null);
+                                        }}
+                                        disabled={cancelPendingExtensionMutation.isPending}
+                                      >
+                                        <X className="h-4 w-4 mr-1" />
+                                        Cancel
+                                      </Button>
+                                    </div>
+                                  </div>
+                                ) : (
                                 <div className="space-y-3">
                                   <div className="text-sm font-medium">Extend {player.name}</div>
                                   {extensionEligibility.requiresPPGPricing ? (
@@ -3841,6 +4071,7 @@ function ManageTeamContractsTab({
                                     )}
                                   </div>
                                 </div>
+                                )}
                               </PopoverContent>
                             </Popover>
                           );
@@ -3873,6 +4104,7 @@ function ManageTeamContractsTab({
                 )}
               </TableBody>
             </Table>
+            <ScrollBar orientation="horizontal" />
           </ScrollArea>
 
           <Separator className="my-4" />
