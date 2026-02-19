@@ -3093,8 +3093,8 @@ export async function registerRoutes(
       const regularSeasonWeeks = playoffWeekStart - 1;
       // Include current week in remaining weeks (e.g., week 12 with 14-week season = 3 weeks left including current)
       let remainingWeeks = Math.max(0, regularSeasonWeeks - currentWeek + 1);
-      // When Sleeper API says postseason, set remaining regular season weeks to 0
-      if (nflState.season_type === "post") {
+      // When Sleeper API says postseason or offseason, set remaining regular season weeks to 0
+      if (nflState.season_type === "post" || nflState.season_type === "off") {
         remainingWeeks = 0;
       }
 

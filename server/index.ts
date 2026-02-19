@@ -131,10 +131,28 @@ app.use((req, res, next) => {
 
     const port = parseInt(process.env.PORT || "5000", 10);
     console.log(`[startup] Listening on ${host}:${port}...`);
-    httpServer.listen({ port, host }, () => {
-      log(`serving on port ${port}`);
-      console.log(`=== SERVER READY at http://localhost:${port} ===`);
+
+    const tryListen = (p: number) => {
+      httpServer.listen({ port: p, host }, () => {
+        process.env.PORT = String(p);
+        log(`serving on port ${p}`);
+        console.log(`=== SERVER READY at http://localhost:${p} ===`);
+      });
+    };
+
+    httpServer.once("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EADDRINUSE") {
+        const nextPort = port + 1;
+        console.warn(`[startup] Port ${port} in use, retrying on ${nextPort}...`);
+        process.env.PORT = String(nextPort);
+        tryListen(nextPort);
+      } else {
+        console.error("[startup] Server listen error:", err);
+        process.exit(1);
+      }
     });
+
+    tryListen(port);
   } catch (err: any) {
     console.error("=== SERVER STARTUP FAILED ===");
     console.error("Error name:", err?.name);

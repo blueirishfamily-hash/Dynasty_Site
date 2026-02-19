@@ -492,12 +492,12 @@ export default function Draft() {
     const NON_PLAYOFF_PICKS = 5; // Picks 1-5 for non-playoff teams
     
     // Determine if regular season has ended: Sleeper season_type "post", or current week >= playoff start, or remainingWeeks === 0.
-    // Eliminated teams lock when regular season has ended (so picks 1-5 are fixed by Max PF).
+    // When remaining weeks is 0, eliminated teams are locked to 100% at their max-PF-determined pick (lowest max PF = pick 1, etc.).
     const playoffWeekStart = league?.playoffWeekStart || 15;
     const currentWeek = playoffPredictions?.currentWeek;
     const seasonType = playoffPredictions?.seasonType;
     const regularSeasonEnded =
-      seasonType === "post" ||
+      seasonType === "post" || seasonType === "off" ||
       (currentWeek !== undefined ? currentWeek >= playoffWeekStart : playoffPredictions?.remainingWeeks === 0);
 
     const predictionMap = new Map(
@@ -679,10 +679,9 @@ export default function Draft() {
       
       // Assign 100% odds for eliminated teams (locked in - no uncertainty)
       // Only update odds for non-locked teams, locked teams already have their odds preserved
-      eliminatedTeams.forEach((team, index) => {
-        // Find the team's position among all eliminated teams
+      eliminatedTeams.forEach((team) => {
         const positionInAll = allEliminatedTeams.findIndex(t => t.rosterId === team.rosterId);
-        if (positionInAll < NON_PLAYOFF_PICKS) {
+        if (positionInAll >= 0 && positionInAll < totalTeams) {
           team.pickOdds = new Array(totalTeams).fill(0);
           team.pickOdds[positionInAll] = 100;
         }
@@ -691,7 +690,7 @@ export default function Draft() {
       // For locked eliminated teams, ensure their odds are set correctly if not already set
       lockedEliminatedTeams.forEach(team => {
         const positionInAll = allEliminatedTeams.findIndex(t => t.rosterId === team.rosterId);
-        if (positionInAll < NON_PLAYOFF_PICKS && (!team.pickOdds || team.pickOdds.every(odds => odds === 0))) {
+        if (positionInAll >= 0 && positionInAll < totalTeams && (!team.pickOdds || team.pickOdds.every(odds => odds === 0))) {
           team.pickOdds = new Array(totalTeams).fill(0);
           team.pickOdds[positionInAll] = 100;
         }

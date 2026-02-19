@@ -19,7 +19,8 @@
     <script>
       (function() {
         var port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
-        var onDevServer = window.location.hostname === 'localhost' && port === '5000';
+        var portNum = parseInt(port, 10);
+        var onDevServer = window.location.hostname === 'localhost' && (port === '5000' || (portNum >= 5001 && portNum <= 5010));
         if (!onDevServer && (window.location.protocol === 'file:' || window.location.protocol === 'vscode-webview:')) {
           var msg = document.getElementById('loading-msg');
           if (msg) {
