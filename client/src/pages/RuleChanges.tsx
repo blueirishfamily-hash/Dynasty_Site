@@ -1150,7 +1150,7 @@ function RuleCard({
                 disabled={!hasSelectedTeam}
               >
                 <ThumbsUp className="w-4 h-4 mr-1" />
-                Approve ({approveCount})
+                Approve
               </Button>
               <Button
                 variant={currentUserVote === "reject" ? "default" : "outline"}
@@ -1159,7 +1159,7 @@ function RuleCard({
                 disabled={!hasSelectedTeam}
               >
                 <ThumbsDown className="w-4 h-4 mr-1" />
-                Reject ({rejectCount})
+                Reject
               </Button>
             </div>
             {currentUserVote && (
@@ -1168,6 +1168,9 @@ function RuleCard({
               </Badge>
             )}
           </div>
+        )}
+        {!votingEnabled && !isMultiChoice && (approveCount > 0 || rejectCount > 0) && (
+          <p className="text-sm text-muted-foreground pt-2">Approve: {approveCount} · Reject: {rejectCount}</p>
         )}
 
         {votingEnabled && isMultiChoice && (
@@ -1209,20 +1212,20 @@ function RuleCard({
                 <Badge variant="secondary">You voted</Badge>
               )}
             </div>
-            {pointsByOption.length > 0 && (
-              <div className="pt-2 space-y-1">
-                <p className="text-sm font-medium text-muted-foreground">Results ({voterCount} voter{voterCount !== 1 ? "s" : ""})</p>
-                {options
-                  .map((opt, i) => ({ opt, points: pointsByOption[i] ?? 0, index: i }))
-                  .sort((a, b) => b.points - a.points)
-                  .map(({ opt, points }, idx) => (
-                    <div key={idx} className="flex justify-between text-sm">
-                      <span>{idx + 1}. {opt}</span>
-                      <span className="font-medium">{points} pts</span>
-                    </div>
-                  ))}
-              </div>
-            )}
+          </div>
+        )}
+        {!votingEnabled && isMultiChoice && pointsByOption.length > 0 && (
+          <div className="pt-2 space-y-1 border-t">
+            <p className="text-sm font-medium text-muted-foreground">Results ({voterCount} voter{voterCount !== 1 ? "s" : ""})</p>
+            {options
+              .map((opt, i) => ({ opt, points: pointsByOption[i] ?? 0, index: i }))
+              .sort((a, b) => b.points - a.points)
+              .map(({ opt, points }, idx) => (
+                <div key={idx} className="flex justify-between text-sm">
+                  <span>{idx + 1}. {opt}</span>
+                  <span className="font-medium">{points} pts</span>
+                </div>
+              ))}
           </div>
         )}
 

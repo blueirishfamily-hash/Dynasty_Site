@@ -5362,7 +5362,17 @@ export async function registerRoutes(
     try {
       const ruleId = req.params.id;
       const rule = await storage.getRuleSuggestionById(ruleId);
-      const voteType = rule ? (rule as any).voteType ?? "binary" : "binary";
+      if (!rule) {
+        return res.status(404).json({ error: "Rule not found" });
+      }
+      const voteType = (rule as any).voteType ?? "binary";
+      const votingMasterEnabled = (await storage.getLeagueSetting(rule.leagueId, "rule_voting_master")) === "true";
+      if (votingMasterEnabled) {
+        if (voteType === "multi_choice") {
+          return res.json({ ranked: true, pointsByOption: [], voterCount: 0 });
+        }
+        return res.json({ approveCount: 0, rejectCount: 0 });
+      }
       if (voteType === "multi_choice") {
         const { pointsByOption, voterCount } = await storage.getRuleRankedVotes(ruleId);
         return res.json({ ranked: true, pointsByOption, voterCount });
