@@ -22,13 +22,15 @@
         var portNum = parseInt(port, 10);
         var onDevServer = window.location.hostname === 'localhost' && (port === '5000' || (portNum >= 5001 && portNum <= 5010));
         if (!onDevServer && (window.location.protocol === 'file:' || window.location.protocol === 'vscode-webview:')) {
+          var devUrl = 'http://localhost:5000';
           var msg = document.getElementById('loading-msg');
           if (msg) {
-            msg.innerHTML = 'This page must be opened from the dev server. Run <strong>npm run dev</strong> in the project, then <a href="http://localhost:5000" style="color:#38bdf8;font-weight:600;">click here to open the app</a>.';
+            msg.innerHTML = 'Redirecting to dev server…<br><br>If the app doesn’t load, <a href="' + devUrl + '" target="_blank" rel="noopener" style="color:#38bdf8;font-weight:600;">open ' + devUrl + ' in your browser</a> (Chrome/Edge).';
             msg.style.color = '#e2e8f0';
             msg.style.maxWidth = '420px';
             msg.style.textAlign = 'center';
           }
+          window.location.replace(devUrl);
           return;
         }
       })();
@@ -39,8 +41,11 @@
         setTimeout(function() {
           var msg = document.getElementById('loading-msg');
           if (msg && msg.textContent.indexOf('Loading') === 0) {
-            var url = 'http://localhost:5000';
-            msg.innerHTML = 'App didn’t load. 1) Run <strong>npm run dev</strong> in the terminal. 2) <a href="' + url + '" style="color:#38bdf8;font-weight:600;">Open ' + url + '</a> in your browser (or copy the link). You are at: <span style="font-size:0.85em;color:#64748b;">' + window.location.href + '</span>';
+            var port = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+            var portNum = parseInt(port, 10);
+            var onLocalDev = window.location.hostname === 'localhost' && (port === '5000' || (portNum >= 5001 && portNum <= 5010));
+            var url = onLocalDev ? (window.location.origin || ('http://localhost:' + port)) : 'http://localhost:5000';
+            msg.innerHTML = 'App didn’t load. 1) Run <strong>npm run dev</strong> in the terminal. 2) <a href="' + url + '" target="_blank" rel="noopener" style="color:#38bdf8;font-weight:600;">Open ' + url + ' in your browser</a> (Chrome/Edge). You are at: <span style="font-size:0.85em;color:#64748b;">' + window.location.href + '</span>';
             msg.style.color = '#e2e8f0';
             msg.style.maxWidth = '480px';
             msg.style.textAlign = 'center';

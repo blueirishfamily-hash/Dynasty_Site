@@ -1466,7 +1466,7 @@ export default function Draft() {
                       <TableHead className="sticky left-0 bg-background z-10">Team</TableHead>
                       <TableHead className="text-center">Record</TableHead>
                       <TableHead className="text-center">Status</TableHead>
-                      <TableHead className="text-right">Points For</TableHead>
+                      <TableHead className="text-right">Max PF</TableHead>
                       {Array.from({ length: Math.min(totalTeams, 12) }, (_, i) => (
                         <TableHead key={i} className="text-center w-16">
                           Pick {i + 1}
@@ -1531,7 +1531,7 @@ export default function Draft() {
                           )}
                         </TableCell>
                         <TableCell className="text-right tabular-nums">
-                          {Number(team.pointsFor ?? 0).toFixed(1)}
+                          {Number(team.maxPoints ?? 0).toFixed(1)}
                         </TableCell>
                         {Array.from({ length: Math.min(totalTeams, 12) }, (_, pickIndex) => {
                           const odds = team.pickOdds[pickIndex] || 0;

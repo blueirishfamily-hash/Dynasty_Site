@@ -489,10 +489,17 @@ export async function registerRoutes(
       const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
       const regularSeasonWeeks = playoffWeekStart - 1; // Typically 14 weeks
       
-      // Calculate completed regular season weeks matching PF/PA logic
-      // PF and PA use: Math.min(currentWeek - 1, regularSeasonWeeks)
-      // This ensures we only count completed weeks up to regular season end
-      const completedRegularSeasonWeeks = Math.max(1, Math.min(currentWeek - 1, regularSeasonWeeks));
+      // Once regular season is complete (playoffs started or post/off), include all 14 weeks in Max PF
+      const regularSeasonComplete =
+        nflState.season_type === "post" ||
+        nflState.season_type === "off" ||
+        currentWeek >= playoffWeekStart;
+      const completedRegularSeasonWeeks = regularSeasonComplete
+        ? regularSeasonWeeks
+        : Math.max(1, Math.min(currentWeek - 1, regularSeasonWeeks));
+      if (regularSeasonComplete) {
+        console.log("[Max PF] Regular season complete, including week 14");
+      }
       
       // Fetch matchups for regular season weeks only (matching PF/PA calculation)
       const matchupPromises = [];
@@ -589,21 +596,44 @@ export async function registerRoutes(
       // Map roster positions (exclude bench/IR/taxi since they don't affect optimal lineup)
       const rosterPositions = (league?.roster_positions || []).filter(pos => !["BN", "IR", "TAXI"].includes(pos));
 
-      // Build roster composition per week (transactions apply forward; no changes to prior weeks)
+      // Build roster composition per week (transactions apply forward from opening day)
       const buildRosterHistory = () => {
         const rosterState = new Map<number, Set<string>>();
         const rosterWeekly = new Map<number, Map<number, string[]>>();
 
-        // Initialize with starting rosters
+        // Initialize with current rosters (players + taxi + reserve) for Max PF pool
         rosters.forEach(r => {
-          rosterState.set(r.roster_id, new Set(r.players || []));
+          const allPlayers = [
+            ...(r.players || []),
+            ...(r.taxi || []),
+            ...(r.reserve || []),
+          ];
+          rosterState.set(r.roster_id, new Set(allPlayers));
           rosterWeekly.set(r.roster_id, new Map());
         });
 
+        // Reverse-apply all in-season transactions to get opening day roster
+        const allTx = weeklyTransactions
+          .flatMap(({ week, transactions }) => transactions.map(t => ({ week, t })))
+          .filter(({ t }) => t.status === "complete")
+          .sort((a, b) =>
+            b.week !== a.week
+              ? b.week - a.week
+              : (b.t.status_updated || 0) - (a.t.status_updated || 0)
+          );
+        for (const { t } of allTx) {
+          Object.entries(t.adds || {}).forEach(([playerId, rosterId]) => {
+            rosterState.get(Number(rosterId))?.delete(playerId);
+          });
+          Object.entries(t.drops || {}).forEach(([playerId, rosterId]) => {
+            rosterState.get(Number(rosterId))?.add(playerId);
+          });
+        }
+
+        // Forward pass: apply week 1..N transactions and snapshot per week (now from opening day)
         for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
           const transactionsForWeek = weeklyTransactions.find(w => w.week === week)?.transactions || [];
 
-          // Apply transactions for this week (affects this week and future weeks)
           transactionsForWeek
             .filter(t => t.status === "complete")
             .forEach(t => {
@@ -611,17 +641,16 @@ export async function registerRoutes(
               const drops = t.drops || {};
 
               Object.entries(adds).forEach(([playerId, rosterId]) => {
-                const state = rosterState.get(rosterId);
+                const state = rosterState.get(Number(rosterId));
                 if (state) state.add(playerId);
               });
 
               Object.entries(drops).forEach(([playerId, rosterId]) => {
-                const state = rosterState.get(rosterId);
+                const state = rosterState.get(Number(rosterId));
                 if (state) state.delete(playerId);
               });
             });
 
-          // Snapshot roster for this week after applying the week's transactions
           rosterState.forEach((state, rosterId) => {
             rosterWeekly.get(rosterId)?.set(week, Array.from(state));
           });
@@ -660,26 +689,38 @@ export async function registerRoutes(
         matchupByRosterAndWeek.set(week, weekMap);
       });
 
+      // Build per-week roster using matchup.players (source of truth) with rosterHistory as fallback
+      const rosterWeeklyRoster = new Map<number, Map<number, string[]>>();
+      rosters.forEach(roster => {
+        rosterWeeklyRoster.set(roster.roster_id, new Map());
+      });
+      for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
+        const weekMatchups = matchupByRosterAndWeek.get(week) || new Map();
+        rosters.forEach(roster => {
+          const matchup = weekMatchups.get(roster.roster_id);
+          const weekRoster =
+            (matchup?.players && matchup.players.length > 0)
+              ? matchup.players
+              : (rosterHistory.get(roster.roster_id)?.get(week) || []);
+          rosterWeeklyRoster.get(roster.roster_id)!.set(week, weekRoster);
+        });
+      }
+
       // Build weekly player points per roster from matchup data
       const rosterWeeklyPoints = new Map<number, Map<number, Record<string, number>>>();
       for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
         const weekMatchups = matchupByRosterAndWeek.get(week) || new Map();
-        
         rosters.forEach(roster => {
-          const weekRoster = rosterHistory.get(roster.roster_id)?.get(week) || [];
+          const weekRoster = rosterWeeklyRoster.get(roster.roster_id)?.get(week) || [];
           const matchup = weekMatchups.get(roster.roster_id);
           const playersPoints = matchup?.players_points || {};
-          
           if (!rosterWeeklyPoints.has(roster.roster_id)) {
             rosterWeeklyPoints.set(roster.roster_id, new Map());
           }
-          
           const weekPoints: Record<string, number> = {};
           weekRoster.forEach(playerId => {
-            // Use pre-calculated points from matchup, default to 0 if player didn't play
             weekPoints[playerId] = typeof playersPoints[playerId] === 'number' ? playersPoints[playerId] : 0;
           });
-          
           rosterWeeklyPoints.get(roster.roster_id)!.set(week, weekPoints);
         });
       }
@@ -739,12 +780,11 @@ export async function registerRoutes(
       
       rosters.forEach(roster => {
         let total = 0;
-        const weeklyMap = rosterHistory.get(roster.roster_id) || new Map();
         const weeklyMaxPoints: number[] = []; // Track per-week values for validation
 
         // Sum optimal weekly lineup points for all completed weeks up to week 14
         for (let week = 1; week <= weeksToSum; week++) {
-          const weekRoster = weeklyMap.get(week) || [];
+          const weekRoster = rosterWeeklyRoster.get(roster.roster_id)?.get(week) || [];
           const weekPoints = rosterWeeklyPoints.get(roster.roster_id)?.get(week) || {};
           
           // Calculate optimal lineup for this week
@@ -1477,10 +1517,13 @@ export async function registerRoutes(
   app.get("/api/sleeper/league/:leagueId/transactions", async (req, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 10;
-      const state = await getNFLState();
-      
+      const [state, league] = await Promise.all([
+        getNFLState(),
+        getLeague(req.params.leagueId).catch(() => null),
+      ]);
+      const effectiveWeek = getEffectiveWeek(state, league);
       const [allTransactions, rosters, users, players] = await Promise.all([
-        getAllLeagueTransactions(req.params.leagueId, state.week),
+        getAllLeagueTransactions(req.params.leagueId, effectiveWeek),
         getLeagueRosters(req.params.leagueId),
         getLeagueUsers(req.params.leagueId),
         getAllPlayers(),
@@ -1562,10 +1605,13 @@ export async function registerRoutes(
   // Get trade history
   app.get("/api/sleeper/league/:leagueId/trades", async (req, res) => {
     try {
-      const state = await getNFLState();
-      
+      const [state, league] = await Promise.all([
+        getNFLState(),
+        getLeague(req.params.leagueId).catch(() => null),
+      ]);
+      const effectiveWeek = getEffectiveWeek(state, league);
       const [allTransactions, rosters, users, players] = await Promise.all([
-        getAllLeagueTransactions(req.params.leagueId, state.week),
+        getAllLeagueTransactions(req.params.leagueId, effectiveWeek),
         getLeagueRosters(req.params.leagueId),
         getLeagueUsers(req.params.leagueId),
         getAllPlayers(),
