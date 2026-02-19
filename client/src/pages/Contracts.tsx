@@ -805,15 +805,18 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
       if (!league?.leagueId) {
         throw new Error("League ID is required");
       }
-      return apiRequest("POST", `/api/league/${league.leagueId}/contracts`, [{
-        rosterId: data.rosterId,
-        playerId: data.playerId,
-        salaries: JSON.stringify(data.salaries || {}),
-        fifthYearOption: null,
-        isOnIr: 0,
-        originalContractYears: data.originalContractYears ?? 0,
-        isRookieContract: data.isRookieContract,
-      }]);
+      return apiRequest("POST", `/api/league/${league.leagueId}/contracts`, {
+        contracts: [{
+          rosterId: data.rosterId,
+          playerId: data.playerId,
+          salaries: JSON.stringify(data.salaries || {}),
+          fifthYearOption: null,
+          isOnIr: 0,
+          originalContractYears: data.originalContractYears ?? 0,
+          isRookieContract: data.isRookieContract,
+        }],
+        userId: user?.userId,
+      });
     },
   });
 
@@ -3519,28 +3522,41 @@ function ManageTeamContractsTab({
                         const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
                         const deadCapValue = deadCapEnabled ? (currentValue * deadCapPercent) : 0;
 
+                        const isReadOnlySalary = !isCommissioner && player.isRosterPlayer && !player.isFreeAgent;
                         return (
                           <TableCell key={year} className="text-center">
                             <div className="flex flex-col items-center gap-0.5">
                               <div className="flex items-center justify-center gap-0.5">
-                                <span className="text-xs text-muted-foreground">$</span>
-                                <Input
-                                  type="number"
-                                  step="0.1"
-                                  min="0"
-                                  className={`h-7 w-16 text-center tabular-nums text-sm ${isPendingExtYear ? "border-amber-400 border-dashed" : isDifferent ? "border-primary" : ""}`}
-                                  placeholder="0"
-                                  value={currentValue || ""}
-                                  onChange={(e) => {
-                                    if (player.isFreeAgent) {
-                                      handleFreeAgentSalaryChange(player.playerId, year, e.target.value);
-                                    } else {
-                                      handleHypotheticalSalaryChange(player.playerId, year, e.target.value);
-                                    }
-                                  }}
-                                  data-testid={`input-hypothetical-${player.playerId}-${year}`}
-                                />
-                                <span className="text-xs text-muted-foreground">M</span>
+                                {isReadOnlySalary ? (
+                                  <>
+                                    <span className="text-xs text-muted-foreground">$</span>
+                                    <span className="text-sm tabular-nums font-medium w-16 text-center">
+                                      {currentValue ? `${Number(currentValue).toFixed(1)}` : "—"}
+                                    </span>
+                                    <span className="text-xs text-muted-foreground">M</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className="text-xs text-muted-foreground">$</span>
+                                    <Input
+                                      type="number"
+                                      step="0.1"
+                                      min="0"
+                                      className={`h-7 w-16 text-center tabular-nums text-sm ${isPendingExtYear ? "border-amber-400 border-dashed" : isDifferent ? "border-primary" : ""}`}
+                                      placeholder="0"
+                                      value={currentValue || ""}
+                                      onChange={(e) => {
+                                        if (player.isFreeAgent) {
+                                          handleFreeAgentSalaryChange(player.playerId, year, e.target.value);
+                                        } else {
+                                          handleHypotheticalSalaryChange(player.playerId, year, e.target.value);
+                                        }
+                                      }}
+                                      data-testid={`input-hypothetical-${player.playerId}-${year}`}
+                                    />
+                                    <span className="text-xs text-muted-foreground">M</span>
+                                  </>
+                                )}
                               </div>
                               {isPendingExtYear && (
                                 <span className="text-[10px] text-amber-600 italic">pending ext.</span>
@@ -3550,7 +3566,7 @@ function ManageTeamContractsTab({
                                   DC: ${Math.ceil(deadCapValue)}M ({Math.round(deadCapPercent * 100)}%)
                                 </span>
                               )}
-                              {player.isRosterPlayer && leagueSalary > 0 && isDifferent && (
+                              {player.isRosterPlayer && leagueSalary > 0 && isDifferent && !isReadOnlySalary && (
                                 <span className="text-[10px] text-muted-foreground">
                                   League: ${leagueSalary.toFixed(1)}M
                                 </span>
@@ -6709,6 +6725,7 @@ export default function Contracts() {
     mutationFn: async (contracts: any[]) => {
       const response = await apiRequest("POST", `/api/league/${league?.leagueId}/contracts`, {
         contracts,
+        userId: user?.userId,
       });
       return response.json();
     },

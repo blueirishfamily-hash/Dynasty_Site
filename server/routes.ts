@@ -5730,14 +5730,23 @@ export async function registerRoutes(
     }
   });
 
-  // Save player contracts (bulk upsert)
+  // Save player contracts (bulk upsert) - commissioner only
   app.post("/api/league/:leagueId/contracts", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { contracts } = req.body;
+      const { contracts, userId } = req.body;
       
       if (!Array.isArray(contracts)) {
         return res.status(400).json({ error: "Contracts must be an array" });
+      }
+
+      const league = await getLeague(leagueId).catch(() => null);
+      if (!league) {
+        return res.status(404).json({ error: "League not found" });
+      }
+      const isCommissioner = userId && league.owner_id === userId;
+      if (!isCommissioner) {
+        return res.status(403).json({ error: "Only the league commissioner can save contracts directly" });
       }
 
       // Get all existing contracts once to avoid repeated queries
