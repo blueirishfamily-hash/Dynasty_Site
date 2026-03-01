@@ -284,6 +284,8 @@ export default function DraftProspects() {
   const [bulkText, setBulkText] = useState("");
   const [rasImportOpen, setRasImportOpen] = useState(false);
   const [rasImportCsv, setRasImportCsv] = useState("");
+  const [combineImportOpen, setCombineImportOpen] = useState(false);
+  const [combineImportCsv, setCombineImportCsv] = useState("");
   const [editForm, setEditForm] = useState<Partial<DraftProspect>>({});
 
   const isCommissioner = !!(
@@ -473,6 +475,33 @@ export default function DraftProspects() {
     },
     onError: (e: Error) => {
       toast({ variant: "destructive", title: "RAS import failed", description: e.message });
+    },
+  });
+
+  const combineImportMutation = useMutation({
+    mutationFn: async (csv: string) => {
+      const res = await fetch(
+        `/api/league/${league!.leagueId}/draft-prospects/combine-csv`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user?.userId, season, csv }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Combine CSV import failed");
+      }
+      return res.json();
+    },
+    onSuccess: (data: { success: boolean; updatedCount: number }) => {
+      queryClient.invalidateQueries({ queryKey });
+      setCombineImportOpen(false);
+      setCombineImportCsv("");
+      toast({ title: "Combine CSV imported", description: `${data.updatedCount ?? 0} prospects updated.` });
+    },
+    onError: (e: Error) => {
+      toast({ variant: "destructive", title: "Combine CSV import failed", description: e.message });
     },
   });
 
@@ -728,6 +757,15 @@ export default function DraftProspects() {
                     className={`w-4 h-4 mr-1 ${refreshMutation.isPending ? "animate-spin" : ""}`}
                   />
                   Refresh combine & awards
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCombineImportOpen(true)}
+                  disabled={combineImportMutation.isPending || prospects.length === 0}
+                >
+                  <FileUp className="w-4 h-4 mr-1" />
+                  Import combine CSV
                 </Button>
                 <Button
                   variant="outline"
@@ -1413,6 +1451,51 @@ export default function DraftProspects() {
             </Button>
             <Button onClick={handleBulkSubmit} disabled={bulkAddMutation.isPending}>
               Add prospects
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import combine CSV dialog */}
+      <Dialog open={combineImportOpen} onOpenChange={(open) => (!open && (setCombineImportOpen(false), setCombineImportCsv("")))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Import combine CSV</DialogTitle>
+            <DialogDescription>
+              Upload or paste a CSV with combine results. Columns: Name, Pos, School, Height, Weight, Hands, Arms, Wingspan, 40 Yd, 10 Split, Vertical, Broad, Bench, 3-Cone, Shuttle. Matched prospects will have their combine data replaced with the CSV row.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Input
+              type="file"
+              accept=".csv,text/csv"
+              className="cursor-pointer"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = () => setCombineImportCsv(String(reader.result ?? ""));
+                  reader.readAsText(file);
+                }
+                e.target.value = "";
+              }}
+            />
+            <Textarea
+              className="min-h-[200px] font-mono text-sm"
+              placeholder="Paste CSV with header: Name,Pos,School,Height,Weight,Hands,Arms,Wingspan,40 Yd,10 Split,Vertical,Broad,Bench,3-Cone,Shuttle"
+              value={combineImportCsv}
+              onChange={(e) => setCombineImportCsv(e.target.value)}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => (setCombineImportOpen(false), setCombineImportCsv(""))}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => combineImportMutation.mutate(combineImportCsv)}
+              disabled={combineImportMutation.isPending || !combineImportCsv.trim()}
+            >
+              Import
             </Button>
           </DialogFooter>
         </DialogContent>

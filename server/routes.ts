@@ -8938,6 +8938,168 @@ export async function registerRoutes(
     }
   });
 
+  app.post("/api/league/:leagueId/draft-prospects/combine-csv", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, csv, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (typeof csv !== "string") return res.status(400).json({ error: "CSV content required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can import combine CSV data" });
+
+      const prospects = await storage.getDraftProspects(leagueId, season);
+      if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
+
+      const normalizeName = (s: string) =>
+        String(s || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\b(jr\.?|sr\.?|iii?|iv)\b/gi, "").trim();
+      const nameAliases: Record<string, string> = { "k.c. concepcion": "kc concepcion", "mike washington jr.": "mike washington", "mike washington jr": "mike washington" };
+      const normalizeSchool = (s: string) => String(s || "").trim().toLowerCase();
+      const posMap: Record<string, string> = { de: "edge", edge: "edge", dt: "dt", nt: "dt", s: "s", ss: "s", fs: "s", cb: "cb", lb: "lb", ilb: "lb", olb: "lb", te: "te", wr: "wr", rb: "rb", qb: "qb", ot: "ot", og: "og", c: "c", k: "k", p: "p" };
+      const normalizePos = (pos: string) => posMap[pos.toLowerCase().replace(/\s+/g, "")] ?? pos.toLowerCase();
+
+      const parseCsvLine = (line: string): string[] => {
+        const out: string[] = [];
+        let i = 0;
+        while (i < line.length) {
+          if (line[i] === '"') {
+            i++;
+            let field = "";
+            while (i < line.length) {
+              if (line[i] === '"') {
+                if (line[i + 1] === '"') {
+                  field += '"';
+                  i += 2;
+                } else {
+                  break;
+                }
+              } else if (line[i] === "\\") {
+                i++;
+                field += line[i++] ?? "";
+              } else {
+                field += line[i++];
+              }
+            }
+            if (line[i] === '"') i++;
+            out.push(field);
+            while (i < line.length && (line[i] === "," || line[i] === " ")) i++;
+          } else {
+            let field = "";
+            while (i < line.length && line[i] !== ",") field += line[i++];
+            out.push(field.trim());
+            if (line[i] === ",") i++;
+          }
+        }
+        return out;
+      };
+
+      const CSV_COL_KEYS: Array<{ header: string; key: string }> = [
+        { header: "height", key: "height" },
+        { header: "weight", key: "weight" },
+        { header: "hands", key: "hand" },
+        { header: "arms", key: "arm" },
+        { header: "wingspan", key: "wingspan" },
+        { header: "40 yd", key: "40Yd" },
+        { header: "10 split", key: "10YdSplit" },
+        { header: "vertical", key: "vertical" },
+        { header: "broad", key: "broad" },
+        { header: "bench", key: "bench" },
+        { header: "3-cone", key: "3cone" },
+        { header: "shuttle", key: "shuttle" },
+      ];
+
+      const lines = csv.split(/\r?\n/).map((l: string) => l.trim()).filter(Boolean);
+      if (lines.length < 2) return res.status(400).json({ error: "CSV must have a header row and at least one data row" });
+
+      const headerCols = parseCsvLine(lines[0]).map((h: string) => h.trim().toLowerCase());
+      const nameIdx = headerCols.findIndex((h: string) => h === "name");
+      const posIdx = headerCols.findIndex((h: string) => h === "pos");
+      const schoolIdx = headerCols.findIndex((h: string) => h === "school");
+      if (nameIdx < 0) return res.status(400).json({ error: "CSV must have a 'Name' column" });
+
+      const colIndices: Record<string, number> = {};
+      for (const { header, key } of CSV_COL_KEYS) {
+        const idx = headerCols.findIndex((h: string) => h === header || h.replace(/\s+/g, " ").trim() === header);
+        if (idx >= 0) colIndices[key] = idx;
+      }
+
+      const combineRowsByNormalName = new Map<string, Array<Record<string, string>>>();
+      for (let i = 1; i < lines.length; i++) {
+        const cols = parseCsvLine(lines[i]);
+        const name = nameIdx >= 0 ? String(cols[nameIdx] ?? "").trim() : "";
+        if (!name) continue;
+        const row: Record<string, string> = {};
+        for (const [key, idx] of Object.entries(colIndices)) {
+          const val = cols[idx] != null ? String(cols[idx]).trim() : "";
+          if (val !== "") row[key] = val;
+        }
+        if (Object.keys(row).length === 0) continue;
+        const n = normalizeName(name);
+        const rowWithMeta = {
+          ...row,
+          _pos: posIdx >= 0 ? String(cols[posIdx] ?? "").trim() : "",
+          _school: schoolIdx >= 0 ? String(cols[schoolIdx] ?? "").trim() : "",
+        };
+        const list = combineRowsByNormalName.get(n) ?? [];
+        list.push(rowWithMeta);
+        combineRowsByNormalName.set(n, list);
+        const alt = nameAliases[n];
+        if (alt) {
+          const altList = combineRowsByNormalName.get(alt) ?? [];
+          altList.push(rowWithMeta);
+          combineRowsByNormalName.set(alt, altList);
+        }
+      }
+
+      const prospectByNormalName = new Map<string, typeof prospects>();
+      for (const p of prospects) {
+        const n = normalizeName(p.displayName);
+        const list = prospectByNormalName.get(n) ?? [];
+        list.push(p);
+        prospectByNormalName.set(n, list);
+        const alt = nameAliases[n];
+        if (alt) {
+          const altList = prospectByNormalName.get(alt) ?? [];
+          altList.push(p);
+          prospectByNormalName.set(alt, altList);
+        }
+      }
+
+      const updates: Array<{ id: string; combineData: string }> = [];
+      for (const p of prospects) {
+        const n = normalizeName(p.displayName);
+        const csvRows = combineRowsByNormalName.get(n) ?? combineRowsByNormalName.get(nameAliases[n] ?? "");
+        if (!csvRows || csvRows.length === 0) continue;
+        let csvRow = csvRows[0];
+        if (csvRows.length > 1) {
+          const match = csvRows.find((r: Record<string, string>) => {
+            const rowPos = normalizePos((r as any)._pos ?? "");
+            const rowSchool = normalizeSchool((r as any)._school ?? "");
+            const pPos = normalizePos(p.position ?? "");
+            const pSchool = normalizeSchool(p.school ?? "");
+            return (rowPos && pPos && rowPos === pPos) || (rowSchool && pSchool && (pSchool.includes(rowSchool) || rowSchool.includes(pSchool)));
+          });
+          if (match) csvRow = match;
+        }
+
+        const merged: Record<string, string> = {};
+        for (const k of Object.keys(csvRow)) {
+          if (k.startsWith("_")) continue;
+          const csvVal = csvRow[k] != null ? String(csvRow[k]).trim() : "";
+          if (csvVal !== "") merged[k] = csvVal;
+        }
+
+        if (Object.keys(merged).length > 0) {
+          updates.push({ id: p.id, combineData: JSON.stringify(merged) });
+        }
+      }
+
+      if (updates.length > 0) await storage.updateDraftProspectsCombineAndAwards(leagueId, season, updates);
+      res.json({ success: true, updatedCount: updates.length });
+    } catch (error: any) {
+      console.error("Error importing combine CSV:", error);
+      res.status(500).json({ error: error?.message || "Failed to import combine CSV data" });
+    }
+  });
+
   app.post("/api/league/:leagueId/draft-prospects/ras", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
