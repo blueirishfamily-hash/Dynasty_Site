@@ -16,7 +16,8 @@ import {
   TableHeader, 
   TableRow 
 } from "@/components/ui/table";
-import { Calendar, Dice1, Trophy, TrendingDown, Lock } from "lucide-react";
+import { Calendar, Dice1, Trophy, TrendingDown, Lock, GraduationCap } from "lucide-react";
+import DraftProspects from "@/pages/DraftProspects";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 
@@ -120,7 +121,7 @@ function getTeamInitials(name: string): string {
 
 export default function Draft() {
   const { user, league, season } = useSleeper();
-  const [activeTab, setActiveTab] = useState<"future" | "historical" | "odds">("future");
+  const [activeTab, setActiveTab] = useState<"future" | "historical" | "odds" | "prospects">("future");
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [showRookiesOnly, setShowRookiesOnly] = useState(false);
   const lockedOddsRef = useRef<Map<number, number[]>>(new Map());
@@ -380,10 +381,12 @@ export default function Draft() {
     .map((pick: any) => {
       const originalOwner = rosterNameMap.get(pick.originalOwnerId) || { name: `Team ${pick.originalOwnerId}`, initials: "??", avatar: null };
       const currentOwner = rosterNameMap.get(pick.currentOwnerId) || { name: `Team ${pick.currentOwnerId}`, initials: "??", avatar: null };
-      
+      // Use draftSlot (draft-odds order) when present so 1.01, 1.02, ... follow draft order
+      const pickSlot = Number(pick.draftSlot ?? pick.rosterId ?? 0);
       return {
         round: Number(pick.round || 1),
-        pick: Number(pick.rosterId || 0),
+        pick: pickSlot,
+        rosterId: pick.originalOwnerId != null ? Number(pick.originalOwnerId) : undefined,
         originalOwner: { name: originalOwner.name, initials: originalOwner.initials, avatar: originalOwner.avatar },
         currentOwner: { name: currentOwner.name, initials: currentOwner.initials, avatar: currentOwner.avatar },
         isUserPick: pick.currentOwnerId === userRosterId,
@@ -394,6 +397,83 @@ export default function Draft() {
       if (a.round !== b.round) return a.round - b.round;
       return a.pick - b.pick;
     });
+
+  // Draft order from Draft Odds logic (standings + max PF, bracket when postseason). Used so Future Picks follows Draft Odds until Sleeper assigns picks.
+  const draftOrderFromDraftOddsLogic = useMemo((): number[] => {
+    if (!standings || standings.length === 0 || !league) return [];
+    const NON_PLAYOFF_PICKS = 5;
+    const nTeams = league.totalRosters || 12;
+    const nPlayoff = league.playoffTeams ?? 6;
+    const playoffWeekStart = league.playoffWeekStart || 15;
+    const currentWeek = playoffPredictions?.currentWeek;
+    const seasonType = playoffPredictions?.seasonType;
+    const regularSeasonEnded =
+      seasonType === "post" || seasonType === "off" ||
+      (currentWeek !== undefined ? currentWeek >= playoffWeekStart : playoffPredictions?.remainingWeeks === 0);
+
+    const standingsList = standings.map((s: any) => ({
+      rosterId: s.rosterId,
+      maxPointsFor: (s as { maxPointsFor?: number }).maxPointsFor ?? s.pointsFor ?? 0,
+      rank: s.rank ?? 99,
+    }));
+
+    const getBracketPickAssignment = (): Map<number, number> => {
+      const assignment = new Map<number, number>();
+      const matchups = bracketData?.matchups ?? [];
+      const consolation = bracketData?.consolationMatchups ?? [];
+      const p7 = consolation.find((m: any) => m.placement === 7);
+      if (p7?.loser != null) assignment.set(p7.loser, NON_PLAYOFF_PICKS);
+      const p5 = consolation.find((m: any) => m.placement === 5);
+      if (p5?.loser != null) assignment.set(p5.loser, NON_PLAYOFF_PICKS + 1);
+      if (p5?.winner != null) assignment.set(p5.winner, NON_PLAYOFF_PICKS + 2);
+      const p3 = consolation.find((m: any) => m.placement === 3);
+      if (p3?.loser != null) assignment.set(p3.loser, NON_PLAYOFF_PICKS + 3);
+      if (p3?.winner != null) assignment.set(p3.winner, NON_PLAYOFF_PICKS + 4);
+      const p1 = matchups.find((m: any) => m.placement === 1);
+      if (p1?.loser != null) assignment.set(p1.loser, nTeams - 2);
+      if (p1?.winner != null) assignment.set(p1.winner, nTeams - 1);
+      return assignment;
+    };
+
+    const bracketPickAssignment = getBracketPickAssignment();
+
+    if (regularSeasonEnded) {
+      const bracketRosterIds = new Set(bracketPickAssignment.keys());
+      const eliminated = standingsList
+        .filter((row: { rosterId: number }) => !bracketRosterIds.has(row.rosterId))
+        .sort((a: { maxPointsFor: number }, b: { maxPointsFor: number }) => a.maxPointsFor - b.maxPointsFor);
+      const pickOrderRosterIds: number[] = [];
+      eliminated.forEach((row: { rosterId: number }) => pickOrderRosterIds.push(row.rosterId));
+      for (let slot = NON_PLAYOFF_PICKS; slot < nTeams; slot++) {
+        const rosterId = Array.from(bracketPickAssignment.entries()).find(([, idx]) => idx === slot)?.[0];
+        if (rosterId != null) pickOrderRosterIds.push(rosterId);
+      }
+      if (pickOrderRosterIds.length >= nTeams) return pickOrderRosterIds.slice(0, nTeams);
+    } else {
+      const eliminated = standingsList
+        .filter((row: { rank: number }) => row.rank > nPlayoff)
+        .sort((a: { maxPointsFor: number }, b: { maxPointsFor: number }) => a.maxPointsFor - b.maxPointsFor);
+      const playoff = standingsList
+        .filter((row: { rank: number }) => row.rank <= nPlayoff)
+        .sort((a: { rank: number }, b: { rank: number }) => b.rank - a.rank);
+      const order = [...eliminated.map((r: { rosterId: number }) => r.rosterId), ...playoff.map((r: { rosterId: number }) => r.rosterId)];
+      if (order.length === nTeams) return order;
+    }
+    return standings.map((s: any) => s.rosterId);
+  }, [standings, bracketData, playoffPredictions, league]);
+
+  const isDraftCompletedForCurrentYear = (drafts || []).some(
+    (d) => d.season === currentYear.toString() && isDraftComplete(d.status)
+  );
+
+  const draftOrderRosterIds = useMemo((): number[] => {
+    if (isDraftCompletedForCurrentYear && formattedFuturePicks.length > 0) {
+      const round1 = formattedFuturePicks.filter((p) => p.round === 1).sort((a, b) => a.pick - b.pick);
+      const fromPicks = round1.map((p) => p.rosterId).filter((id): id is number => id != null);
+      if (fromPicks.length >= totalTeams) return fromPicks;
+    }
+    return draftOrderFromDraftOddsLogic;
+  }, [isDraftCompletedForCurrentYear, formattedFuturePicks, draftOrderFromDraftOddsLogic, totalTeams]);
 
   const formattedHistoricalPicks: DraftPick[] = (historicalPicks || [])
     .filter((p) => !!p)
@@ -1072,34 +1152,30 @@ export default function Draft() {
     );
   };
 
-  const renderDraftGrid = (picks: DraftPick[], showPlayers: boolean) => {
+  const renderDraftGrid = (picks: DraftPick[], showPlayers: boolean, options?: { draftOrderRosterIds?: number[] }) => {
     if (!picks || picks.length === 0) {
       return <p className="text-center text-muted-foreground py-8">No picks available</p>;
     }
     
     const teamsCount = league?.totalRosters || 12;
+    const useDraftOrder = options?.draftOrderRosterIds && options.draftOrderRosterIds.length >= teamsCount;
+    
     // Calculate max rounds from picks (for 2023 draft which may have more than totalRounds)
     const maxRounds = picks.length > 0 ? Math.max(...picks.map(p => p.round || 1)) : totalRounds;
     const displayRounds = is2023Draft ? Math.max(maxRounds, 1) : totalRounds;
     
     // For historical drafts, create a mapping from rosterId to display order
-    // Get unique rosterIds from picks and sort them
-    const uniqueRosterIds = Array.from(new Set(
-      picks
-        .map(p => {
-          // For historical picks, we need to get rosterId from the pick data
-          // Check if pick has a rosterId property (from historical picks)
-          const rosterId = p.rosterId ?? p.pick;
-          return rosterId && !isNaN(Number(rosterId)) ? Number(rosterId) : null;
-        })
-        .filter((id): id is number => id !== null)
-    )).sort((a, b) => a - b);
-    
-    // Create rosterId to team index mapping
-    const rosterIdToIndex = new Map<number, number>();
-    uniqueRosterIds.forEach((rosterId, index) => {
-      rosterIdToIndex.set(rosterId, index);
-    });
+    // When useDraftOrder (Future Picks aligned with Draft Odds), row order = draftOrderRosterIds
+    const uniqueRosterIds = useDraftOrder
+      ? options.draftOrderRosterIds!
+      : Array.from(new Set(
+          picks
+            .map(p => {
+              const rosterId = p.rosterId ?? p.pick;
+              return rosterId && !isNaN(Number(rosterId)) ? Number(rosterId) : null;
+            })
+            .filter((id): id is number => id !== null)
+        )).sort((a, b) => a - b);
     
     return (
       <ScrollArea className="w-full">
@@ -1114,13 +1190,11 @@ export default function Draft() {
 
           <div className="mt-2 space-y-2">
             {Array.from({ length: Math.max(teamsCount, uniqueRosterIds.length || teamsCount) }, (_, teamIndex) => {
-              // For historical drafts, use the rosterId from the mapping
-              // For future drafts, use teamIndex + 1
               let targetRosterId: number;
-              if (is2023Draft && uniqueRosterIds.length > 0) {
-                if (teamIndex >= uniqueRosterIds.length) {
-                  return null; // Skip rows beyond available rosterIds
-                }
+              if (useDraftOrder && teamIndex < options!.draftOrderRosterIds!.length) {
+                targetRosterId = options!.draftOrderRosterIds![teamIndex];
+              } else if (is2023Draft && uniqueRosterIds.length > 0) {
+                if (teamIndex >= uniqueRosterIds.length) return null;
                 targetRosterId = uniqueRosterIds[teamIndex];
               } else {
                 targetRosterId = teamIndex + 1;
@@ -1135,13 +1209,10 @@ export default function Draft() {
                   {Array.from({ length: displayRounds }, (_, roundIndex) => {
                     const pick = picks.find((p) => {
                       try {
-                        if (is2023Draft && p.rosterId !== undefined && p.rosterId !== null) {
-                          // For 2023 draft, match by rosterId
+                        if (useDraftOrder || (is2023Draft && p.rosterId != null)) {
                           return p.round === roundIndex + 1 && p.rosterId === targetRosterId;
-                        } else {
-                          // For other drafts, match by pick number (which is rosterId for future picks, draftSlot for historical)
-                          return p.round === roundIndex + 1 && p.pick === targetRosterId;
                         }
+                        return p.round === roundIndex + 1 && p.pick === targetRosterId;
                       } catch (error) {
                         console.error("Error matching pick:", error, p);
                         return false;
@@ -1157,11 +1228,11 @@ export default function Draft() {
                       className={`p-2 rounded-md border border-border hover-elevate ${
                         pick.isUserPick ? "bg-primary/10 border-primary/30" : "bg-card"
                       }`}
-                      data-testid={`pick-${pick.round}-${pick.pick}`}
+                      data-testid={`pick-${pick.round}-${useDraftOrder ? teamIndex + 1 : pick.pick}`}
                     >
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-xs text-muted-foreground">
-                          {pick.round}.{String(pick.pick || "").padStart(2, "0")}
+                          {pick.round}.{String((useDraftOrder ? teamIndex + 1 : pick.pick) || "").padStart(2, "0")}
                         </span>
                         <div className="flex items-center gap-1">
                           {showRookiesOnly && pick.rookieDraftPosition && (
@@ -1282,11 +1353,13 @@ export default function Draft() {
                   ? currentYear 
                   : activeTab === "historical" 
                     ? (selectedDraftId ? completedDrafts.find(d => d.draftId === selectedDraftId)?.season : "")
-                    : `${currentYear} Odds`
+                    : activeTab === "prospects"
+                      ? "Prospects"
+                      : `${currentYear} Odds`
                 }
               </Badge>
             </div>
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "future" | "historical" | "odds")}>
+            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "future" | "historical" | "odds" | "prospects")}>
               <TabsList>
                 <TabsTrigger value="future" data-testid="tab-future-draft">
                   Future Picks
@@ -1297,6 +1370,10 @@ export default function Draft() {
                 <TabsTrigger value="odds" data-testid="tab-draft-odds">
                   <Dice1 className="w-4 h-4 mr-1" />
                   Draft Odds
+                </TabsTrigger>
+                <TabsTrigger value="prospects" data-testid="tab-draft-prospects">
+                  <GraduationCap className="w-4 h-4 mr-1" />
+                  Draft Prospects
                 </TabsTrigger>
               </TabsList>
             </Tabs>
@@ -1324,7 +1401,7 @@ export default function Draft() {
                   ))}
                 </div>
               ) : formattedFuturePicks.length > 0 ? (
-                renderDraftGrid(formattedFuturePicks, false)
+                renderDraftGrid(formattedFuturePicks, false, { draftOrderRosterIds })
               ) : (
                 <p className="text-center text-muted-foreground py-8">
                   No draft pick data available
@@ -1436,6 +1513,10 @@ export default function Draft() {
                 </div>
               )}
             </div>
+          ) : activeTab === "prospects" ? (
+            <div className="min-h-[400px]">
+              <DraftProspects />
+            </div>
           ) : (
             <div className="space-y-4">
               <CardDescription>
@@ -1475,7 +1556,17 @@ export default function Draft() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {draftOddsTeams.map((team, index) => (
+                    {(draftOrderRosterIds.length >= totalTeams
+                      ? [...draftOddsTeams].sort((a, b) => {
+                          const ia = draftOrderRosterIds.indexOf(a.rosterId);
+                          const ib = draftOrderRosterIds.indexOf(b.rosterId);
+                          if (ia === -1 && ib === -1) return 0;
+                          if (ia === -1) return 1;
+                          if (ib === -1) return -1;
+                          return ia - ib;
+                        })
+                      : draftOddsTeams
+                    ).map((team, index) => (
                       <TableRow 
                         key={team.rosterId}
                         className={team.isUser ? "bg-primary/5" : ""}

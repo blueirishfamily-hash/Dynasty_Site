@@ -24,6 +24,7 @@ import {
   matchupSnapshotsTable,
   transactionSnapshotsTable,
   favoriteExpiringPlayersTable,
+  draftProspectsTable,
 } from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -31,6 +32,7 @@ import type {
   AwardBallot, InsertAwardBallot,
   RuleVote, InsertRuleVote,
   LeagueSetting,
+  DraftProspect, InsertDraftProspect,
   PlayerContract, InsertPlayerContract,
   PlayerBid, InsertPlayerBid,
   DeadCapEntry, InsertDeadCapEntry,
@@ -88,7 +90,18 @@ export interface IStorage {
   
   getLeagueSetting(leagueId: string, settingKey: string): Promise<string | undefined>;
   setLeagueSetting(leagueId: string, settingKey: string, settingValue: string): Promise<LeagueSetting>;
-  
+
+  getDraftProspects(leagueId: string, season?: string): Promise<DraftProspect[]>;
+  getDraftProspectById(id: string, leagueId: string): Promise<DraftProspect | undefined>;
+  upsertDraftProspects(leagueId: string, season: string, prospects: Array<{ displayName: string; position?: string; school?: string; age?: number; adp?: number }>): Promise<DraftProspect[]>;
+  updateDraftProspect(id: string, leagueId: string, data: Partial<Pick<DraftProspect, "displayName" | "school" | "position" | "age" | "adp" | "overview" | "sleeperPlayerId" | "nflTeam" | "combineData" | "collegeAwards" | "ras" | "rasLink" | "advancedStats">>): Promise<DraftProspect | undefined>;
+  deleteDraftProspect(id: string, leagueId: string): Promise<void>;
+  reorderDraftProspects(leagueId: string, season: string, orderedIds: string[]): Promise<DraftProspect[]>;
+  updateDraftProspectsCombineAndAwards(leagueId: string, season: string, updates: Array<{ id: string; combineData?: string; collegeAwards?: string }>): Promise<void>;
+  updateDraftProspectsRas(leagueId: string, season: string, updates: Array<{ id: string; ras?: number; rasLink?: string }>): Promise<void>;
+  updateDraftProspectsAdvancedStats(leagueId: string, season: string, updates: Array<{ id: string; advancedStats: string | null }>): Promise<void>;
+  updateDraftProspectsSchool(leagueId: string, season: string, updates: Array<{ id: string; school: string | null }>): Promise<void>;
+
   getPlayerContracts(leagueId: string): Promise<PlayerContract[]>;
   upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract>;
   deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void>;
@@ -127,6 +140,7 @@ export interface IStorage {
   // League migration + roster mapping
   createLeagueMigration(data: InsertLeagueMigration): Promise<LeagueMigration>;
   updateLeagueMigration(id: string, updates: Partial<InsertLeagueMigration> & { status?: string; errorMessage?: string | null }): Promise<LeagueMigration | undefined>;
+  getMigrationByNewLeagueId(newLeagueId: string): Promise<LeagueMigration | null>;
   createRosterMapping(data: InsertRosterMapping): Promise<RosterMapping>;
   getRosterMappings(migrationId: string): Promise<RosterMapping[]>;
 
@@ -811,6 +825,231 @@ export class DatabaseStorage implements IStorage {
     };
   }
 
+  async getDraftProspects(leagueId: string, season: string = "2026"): Promise<DraftProspect[]> {
+    const rows = await db
+      .select()
+      .from(draftProspectsTable)
+      .where(and(
+        eq(draftProspectsTable.leagueId, leagueId),
+        eq(draftProspectsTable.season, season)
+      ))
+      .orderBy(asc(draftProspectsTable.rank));
+    return rows;
+  }
+
+  async getDraftProspectById(id: string, leagueId: string): Promise<DraftProspect | undefined> {
+    const [row] = await db
+      .select()
+      .from(draftProspectsTable)
+      .where(and(
+        eq(draftProspectsTable.id, id),
+        eq(draftProspectsTable.leagueId, leagueId)
+      ));
+    return row;
+  }
+
+  async upsertDraftProspects(
+    leagueId: string,
+    season: string,
+    prospects: Array<{ displayName: string; position?: string; school?: string; age?: number; adp?: number }>
+  ): Promise<DraftProspect[]> {
+    const now = Date.now();
+    const existing = await this.getDraftProspects(leagueId, season);
+    const toDelete = existing.filter((_, i) => i >= prospects.length);
+    for (const p of toDelete) {
+      await db.delete(draftProspectsTable).where(eq(draftProspectsTable.id, p.id));
+    }
+    const result: DraftProspect[] = [];
+    for (let i = 0; i < prospects.length; i++) {
+      const p = prospects[i];
+      const rank = i + 1;
+      const existingRow = existing[i];
+      const row = {
+        leagueId,
+        season,
+        rank,
+        displayName: p.displayName,
+        school: p.school ?? null,
+        position: p.position ?? null,
+        age: p.age ?? null,
+        adp: p.adp ?? null,
+        sleeperPlayerId: null,
+        overview: null,
+        collegeAwards: null,
+        combineData: null,
+        nflTeam: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      if (existingRow) {
+        await db
+          .update(draftProspectsTable)
+          .set({
+            rank: row.rank,
+            displayName: row.displayName,
+            school: row.school,
+            position: row.position,
+            age: row.age,
+            adp: row.adp,
+            updatedAt: now,
+          })
+          .where(eq(draftProspectsTable.id, existingRow.id));
+        result.push({ ...existingRow, ...row, id: existingRow.id });
+      } else {
+        const id = randomUUID();
+        await db.insert(draftProspectsTable).values({ id, ...row });
+        result.push({ id, ...row } as DraftProspect);
+      }
+    }
+    return result;
+  }
+
+  async updateDraftProspect(
+    id: string,
+    leagueId: string,
+    data: Partial<Pick<DraftProspect, "displayName" | "school" | "position" | "age" | "adp" | "overview" | "sleeperPlayerId" | "nflTeam" | "combineData" | "collegeAwards" | "ras" | "rasLink" | "advancedStats">>
+  ): Promise<DraftProspect | undefined> {
+    const [existing] = await db
+      .select()
+      .from(draftProspectsTable)
+      .where(and(eq(draftProspectsTable.id, id), eq(draftProspectsTable.leagueId, leagueId)));
+    if (!existing) return undefined;
+    const updatedAt = Date.now();
+    const set: Record<string, unknown> = { updatedAt };
+    if (data.displayName !== undefined) set.displayName = data.displayName;
+    if (data.school !== undefined) set.school = data.school;
+    if (data.position !== undefined) set.position = data.position;
+    if (data.age !== undefined) set.age = data.age;
+    if (data.adp !== undefined) set.adp = data.adp;
+    if (data.overview !== undefined) set.overview = data.overview;
+    if (data.sleeperPlayerId !== undefined) set.sleeperPlayerId = data.sleeperPlayerId;
+    if (data.nflTeam !== undefined) set.nflTeam = data.nflTeam;
+    if (data.combineData !== undefined) set.combineData = data.combineData;
+    if (data.collegeAwards !== undefined) set.collegeAwards = data.collegeAwards;
+    if (data.ras !== undefined) set.ras = data.ras;
+    if (data.rasLink !== undefined) set.rasLink = data.rasLink;
+    if (data.advancedStats !== undefined) set.advancedStats = data.advancedStats;
+    await db.update(draftProspectsTable).set(set).where(eq(draftProspectsTable.id, id));
+    const [updated] = await db.select().from(draftProspectsTable).where(eq(draftProspectsTable.id, id));
+    return updated;
+  }
+
+  async deleteDraftProspect(id: string, leagueId: string): Promise<void> {
+    const [deleted] = await db
+      .select()
+      .from(draftProspectsTable)
+      .where(and(eq(draftProspectsTable.id, id), eq(draftProspectsTable.leagueId, leagueId)));
+    if (!deleted) return;
+    await db.delete(draftProspectsTable).where(eq(draftProspectsTable.id, id));
+    const remaining = await this.getDraftProspects(leagueId, deleted.season);
+    const now = Date.now();
+    for (let i = 0; i < remaining.length; i++) {
+      if (remaining[i].rank !== i + 1) {
+        await db
+          .update(draftProspectsTable)
+          .set({ rank: i + 1, updatedAt: now })
+          .where(eq(draftProspectsTable.id, remaining[i].id));
+      }
+    }
+  }
+
+  async reorderDraftProspects(leagueId: string, season: string, orderedIds: string[]): Promise<DraftProspect[]> {
+    const now = Date.now();
+    for (let i = 0; i < orderedIds.length; i++) {
+      await db
+        .update(draftProspectsTable)
+        .set({ rank: i + 1, updatedAt: now })
+        .where(and(
+          eq(draftProspectsTable.id, orderedIds[i]),
+          eq(draftProspectsTable.leagueId, leagueId),
+          eq(draftProspectsTable.season, season)
+        ));
+    }
+    return this.getDraftProspects(leagueId, season);
+  }
+
+  async updateDraftProspectsCombineAndAwards(
+    leagueId: string,
+    season: string,
+    updates: Array<{ id: string; combineData?: string; collegeAwards?: string }>
+  ): Promise<void> {
+    const now = Date.now();
+    for (const u of updates) {
+      const set: Record<string, unknown> = { updatedAt: now };
+      if (u.combineData !== undefined) set.combineData = u.combineData;
+      if (u.collegeAwards !== undefined) set.collegeAwards = u.collegeAwards;
+      if (Object.keys(set).length > 1) {
+        await db
+          .update(draftProspectsTable)
+          .set(set)
+          .where(and(
+            eq(draftProspectsTable.id, u.id),
+            eq(draftProspectsTable.leagueId, leagueId),
+            eq(draftProspectsTable.season, season)
+          ));
+      }
+    }
+  }
+
+  async updateDraftProspectsRas(
+    leagueId: string,
+    season: string,
+    updates: Array<{ id: string; ras?: number; rasLink?: string }>
+  ): Promise<void> {
+    const now = Date.now();
+    for (const u of updates) {
+      const set: Record<string, unknown> = { updatedAt: now };
+      if (u.ras !== undefined) set.ras = u.ras;
+      if (u.rasLink !== undefined) set.rasLink = u.rasLink;
+      if (Object.keys(set).length > 1) {
+        await db
+          .update(draftProspectsTable)
+          .set(set)
+          .where(and(
+            eq(draftProspectsTable.id, u.id),
+            eq(draftProspectsTable.leagueId, leagueId),
+            eq(draftProspectsTable.season, season)
+          ));
+      }
+    }
+  }
+
+  async updateDraftProspectsAdvancedStats(
+    leagueId: string,
+    season: string,
+    updates: Array<{ id: string; advancedStats: string | null }>
+  ): Promise<void> {
+    const now = Date.now();
+    for (const u of updates) {
+      await db
+        .update(draftProspectsTable)
+        .set({ advancedStats: u.advancedStats, updatedAt: now })
+        .where(and(
+          eq(draftProspectsTable.id, u.id),
+          eq(draftProspectsTable.leagueId, leagueId),
+          eq(draftProspectsTable.season, season)
+        ));
+    }
+  }
+
+  async updateDraftProspectsSchool(
+    leagueId: string,
+    season: string,
+    updates: Array<{ id: string; school: string | null }>
+  ): Promise<void> {
+    const now = Date.now();
+    for (const u of updates) {
+      await db
+        .update(draftProspectsTable)
+        .set({ school: u.school, updatedAt: now })
+        .where(and(
+          eq(draftProspectsTable.id, u.id),
+          eq(draftProspectsTable.leagueId, leagueId),
+          eq(draftProspectsTable.season, season)
+        ));
+    }
+  }
+
   async getPlayerContracts(leagueId: string): Promise<PlayerContract[]> {
     const rows = await db
       .select()
@@ -1433,6 +1672,19 @@ export class DatabaseStorage implements IStorage {
       .where(eq(leagueMigrationsTable.id, id))
       .returning();
     return row;
+  }
+
+  async getMigrationByNewLeagueId(newLeagueId: string): Promise<LeagueMigration | null> {
+    const [row] = await db
+      .select()
+      .from(leagueMigrationsTable)
+      .where(and(
+        eq(leagueMigrationsTable.newLeagueId, newLeagueId),
+        eq(leagueMigrationsTable.status, "completed")
+      ))
+      .orderBy(desc(leagueMigrationsTable.migratedAt))
+      .limit(1);
+    return row ?? null;
   }
 
   async createRosterMapping(data: InsertRosterMapping): Promise<RosterMapping> {

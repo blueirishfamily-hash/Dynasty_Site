@@ -388,23 +388,59 @@ export async function registerRoutes(
     }
   });
 
-  // Get draft position for a player from most recent completed rookie draft
+  // Get draft position for a player from historical draft snapshots (2024/2023) or most recent completed rookie draft
   app.get("/api/league/:leagueId/player/:playerId/draft-position", async (req, res) => {
     try {
       const { leagueId, playerId } = req.params;
-      
-      // Get all completed drafts for the league, sorted by season descending.
-      // Include rookie, linear, and snake types (Sleeper uses order type, not "rookie" for many leagues).
+      const pid = String(playerId);
+
+      // 1. Try historical draft snapshots first (2024 then 2023; current league then old league if advanced)
+      const [snapshots2024Current, snapshots2023Current] = await Promise.all([
+        storage.getDraftSnapshots(leagueId, "2024"),
+        storage.getDraftSnapshots(leagueId, "2023"),
+      ]);
+      let snapshots2024Old: Awaited<ReturnType<typeof storage.getDraftSnapshots>> = [];
+      let snapshots2023Old: Awaited<ReturnType<typeof storage.getDraftSnapshots>> = [];
+      const migration = await storage.getMigrationByNewLeagueId(leagueId);
+      if (migration && migration.oldLeagueId !== leagueId) {
+        [snapshots2024Old, snapshots2023Old] = await Promise.all([
+          storage.getDraftSnapshots(migration.oldLeagueId, "2024"),
+          storage.getDraftSnapshots(migration.oldLeagueId, "2023"),
+        ]);
+      }
+      const snapshotBatches: { snapshots: typeof snapshots2024Current }[] = [
+        { snapshots: snapshots2024Current },
+        { snapshots: snapshots2023Current },
+        { snapshots: snapshots2024Old },
+        { snapshots: snapshots2023Old },
+      ];
+      for (const { snapshots } of snapshotBatches) {
+        for (const snapshot of snapshots) {
+          try {
+            const picks = JSON.parse(snapshot.picksData) as Array<{ player_id: string; round: number; draft_slot: number }>;
+            const pick = picks.find((p: { player_id: string }) => String(p.player_id) === pid);
+            if (pick) {
+              return res.json({
+                round: pick.round,
+                draftSlot: pick.draft_slot,
+                season: snapshot.season,
+                draftId: snapshot.draftId,
+              });
+            }
+          } catch {
+            // Malformed picksData: skip this snapshot
+          }
+        }
+      }
+
+      // 2. Fallback: Sleeper API
       const drafts = await getLeagueDrafts(leagueId);
       const completedDrafts = drafts
         .filter(d => d.status === "complete" && ["rookie", "linear", "snake"].includes(d.type))
         .sort((a, b) => parseInt(b.season) - parseInt(a.season));
-      
-      // Search through drafts from most recent to oldest
       for (const draft of completedDrafts) {
         const picks = await getDraftPicks(draft.draft_id);
-        const playerPick = picks.find(p => String(p.player_id) === String(playerId));
-        
+        const playerPick = picks.find(p => String(p.player_id) === pid);
         if (playerPick) {
           return res.json({
             round: playerPick.round,
@@ -414,7 +450,7 @@ export async function registerRoutes(
           });
         }
       }
-      
+
       res.json({ round: null, draftSlot: null, season: null, draftId: null });
     } catch (error) {
       console.error("Error fetching draft position:", error);
@@ -570,6 +606,43 @@ export async function registerRoutes(
         if (streak === 0 || streakType === null) return "—";
         return streakType ? `W${streak}` : `L${streak}`;
       };
+
+      // Build points per roster per week from matchups (for previous-week rank)
+      const pointsByRosterByWeek = new Map<number, Map<number, number>>();
+      rosters.forEach(r => pointsByRosterByWeek.set(r.roster_id, new Map()));
+      for (const { week, matchups } of allMatchups) {
+        for (const m of matchups) {
+          const rid = m.roster_id;
+          const pts = typeof m.points === "number" ? m.points : 0;
+          pointsByRosterByWeek.get(rid)?.set(week, pts);
+        }
+      }
+      const cumulativePointsThroughWeek = (rosterId: number, throughWeek: number): number => {
+        let sum = 0;
+        const byWeek = pointsByRosterByWeek.get(rosterId);
+        if (!byWeek) return 0;
+        for (let w = 1; w <= throughWeek; w++) {
+          sum += byWeek.get(w) ?? 0;
+        }
+        return sum;
+      };
+
+      const previousWeek = currentWeek - 1;
+      let previousRankByRoster: Map<number, number> | null = null;
+      if (previousWeek >= 1) {
+        const prevStandings = rosters.map(r => {
+          const history = matchupHistory.get(r.roster_id) || [];
+          const winsThroughPrev = history.filter(h => h.week <= previousWeek && h.won === true).length;
+          const pointsThroughPrev = cumulativePointsThroughWeek(r.roster_id, previousWeek);
+          return { rosterId: r.roster_id, wins: winsThroughPrev, pointsFor: pointsThroughPrev };
+        });
+        prevStandings.sort((a, b) => {
+          if (b.wins !== a.wins) return b.wins - a.wins;
+          return b.pointsFor - a.pointsFor;
+        });
+        previousRankByRoster = new Map();
+        prevStandings.forEach((t, idx) => previousRankByRoster!.set(t.rosterId, idx + 1));
+      }
 
       // Calculate max points for each team (sum of optimal weekly lineups)
       // Wrap in try-catch to ensure standings still return even if Max PF calculation fails
@@ -882,7 +955,13 @@ export async function registerRoutes(
           if (b.wins !== a.wins) return b.wins - a.wins;
           return b.pointsFor - a.pointsFor;
         })
-        .map((team, index) => ({ ...team, rank: index + 1 }));
+        .map((team, index) => ({
+          ...team,
+          rank: index + 1,
+          previousRank: previousWeek >= 1 && previousRankByRoster
+            ? (previousRankByRoster.get(team.rosterId) ?? index + 1)
+            : null,
+        }));
 
       res.json(standings);
     } catch (error) {
@@ -1982,7 +2061,43 @@ export async function registerRoutes(
         }
       });
 
-      res.json(depthData);
+      // Position strength vs league: rank each roster by total PPG per position (QB, RB, WR, TE, K, DEF)
+      const totalTeams = rosters.length;
+      const positionRanks: Record<string, { rank: number; totalTeams: number; totalPpg: number }> = {};
+      const positionsForStrength = ["QB", "RB", "WR", "TE", "K", "DEF"] as const;
+      positionsForStrength.forEach(pos => {
+        const rosterTotals: { rosterId: number; ownerId: string; totalPpg: number }[] = rosters.map(r => {
+          let totalPpg = 0;
+          (r.players || []).forEach(pid => {
+            const player = players[pid];
+            if (!player || player.position !== pos) return;
+            totalPpg += playerPPG.get(pid) || 0;
+          });
+          return { rosterId: r.roster_id, ownerId: r.owner_id, totalPpg };
+        });
+        rosterTotals.sort((a, b) => b.totalPpg - a.totalPpg || a.rosterId - b.rosterId);
+        let rank = 1;
+        let prevPpg = -1;
+        let userRank = 0;
+        let userTotalPpg = 0;
+        for (let i = 0; i < rosterTotals.length; i++) {
+          if (rosterTotals[i].totalPpg !== prevPpg) {
+            rank = i + 1;
+            prevPpg = rosterTotals[i].totalPpg;
+          }
+          if (rosterTotals[i].ownerId === req.params.userId) {
+            userRank = rank;
+            userTotalPpg = Math.round(rosterTotals[i].totalPpg * 10) / 10;
+            break;
+          }
+        }
+        const userHasPosition = depthData[pos] || (userRoster.players || []).some(pid => players[pid]?.position === pos);
+        if (userHasPosition && userRank > 0) {
+          positionRanks[pos] = { rank: userRank, totalTeams, totalPpg: userTotalPpg };
+        }
+      });
+
+      res.json({ ...depthData, positionRanks });
     } catch (error) {
       console.error("Error fetching depth analysis:", error);
       res.status(500).json({ error: "Failed to fetch depth analysis" });
@@ -2933,13 +3048,16 @@ export async function registerRoutes(
     }
   });
 
-  // Get traded picks / draft capital
+  // Get traded picks / draft capital (draft order from draft-odds logic: standings + max PF, bracket when postseason)
   app.get("/api/sleeper/league/:leagueId/draft-picks", async (req, res) => {
     try {
-      const [tradedPicks, rosters, users] = await Promise.all([
-        getTradedPicks(req.params.leagueId),
-        getLeagueRosters(req.params.leagueId),
-        getLeagueUsers(req.params.leagueId),
+      const leagueId = req.params.leagueId;
+      const [tradedPicks, rosters, users, league, nflState] = await Promise.all([
+        getTradedPicks(leagueId),
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getLeague(leagueId).catch(() => null),
+        getNFLState(),
       ]);
 
       const userMap = new Map<string, SleeperLeagueUser>();
@@ -2952,35 +3070,135 @@ export async function registerRoutes(
         rosterOwnerMap.set(r.roster_id, teamName);
       });
 
-      // Build complete draft pick ownership for next few years
+      const playoffTeams = league?.settings?.playoff_teams ?? 6;
+      const playoffWeekStart = (league?.settings as any)?.playoff_week_start ?? 15;
+      const currentWeek = getEffectiveWeek(nflState, league);
+      const regularSeasonWeeks = Math.max(1, playoffWeekStart - 1);
+
+      // Max PF: regular season weeks only
+      const matchupPromises: Promise<SleeperMatchup[]>[] = [];
+      for (let week = 1; week <= regularSeasonWeeks; week++) {
+        matchupPromises.push(getLeagueMatchups(leagueId, week).catch(() => []));
+      }
+      const allMatchups = await Promise.all(matchupPromises);
+      const maxPfByRoster = new Map<number, number>();
+      rosters.forEach(r => maxPfByRoster.set(r.roster_id, 0));
+      allMatchups.forEach((weekMatchups, weekIndex) => {
+        const matchupGroups = new Map<number, SleeperMatchup[]>();
+        weekMatchups.forEach(m => {
+          if (!matchupGroups.has(m.matchup_id)) matchupGroups.set(m.matchup_id, []);
+          matchupGroups.get(m.matchup_id)!.push(m);
+        });
+        matchupGroups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const p1 = t1.points ?? 0;
+          const p2 = t2.points ?? 0;
+          const cur1 = maxPfByRoster.get(t1.roster_id) ?? 0;
+          const cur2 = maxPfByRoster.get(t2.roster_id) ?? 0;
+          maxPfByRoster.set(t1.roster_id, Math.max(cur1, p1));
+          maxPfByRoster.set(t2.roster_id, Math.max(cur2, p2));
+        });
+      });
+
+      // Standings: wins, pointsFor, maxPointsFor, rank
+      const standingsList = rosters.map(r => ({
+        rosterId: r.roster_id,
+        wins: r.settings.wins,
+        pointsFor: r.settings.fpts + (r.settings.fpts_decimal ?? 0) / 100,
+        maxPointsFor: maxPfByRoster.get(r.roster_id) ?? r.settings.fpts + (r.settings.fpts_decimal ?? 0) / 100,
+      }));
+      standingsList.sort((a, b) => {
+        if (b.wins !== a.wins) return b.wins - a.wins;
+        return b.pointsFor - a.pointsFor;
+      });
+      const rankByRoster = new Map<number, number>();
+      standingsList.forEach((row, i) => rankByRoster.set(row.rosterId, i + 1));
+
+      const NON_PLAYOFF_PICKS = 5;
+      const totalTeams = rosters.length;
+
+      // Draft order: 1..12 (roster_id for slot 1, 2, ... 12)
+      let draftOrder: number[];
+      const isPostseason = currentWeek >= playoffWeekStart;
+
+      if (isPostseason) {
+        let bracket: Awaited<ReturnType<typeof getWinnersBracket>> | null = null;
+        let losersBracket: Awaited<ReturnType<typeof getLosersBracket>> | null = null;
+        try {
+          [bracket, losersBracket] = await Promise.all([
+            getWinnersBracket(leagueId).catch(() => null),
+            getLosersBracket(leagueId).catch(() => null),
+          ]);
+        } catch (_) {}
+
+        const bracketPickAssignment = new Map<number, number>(); // rosterId -> pick index (0-based)
+        const allBracket = [...(bracket ?? []), ...(losersBracket ?? [])];
+        const p7 = allBracket.find(m => m.p === 7);
+        if (p7?.l != null) bracketPickAssignment.set(p7.l, NON_PLAYOFF_PICKS);
+        const p5 = allBracket.find(m => m.p === 5);
+        if (p5?.l != null) bracketPickAssignment.set(p5.l, NON_PLAYOFF_PICKS + 1);
+        if (p5?.w != null) bracketPickAssignment.set(p5.w, NON_PLAYOFF_PICKS + 2);
+        const p3 = allBracket.find(m => m.p === 3);
+        if (p3?.l != null) bracketPickAssignment.set(p3.l, NON_PLAYOFF_PICKS + 3);
+        if (p3?.w != null) bracketPickAssignment.set(p3.w, NON_PLAYOFF_PICKS + 4);
+        const p1 = allBracket.find(m => m.p === 1);
+        if (p1?.l != null) bracketPickAssignment.set(p1.l, totalTeams - 2);
+        if (p1?.w != null) bracketPickAssignment.set(p1.w, totalTeams - 1);
+
+        const bracketRosterIds = new Set(bracketPickAssignment.keys());
+        const eliminated = standingsList
+          .filter(row => !bracketRosterIds.has(row.rosterId))
+          .sort((a, b) => a.maxPointsFor - b.maxPointsFor);
+        const pickOrderRosterIds: number[] = [];
+        eliminated.forEach(row => pickOrderRosterIds.push(row.rosterId));
+        for (let slot = NON_PLAYOFF_PICKS; slot < totalTeams; slot++) {
+          const rosterId = Array.from(bracketPickAssignment.entries()).find(([, idx]) => idx === slot)?.[0];
+          if (rosterId != null) pickOrderRosterIds.push(rosterId);
+        }
+        draftOrder =
+          pickOrderRosterIds.length >= totalTeams
+            ? pickOrderRosterIds.slice(0, totalTeams)
+            : rosters.map(r => r.roster_id);
+      } else {
+        const eliminated = standingsList
+          .filter(row => (rankByRoster.get(row.rosterId) ?? 99) > playoffTeams)
+          .sort((a, b) => a.maxPointsFor - b.maxPointsFor);
+        const playoff = standingsList
+          .filter(row => (rankByRoster.get(row.rosterId) ?? 99) <= playoffTeams)
+          .sort((a, b) => (rankByRoster.get(b.rosterId) ?? 0) - (rankByRoster.get(a.rosterId) ?? 0));
+        draftOrder = [...eliminated.map(r => r.rosterId), ...playoff.map(r => r.rosterId)];
+      }
+
+      if (draftOrder.length !== totalTeams) {
+        draftOrder = rosters.map(r => r.roster_id);
+      }
+
+      // Build complete draft pick ownership (order by draft slot; ownership unchanged)
       const currentYear = new Date().getFullYear();
       const years = [currentYear, currentYear + 1, currentYear + 2];
       const rounds = [1, 2, 3, 4];
-      
-      const allPicks: DraftPick[] = [];
-      
+      const allPicks: (DraftPick & { draftSlot?: number })[] = [];
+
       years.forEach(year => {
         rounds.forEach(round => {
-          rosters.forEach(roster => {
-            // Check if this pick was traded
+          draftOrder.forEach((rosterId, index) => {
+            const slot = index + 1;
             const traded = tradedPicks.find(
-              tp => tp.season === year.toString() && 
-                    tp.round === round && 
-                    tp.roster_id === roster.roster_id
+              tp => tp.season === year.toString() && tp.round === round && tp.roster_id === rosterId
             );
-            
-            const originalOwnerId = roster.roster_id;
-            const currentOwnerId = traded ? traded.owner_id : roster.roster_id;
-            
+            const originalOwnerId = rosterId;
+            const currentOwnerId = traded ? traded.owner_id : rosterId;
             allPicks.push({
-              id: `${year}-${round}-${roster.roster_id}`,
+              id: `${year}-${round}-${rosterId}`,
               season: year.toString(),
               round,
-              rosterId: roster.roster_id,
+              rosterId,
               originalOwnerId,
               currentOwnerId,
               originalOwnerName: rosterOwnerMap.get(originalOwnerId),
               currentOwnerName: rosterOwnerMap.get(currentOwnerId),
+              draftSlot: slot,
             });
           });
         });
@@ -5078,7 +5296,13 @@ export async function registerRoutes(
         : [];
 
       const votingMasterEnabled = (await storage.getLeagueSetting(leagueId, "rule_voting_master")) === "true";
-      res.json({ suggestions: suggestionsWithVoting, votingMasterEnabled });
+      const closesAtRaw = await storage.getLeagueSetting(leagueId, "rule_voting_closes_at");
+      const votingClosesAt =
+        closesAtRaw != null && closesAtRaw !== ""
+          ? parseInt(closesAtRaw, 10)
+          : null;
+      const votingClosesAtValid = typeof votingClosesAt === "number" && !isNaN(votingClosesAt) ? votingClosesAt : null;
+      res.json({ suggestions: suggestionsWithVoting, votingMasterEnabled, votingClosesAt: votingClosesAtValid });
     } catch (error: any) {
       console.error("Error fetching rule suggestions:", error);
       const errorMessage = error?.message || "Unknown error";
@@ -5127,6 +5351,32 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error setting rule voting master:", error);
       res.status(500).json({ error: "Failed to set voting state" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/rule-voting-closes-at", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, closesAt } = req.body;
+      if (!leagueId || userId == null) return res.status(400).json({ error: "League ID and userId are required" });
+      const isUserCommissioner = await isCommissioner(userId, leagueId);
+      if (!isUserCommissioner) {
+        return res.status(403).json({ error: "Only the commissioner can set the voting close time." });
+      }
+      if (closesAt == null) {
+        await storage.setLeagueSetting(leagueId, "rule_voting_closes_at", "");
+      } else {
+        const ts = typeof closesAt === "number" ? closesAt : parseInt(String(closesAt), 10);
+        if (isNaN(ts)) return res.status(400).json({ error: "closesAt must be a valid timestamp (ms)." });
+        await storage.setLeagueSetting(leagueId, "rule_voting_closes_at", String(ts));
+      }
+      const raw = await storage.getLeagueSetting(leagueId, "rule_voting_closes_at");
+      const votingClosesAt =
+        raw != null && raw !== "" ? (parseInt(raw, 10) || null) : null;
+      res.json({ votingClosesAt });
+    } catch (error) {
+      console.error("Error setting rule voting closes at:", error);
+      res.status(500).json({ error: "Failed to set voting close time" });
     }
   });
 
@@ -5375,6 +5625,13 @@ export async function registerRoutes(
         if (votingMaster !== "true") {
           return res.status(403).json({ error: "Voting is currently closed." });
         }
+        const closesAtRaw = await storage.getLeagueSetting(leagueId, "rule_voting_closes_at");
+        if (closesAtRaw != null && closesAtRaw !== "") {
+          const closesAt = parseInt(closesAtRaw, 10);
+          if (!isNaN(closesAt) && Date.now() >= closesAt) {
+            return res.status(403).json({ error: "Voting has closed." });
+          }
+        }
         await storage.castRuleRankedVote(ruleId, parseInt(rosterId), voterName, points.map((p: number) => Number(p)));
         return res.json({ success: true });
       }
@@ -5389,6 +5646,13 @@ export async function registerRoutes(
       const votingMaster = await storage.getLeagueSetting(leagueId, "rule_voting_master");
       if (votingMaster !== "true") {
         return res.status(403).json({ error: "Voting is currently closed." });
+      }
+      const closesAtRaw = await storage.getLeagueSetting(leagueId, "rule_voting_closes_at");
+      if (closesAtRaw != null && closesAtRaw !== "") {
+        const closesAt = parseInt(closesAtRaw, 10);
+        if (!isNaN(closesAt) && Date.now() >= closesAt) {
+          return res.status(403).json({ error: "Voting has closed." });
+        }
       }
       const ruleVote = await storage.castRuleVote({
         ruleId,
@@ -5413,7 +5677,14 @@ export async function registerRoutes(
       }
       const voteType = (rule as any).voteType ?? "binary";
       const votingMasterEnabled = (await storage.getLeagueSetting(rule.leagueId, "rule_voting_master")) === "true";
-      if (votingMasterEnabled) {
+      const closesAtRaw = await storage.getLeagueSetting(rule.leagueId, "rule_voting_closes_at");
+      const votingClosedByDeadline =
+        closesAtRaw != null &&
+        closesAtRaw !== "" &&
+        !isNaN(parseInt(closesAtRaw, 10)) &&
+        Date.now() >= parseInt(closesAtRaw, 10);
+      const effectivelyClosed = !votingMasterEnabled || votingClosedByDeadline;
+      if (!effectivelyClosed) {
         if (voteType === "multi_choice") {
           return res.json({ ranked: true, pointsByOption: [], voterCount: 0 });
         }
@@ -6927,6 +7198,139 @@ export async function registerRoutes(
     }
   });
 
+  // Get preferred free agents (trending + expiring not extended); visibility controlled by commissioner
+  app.get("/api/league/:leagueId/preferred-free-agents", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const visibleSetting = await storage.getLeagueSetting(leagueId, "preferred_free_agents_visible");
+      if (visibleSetting === "false") {
+        return res.json({ visible: false, players: [] });
+      }
+
+      const skillPositions = new Set(["QB", "RB", "WR", "TE", "K"]);
+      const trendingPlayerIds: string[] = [];
+      let trendingCountByPlayer: Record<string, number> = {};
+
+      try {
+        const trendingRes = await fetch(
+          "https://api.sleeper.app/v1/players/nfl/trending/add?lookback_hours=24&limit=30"
+        );
+        if (trendingRes.ok) {
+          const trending = await trendingRes.json();
+          if (Array.isArray(trending)) {
+            for (const item of trending) {
+              const pid = item?.player_id ?? item?.playerId;
+              if (pid) {
+                trendingPlayerIds.push(String(pid));
+                if (typeof item?.count === "number") {
+                  trendingCountByPlayer[String(pid)] = item.count;
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Sleeper trending fetch failed:", e);
+      }
+
+      const expiringPlayerIds: string[] = [];
+      const migration = await storage.getMigrationByNewLeagueId(leagueId);
+      if (migration) {
+        const oldLeagueId = migration.oldLeagueId;
+        const oldSeason = parseInt(migration.oldSeason, 10);
+        if (!Number.isNaN(oldSeason)) {
+          const contracts = await storage.getPlayerContracts(oldLeagueId);
+          for (const contract of contracts) {
+            if ((contract as any).extensionApplied === 1) continue;
+            let salaries: Record<string, number> = {};
+            try {
+              const raw = (contract as any).salaries;
+              salaries = typeof raw === "string" ? JSON.parse(raw || "{}") : raw || {};
+            } catch {
+              continue;
+            }
+            const entries = Object.entries(salaries)
+              .map(([y, v]) => ({ year: parseInt(y, 10), value: Number(v) }))
+              .filter((e) => !Number.isNaN(e.year) && e.value > 0);
+            const lastPaidYear = entries.length ? Math.max(...entries.map((e) => e.year)) : 0;
+            const salaryThatYear = lastPaidYear ? Number(salaries[String(lastPaidYear)]) || 0 : 0;
+            if (lastPaidYear === oldSeason && salaryThatYear > 0) {
+              expiringPlayerIds.push(contract.playerId);
+            }
+          }
+        }
+      }
+
+      const mergedIds = new Set<string>();
+      const order: string[] = [];
+      for (const id of trendingPlayerIds) {
+        if (!mergedIds.has(id)) {
+          mergedIds.add(id);
+          order.push(id);
+        }
+      }
+      for (const id of expiringPlayerIds) {
+        if (!mergedIds.has(id)) {
+          mergedIds.add(id);
+          order.push(id);
+        }
+      }
+
+      const playersMap = await getAllPlayers().catch(() => ({} as Record<string, SleeperPlayer>));
+      const players: Array<{ id: string; name: string; position: string; team: string | null; source: string; trendingCount?: number }> = [];
+      for (const playerId of order) {
+        const p = playersMap[playerId];
+        if (!p) {
+          players.push({
+            id: playerId,
+            name: `Unknown (${playerId})`,
+            position: "NA",
+            team: null,
+            source: trendingPlayerIds.includes(playerId) ? "trending" : "expiring",
+            trendingCount: trendingCountByPlayer[playerId],
+          });
+          continue;
+        }
+        const position = p.position || "NA";
+        if (!skillPositions.has(position)) continue;
+        const name = p.full_name || [p.first_name, p.last_name].filter(Boolean).join(" ") || "Unknown";
+        players.push({
+          id: playerId,
+          name,
+          position,
+          team: p.team || null,
+          source: trendingPlayerIds.includes(playerId) ? "trending" : "expiring",
+          trendingCount: trendingCountByPlayer[playerId],
+        });
+      }
+
+      res.json({ visible: true, players });
+    } catch (error) {
+      console.error("Error fetching preferred free agents:", error);
+      res.status(500).json({ error: "Failed to fetch preferred free agents" });
+    }
+  });
+
+  // Set preferred free agents section visibility (commissioner only)
+  app.post("/api/league/:leagueId/preferred-free-agents-visibility", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { userId, visible } = req.body;
+      if (!userId) {
+        return res.status(400).json({ error: "userId is required" });
+      }
+      const isUserCommissioner = await isCommissioner(userId, leagueId);
+      if (!isUserCommissioner) {
+        return res.status(403).json({ error: "Only the commissioner can change this setting" });
+      }
+      await storage.setLeagueSetting(leagueId, "preferred_free_agents_visible", visible ? "true" : "false");
+      res.json({ visible: !!visible });
+    } catch (error) {
+      console.error("Error setting preferred free agents visibility:", error);
+      res.status(500).json({ error: "Failed to set visibility" });
+    }
+  });
+
   // Get favorite expiring players for a team
   app.get("/api/league/:leagueId/favorites/:rosterId", async (req, res) => {
     try {
@@ -8253,6 +8657,795 @@ export async function registerRoutes(
     }
     return false;
   }
+
+  // Draft Prospects API (top 40 incoming rookies, 2026 class)
+  const DEFAULT_COMBINE_URL = "https://www.cbssports.com/nfl/draft/news/2026-nfl-combine-results-full-list-measurements-40-times/";
+  const DEFAULT_AWARDS_URL = "https://www.cbssports.com/college-football/news/college-football-awards-2025-where-to-watch-winners/";
+
+  app.get("/api/league/:leagueId/draft-prospects", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const season = (req.query.season as string) || "2026";
+      if (!leagueId) return res.status(400).json({ error: "League ID is required" });
+      const prospects = await storage.getDraftProspects(leagueId, season);
+      let playersMap: Record<string, SleeperPlayer> = {};
+      try {
+        playersMap = await getAllPlayers();
+      } catch {
+        // ignore
+      }
+      const enriched = prospects.map((p) => {
+        const sleeper = p.sleeperPlayerId ? playersMap[p.sleeperPlayerId] : null;
+        return {
+          ...p,
+          photoUrl: sleeper ? `https://sleepercdn.com/content/nfl/players/${p.sleeperPlayerId}.jpg` : null,
+          sleeperTeam: sleeper?.team ?? null,
+          sleeperCollege: sleeper?.college ?? null,
+        };
+      });
+      res.json(enriched);
+    } catch (error: any) {
+      console.error("Error fetching draft prospects:", error);
+      const msg = error?.message || "Failed to fetch draft prospects";
+      const schemaHint = /column.*does not exist|relation.*does not exist/i.test(String(msg))
+        ? " Run 'npm run db:push' to sync the database schema."
+        : "";
+      res.status(500).json({ error: msg + schemaHint });
+    }
+  });
+
+  app.get("/api/league/:leagueId/draft-prospects/:id", async (req, res) => {
+    try {
+      const { leagueId, id } = req.params;
+      if (!leagueId || !id) return res.status(400).json({ error: "League ID and prospect ID required" });
+      const prospect = await storage.getDraftProspectById(id, leagueId);
+      if (!prospect) return res.status(404).json({ error: "Prospect not found" });
+      let sleeper: SleeperPlayer | null = null;
+      if (prospect.sleeperPlayerId) {
+        try {
+          const players = await getAllPlayers();
+          sleeper = players[prospect.sleeperPlayerId] ?? null;
+        } catch {
+          // ignore
+        }
+      }
+      res.json({
+        ...prospect,
+        photoUrl: prospect.sleeperPlayerId ? `https://sleepercdn.com/content/nfl/players/${prospect.sleeperPlayerId}.jpg` : null,
+        sleeperTeam: sleeper?.team ?? null,
+        sleeperCollege: sleeper?.college ?? null,
+      });
+    } catch (error: any) {
+      console.error("Error fetching draft prospect:", error);
+      res.status(500).json({ error: error?.message || "Failed to fetch draft prospect" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/draft-prospects", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, prospects: prospectsBody, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can manage draft prospects" });
+      const arr = Array.isArray(prospectsBody) ? prospectsBody : [];
+      if (arr.length > 40) return res.status(400).json({ error: "Maximum 40 prospects allowed" });
+      const prospects = arr.map((p: any) => ({
+        displayName: String(p.displayName ?? p.name ?? "").trim(),
+        position: p.position ? String(p.position).trim() : undefined,
+        school: p.school ? String(p.school).trim() : undefined,
+        age: p.age != null ? Number(p.age) : undefined,
+        adp: p.adp != null ? Number(p.adp) : undefined,
+      }));
+      if (prospects.some((p: any) => !p.displayName)) return res.status(400).json({ error: "Each prospect must have a displayName" });
+      const result = await storage.upsertDraftProspects(leagueId, season, prospects);
+      try {
+        await fillSchoolFromCfbd(leagueId, season);
+      } catch (fillErr: any) {
+        console.warn("Fill school from CFBD after add prospects:", fillErr?.message ?? fillErr);
+      }
+      const final = await storage.getDraftProspects(leagueId, season);
+      res.json(final);
+    } catch (error: any) {
+      console.error("Error upserting draft prospects:", error);
+      res.status(500).json({ error: error?.message || "Failed to upsert draft prospects" });
+    }
+  });
+
+  app.put("/api/league/:leagueId/draft-prospects/:id", async (req, res) => {
+    try {
+      const { leagueId, id } = req.params;
+      const { userId, ...data } = req.body;
+      if (!leagueId || !id || !userId) return res.status(400).json({ error: "League ID, prospect ID, and userId required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can update draft prospects" });
+      const updated = await storage.updateDraftProspect(id, leagueId, data);
+      if (!updated) return res.status(404).json({ error: "Prospect not found" });
+      res.json(updated);
+    } catch (error: any) {
+      console.error("Error updating draft prospect:", error);
+      res.status(500).json({ error: error?.message || "Failed to update draft prospect" });
+    }
+  });
+
+  app.delete("/api/league/:leagueId/draft-prospects/:id", async (req, res) => {
+    try {
+      const { leagueId, id } = req.params;
+      const userId = req.query.userId as string;
+      if (!leagueId || !id || !userId) return res.status(400).json({ error: "League ID, prospect ID, and userId required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can delete draft prospects" });
+      await storage.deleteDraftProspect(id, leagueId);
+      res.json({ success: true });
+    } catch (error: any) {
+      console.error("Error deleting draft prospect:", error);
+      res.status(500).json({ error: error?.message || "Failed to delete draft prospect" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/draft-prospects/reorder", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, orderedIds, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can reorder draft prospects" });
+      const ids = Array.isArray(orderedIds) ? orderedIds : [];
+      if (ids.length > 40) return res.status(400).json({ error: "Maximum 40 prospects" });
+      const result = await storage.reorderDraftProspects(leagueId, season, ids);
+      res.json(result);
+    } catch (error: any) {
+      console.error("Error reordering draft prospects:", error);
+      res.status(500).json({ error: error?.message || "Failed to reorder draft prospects" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/draft-prospects/refresh", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can refresh combine & awards data" });
+      const combineUrl = (await storage.getLeagueSetting(leagueId, "draft_combine_url")) || DEFAULT_COMBINE_URL;
+      const awardsUrl = (await storage.getLeagueSetting(leagueId, "draft_awards_url")) || DEFAULT_AWARDS_URL;
+      const prospects = await storage.getDraftProspects(leagueId, season);
+      if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
+
+      const { load } = await import("cheerio");
+      const normalizeName = (s: string) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\b(jr\.?|sr\.?|iii?|iv)\b/gi, "").trim();
+      const nameAliases: Record<string, string> = { "k.c. concepcion": "kc concepcion", "mike washington jr.": "mike washington", "mike washington jr": "mike washington" };
+
+      const updatesByProspectId = new Map<string, { combineData?: string; collegeAwards?: string }>();
+      for (const p of prospects) updatesByProspectId.set(p.id, {});
+
+      const prospectByNormalName = new Map<string, typeof prospects[0]>();
+      for (const p of prospects) {
+        const n = normalizeName(p.displayName);
+        prospectByNormalName.set(n, p);
+        const alt = nameAliases[n];
+        if (alt) prospectByNormalName.set(alt, p);
+      }
+
+      let combineFetched = false;
+      try {
+        const combineRes = await fetch(combineUrl, { headers: { "User-Agent": "Mozilla/5.0 (compatible; DynastyApp/1.0)" } });
+        if (combineRes.ok) {
+          const html = await combineRes.text();
+          const $ = load(html);
+          const combineByPlayer = new Map<string, Record<string, string>>();
+          $("table").each((_, table) => {
+            const $table = $(table);
+            const rows = $table.find("tr");
+            if (rows.length < 2) return;
+            const headerCells = $(rows[0]).find("td, th").map((__, c) => $(c).text().trim().toLowerCase()).get();
+            const playerIdx = headerCells.findIndex((h: string) => h.includes("player") || h === "name");
+            const heightIdx = headerCells.findIndex((h: string) => h.includes("height"));
+            const weightIdx = headerCells.findIndex((h: string) => h.includes("weight"));
+            const handIdx = headerCells.findIndex((h: string) => h === "hand" || h.includes("hand"));
+            const armIdx = headerCells.findIndex((h: string) => h === "arm" || h.includes("arm"));
+            const wingspanIdx = headerCells.findIndex((h: string) => h.includes("wingspan"));
+            const fortyIdx = headerCells.findIndex((h: string) => h.includes("40") || h.includes("dash"));
+            const tenIdx = headerCells.findIndex((h: string) => h.includes("10"));
+            const vertIdx = headerCells.findIndex((h: string) => h.includes("vertical") || h === "vertical");
+            const broadIdx = headerCells.findIndex((h: string) => h.includes("broad"));
+            const benchIdx = headerCells.findIndex((h: string) => h.includes("bench"));
+            const coneIdx = headerCells.findIndex((h: string) => h.includes("3-cone") || h.includes("cone"));
+            const shuttleIdx = headerCells.findIndex((h: string) => h.includes("shuttle"));
+            for (let i = 1; i < rows.length; i++) {
+              const cells = $(rows[i]).find("td, th").map((__, c) => $(c).text().trim()).get();
+              const playerName = playerIdx >= 0 ? cells[playerIdx] : "";
+              const key = normalizeName(playerName);
+              const existing = combineByPlayer.get(key) || {};
+              if (heightIdx >= 0 && cells[heightIdx]) existing.height = cells[heightIdx];
+              if (weightIdx >= 0 && cells[weightIdx]) existing.weight = cells[weightIdx];
+              if (handIdx >= 0 && cells[handIdx]) existing.hand = cells[handIdx];
+              if (armIdx >= 0 && cells[armIdx]) existing.arm = cells[armIdx];
+              if (wingspanIdx >= 0 && cells[wingspanIdx]) existing.wingspan = cells[wingspanIdx];
+              if (fortyIdx >= 0 && cells[fortyIdx] && cells[fortyIdx] !== "—" && cells[fortyIdx] !== "--") existing["40Yd"] = cells[fortyIdx];
+              if (tenIdx >= 0 && cells[tenIdx] && cells[tenIdx] !== "—" && cells[tenIdx] !== "--") existing["10YdSplit"] = cells[tenIdx];
+              if (vertIdx >= 0 && cells[vertIdx] && cells[vertIdx] !== "—" && cells[vertIdx] !== "--") existing.vertical = cells[vertIdx];
+              if (broadIdx >= 0 && cells[broadIdx] && cells[broadIdx] !== "—" && cells[broadIdx] !== "--") existing.broad = cells[broadIdx];
+              if (benchIdx >= 0 && cells[benchIdx] && cells[benchIdx] !== "—" && cells[benchIdx] !== "--") existing.bench = cells[benchIdx];
+              if (coneIdx >= 0 && cells[coneIdx] && cells[coneIdx] !== "—" && cells[coneIdx] !== "--") existing["3cone"] = cells[coneIdx];
+              if (shuttleIdx >= 0 && cells[shuttleIdx] && cells[shuttleIdx] !== "—" && cells[shuttleIdx] !== "--") existing.shuttle = cells[shuttleIdx];
+              combineByPlayer.set(key, existing);
+            }
+          });
+          combineFetched = true;
+          for (const p of prospects) {
+            const n = normalizeName(p.displayName);
+            const combined = combineByPlayer.get(n) || combineByPlayer.get(nameAliases[n] || "");
+            if (combined && Object.keys(combined).length > 0) {
+              const u = updatesByProspectId.get(p.id)!;
+              u.combineData = JSON.stringify(combined);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Combine fetch/parse error:", e);
+      }
+
+      let awardsFetched = false;
+      try {
+        const awardsRes = await fetch(awardsUrl, { headers: { "User-Agent": "Mozilla/5.0 (compatible; DynastyApp/1.0)" } });
+        if (awardsRes.ok) {
+          const html = await awardsRes.text();
+          const $ = load(html);
+          const awardsByPlayer = new Map<string, string[]>();
+          $("table").each((_, table) => {
+            const $table = $(table);
+            const rows = $table.find("tr");
+            if (rows.length < 2) return;
+            const headerCells = $(rows[0]).find("td, th").map((__, c) => $(c).text().trim().toLowerCase()).get();
+            const awardIdx = headerCells.findIndex((h: string) => h.includes("award"));
+            const winnerIdx = headerCells.findIndex((h: string) => h.includes("winner") || h.includes("2025"));
+            if (winnerIdx < 0 || awardIdx < 0) return;
+            for (let i = 1; i < rows.length; i++) {
+              const cells = $(rows[i]).find("td, th").map((__, c) => $(c).text().trim()).get();
+              const awardName = cells[awardIdx] || "";
+              const winnerCell = cells[winnerIdx] || "";
+              const [namePart] = winnerCell.split("|").map((s: string) => s.trim());
+              const name = normalizeName(namePart || winnerCell);
+              if (!name) continue;
+              const list = awardsByPlayer.get(name) || [];
+              list.push(awardName);
+              awardsByPlayer.set(name, list);
+            }
+          });
+          awardsFetched = true;
+          for (const p of prospects) {
+            const n = normalizeName(p.displayName);
+            const list = awardsByPlayer.get(n) || awardsByPlayer.get(nameAliases[n] || n) || [];
+            if (list.length > 0) {
+              const u = updatesByProspectId.get(p.id)!;
+              u.collegeAwards = JSON.stringify(list);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Awards fetch/parse error:", e);
+      }
+
+      const updates = Array.from(updatesByProspectId.entries())
+        .filter(([, v]) => v.combineData || v.collegeAwards)
+        .map(([id, v]) => ({ id, ...v }));
+      if (updates.length > 0) await storage.updateDraftProspectsCombineAndAwards(leagueId, season, updates);
+      res.json({
+        success: true,
+        combineFetched,
+        awardsFetched,
+        updatedCount: updates.length,
+      });
+    } catch (error: any) {
+      console.error("Error refreshing draft prospects:", error);
+      res.status(500).json({ error: error?.message || "Failed to refresh combine & awards data" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/draft-prospects/ras", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, csv, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (typeof csv !== "string") return res.status(400).json({ error: "CSV content required" });
+      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can import RAS data" });
+
+      const prospects = await storage.getDraftProspects(leagueId, season);
+      if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
+
+      const normalizeName = (s: string) =>
+        String(s || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\b(jr\.?|sr\.?|iii?|iv)\b/gi, "").trim();
+      const nameAliases: Record<string, string> = { "k.c. concepcion": "kc concepcion", "mike washington jr.": "mike washington", "mike washington jr": "mike washington" };
+
+      const parseCsvLine = (line: string): string[] => {
+        const out: string[] = [];
+        let i = 0;
+        while (i < line.length) {
+          if (line[i] === '"') {
+            i++;
+            let field = "";
+            while (i < line.length && line[i] !== '"') {
+              if (line[i] === "\\") { i++; field += line[i++] ?? ""; }
+              else field += line[i++];
+            }
+            if (line[i] === '"') i++;
+            out.push(field);
+            while (i < line.length && (line[i] === "," || line[i] === " ")) i++;
+          } else {
+            let field = "";
+            while (i < line.length && line[i] !== ",") field += line[i++];
+            out.push(field.trim());
+            if (line[i] === ",") i++;
+          }
+        }
+        return out;
+      };
+
+      const hrefRe = /href="([^"]+)"/;
+      const lines = csv.split(/\r?\n/).map((l: string) => l.trim()).filter(Boolean);
+      const rasRows: Array<{ name: string; pos: string; college: string; ras: number; rasLink: string | null }> = [];
+      for (const line of lines) {
+        const cols = parseCsvLine(line);
+        if (cols.length < 6) continue;
+        const [linkCol, name, pos, , college, rasCol] = cols;
+        const ras = parseFloat(rasCol);
+        if (Number.isNaN(ras)) continue;
+        const hrefMatch = typeof linkCol === "string" ? linkCol.match(hrefRe) : null;
+        const rasLink = hrefMatch ? hrefMatch[1] : null;
+        rasRows.push({ name: String(name).trim(), pos: String(pos).trim(), college: String(college).trim(), ras, rasLink });
+      }
+
+      const prospectByNormalName = new Map<string, typeof prospects>();
+      for (const p of prospects) {
+        const n = normalizeName(p.displayName);
+        const list = prospectByNormalName.get(n) ?? [];
+        list.push(p);
+        prospectByNormalName.set(n, list);
+        const alt = nameAliases[n];
+        if (alt) {
+          const altList = prospectByNormalName.get(alt) ?? [];
+          altList.push(p);
+          prospectByNormalName.set(alt, altList);
+        }
+      }
+
+      const posMap: Record<string, string> = { de: "edge", edge: "edge", dt: "dt", nt: "dt", s: "s", ss: "s", fs: "s", cb: "cb", lb: "lb", ilb: "lb", olb: "lb", te: "te", wr: "wr", rb: "rb", qb: "qb", ot: "ot", og: "og", c: "c", k: "k", p: "p" };
+      const normalizePos = (pos: string) => posMap[pos.toLowerCase().replace(/\s+/g, "")] ?? pos.toLowerCase();
+      const normalizeSchool = (s: string) => String(s || "").trim().toLowerCase();
+
+      const updates: Array<{ id: string; ras: number; rasLink?: string }> = [];
+      const usedProspectIds = new Set<string>();
+      for (const row of rasRows) {
+        const n = normalizeName(row.name);
+        const candidates = prospectByNormalName.get(n) ?? prospectByNormalName.get(nameAliases[n] ?? "");
+        if (!candidates || candidates.length === 0) continue;
+        let match = candidates.length === 1 ? candidates[0] : null;
+        if (!match && candidates.length > 1) {
+          const rowPos = normalizePos(row.pos);
+          const rowSchool = normalizeSchool(row.college);
+          match = candidates.find((p) => {
+            const pPos = normalizePos(p.position ?? "");
+            const pSchool = normalizeSchool(p.school ?? "");
+            return (rowPos && pPos && rowPos === pPos) || (rowSchool && pSchool && pSchool.includes(rowSchool) || rowSchool.includes(pSchool));
+          }) ?? candidates[0];
+        }
+        if (match && !usedProspectIds.has(match.id)) {
+          usedProspectIds.add(match.id);
+          updates.push({ id: match.id, ras: row.ras, ...(row.rasLink ? { rasLink: row.rasLink } : {}) });
+        }
+      }
+
+      if (updates.length > 0) await storage.updateDraftProspectsRas(leagueId, season, updates);
+      res.json({ updated: updates.length });
+    } catch (error: any) {
+      console.error("Error importing RAS data:", error);
+      res.status(500).json({ error: error?.message || "Failed to import RAS data" });
+    }
+  });
+
+  // Draft prospects advanced stats (College Football Data API): Dominator, Breakout, YPRR, Speed Score
+  const CFBD_BASE = "https://api.collegefootballdata.com";
+  const SCHOOL_TO_CFBD_TEAM: Record<string, string> = {
+    "ohio state": "Ohio State", "notre dame": "Notre Dame", "alabama": "Alabama", "georgia": "Georgia",
+    "lsu": "LSU", "clemson": "Clemson", "texas": "Texas", "usc": "USC", "michigan": "Michigan",
+    "penn state": "Penn State", "florida state": "Florida State", "oregon": "Oregon", "tennessee": "Tennessee",
+    "washington": "Washington", "texas a&m": "Texas A&M", "arkansas": "Arkansas", "nebraska": "Nebraska",
+    "indiana": "Indiana", "arizona state": "Arizona State", "louisville": "Louisville", "baylor": "Baylor",
+    "mississippi state": "Mississippi State", "missouri": "Missouri", "kentucky": "Kentucky", "vanderbilt": "Vanderbilt",
+    "stanford": "Stanford", "ucla": "UCLA", "miami": "Miami", "north carolina": "North Carolina", "virginia": "Virginia",
+    "pittsburgh": "Pittsburgh", "wake forest": "Wake Forest", "south carolina": "South Carolina", "iowa": "Iowa",
+    "wisconsin": "Wisconsin", "north dakota state": "North Dakota State", "utah": "Utah", "houston": "Houston",
+    "cincinnati": "Cincinnati", "connecticut": "Connecticut", "georgia state": "Georgia State", "ole miss": "Ole Miss",
+    "tcu": "TCU", "oklahoma": "Oklahoma", "illinois": "Illinois", "navy": "Navy", "wyoming": "Wyoming",
+    "smu": "SMU", "incarnate word": "Incarnate Word", "byu": "BYU", "toledo": "Toledo", "duke": "Duke",
+    "kansas": "Kansas", "kansas state": "Kansas State", "maryland": "Maryland", "florida": "Florida",
+    "texas tech": "Texas Tech", "auburn": "Auburn", "minnesota": "Minnesota", "western michigan": "Western Michigan",
+    "boston college": "Boston College", "northwestern": "Northwestern", "florida atlantic": "Florida Atlantic",
+    "north texas": "North Texas", "stephen f austin": "Stephen F. Austin", "southeastern louisiana": "Southeastern Louisiana",
+    "john carroll": "John Carroll", "ucf": "UCF",
+    "oregon state": "Oregon State", "syracuse": "Syracuse", "colorado": "Colorado", "west virginia": "West Virginia",
+    "iowa state": "Iowa State", "purdue": "Purdue", "rutgers": "Rutgers", "virginia tech": "Virginia Tech",
+    "n.c. state": "NC State", "nc state": "NC State", "north carolina state": "NC State",
+    "north carolina st": "NC State", "pitt": "Pittsburgh", "uconn": "Connecticut",
+    "miami fl": "Miami", "miami florida": "Miami", "miami (fl)": "Miami",
+    "southern california": "USC", "texas am": "Texas A&M", "texas a and m": "Texas A&M",
+    "florida st": "Florida State",
+  };
+
+  function normalizeSchoolKey(raw: string): string {
+    return raw
+      .toLowerCase()
+      .replace(/[.'’]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function schoolToCfbdTeam(school: string | null): string | null {
+    if (!school || !school.trim()) return null;
+    const key = normalizeSchoolKey(school);
+    const candidates = [
+      key,
+      key.replace(/\s*&\s*/g, "&"),
+      key.replace(/\s*&\s*/g, " and "),
+      key.replace(/\s+and\s+/g, " & "),
+      key.replace(/\buniversity\b/g, "").replace(/\s+/g, " ").trim(),
+    ];
+    for (const candidate of candidates) {
+      if (candidate && SCHOOL_TO_CFBD_TEAM[candidate]) return SCHOOL_TO_CFBD_TEAM[candidate];
+    }
+    return null;
+  }
+
+  async function fillSchoolFromCfbd(leagueId: string, season: string): Promise<number> {
+    const apiKey = process.env.COLLEGE_FOOTBALL_DATA_API_KEY;
+    if (!apiKey) return 0;
+    const prospects = await storage.getDraftProspects(leagueId, season);
+    const needToFill = prospects.filter((p) => !p.school || !p.school.trim());
+    if (needToFill.length === 0) return 0;
+    const authHeader = { Authorization: `Bearer ${apiKey}`, Accept: "application/json" };
+    const updates: Array<{ id: string; school: string }> = [];
+    for (const p of needToFill) {
+      const searchTerm = p.displayName.split(/\s+/).slice(0, 2).join(" ");
+      try {
+        const params = new URLSearchParams({ searchTerm, year: "2025" });
+        const r = await fetch(`${CFBD_BASE}/player/search?${params}`, { headers: authHeader });
+        if (!r.ok) continue;
+        const data = (await r.json()) as Array<{ name?: string; team?: string }>;
+        if (!Array.isArray(data) || data.length === 0) continue;
+        const team = data[0].team;
+        if (typeof team !== "string" || !team.trim()) continue;
+        updates.push({ id: p.id, school: team.trim() });
+      } catch (e) {
+        console.warn("CFBD fill school for prospect", p.displayName, e);
+      }
+    }
+    if (updates.length > 0) await storage.updateDraftProspectsSchool(leagueId, season, updates);
+    return updates.length;
+  }
+
+  function computeSpeedScore(combineData: string | null): number | null {
+    if (!combineData) return null;
+    try {
+      const raw = JSON.parse(combineData) as Record<string, string>;
+      const weightStr = raw.weight ?? raw.Weight ?? "";
+      const fortyStr = raw["40Yd"] ?? raw["40"] ?? "";
+      const weight = parseFloat(weightStr.replace(/[^\d.]/g, ""));
+      const forty = parseFloat(fortyStr.replace(/[^\d.]/g, ""));
+      if (!Number.isFinite(weight) || !Number.isFinite(forty) || forty <= 0) return null;
+      const score = (weight * 200) / Math.pow(forty, 4);
+      return Number.isFinite(score) ? Math.round(score * 100) / 100 : null;
+    } catch {
+      return null;
+    }
+  }
+
+  type AdvancedStatsPayload = {
+    speedScore: number | null;
+    dominatorByYear: { year: number; dominator: number }[];
+    bestDominator: number | null;
+    breakoutSeason: number | null;
+    yprrByYear: { year: number; yprr: number }[];
+    bestYprr: number | null;
+    dominatorUnavailableReason?: string | null;
+  };
+
+  app.post("/api/league/:leagueId/draft-prospects/advanced-stats", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (!(await isCommissioner(userId, leagueId)))
+        return res.status(403).json({ error: "Only the commissioner can refresh advanced stats" });
+      const apiKey = process.env.COLLEGE_FOOTBALL_DATA_API_KEY;
+      if (!apiKey)
+        return res.status(400).json({ error: "COLLEGE_FOOTBALL_DATA_API_KEY is not set. Set it in your environment to use advanced stats." });
+
+      const schoolsFilled = await fillSchoolFromCfbd(leagueId, season);
+      let prospects = await storage.getDraftProspects(leagueId, season);
+      if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
+
+      const authHeader = { Authorization: `Bearer ${apiKey}` };
+
+      const cfbdGet = async (path: string, params: Record<string, string | number>): Promise<unknown> => {
+        const q = new URLSearchParams();
+        for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== "") q.set(k, String(v));
+        const url = `${CFBD_BASE}${path}${q.toString() ? "?" + q.toString() : ""}`;
+        const r = await fetch(url, { headers: { ...authHeader, Accept: "application/json" } });
+        if (!r.ok) throw new Error(`CFBD ${path} ${r.status}`);
+        return r.json();
+      };
+
+      const parseStatNumber = (value: unknown): number => {
+        if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+        if (typeof value === "string") {
+          const parsed = parseFloat(value.replace(/,/g, ""));
+          return Number.isFinite(parsed) ? parsed : 0;
+        }
+        return 0;
+      };
+
+      const normalizePlayerName = (name: string): string => {
+        let s = name
+          .toLowerCase()
+          .replace(/[.'’]/g, "")
+          .replace(/\b(jr|sr|ii|iii|iv|v)\b/g, " ")
+          .replace(/\s+/g, " ")
+          .trim();
+        const parts = s.split(",").map((p) => p.trim());
+        if (parts.length === 2 && parts[0].length > 0 && parts[1].length > 0) {
+          s = [parts[1], parts[0]].join(" ").replace(/\s+/g, " ").trim();
+        }
+        return s;
+      };
+
+      const nameTokens = (normalized: string): Set<string> =>
+        new Set(normalized.split(/\s+/).filter((t) => t.length > 0));
+
+      const namesMatchByTokens = (a: string, b: string, minTokens = 2): boolean => {
+        const ta = nameTokens(a);
+        const tb = nameTokens(b);
+        if (ta.size < minTokens && tb.size < minTokens) return false;
+        const overlap = Array.from(ta).filter((t) => tb.has(t)).length;
+        return overlap >= minTokens || (ta.size <= tb.size && overlap === ta.size) || (tb.size <= ta.size && overlap === tb.size);
+      };
+
+      const formatReason = (reason: string | null, pos: string, school: string | null): string | null => {
+        if (!reason) return null;
+        switch (reason) {
+          case "unmapped_school":
+            return `School "${school ?? "Unknown"}" is not mapped to a CollegeFootballData team name.`;
+          case "unsupported_position":
+            return `Dominator is only calculated for WR/TE/RB. Current position: ${pos || "Unknown"}.`;
+          case "player_search_empty":
+            return "No CollegeFootballData player match found for this prospect/team.";
+          case "player_rows_no_match":
+            return "Player season stats were found for team/year, but no rows matched the player name.";
+          case "team_stats_missing":
+            return "Missing team season stats from CollegeFootballData for one or more years.";
+          case "no_dominator_values":
+            return "Player/team stats were found, but no season produced a dominator value above 0.";
+          case "player_year_fetch_failed":
+            return "Error fetching one or more player season stat years from CollegeFootballData.";
+          default:
+            return "Dominator could not be calculated from available CollegeFootballData stats.";
+        }
+      };
+
+      const reasonCounts = new Map<string, number>();
+      const reasonSamples = new Map<string, string[]>();
+      const trackReason = (reason: string, prospectName: string) => {
+        reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
+        const samples = reasonSamples.get(reason) ?? [];
+        if (samples.length < 3 && !samples.includes(prospectName)) samples.push(prospectName);
+        reasonSamples.set(reason, samples);
+      };
+
+      const teamStatsCache = new Map<string, { netPassingYds: number; passTDs: number; rushYds: number; rushTDs: number; passAttempts: number }>();
+      const getTeamStats = async (year: number, team: string): Promise<{ netPassingYds: number; passTDs: number; rushYds: number; rushTDs: number; passAttempts: number } | null> => {
+        const key = `${year}:${team}`;
+        if (teamStatsCache.has(key)) return teamStatsCache.get(key)!;
+        try {
+          const data = (await cfbdGet("/stats/season", { year, team })) as Array<Record<string, unknown>>;
+          if (!Array.isArray(data) || data.length === 0) return null;
+          // CFBD API returns long format: { statName: "netPassingYards", statValue: 3755 }
+          let netPassingYds = 0, passTDs = 0, rushYds = 0, rushTDs = 0, passAttempts = 0;
+          for (const row of data) {
+            const name = String(row.statName ?? "");
+            const val = parseStatNumber(row.statValue);
+            switch (name) {
+              case "netPassingYards": netPassingYds = val; break;
+              case "passingTDs": passTDs = val; break;
+              case "rushingYards": rushYds = val; break;
+              case "rushingTDs": rushTDs = val; break;
+              case "passAttempts": passAttempts = val; break;
+            }
+          }
+          const out = { netPassingYds, passTDs, rushYds, rushTDs, passAttempts };
+          teamStatsCache.set(key, out);
+          return out;
+        } catch {
+          return null;
+        }
+      };
+
+      const updates: Array<{ id: string; advancedStats: string | null }> = [];
+      const years = [2022, 2023, 2024, 2025];
+
+      for (const p of prospects) {
+        const out: AdvancedStatsPayload = {
+          speedScore: computeSpeedScore(p.combineData),
+          dominatorByYear: [],
+          bestDominator: null,
+          breakoutSeason: null,
+          yprrByYear: [],
+          bestYprr: null,
+          dominatorUnavailableReason: null,
+        };
+        let firstDominatorReason: string | null = null;
+        const markReason = (reason: string) => {
+          if (!firstDominatorReason) firstDominatorReason = reason;
+          trackReason(reason, p.displayName);
+        };
+
+        const cfbdTeam = schoolToCfbdTeam(p.school);
+        const pos = (p.position ?? "").toUpperCase().replace(/[0-9]/g, "").trim();
+        const isRB = pos === "RB";
+        const isWR = pos === "WR";
+        const isTE = pos === "TE";
+        const breakoutThreshold = isTE ? 0.15 : 0.2;
+        if (!cfbdTeam) markReason("unmapped_school");
+        if (!(isWR || isTE || isRB)) markReason("unsupported_position");
+
+        if (cfbdTeam && (isWR || isTE || isRB)) {
+          const searchTerm = p.displayName.split(/\s+/).slice(0, 2).join(" ");
+          const displayNameNorm = normalizePlayerName(p.displayName);
+          const searchTermNorm = normalizePlayerName(searchTerm);
+          try {
+            const searchResults = (await cfbdGet("/player/search", {
+              searchTerm,
+              team: cfbdTeam,
+              year: 2025,
+            })) as Array<{ name?: string; team?: string }>;
+            if (!Array.isArray(searchResults) || searchResults.length === 0) {
+              markReason("player_search_empty");
+              out.dominatorUnavailableReason = formatReason(firstDominatorReason, pos, p.school);
+              updates.push({ id: p.id, advancedStats: JSON.stringify(out) });
+              continue;
+            }
+
+            const selectedSearchResult =
+              searchResults.find((r) => normalizePlayerName(String(r.name ?? "")) === displayNameNorm) ??
+              searchResults.find((r) => {
+                const n = normalizePlayerName(String(r.name ?? ""));
+                return n.length >= 6 && (n.includes(displayNameNorm) || displayNameNorm.includes(n));
+              }) ??
+              searchResults[0];
+            const playerName = (selectedSearchResult?.name ?? p.displayName).trim();
+            const playerNameNorm = normalizePlayerName(playerName);
+            const playerStatsByYear = new Map<number, { recYds: number; recTDs: number; rushYds: number; rushTDs: number }>();
+
+            for (const year of years) {
+              try {
+                const playerData = (await cfbdGet("/stats/player/season", { year, team: cfbdTeam })) as Array<Record<string, unknown>>;
+                if (!Array.isArray(playerData)) continue;
+
+                // CFBD API uses "player" for name; one row per player with snake_case: receiving_yds, receiving_td, rushing_yds, rushing_td
+                const rowsForPlayer = playerData.filter((r) => {
+                  const name = String((r as Record<string, unknown>).player ?? (r as Record<string, unknown>).name ?? "").trim();
+                  const normalized = normalizePlayerName(name);
+                  if (!normalized) return false;
+                  if (normalized === playerNameNorm || normalized === displayNameNorm) return true;
+                  if (playerNameNorm.length >= 6 && normalized.includes(playerNameNorm)) return true;
+                  if (displayNameNorm.length >= 6 && normalized.includes(displayNameNorm)) return true;
+                  if (searchTermNorm.length >= 6 && normalized.includes(searchTermNorm)) return true;
+                  return namesMatchByTokens(normalized, playerNameNorm) || namesMatchByTokens(normalized, displayNameNorm) || namesMatchByTokens(normalized, searchTermNorm);
+                });
+                if (rowsForPlayer.length === 0) {
+                  if (process.env.DEBUG_CFBD_NAMES === "true") {
+                    const sampleRows = playerData.slice(0, 10).map((r) => {
+                      const row = r as Record<string, unknown>;
+                      return { player: row.player ?? "(missing)", name: row.name ?? "(missing)" };
+                    });
+                    console.log("[CFBD name debug]", {
+                      prospect: p.displayName,
+                      playerNameFromSearch: playerName,
+                      playerNameNorm,
+                      displayNameNorm,
+                      searchTermNorm,
+                      team: cfbdTeam,
+                      year,
+                      apiNameSample: sampleRows,
+                    });
+                  }
+                  markReason("player_rows_no_match");
+                  continue;
+                }
+
+                // CFBD API returns long format: { category: "receiving", statType: "YDS", stat: 875 }
+                let recYds = 0, recTDs = 0, rushYds = 0, rushTDs = 0;
+                for (const row of rowsForPlayer) {
+                  const r = row as Record<string, unknown>;
+                  const cat = String(r.category ?? "").toLowerCase();
+                  const st = String(r.statType ?? r.stat_type ?? "").toUpperCase();
+                  const val = parseStatNumber(r.stat ?? r.value ?? 0);
+                  if (cat === "receiving") {
+                    if (st === "YDS") recYds += val;
+                    else if (st === "TD") recTDs += val;
+                  } else if (cat === "rushing") {
+                    if (st === "YDS") rushYds += val;
+                    else if (st === "TD") rushTDs += val;
+                  }
+                }
+                playerStatsByYear.set(year, { recYds, recTDs, rushYds, rushTDs });
+              } catch (error) {
+                markReason("player_year_fetch_failed");
+                console.warn("CFBD player stats year fetch failed", { player: p.displayName, year, team: cfbdTeam, error });
+              }
+            }
+
+            const teamStatsByYear = new Map<number, Awaited<ReturnType<typeof getTeamStats>>>();
+            for (const year of years) {
+              const ts = await getTeamStats(year, cfbdTeam);
+              if (ts) teamStatsByYear.set(year, ts);
+              else markReason("team_stats_missing");
+            }
+
+            for (const year of years) {
+              const ps = playerStatsByYear.get(year);
+              const ts = teamStatsByYear.get(year);
+              if (!ps || !ts) continue;
+
+              let dominator = 0;
+              if (isRB) {
+                const playerTotalYds = ps.rushYds + ps.recYds;
+                const playerTotalTDs = ps.rushTDs + ps.recTDs;
+                const teamTotalYds = ts.netPassingYds + ts.rushYds;
+                const teamTotalTDs = ts.passTDs + ts.rushTDs;
+                if (teamTotalYds > 0 || teamTotalTDs > 0)
+                  dominator = 0.5 * ((teamTotalYds ? playerTotalYds / teamTotalYds : 0) + (teamTotalTDs ? playerTotalTDs / teamTotalTDs : 0));
+              } else {
+                if (ts.netPassingYds > 0 || ts.passTDs > 0)
+                  dominator = 0.5 * ((ts.netPassingYds ? ps.recYds / ts.netPassingYds : 0) + (ts.passTDs ? ps.recTDs / ts.passTDs : 0));
+              }
+              if (dominator > 0) {
+                out.dominatorByYear.push({ year, dominator: Math.round(dominator * 1000) / 1000 });
+                if (out.bestDominator == null || dominator > out.bestDominator) out.bestDominator = Math.round(dominator * 1000) / 1000;
+                if (out.breakoutSeason == null && dominator >= breakoutThreshold) out.breakoutSeason = year;
+              }
+
+              if ((isWR || isTE) && ts.passAttempts > 0 && ps.recYds >= 0) {
+                const yprr = ps.recYds / ts.passAttempts;
+                out.yprrByYear.push({ year, yprr: Math.round(yprr * 1000) / 1000 });
+                if (out.bestYprr == null || yprr > out.bestYprr) out.bestYprr = Math.round(yprr * 1000) / 1000;
+              }
+            }
+          } catch (e) {
+            markReason("player_year_fetch_failed");
+            console.warn("CFBD advanced stats for prospect", p.displayName, e);
+          }
+        }
+
+        if (out.bestDominator == null) {
+          if (!firstDominatorReason) markReason("no_dominator_values");
+          out.dominatorUnavailableReason = formatReason(firstDominatorReason, pos, p.school);
+        }
+
+        updates.push({ id: p.id, advancedStats: JSON.stringify(out) });
+      }
+
+      if (updates.length > 0) await storage.updateDraftProspectsAdvancedStats(leagueId, season, updates);
+      if (reasonCounts.size > 0) {
+        const diagnostics = Array.from(reasonCounts.entries())
+          .map(([reason, count]) => ({
+            reason,
+            count,
+            samples: reasonSamples.get(reason) ?? [],
+          }))
+          .sort((a, b) => b.count - a.count);
+        console.log("[AdvancedStats] Dominator missing reason diagnostics", diagnostics);
+      }
+      res.json({ updated: updates.length, schoolsFilled: schoolsFilled > 0 ? schoolsFilled : undefined });
+    } catch (error: any) {
+      console.error("Error refreshing advanced stats:", error);
+      res.status(500).json({ error: error?.message || "Failed to refresh advanced stats" });
+    }
+  });
 
   // Get list of all database tables with row counts
   app.get("/api/admin/database/tables", async (req, res) => {

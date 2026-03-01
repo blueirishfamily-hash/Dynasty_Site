@@ -125,7 +125,7 @@ export default function Standings() {
     pointsAgainst: team.pointsAgainst,
     maxPointsFor: team.maxPointsFor,
     streak: team.streak || "—",
-    trend: [100, 110, 105, 115, 120],
+    trend: team.previousRank != null ? [team.previousRank, team.rank || index + 1] : [team.rank || index + 1, team.rank || index + 1],
     isUser: team.isUser,
     rosterId: team.rosterId,
   }));

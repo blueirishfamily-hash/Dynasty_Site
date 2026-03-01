@@ -117,7 +117,7 @@ export default function RuleChanges() {
     COMMISSIONER_USER_IDS.includes(user.userId)
   ));
 
-  const { data: rulesData, isLoading: rulesLoading, isError: rulesError, error: rulesErrorDetails, refetch: refetchRules } = useQuery<{ suggestions: RuleSuggestionWithVoting[]; votingMasterEnabled: boolean }>({
+  const { data: rulesData, isLoading: rulesLoading, isError: rulesError, error: rulesErrorDetails, refetch: refetchRules } = useQuery<{ suggestions: RuleSuggestionWithVoting[]; votingMasterEnabled: boolean; votingClosesAt: number | null }>({
     queryKey: ["/api/league", league?.leagueId, "rule-suggestions"],
     queryFn: async () => {
       const res = await fetch(`/api/league/${league?.leagueId}/rule-suggestions`);
@@ -135,6 +135,39 @@ export default function RuleChanges() {
   });
   const ruleSuggestions = rulesData?.suggestions ?? [];
   const votingMasterEnabled = rulesData?.votingMasterEnabled ?? false;
+  const votingClosesAt = rulesData?.votingClosesAt ?? null;
+
+  // Live "now" for countdown and effective voting closed (updates every second when deadline is in future)
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (votingClosesAt == null || votingClosesAt <= Date.now()) return;
+    const interval = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, [votingClosesAt]);
+
+  const effectiveVotingOpen =
+    votingMasterEnabled && (votingClosesAt == null || now < votingClosesAt);
+
+  function formatCountdown(ms: number): string {
+    if (ms <= 0) return "0w 0d 0h 0m 0s";
+    const s = Math.floor(ms / 1000) % 60;
+    const m = Math.floor(ms / 60000) % 60;
+    const h = Math.floor(ms / 3600000) % 24;
+    const d = Math.floor(ms / 86400000) % 7;
+    const w = Math.floor(ms / 604800000);
+    return `${w}w ${d}d ${h}h ${m}m ${s}s`;
+  }
+
+  // Format timestamp for datetime-local input (must be local time, not UTC)
+  function toLocalDatetimeLocalString(ms: number): string {
+    const d = new Date(ms);
+    const y = d.getFullYear();
+    const mo = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    const h = String(d.getHours()).padStart(2, "0");
+    const min = String(d.getMinutes()).padStart(2, "0");
+    return `${y}-${mo}-${day}T${h}:${min}`;
+  }
 
   // Create rule suggestion mutation
   const createRuleMutation = useMutation({
@@ -196,6 +229,32 @@ export default function RuleChanges() {
       if (!res.ok) {
         const error = await res.json();
         throw new Error(error.error || "Failed to set voting state");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "rule-suggestions"] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Error",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  // Set voting close date/time (commissioner only)
+  const setVotingClosesAtMutation = useMutation({
+    mutationFn: async (closesAt: number | null) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/rule-voting-closes-at`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user?.userId, closesAt }),
+      });
+      if (!res.ok) {
+        const error = await res.json();
+        throw new Error(error.error || "Failed to set voting close time");
       }
       return res.json();
     },
@@ -533,18 +592,48 @@ export default function RuleChanges() {
           </div>
           <div className="flex items-center gap-2">
             {isCommissioner && (
-              <div className="flex items-center gap-2">
-                <Switch
-                  checked={votingMasterEnabled}
-                  onCheckedChange={(checked) => setVotingMasterMutation.mutate(checked)}
-                  disabled={setVotingMasterMutation.isPending}
-                />
-                <span className="text-sm text-muted-foreground">
-                  Voting {votingMasterEnabled ? "open" : "closed"}
-                </span>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Switch
+                    checked={votingMasterEnabled}
+                    onCheckedChange={(checked) => setVotingMasterMutation.mutate(checked)}
+                    disabled={setVotingMasterMutation.isPending}
+                  />
+                  <span className="text-sm text-muted-foreground">
+                    Voting {votingMasterEnabled ? "open" : "closed"}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="voting-closes-at" className="text-sm text-muted-foreground whitespace-nowrap">
+                    Voting closes at
+                  </Label>
+                  <input
+                    id="voting-closes-at"
+                    type="datetime-local"
+                    className="border rounded-md px-2 py-1.5 text-sm bg-background"
+                    value={votingClosesAt != null ? toLocalDatetimeLocalString(votingClosesAt) : ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) {
+                        // datetime-local gives local time string; parse as local for correct ms
+                        setVotingClosesAtMutation.mutate(new Date(v).getTime());
+                      }
+                    }}
+                    disabled={setVotingClosesAtMutation.isPending}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setVotingClosesAtMutation.mutate(null)}
+                    disabled={votingClosesAt == null || setVotingClosesAtMutation.isPending}
+                  >
+                    Clear deadline
+                  </Button>
+                </div>
               </div>
             )}
-            {votingMasterEnabled && !isCommissioner ? (
+            {effectiveVotingOpen && !isCommissioner ? (
               <p className="text-sm text-muted-foreground">Suggestions are closed while voting is open.</p>
             ) : (
             <Dialog open={ruleDialogOpen} onOpenChange={setRuleDialogOpen}>
@@ -665,6 +754,26 @@ export default function RuleChanges() {
         </div>
         </div>
 
+        {/* Countdown / voting ended banner */}
+        {votingClosesAt != null && votingMasterEnabled && (
+          <Card className="bg-muted/50">
+            <CardContent className="py-3">
+              {now < votingClosesAt ? (
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Clock className="w-4 h-4" />
+                  Voting closes in{" "}
+                  <span className="tabular-nums">{formatCountdown(votingClosesAt - now)}</span>
+                </p>
+              ) : (
+                <p className="text-sm font-medium flex items-center gap-2">
+                  <Clock className="w-4 h-4" />
+                  Voting has ended (closed {new Date(votingClosesAt).toLocaleString()})
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
         {!hasSelectedTeam && (
           <Card className="border-destructive/50 bg-destructive/5">
             <CardContent className="py-4">
@@ -781,7 +890,7 @@ export default function RuleChanges() {
                     hasSelectedTeam={hasSelectedTeam}
                     isCommissioner={isCommissioner}
                     userId={user?.userId}
-                    votingMasterEnabled={votingMasterEnabled}
+                    votingMasterEnabled={effectiveVotingOpen}
                     onVote={(vote) => voteMutation.mutate({ ruleId: rule.id, vote })}
                     onVoteRanked={(points) => voteMutation.mutate({ ruleId: rule.id, points })}
                     onEdit={() => handleEditRule(rule)}

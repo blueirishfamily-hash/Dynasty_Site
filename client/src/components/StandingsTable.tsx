@@ -9,8 +9,6 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { LineChart, Line, ResponsiveContainer } from "recharts";
-
 interface TeamStanding {
   rank: number;
   name: string;
@@ -160,19 +158,22 @@ export default function StandingsTable({ standings, division, playoffTeams = 6, 
                   </Badge>
                 </TableCell>
                 <TableCell>
-                  <div className="w-20 h-8">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={team.trend.map((v, i) => ({ v, i }))}>
-                        <Line
-                          type="monotone"
-                          dataKey="v"
-                          stroke={team.trend[team.trend.length - 1] > team.trend[0] ? "hsl(var(--primary))" : "hsl(var(--destructive))"}
-                          strokeWidth={2}
-                          dot={false}
-                        />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
+                  {(() => {
+                    const prev = team.trend[0];
+                    const curr = team.trend[team.trend.length - 1];
+                    const change = prev != null && curr != null ? prev - curr : 0;
+                    if (prev == null || curr == null || (prev === curr && change === 0)) {
+                      return <span className="tabular-nums text-muted-foreground">—</span>;
+                    }
+                    const text = change > 0 ? `+${change}` : String(change);
+                    const colorClass =
+                      change > 0
+                        ? "text-primary font-medium"
+                        : change < 0
+                          ? "text-destructive font-medium"
+                          : "text-muted-foreground";
+                    return <span className={`tabular-nums ${colorClass}`}>{text}</span>;
+                  })()}
                 </TableCell>
               </TableRow>
               );

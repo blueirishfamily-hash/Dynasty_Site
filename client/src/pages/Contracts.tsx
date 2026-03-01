@@ -4393,6 +4393,38 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
 
   const favoritePlayerIds = useMemo(() => new Set(favorites.map(f => f.playerId)), [favorites]);
 
+  // Preferred free agents (trending + expiring not extended); visibility set by commissioner
+  const { data: preferredFreeAgentsData, isLoading: isLoadingPreferred } = useQuery<{ visible: boolean; players: Array<{ id: string; name: string; position: string; team: string | null; source?: string; trendingCount?: number }> }>({
+    queryKey: ["/api/league", leagueId, "preferred-free-agents"],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${leagueId}/preferred-free-agents`);
+      if (!res.ok) throw new Error("Failed to fetch preferred free agents");
+      return res.json();
+    },
+    enabled: !!leagueId,
+  });
+
+  const setPreferredVisibilityMutation = useMutation({
+    mutationFn: async (visible: boolean) => {
+      const res = await apiRequest("POST", `/api/league/${leagueId}/preferred-free-agents-visibility`, { userId: user?.userId, visible });
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "preferred-free-agents"] });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to update visibility", variant: "destructive", description: error.message });
+    },
+  });
+
+  const preferredFreeAgentsFiltered = useMemo(() => {
+    if (!preferredFreeAgentsData?.visible || !preferredFreeAgentsData.players?.length) return [];
+    const bidded = new Set(bids.map(b => b.playerId));
+    return preferredFreeAgentsData.players.filter(
+      p => !allRosterPlayerIdsSet.has(p.id) && !bidded.has(p.id)
+    );
+  }, [preferredFreeAgentsData, bids, allRosterPlayerIdsSet]);
+
   const favoriteFreeAgents = useMemo(() => {
     if (!favorites.length) return [];
     const biddedPlayerIds = new Set(bids.map(b => b.playerId));
@@ -4582,6 +4614,79 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
               </div>
             </div>
           </CardContent>
+        </Card>
+      )}
+
+      {(preferredFreeAgentsData?.visible || (isCommissioner && preferredFreeAgentsData !== undefined)) && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="text-base">Preferred Free Agents</CardTitle>
+                <p className="text-sm text-muted-foreground mt-0.5">
+                  {preferredFreeAgentsData?.visible
+                    ? "Top 30 trending (Sleeper) + last season's expiring contracts not extended."
+                    : "Hidden from the league. Turn on to show preferred free agents."}
+                </p>
+              </div>
+              {isCommissioner && (
+                <div className="flex items-center gap-2">
+                  <Label htmlFor="preferred-fa-visibility" className="text-sm text-muted-foreground whitespace-nowrap">
+                    Show to league
+                  </Label>
+                  <Switch
+                    id="preferred-fa-visibility"
+                    checked={preferredFreeAgentsData?.visible !== false}
+                    onCheckedChange={(checked) => setPreferredVisibilityMutation.mutate(checked)}
+                    disabled={setPreferredVisibilityMutation.isPending}
+                  />
+                </div>
+              )}
+            </div>
+          </CardHeader>
+          {preferredFreeAgentsData?.visible && (
+            <CardContent>
+              {isLoadingPreferred ? (
+                <p className="text-sm text-muted-foreground py-4">Loading preferred free agents…</p>
+              ) : preferredFreeAgentsFiltered.length === 0 ? (
+                <p className="text-sm text-muted-foreground py-4">No preferred free agents right now.</p>
+              ) : (
+                <div className="border rounded-md max-h-64 overflow-auto">
+                  {preferredFreeAgentsFiltered.map((p) => (
+                    <div
+                      key={p.id}
+                      className="p-2.5 hover:bg-muted/50 cursor-pointer flex items-center justify-between border-b last:border-b-0"
+                      onClick={() => {
+                        setSelectedPlayer({ id: p.id, name: p.name, position: p.position, team: p.team });
+                        setBidCardOpen(true);
+                      }}
+                      data-testid={`preferred-fa-${p.id}`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <img
+                          src={`https://sleepercdn.com/content/nfl/players/${p.id}.jpg`}
+                          alt=""
+                          className="w-8 h-8 rounded-full object-cover bg-muted"
+                          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                        />
+                        <Badge className={`${positionColors[p.position] || "bg-gray-500"} text-[10px] px-1.5 py-0`}>
+                          {p.position}
+                        </Badge>
+                        <span className="font-medium text-sm">{p.name}</span>
+                        {p.source === "trending" && (
+                          <Badge variant="secondary" className="text-[10px] px-1.5 py-0">Trending</Badge>
+                        )}
+                        {p.source === "expiring" && (
+                          <Badge variant="outline" className="text-[10px] px-1.5 py-0">Expired</Badge>
+                        )}
+                      </div>
+                      <span className="text-xs text-muted-foreground">{p.team || "FA"}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          )}
         </Card>
       )}
 

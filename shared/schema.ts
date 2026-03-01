@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { pgTable, text, integer, bigint, varchar } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, varchar, real, unique } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 
 // Database Tables for persistent storage
@@ -73,6 +73,31 @@ export const leagueSettingsTable = pgTable("league_settings", {
   settingValue: varchar("setting_value", { length: 256 }).notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 });
+
+// Draft prospects (top 40 incoming rookies per league, 2026 class)
+export const draftProspectsTable = pgTable("draft_prospects", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull().default("2026"),
+  rank: integer("rank").notNull(),
+  displayName: varchar("display_name", { length: 128 }).notNull(),
+  school: varchar("school", { length: 128 }),
+  position: varchar("position", { length: 8 }),
+  age: integer("age"),
+  adp: real("adp"),
+  sleeperPlayerId: varchar("sleeper_player_id", { length: 64 }),
+  overview: text("overview"),
+  collegeAwards: text("college_awards"),
+  combineData: text("combine_data"),
+  ras: real("ras"),
+  rasLink: varchar("ras_link", { length: 512 }),
+  advancedStats: text("advanced_stats"),
+  nflTeam: varchar("nfl_team", { length: 8 }),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (t) => ({
+  leagueSeasonRankUnique: unique().on(t.leagueId, t.season, t.rank),
+}));
 
 export const playerContractsTable = pgTable("player_contracts", {
   id: varchar("id", { length: 36 }).primaryKey(),
@@ -280,6 +305,7 @@ export const insertRuleRankedVoteDbSchema = createInsertSchema(ruleRankedVotesTa
 export const insertAwardNominationDbSchema = createInsertSchema(awardNominationsTable).omit({ id: true, createdAt: true });
 export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).omit({ id: true, createdAt: true });
 export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTable).omit({ id: true, updatedAt: true });
+export const insertDraftProspectDbSchema = createInsertSchema(draftProspectsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertPlayerContractDbSchema = createInsertSchema(playerContractsTable).omit({ id: true, updatedAt: true });
 export const insertPlayerBidDbSchema = createInsertSchema(playerBidsTable).omit({ id: true, createdAt: true, updatedAt: true, status: true });
 export const insertDeadCapEntryDbSchema = createInsertSchema(deadCapEntriesTable).omit({ id: true, createdAt: true });
@@ -346,6 +372,10 @@ export type InsertFavoriteExpiringPlayer = z.infer<typeof insertFavoriteExpiring
 // League Settings types
 export type LeagueSetting = typeof leagueSettingsTable.$inferSelect;
 export type InsertLeagueSetting = z.infer<typeof insertLeagueSettingDbSchema>;
+
+// Draft Prospect types
+export type DraftProspect = typeof draftProspectsTable.$inferSelect;
+export type InsertDraftProspect = z.infer<typeof insertDraftProspectDbSchema>;
 
 // Zod Schemas for API validation
 
@@ -426,6 +456,8 @@ export const draftPickSchema = z.object({
   currentOwnerId: z.number(),
   originalOwnerName: z.string().optional(),
   currentOwnerName: z.string().optional(),
+  /** 1-based draft slot in round (1.01 = 1, 1.02 = 2, ...) from draft-odds logic */
+  draftSlot: z.number().optional(),
 });
 export type DraftPick = z.infer<typeof draftPickSchema>;
 

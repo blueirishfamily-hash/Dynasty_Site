@@ -136,7 +136,15 @@ app.use((req, res, next) => {
       httpServer.listen({ port: p, host }, () => {
         process.env.PORT = String(p);
         log(`serving on port ${p}`);
-        console.log(`=== SERVER READY at http://localhost:${p} ===`);
+        // Warm up Vite so the preview browser gets a fast first response
+        const url = `http://localhost:${p}/`;
+        fetch(url)
+          .then(() => {
+            console.log(`=== SERVER READY at ${url} ===`);
+          })
+          .catch(() => {
+            console.log(`=== SERVER READY at ${url} ===`);
+          });
       });
     };
 

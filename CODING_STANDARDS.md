@@ -172,6 +172,18 @@ node -e "import('pg').then(({ default: pg }) => { const pool = new pg.Pool({ con
 - ❌ **Never start server without `DATABASE_URL`** - will cause startup failure
 - ❌ **Don't manually connect/disconnect** - connection pool handles this automatically
 
+### Database Change Policy
+
+**No changes may be made to the database without explicit approval from the project owner.**
+
+This includes but is not limited to:
+- Adding, removing, or altering tables in `shared/schema.ts`
+- Running or proposing migrations (`npm run db:push` or custom migrations)
+- Changing column types, constraints, or indexes
+- Adding or removing database-backed features that require new or modified tables
+
+Before implementing any database change, obtain explicit approval. Do not assume approval from a general feature request; confirm that the specific schema or migration is approved.
+
 ### Automatic Code Reloading
 
 **Backend Changes** (`server/**`):

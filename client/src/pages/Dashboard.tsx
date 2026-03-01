@@ -64,21 +64,26 @@ export default function Dashboard() {
     enabled: !!league?.leagueId,
   });
 
-  const formattedStandings = (standings || []).map((team: any, index: number) => ({
-    rank: team.rank || index + 1,
-    name: team.name,
-    initials: team.initials,
-    avatar: team.avatar,
-    wins: team.wins,
-    losses: team.losses,
-    pointsFor: team.pointsFor,
-    pointsAgainst: team.pointsAgainst,
-    maxPointsFor: team.maxPointsFor,
-    streak: team.streak || "—",
-    trend: [100, 110, 105, 115, 120],
-    isUser: team.isUser,
-    rosterId: team.rosterId,
-  }));
+  const formattedStandings = (standings || []).map((team: any, index: number) => {
+    const rank = team.rank || index + 1;
+    const previousRank = team.previousRank;
+    const trend = previousRank != null ? [previousRank, rank] : [rank, rank];
+    return {
+      rank,
+      name: team.name,
+      initials: team.initials,
+      avatar: team.avatar,
+      wins: team.wins,
+      losses: team.losses,
+      pointsFor: team.pointsFor,
+      pointsAgainst: team.pointsAgainst,
+      maxPointsFor: team.maxPointsFor,
+      streak: team.streak || "—",
+      trend,
+      isUser: team.isUser,
+      rosterId: team.rosterId,
+    };
+  });
 
   const playoffProbabilities = playoffData?.predictions?.map(p => ({
     rosterId: p.rosterId,

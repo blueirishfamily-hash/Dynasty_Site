@@ -62,6 +62,10 @@ interface DepthData {
   players: DepthPlayer[];
 }
 
+interface DepthApiResponse extends Record<string, DepthData> {
+  positionRanks?: Record<string, { rank: number; totalTeams: number; totalPpg: number }>;
+}
+
 type ModalPosition = "QB" | "RB" | "WR" | "TE";
 
 interface RivalryMatchup {
@@ -279,7 +283,7 @@ export default function Team() {
     enabled: !!league?.leagueId && !!user?.userId,
   });
 
-  const { data: depthData, isLoading: depthLoading } = useQuery<Record<string, DepthData>>({
+  const { data: depthData, isLoading: depthLoading } = useQuery<DepthApiResponse>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "depth", user?.userId],
     queryFn: async () => {
       const res = await fetch(
