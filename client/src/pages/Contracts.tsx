@@ -3446,11 +3446,18 @@ function ManageTeamContractsTab({
                 {allHypotheticalPlayers.map((player) => {
                   const isModified = player.isRosterPlayer && 
                     Object.keys(hypotheticalData.salaryOverrides[player.playerId] || {}).length > 0;
+                  const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.hypotheticalSalaries[y] || 0) > 0);
+                  const lastYearWithSalary = contractYears.length > 0 ? Math.max(...contractYears) : 0;
+                  const remainingYears = lastYearWithSalary >= CURRENT_YEAR ? lastYearWithSalary - CURRENT_YEAR + 1 : 0;
+                  const isExpiring = player.isRosterPlayer && !player.isFreeAgent && remainingYears === 1;
 
                   return (
                     <TableRow 
                       key={player.playerId} 
-                      className={player.isFreeAgent ? "bg-primary/5" : ""}
+                      className={
+                        isExpiring ? "bg-orange-500/15 border-l-4 border-l-orange-500" :
+                        player.isFreeAgent ? "bg-primary/5" : ""
+                      }
                       data-testid={`row-hypothetical-${player.playerId}`}
                     >
                       <TableCell>
