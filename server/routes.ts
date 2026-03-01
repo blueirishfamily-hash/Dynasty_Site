@@ -5686,13 +5686,13 @@ export async function registerRoutes(
       const effectivelyClosed = !votingMasterEnabled || votingClosedByDeadline;
       if (!effectivelyClosed) {
         if (voteType === "multi_choice") {
-          return res.json({ ranked: true, pointsByOption: [], voterCount: 0 });
+          return res.json({ ranked: true, pointsByOption: [], firstPlaceVotesByOption: [], voterCount: 0 });
         }
         return res.json({ approveCount: 0, rejectCount: 0 });
       }
       if (voteType === "multi_choice") {
-        const { pointsByOption, voterCount } = await storage.getRuleRankedVotes(ruleId);
-        return res.json({ ranked: true, pointsByOption, voterCount });
+        const { pointsByOption, firstPlaceVotesByOption, voterCount } = await storage.getRuleRankedVotes(ruleId);
+        return res.json({ ranked: true, pointsByOption, firstPlaceVotesByOption, voterCount });
       }
       const votes = await storage.getRuleVotes(ruleId);
       const approveCount = votes.filter(v => v.vote === "approve").length;

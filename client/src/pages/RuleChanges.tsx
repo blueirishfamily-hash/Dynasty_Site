@@ -64,6 +64,7 @@ interface RuleVoteData {
   rejectCount?: number;
   ranked?: boolean;
   pointsByOption?: number[];
+  firstPlaceVotesByOption?: number[];
   voterCount?: number;
 }
 
@@ -1110,6 +1111,7 @@ function RuleCard({
   const currentUserVote = !isMultiChoice && userVoteData && "vote" in userVoteData ? userVoteData.vote : undefined;
   const currentUserRankedVote = isMultiChoice && userVoteData && "pointsByOption" in userVoteData ? (userVoteData as { pointsByOption: number[] }).pointsByOption : undefined;
   const pointsByOption = votesData?.ranked ? (votesData.pointsByOption ?? []) : [];
+  const firstPlaceVotesByOption = votesData?.ranked ? (votesData.firstPlaceVotesByOption ?? []) : [];
   const voterCount = votesData?.voterCount ?? 0;
 
   useEffect(() => {
@@ -1327,12 +1329,25 @@ function RuleCard({
           <div className="pt-2 space-y-1 border-t">
             <p className="text-sm font-medium text-muted-foreground">Results ({voterCount} voter{voterCount !== 1 ? "s" : ""})</p>
             {options
-              .map((opt, i) => ({ opt, points: pointsByOption[i] ?? 0, index: i }))
-              .sort((a, b) => b.points - a.points)
-              .map(({ opt, points }, idx) => (
-                <div key={idx} className="flex justify-between text-sm">
+              .map((opt, i) => ({
+                opt,
+                points: pointsByOption[i] ?? 0,
+                firstPlaceVotes: firstPlaceVotesByOption[i] ?? 0,
+                index: i,
+              }))
+              .sort((a, b) => {
+                if (b.points !== a.points) return b.points - a.points;
+                return (b.firstPlaceVotes ?? 0) - (a.firstPlaceVotes ?? 0);
+              })
+              .map(({ opt, points, firstPlaceVotes }, idx) => (
+                <div key={idx} className="flex justify-between items-center gap-2 text-sm">
                   <span>{idx + 1}. {opt}</span>
-                  <span className="font-medium">{points} pts</span>
+                  <span className="font-medium shrink-0">
+                    {points} pts
+                    {firstPlaceVotes != null && firstPlaceVotes > 0 && (
+                      <span className="text-muted-foreground font-normal ml-1">({firstPlaceVotes} 1st)</span>
+                    )}
+                  </span>
                 </div>
               ))}
           </div>

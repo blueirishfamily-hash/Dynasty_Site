@@ -77,7 +77,7 @@ export interface IStorage {
   castRuleVote(data: InsertRuleVote): Promise<RuleVote>;
   getRuleVoteByRoster(ruleId: string, rosterId: number): Promise<RuleVote | undefined>;
   castRuleRankedVote(ruleId: string, rosterId: number, voterName: string, pointsByOption: number[]): Promise<void>;
-  getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; voterCount: number }>;
+  getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; firstPlaceVotesByOption: number[]; voterCount: number }>;
   getRuleRankedVoteByRoster(ruleId: string, rosterId: number): Promise<number[] | undefined>;
   
   getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]>;
@@ -546,7 +546,7 @@ export class DatabaseStorage implements IStorage {
     }
   }
 
-  async getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; voterCount: number }> {
+  async getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; firstPlaceVotesByOption: number[]; voterCount: number }> {
     const rows = await db
       .select()
       .from(ruleRankedVotesTable)
@@ -555,10 +555,24 @@ export class DatabaseStorage implements IStorage {
     const voterCount = rosterIds.size;
     const maxIndex = rows.length ? Math.max(...rows.map(r => r.optionIndex)) : -1;
     const pointsByOption: number[] = Array.from({ length: maxIndex + 1 }, () => 0);
+    const firstPlaceVotesByOption: number[] = Array.from({ length: maxIndex + 1 }, () => 0);
     for (const row of rows) {
       pointsByOption[row.optionIndex] += row.points;
     }
-    return { pointsByOption, voterCount };
+    // For each roster (ballot), the option with max points got first place
+    const byRoster = new Map<number, { optionIndex: number; points: number }[]>();
+    for (const row of rows) {
+      if (!byRoster.has(row.rosterId)) byRoster.set(row.rosterId, []);
+      byRoster.get(row.rosterId)!.push({ optionIndex: row.optionIndex, points: row.points });
+    }
+    byRoster.forEach((optionPoints) => {
+      if (optionPoints.length === 0) return;
+      const first = optionPoints.reduce((best, cur) => (cur.points > best.points ? cur : best), optionPoints[0]);
+      if (first.optionIndex >= 0 && first.optionIndex < firstPlaceVotesByOption.length) {
+        firstPlaceVotesByOption[first.optionIndex]++;
+      }
+    });
+    return { pointsByOption, firstPlaceVotesByOption, voterCount };
   }
 
   async getRuleRankedVoteByRoster(ruleId: string, rosterId: number): Promise<number[] | undefined> {
