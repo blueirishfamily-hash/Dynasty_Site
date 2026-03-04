@@ -42,6 +42,7 @@ import { useToast } from "@/hooks/use-toast";
 import { Separator } from "@/components/ui/separator";
 import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Checkbox } from "@/components/ui/checkbox";
 import { getRookieSalary, formatDraftPosition } from "@/utils/rookiePayScale";
 
 const COMMISSIONER_USER_IDS = [
@@ -496,7 +497,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   };
   
   const [selectedRosterId, setSelectedRosterId] = useState<string>(teams[0]?.rosterId.toString() || "");
-  const [positionFilter, setPositionFilter] = useState<string>("ALL");
+  const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
   
   // State for rookie draft positions and pay scale application
   const [rookieDraftPositions, setRookieDraftPositions] = useState<Record<string, { round: number | null; draftSlot: number | null }>>({});
@@ -608,7 +609,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           isRookieContract: contract?.isRookieContract ?? false,
         };
       })
-      .filter(p => positionFilter === "ALL" || p.position === positionFilter)
+      .filter(p => selectedPositions.length === 0 || selectedPositions.includes(p.position))
       .sort((a, b) => {
         const posOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
         const posA = posOrder.indexOf(a.position);
@@ -616,7 +617,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         if (posA !== posB) return posA - posB;
         return a.name.localeCompare(b.name);
       });
-  }, [selectedTeam, playerMap, contractData, selectedRosterId, positionFilter]);
+  }, [selectedTeam, playerMap, contractData, selectedRosterId, selectedPositions]);
 
   // Identify rookies (yearsExp === 0)
   const rookiePlayerIds = useMemo(() => {
@@ -1195,23 +1196,26 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
           <Label className="text-sm font-medium whitespace-nowrap ml-4">
             Position:
           </Label>
-          <Select 
-            value={positionFilter} 
-            onValueChange={setPositionFilter}
-          >
-            <SelectTrigger className="w-[140px]" data-testid="select-position-filter-league">
-              <SelectValue placeholder="All Positions" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="ALL">All Positions</SelectItem>
-              <SelectItem value="QB">QB</SelectItem>
-              <SelectItem value="RB">RB</SelectItem>
-              <SelectItem value="WR">WR</SelectItem>
-              <SelectItem value="TE">TE</SelectItem>
-              <SelectItem value="K">K</SelectItem>
-              <SelectItem value="DEF">DEF</SelectItem>
-            </SelectContent>
-          </Select>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant="outline" className="w-[140px] justify-between font-normal" data-testid="select-position-filter-league">
+                {selectedPositions.length === 0 ? "All Positions" : selectedPositions.sort().join(", ")}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-[140px] p-2" align="start">
+              {["QB", "RB", "WR", "TE", "K", "DEF"].map(pos => (
+                <label key={pos} className="flex items-center gap-2 py-1.5 cursor-pointer">
+                  <Checkbox
+                    checked={selectedPositions.includes(pos)}
+                    onCheckedChange={checked => {
+                      setSelectedPositions(prev => checked ? [...prev, pos] : prev.filter(p => p !== pos));
+                    }}
+                  />
+                  <span className="text-sm">{pos}</span>
+                </label>
+              ))}
+            </PopoverContent>
+          </Popover>
         </div>
 
         <Button 
@@ -1719,12 +1723,13 @@ function ManageTeamContractsTab({
   const [freeAgentSearch, setFreeAgentSearch] = useState("");
   const [showFreeAgentSearch, setShowFreeAgentSearch] = useState(false);
   const [franchiseTaggedPlayers, setFranchiseTaggedPlayers] = useState<Set<string>>(new Set());
+  const [pendingFranchiseTagPlayerId, setPendingFranchiseTagPlayerId] = useState<string | null>(null);
   const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [draftsLoaded, setDraftsLoaded] = useState(false);
-  const [positionFilter, setPositionFilter] = useState<string>("ALL");
-  const [contractLengthFilter, setContractLengthFilter] = useState<string>("ALL");
-  const [yearsRemainingFilter, setYearsRemainingFilter] = useState<string>("ALL");
-  const [playerTypeFilter, setPlayerTypeFilter] = useState<string>("ALL");
+  const [selectedPositions, setSelectedPositions] = useState<string[]>([]);
+  const [selectedContractLengths, setSelectedContractLengths] = useState<string[]>([]);
+  const [selectedYearsRemaining, setSelectedYearsRemaining] = useState<string[]>([]);
+  const [selectedPlayerTypes, setSelectedPlayerTypes] = useState<string[]>([]);
   const [activeView, setActiveView] = useState<"contracts" | "salary-breakdown">("contracts");
   const [openExtensionPopover, setOpenExtensionPopover] = useState<string | null>(null);
   const [ppgSalaryData, setPpgSalaryData] = useState<Record<string, {
@@ -1983,6 +1988,7 @@ function ManageTeamContractsTab({
         addedFreeAgents: [],
       });
       setFranchiseTaggedPlayers(new Set());
+      setPendingFranchiseTagPlayerId(null);
       setLastSavedAt(null);
       // Don't set draftsLoaded to false - we want to keep using league values
     }
@@ -2220,6 +2226,7 @@ function ManageTeamContractsTab({
       
       // Restore the loaded data
       setFranchiseTaggedPlayers(taggedPlayers);
+      setPendingFranchiseTagPlayerId(null);
       setHypotheticalData(prev => ({
         salaryOverrides: { ...prev.salaryOverrides, ...salaryOverrides },
         addedFreeAgents: [...prev.addedFreeAgents, ...addedFreeAgents],
@@ -2535,32 +2542,24 @@ function ManageTeamContractsTab({
     })
     .filter(p => {
       // Position filter
-      if (positionFilter !== "ALL" && p.position !== positionFilter) return false;
+      if (selectedPositions.length > 0 && !selectedPositions.includes(p.position)) return false;
       
       // Contract length filter
-      if (contractLengthFilter !== "ALL") {
+      if (selectedContractLengths.length > 0) {
         const contractLength = getContractLength(p.playerId);
-        if (contractLengthFilter === "R") {
-          if (contractLength !== "R") return false;
-        } else {
-          const filterValue = parseInt(contractLengthFilter);
-          if (contractLength !== filterValue) return false;
-        }
+        const lengthStr = contractLength === "R" ? "R" : String(contractLength);
+        if (!selectedContractLengths.includes(lengthStr)) return false;
       }
       
       // Years remaining filter
-      if (yearsRemainingFilter !== "ALL") {
+      if (selectedYearsRemaining.length > 0) {
         const yearsRemaining = getYearsRemaining(p.playerId, p.hypotheticalSalaries);
-        if (yearsRemainingFilter === "4+") {
-          if (yearsRemaining < 4) return false;
-        } else {
-          const filterValue = parseInt(yearsRemainingFilter);
-          if (yearsRemaining !== filterValue) return false;
-        }
+        const yrStr = yearsRemaining >= 4 ? "4+" : String(yearsRemaining);
+        if (!selectedYearsRemaining.includes(yrStr)) return false;
       }
       
-      // Player type filter (roster players always pass this)
-      if (playerTypeFilter !== "ALL" && playerTypeFilter !== "Roster Player") return false;
+      // Player type filter (roster players pass when "Roster Player" selected or no filter)
+      if (selectedPlayerTypes.length > 0 && !selectedPlayerTypes.includes("Roster Player")) return false;
       
       return true;
     })
@@ -2575,16 +2574,16 @@ function ManageTeamContractsTab({
   // Apply filters to free agents as well
   const filteredFreeAgents = hypotheticalData.addedFreeAgents.filter(p => {
     // Position filter
-    if (positionFilter !== "ALL" && p.position !== positionFilter) return false;
+    if (selectedPositions.length > 0 && !selectedPositions.includes(p.position)) return false;
     
-    // Contract length filter (free agents have no contract length, so only show if filter is "ALL" or "0")
-    if (contractLengthFilter !== "ALL" && contractLengthFilter !== "0") return false;
+    // Contract length filter (free agents have no contract, so only show if no filter or "0" selected)
+    if (selectedContractLengths.length > 0 && !selectedContractLengths.includes("0")) return false;
     
-    // Years remaining filter (free agents have no years remaining, so only show if filter is "ALL" or "0")
-    if (yearsRemainingFilter !== "ALL" && yearsRemainingFilter !== "0") return false;
+    // Years remaining filter (free agents have 0 years remaining)
+    if (selectedYearsRemaining.length > 0 && !selectedYearsRemaining.includes("0")) return false;
     
     // Player type filter
-    if (playerTypeFilter !== "ALL" && playerTypeFilter !== "Free Agent") return false;
+    if (selectedPlayerTypes.length > 0 && !selectedPlayerTypes.includes("Free Agent")) return false;
     
     return true;
   });
@@ -2768,6 +2767,7 @@ function ManageTeamContractsTab({
       addedFreeAgents: [],
     });
     setFranchiseTaggedPlayers(new Set());
+    setPendingFranchiseTagPlayerId(null);
   };
 
   const handleFranchiseTag = (playerId: string, position: string) => {
@@ -2783,13 +2783,13 @@ function ManageTeamContractsTab({
     else if (currentSalaries[2025] > 0) lastYearWithSalary = 2025;
     
     const franchiseYear = lastYearWithSalary < OPTION_YEAR ? lastYearWithSalary + 1 : OPTION_YEAR;
-    
-    // Toggle franchise tag
-    setFranchiseTaggedPlayers(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(playerId)) {
+
+    // If already tagged, remove tag (and clear pending if this player was pending)
+    if (franchiseTaggedPlayers.has(playerId)) {
+      setPendingFranchiseTagPlayerId(prev => (prev === playerId ? null : prev));
+      setFranchiseTaggedPlayers(prev => {
+        const newSet = new Set(prev);
         newSet.delete(playerId);
-        // Reset the franchise tag year to 0
         setHypotheticalData(prevData => ({
           ...prevData,
           salaryOverrides: {
@@ -2800,23 +2800,76 @@ function ManageTeamContractsTab({
             }
           }
         }));
-      } else {
-        newSet.add(playerId);
-        // Add 1 year to contract at franchise tag salary
-        setHypotheticalData(prevData => ({
-          ...prevData,
-          salaryOverrides: {
-            ...prevData.salaryOverrides,
-            [playerId]: {
-              ...prevData.salaryOverrides[playerId],
-              [franchiseYear]: franchiseSalary,
-            }
-          }
-        }));
+        return newSet;
+      });
+      return;
+    }
+
+    // If this player is pending, treat click as cancel
+    if (pendingFranchiseTagPlayerId === playerId) {
+      cancelPendingFranchiseTag(playerId);
+      return;
+    }
+
+    // Otherwise go to pending (accept/decline like extension) and show pending contract value
+    setPendingFranchiseTagPlayerId(playerId);
+    setHypotheticalData(prevData => ({
+      ...prevData,
+      salaryOverrides: {
+        ...prevData.salaryOverrides,
+        [playerId]: {
+          ...prevData.salaryOverrides[playerId],
+          [franchiseYear]: franchiseSalary,
+        }
       }
-      return newSet;
-    });
+    }));
   };
+
+  // Apply franchise tag (called when user confirms pending tag)
+  const applyFranchiseTag = useCallback((playerId: string, position: string) => {
+    const franchiseSalary = top5SalariesByPosition[position] || 0;
+    const currentSalaries = leagueContractData[userTeam!.rosterId.toString()]?.[playerId]?.salaries || {};
+    let lastYearWithSalary = 0;
+    if (currentSalaries[2028] > 0) lastYearWithSalary = 2028;
+    else if (currentSalaries[2027] > 0) lastYearWithSalary = 2027;
+    else if (currentSalaries[2026] > 0) lastYearWithSalary = 2026;
+    else if (currentSalaries[2025] > 0) lastYearWithSalary = 2025;
+    const franchiseYear = lastYearWithSalary < OPTION_YEAR ? lastYearWithSalary + 1 : OPTION_YEAR;
+    setFranchiseTaggedPlayers(prev => new Set(prev).add(playerId));
+    setHypotheticalData(prevData => ({
+      ...prevData,
+      salaryOverrides: {
+        ...prevData.salaryOverrides,
+        [playerId]: {
+          ...prevData.salaryOverrides[playerId],
+          [franchiseYear]: franchiseSalary,
+        }
+      }
+    }));
+    setPendingFranchiseTagPlayerId(null);
+  }, [leagueContractData, userTeam, top5SalariesByPosition, OPTION_YEAR]);
+
+  // Revert pending franchise tag salary and clear pending (called on Cancel or when clicking star again)
+  const cancelPendingFranchiseTag = useCallback((playerId: string) => {
+    const currentSalaries = leagueContractData[userTeam!.rosterId.toString()]?.[playerId]?.salaries || {};
+    let lastYearWithSalary = 0;
+    if (currentSalaries[2028] > 0) lastYearWithSalary = 2028;
+    else if (currentSalaries[2027] > 0) lastYearWithSalary = 2027;
+    else if (currentSalaries[2026] > 0) lastYearWithSalary = 2026;
+    else if (currentSalaries[2025] > 0) lastYearWithSalary = 2025;
+    const franchiseYear = lastYearWithSalary < OPTION_YEAR ? lastYearWithSalary + 1 : OPTION_YEAR;
+    setHypotheticalData(prevData => ({
+      ...prevData,
+      salaryOverrides: {
+        ...prevData.salaryOverrides,
+        [playerId]: {
+          ...prevData.salaryOverrides[playerId],
+          [franchiseYear]: 0,
+        }
+      }
+    }));
+    setPendingFranchiseTagPlayerId(null);
+  }, [leagueContractData, userTeam, OPTION_YEAR]);
 
   const hasHypotheticalChanges = Object.keys(hypotheticalData.salaryOverrides).length > 0 || 
     hypotheticalData.addedFreeAgents.length > 0;
@@ -3337,87 +3390,117 @@ function ManageTeamContractsTab({
               <Label className="text-sm font-medium whitespace-nowrap">
                 Position:
               </Label>
-              <Select 
-                value={positionFilter} 
-                onValueChange={setPositionFilter}
-              >
-                <SelectTrigger className="w-[140px]" data-testid="select-position-filter-team">
-                  <SelectValue placeholder="All Positions" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">All Positions</SelectItem>
-                  <SelectItem value="QB">QB</SelectItem>
-                  <SelectItem value="RB">RB</SelectItem>
-                  <SelectItem value="WR">WR</SelectItem>
-                  <SelectItem value="TE">TE</SelectItem>
-                  <SelectItem value="K">K</SelectItem>
-                  <SelectItem value="DEF">DEF</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-[140px] justify-between font-normal" data-testid="select-position-filter-team">
+                    {selectedPositions.length === 0 ? "All Positions" : selectedPositions.sort().join(", ")}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[140px] p-2" align="start">
+                  {["QB", "RB", "WR", "TE", "K", "DEF"].map(pos => (
+                    <label key={pos} className="flex items-center gap-2 py-1.5 cursor-pointer">
+                      <Checkbox
+                        checked={selectedPositions.includes(pos)}
+                        onCheckedChange={checked => {
+                          setSelectedPositions(prev => checked ? [...prev, pos] : prev.filter(p => p !== pos));
+                        }}
+                      />
+                      <span className="text-sm">{pos}</span>
+                    </label>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="flex items-center gap-2">
               <Label className="text-sm font-medium whitespace-nowrap">
                 Contract Length:
               </Label>
-              <Select 
-                value={contractLengthFilter} 
-                onValueChange={setContractLengthFilter}
-              >
-                <SelectTrigger className="w-[140px]" data-testid="select-contract-length-filter">
-                  <SelectValue placeholder="All Lengths" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">All Lengths</SelectItem>
-                  <SelectItem value="0">No Contract</SelectItem>
-                  <SelectItem value="1">1 Year</SelectItem>
-                  <SelectItem value="2">2 Years</SelectItem>
-                  <SelectItem value="3">3 Years</SelectItem>
-                  <SelectItem value="4">4 Years</SelectItem>
-                  <SelectItem value="R">Rookie (R)</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-[140px] justify-between font-normal" data-testid="select-contract-length-filter">
+                    {selectedContractLengths.length === 0 ? "All Lengths" : selectedContractLengths.map(v => v === "R" ? "Rookie (R)" : v === "0" ? "No Contract" : `${v} Yr`).join(", ")}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[160px] p-2" align="start">
+                  {[
+                    { value: "0", label: "No Contract" },
+                    { value: "1", label: "1 Year" },
+                    { value: "2", label: "2 Years" },
+                    { value: "3", label: "3 Years" },
+                    { value: "4", label: "4 Years" },
+                    { value: "R", label: "Rookie (R)" },
+                  ].map(({ value, label }) => (
+                    <label key={value} className="flex items-center gap-2 py-1.5 cursor-pointer">
+                      <Checkbox
+                        checked={selectedContractLengths.includes(value)}
+                        onCheckedChange={checked => {
+                          setSelectedContractLengths(prev => checked ? [...prev, value] : prev.filter(v => v !== value));
+                        }}
+                      />
+                      <span className="text-sm">{label}</span>
+                    </label>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="flex items-center gap-2">
               <Label className="text-sm font-medium whitespace-nowrap">
                 Years Remaining:
               </Label>
-              <Select 
-                value={yearsRemainingFilter} 
-                onValueChange={setYearsRemainingFilter}
-              >
-                <SelectTrigger className="w-[140px]" data-testid="select-years-remaining-filter">
-                  <SelectValue placeholder="All" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">All</SelectItem>
-                  <SelectItem value="0">0 Years</SelectItem>
-                  <SelectItem value="1">1 Year</SelectItem>
-                  <SelectItem value="2">2 Years</SelectItem>
-                  <SelectItem value="3">3 Years</SelectItem>
-                  <SelectItem value="4+">4+ Years</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-[140px] justify-between font-normal" data-testid="select-years-remaining-filter">
+                    {selectedYearsRemaining.length === 0 ? "All" : selectedYearsRemaining.map(v => v === "4+" ? "4+ Years" : `${v} Yr`).join(", ")}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[140px] p-2" align="start">
+                  {[
+                    { value: "0", label: "0 Years" },
+                    { value: "1", label: "1 Year" },
+                    { value: "2", label: "2 Years" },
+                    { value: "3", label: "3 Years" },
+                    { value: "4+", label: "4+ Years" },
+                  ].map(({ value, label }) => (
+                    <label key={value} className="flex items-center gap-2 py-1.5 cursor-pointer">
+                      <Checkbox
+                        checked={selectedYearsRemaining.includes(value)}
+                        onCheckedChange={checked => {
+                          setSelectedYearsRemaining(prev => checked ? [...prev, value] : prev.filter(v => v !== value));
+                        }}
+                      />
+                      <span className="text-sm">{label}</span>
+                    </label>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </div>
 
             <div className="flex items-center gap-2">
               <Label className="text-sm font-medium whitespace-nowrap">
                 Type:
               </Label>
-              <Select 
-                value={playerTypeFilter} 
-                onValueChange={setPlayerTypeFilter}
-              >
-                <SelectTrigger className="w-[140px]" data-testid="select-player-type-filter">
-                  <SelectValue placeholder="All Types" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="ALL">All Types</SelectItem>
-                  <SelectItem value="Roster Player">Roster Player</SelectItem>
-                  <SelectItem value="Free Agent">Free Agent</SelectItem>
-                </SelectContent>
-              </Select>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button variant="outline" className="w-[140px] justify-between font-normal" data-testid="select-player-type-filter">
+                    {selectedPlayerTypes.length === 0 ? "All Types" : selectedPlayerTypes.join(", ")}
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="w-[160px] p-2" align="start">
+                  {["Roster Player", "Free Agent"].map(type => (
+                    <label key={type} className="flex items-center gap-2 py-1.5 cursor-pointer">
+                      <Checkbox
+                        checked={selectedPlayerTypes.includes(type)}
+                        onCheckedChange={checked => {
+                          setSelectedPlayerTypes(prev => checked ? [...prev, type] : prev.filter(t => t !== type));
+                        }}
+                      />
+                      <span className="text-sm">{type}</span>
+                    </label>
+                  ))}
+                </PopoverContent>
+              </Popover>
             </div>
           </div>
 
@@ -3518,6 +3601,14 @@ function ManageTeamContractsTab({
                           e => e.playerId === player.playerId && e.status === "pending" &&
                             year >= e.extensionYear && year < e.extensionYear + e.extensionType
                         ) && leagueSalary === 0;
+                        // Pending franchise tag year (the extra year shown before confirm)
+                        const franchiseYearForPlayer = (() => {
+                          const sal = leagueContractData[userTeam?.rosterId.toString()]?.[player.playerId]?.salaries || {};
+                          let last = 0;
+                          if (sal[2028] > 0) last = 2028; else if (sal[2027] > 0) last = 2027; else if (sal[2026] > 0) last = 2026; else if (sal[2025] > 0) last = 2025;
+                          return last < OPTION_YEAR ? last + 1 : OPTION_YEAR;
+                        })();
+                        const isPendingFranchiseTagYear = pendingFranchiseTagPlayerId === player.playerId && year === franchiseYearForPlayer;
                         // Find contract end year (last year with salary > 0)
                         const contractEndYear = [...CONTRACT_YEARS, OPTION_YEAR]
                           .filter(y => (player.hypotheticalSalaries[y] || 0) > 0)
@@ -3529,19 +3620,19 @@ function ManageTeamContractsTab({
                         const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
                         const deadCapValue = deadCapEnabled ? (currentValue * deadCapPercent) : 0;
 
-                        const isReadOnlySalary = !isCommissioner && player.isRosterPlayer && !player.isFreeAgent;
+                        const isReadOnlySalary = player.isRosterPlayer && !player.isFreeAgent;
                         return (
                           <TableCell key={year} className="text-center">
                             <div className="flex flex-col items-center gap-0.5">
                               <div className="flex items-center justify-center gap-0.5">
                                 {isReadOnlySalary ? (
-                                  <>
+                                  <div className={isPendingFranchiseTagYear ? "rounded border border-amber-400 border-dashed px-1" : ""}>
                                     <span className="text-xs text-muted-foreground">$</span>
                                     <span className="text-sm tabular-nums font-medium w-16 text-center">
                                       {currentValue ? `${Number(currentValue).toFixed(1)}` : "—"}
                                     </span>
                                     <span className="text-xs text-muted-foreground">M</span>
-                                  </>
+                                  </div>
                                 ) : (
                                   <>
                                     <span className="text-xs text-muted-foreground">$</span>
@@ -3549,7 +3640,7 @@ function ManageTeamContractsTab({
                                       type="number"
                                       step="0.1"
                                       min="0"
-                                      className={`h-7 w-16 text-center tabular-nums text-sm ${isPendingExtYear ? "border-amber-400 border-dashed" : isDifferent ? "border-primary" : ""}`}
+                                      className={`h-7 w-16 text-center tabular-nums text-sm ${isPendingExtYear || isPendingFranchiseTagYear ? "border-amber-400 border-dashed" : isDifferent ? "border-primary" : ""}`}
                                       placeholder="0"
                                       value={currentValue || ""}
                                       onChange={(e) => {
@@ -3567,6 +3658,9 @@ function ManageTeamContractsTab({
                               </div>
                               {isPendingExtYear && (
                                 <span className="text-[10px] text-amber-600 italic">pending ext.</span>
+                              )}
+                              {isPendingFranchiseTagYear && (
+                                <span className="text-[10px] text-amber-600 italic">pending tag</span>
                               )}
                               {deadCapEnabled && currentValue > 0 && deadCapPercent > 0 && (
                                 <span className="text-[10px]" style={{ color: COLORS.deadCap }}>
@@ -3611,22 +3705,53 @@ function ManageTeamContractsTab({
                           const isPreviouslyTagged = isPlayerPreviouslyFranchiseTagged(player.playerId);
                           const noPositionData = franchiseSalary === 0;
                           const isThisPlayerTagged = franchiseTaggedPlayers.has(player.playerId);
-                          const teamAlreadyUsedTag = franchiseTaggedPlayers.size > 0 && !isThisPlayerTagged;
+                          const isPendingFranchiseTag = pendingFranchiseTagPlayerId === player.playerId;
+                          const teamAlreadyUsedTag = (franchiseTaggedPlayers.size > 0 || pendingFranchiseTagPlayerId != null) && !isThisPlayerTagged && !isPendingFranchiseTag;
                           const isDisabled = isPreviouslyTagged || noPositionData || teamAlreadyUsedTag;
                           
                           return (
                             <Tooltip>
                               <TooltipTrigger asChild>
-                                <Button
-                                  size="icon"
-                                  variant={isThisPlayerTagged ? "default" : "ghost"}
-                                  className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""}`}
-                                  onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
-                                  disabled={isDisabled}
-                                  data-testid={`button-franchise-tag-${player.playerId}`}
-                                >
-                                  <Star className={`w-4 h-4 ${isThisPlayerTagged ? "fill-current" : ""}`} />
-                                </Button>
+                                <div className="flex items-center justify-center gap-0.5">
+                                  <Button
+                                    size="icon"
+                                    variant={isThisPlayerTagged || isPendingFranchiseTag ? "default" : "ghost"}
+                                    className={`h-7 w-7 ${isDisabled ? "opacity-50 cursor-not-allowed" : ""} ${isPendingFranchiseTag ? "bg-amber-500 hover:bg-amber-600" : ""}`}
+                                    onClick={() => !isDisabled && handleFranchiseTag(player.playerId, player.position)}
+                                    disabled={isDisabled}
+                                    data-testid={`button-franchise-tag-${player.playerId}`}
+                                  >
+                                    <Star className={`w-4 h-4 ${(isThisPlayerTagged || isPendingFranchiseTag) ? "fill-current" : ""}`} />
+                                  </Button>
+                                  {isPendingFranchiseTag && (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          applyFranchiseTag(player.playerId, player.position);
+                                        }}
+                                        title="Confirm franchise tag"
+                                      >
+                                        <Check className="h-3.5 w-3.5" />
+                                      </Button>
+                                      <Button
+                                        size="sm"
+                                        variant="ghost"
+                                        className="h-6 w-6 p-0 text-red-500 hover:text-red-600 hover:bg-red-50"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          cancelPendingFranchiseTag(player.playerId);
+                                        }}
+                                        title="Cancel franchise tag"
+                                      >
+                                        <X className="h-3.5 w-3.5" />
+                                      </Button>
+                                    </>
+                                  )}
+                                </div>
                               </TooltipTrigger>
                               <TooltipContent>
                                 {(() => {
@@ -3648,6 +3773,13 @@ function ManageTeamContractsTab({
                                   }
                                   if (noPositionData) return "No position salary data available";
                                   if (teamAlreadyUsedTag) return "Team can only use 1 franchise tag per season";
+                                  if (isPendingFranchiseTag) {
+                                    return (
+                                      <div>
+                                        <p>Franchise tag pending (${franchiseSalary}M). Click check to confirm or X to cancel.</p>
+                                      </div>
+                                    );
+                                  }
                                   if (isThisPlayerTagged) {
                                     return (
                                       <div>
@@ -3707,18 +3839,12 @@ function ManageTeamContractsTab({
                             allOptionsExhausted = nonRookieExtCount >= 2;
                           }
 
-                          // For commissioners: only disable during mutations
-                          // For non-commissioners: disable if can't apply extension or all options exhausted
-                          // Exception: if user has a pending extension, they can always toggle it off (cancel)
+                          // Disable if can't apply extension or all options exhausted; exception: pending extension can always be toggled off (cancel)
                           const anyMutationPending = applyExtensionMutation.isPending || confirmExtensionMutation.isPending || cancelPendingExtensionMutation.isPending || deleteExtensionMutation.isPending;
                           const isApplyingDisabled = !extensionEligibility.eligible || 
                             allOptionsExhausted ||
                             anyMutationPending;
-                          const toggleDisabled = isPendingExtension
-                            ? anyMutationPending
-                            : isCommissioner 
-                              ? anyMutationPending
-                              : isApplyingDisabled;
+                          const toggleDisabled = isPendingExtension ? anyMutationPending : isApplyingDisabled;
                           
                           return (
                             <Popover open={openExtensionPopover === player.playerId} onOpenChange={(open) => {
@@ -3743,8 +3869,6 @@ function ManageTeamContractsTab({
                                           } else {
                                             if (isPendingExtension && thisPlayerExtension) {
                                               cancelPendingExtensionMutation.mutate(thisPlayerExtension.id);
-                                            } else if (isCommissioner && isConfirmedExtension) {
-                                              deleteExtensionMutation.mutate();
                                             }
                                           }
                                         }}
@@ -3804,8 +3928,8 @@ function ManageTeamContractsTab({
                                     let mainText = "";
                                     if (isPendingExtension) {
                                       mainText = `Extension pending (${thisPlayerExtension?.extensionType}-year). Click ✓ to confirm or ✕ to cancel.`;
-                                    } else if (isCommissioner && isConfirmedExtension) {
-                                      mainText = "This player has a confirmed extension. Click to remove and allow the team to use that extension type again.";
+                                    } else if (isConfirmedExtension) {
+                                      mainText = "This player has a confirmed extension.";
                                     } else if (availableTypes.length === 0 && extensionEligibility.eligible) {
                                       if (isRookiePlayer) {
                                         mainText = rookieExtCount >= 3
@@ -4185,8 +4309,9 @@ interface PlayerBiddingTabProps {
 }
 
 function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts, teamCapData, expiringPlayerIds }: PlayerBiddingTabProps) {
-  const { league, user } = useSleeper();
+  const { league, user, season } = useSleeper();
   const leagueId = league?.leagueId;
+  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const { toast } = useToast();
   const isCommissioner = !!(user?.userId && league && (
     (league.commissionerId && user.userId === league.commissionerId) ||
@@ -4216,38 +4341,31 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
 
-  // Contract limits: 3 four-year, 4 three-year, 12 rookie, 5 two-year
-  const CONTRACT_LIMITS: Record<number | "R", number> = {
+  // Contract limits by years remaining: 3 with 4+ years left, 4 with 3 years left, 5 with 2 years left. Rookie contracts have no limit.
+  const CONTRACT_LIMITS: Record<number, number> = {
     4: 3,
     3: 4,
-    "R": 12,
     2: 5,
   };
 
-  // Calculate existing contract counts by duration
-  // Use originalContractYears and isRookieContract flag to determine buckets
+  // Calculate existing contract counts by years remaining (not contract length). Rookie contracts are excluded from limits.
   const existingContractCounts = useMemo(() => {
-    const counts: Record<number | "R", number> = { 4: 0, 3: 0, "R": 0, 2: 0, 1: 0 };
-    
+    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
     for (const playerId of Object.keys(teamContracts)) {
       const contract = teamContracts[playerId];
       if (!contract) continue;
+      if (contract.isRookieContract) continue; // Rookie contracts do not count toward any limit
       
-      // Check if this is a rookie contract - counts as "R" regardless of length
-      if (contract.isRookieContract) {
-        counts["R"]++;
-        continue; // Rookie contracts always count towards the Rookie bucket, not the regular length buckets
-      }
-      
-      // Use originalContractYears to determine bucket
-      const contractLength = contract.originalContractYears || 0;
-      if (contractLength >= 1 && contractLength <= 4) {
-        counts[contractLength as keyof typeof counts]++;
-      }
+      const salaries = contract.salaries || {};
+      const yearsWithSalary = Object.keys(salaries).map(Number).filter((y) => (salaries[y] ?? 0) > 0);
+      const lastYearWithSalary = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : CURRENT_YEAR - 1;
+      const yearsRemaining = lastYearWithSalary >= CURRENT_YEAR ? lastYearWithSalary - CURRENT_YEAR + 1 : 0;
+      const bucket = Math.min(Math.max(yearsRemaining, 0), 4) as 1 | 2 | 3 | 4;
+      if (bucket >= 1 && bucket <= 4) counts[bucket]++;
     }
     
     return counts;
-  }, [teamContracts]);
+  }, [teamContracts, CURRENT_YEAR]);
 
   // Fetch bidding status
   const { data: biddingStatus, refetch: refetchBiddingStatus } = useQuery<{ isOpen: boolean }>({
@@ -4540,55 +4658,33 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     });
   }, [teamContracts, activeBids, league?.season]);
 
-  // Count active bids by contract years (including rookie contracts)
-  // Note: Rookie bids are stored as contractYears = 3 with a special marker
-  // For now, we'll use contractYears = 3 and check if it's a rookie bid
-  // TODO: Add isRookieContract field to PlayerBid interface and database
+  // Count active bids by contract years. Rookie bids are not counted toward any limit.
   const bidContractCounts = useMemo(() => {
-    const counts: Record<number | "R", number> = { 4: 0, 3: 0, "R": 0, 2: 0, 1: 0 };
+    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
     for (const bid of activeBids) {
-      // Check if this is a rookie bid (contractYears = 3 and marked as rookie)
-      // For now, we'll need to add isRookieContract to the bid interface
-      // For this implementation, we'll assume contractYears = 3 with a special check
-      // This will be updated when we add isRookieContract to bids
-      // Check if this is a rookie bid (contractYears = 3 and isRookieContract = 1)
-      if (bid.contractYears === 3 && (bid as any).isRookieContract === 1) {
-        counts["R"]++;
-        continue; // Don't count rookie bids as 3-year bids
-      } else if (bid.contractYears >= 1 && bid.contractYears <= 4) {
-        counts[bid.contractYears as keyof typeof counts]++;
-      }
+      if (bid.contractYears === 3 && (bid as any).isRookieContract === 1) continue; // Rookie bids have no limit
+      if (bid.contractYears >= 1 && bid.contractYears <= 4) counts[bid.contractYears as keyof typeof counts]++;
     }
     return counts;
   }, [activeBids]);
 
-  // Calculate remaining slots for each contract type
+  // Calculate remaining slots by years (2, 3, 4). Rookie (R) has no limit.
   const remainingSlots = useMemo(() => {
     return {
       4: Math.max(0, CONTRACT_LIMITS[4] - existingContractCounts[4] - bidContractCounts[4]),
       3: Math.max(0, CONTRACT_LIMITS[3] - existingContractCounts[3] - bidContractCounts[3]),
-      "R": Math.max(0, CONTRACT_LIMITS["R"] - existingContractCounts["R"] - bidContractCounts["R"]),
       2: Math.max(0, CONTRACT_LIMITS[2] - existingContractCounts[2] - bidContractCounts[2]),
     };
   }, [existingContractCounts, bidContractCounts]);
 
-  // Check if selected contract years would exceed limit
+  // Check if selected contract years would exceed limit. Rookie (R) and 1-year have no limit.
   const isContractYearDisabled = (years: number | "R"): boolean => {
-    if (years === 1) return false; // No limit on 1-year contracts
-    const limit = CONTRACT_LIMITS[years];
+    if (years === 1 || years === "R") return false;
+    const limit = CONTRACT_LIMITS[years as number];
     if (!limit) return false;
-    
-    const existing = existingContractCounts[years] || 0;
-    const bidsCount = bidContractCounts[years] || 0;
-    
-    // If editing, don't count the current bid being edited
-    const adjustedBidsCount = editingBid && (
-      (years === "R" && editingBid.contractYears === 3 && (editingBid as any).isRookieContract) ||
-      (years !== "R" && editingBid.contractYears === years)
-    )
-      ? bidsCount - 1 
-      : bidsCount;
-    
+    const existing = existingContractCounts[years as number] || 0;
+    const bidsCount = bidContractCounts[years as number] || 0;
+    const adjustedBidsCount = editingBid && editingBid.contractYears === years ? bidsCount - 1 : bidsCount;
     return (existing + adjustedBidsCount) >= limit;
   };
 
@@ -4734,7 +4830,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
 
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm font-medium">Contract Limits (Existing + Pending Bids)</CardTitle>
+          <CardTitle className="text-sm font-medium">Contract Limits by Years Left (Existing + Pending Bids)</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid grid-cols-4 gap-4 text-center">
@@ -4742,25 +4838,23 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
               <div className={`text-lg font-bold ${remainingSlots[4] === 0 ? 'text-destructive' : 'text-foreground'}`}>
                 {existingContractCounts[4] + bidContractCounts[4]}/{CONTRACT_LIMITS[4]}
               </div>
-              <p className="text-xs text-muted-foreground">4-Year Contracts</p>
+              <p className="text-xs text-muted-foreground">4+ Years Left</p>
             </div>
             <div>
               <div className={`text-lg font-bold ${remainingSlots[3] === 0 ? 'text-destructive' : 'text-foreground'}`}>
                 {existingContractCounts[3] + bidContractCounts[3]}/{CONTRACT_LIMITS[3]}
               </div>
-              <p className="text-xs text-muted-foreground">3-Year Contracts</p>
+              <p className="text-xs text-muted-foreground">3 Years Left</p>
             </div>
             <div>
-              <div className={`text-lg font-bold ${remainingSlots["R"] === 0 ? 'text-destructive' : 'text-foreground'}`}>
-                {existingContractCounts["R"] + bidContractCounts["R"]}/{CONTRACT_LIMITS["R"]}
-              </div>
-              <p className="text-xs text-muted-foreground">Rookie (R) Contracts</p>
+              <div className="text-lg font-bold text-foreground">—</div>
+              <p className="text-xs text-muted-foreground">Rookie (R) — No limit</p>
             </div>
             <div>
               <div className={`text-lg font-bold ${remainingSlots[2] === 0 ? 'text-destructive' : 'text-foreground'}`}>
                 {existingContractCounts[2] + bidContractCounts[2]}/{CONTRACT_LIMITS[2]}
               </div>
-              <p className="text-xs text-muted-foreground">2-Year Contracts</p>
+              <p className="text-xs text-muted-foreground">2 Years Left</p>
             </div>
           </div>
         </CardContent>
@@ -4928,12 +5022,12 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
                         4 Years ({remainingSlots[4]}/{CONTRACT_LIMITS[4]} remaining)
                       </SelectItem>
                       <SelectItem value="R" disabled={isContractYearDisabled("R")}>
-                        Rookie (R) ({remainingSlots["R"]}/{CONTRACT_LIMITS["R"]} remaining)
+                        Rookie (R) (No limit)
                       </SelectItem>
                     </SelectContent>
                   </Select>
                   <p className="text-xs text-muted-foreground">
-                    Limits: 3 four-year, 4 three-year, 12 rookie, 5 two-year contracts per team
+                    Limits by years left: 3 with 4+ years left, 4 with 3 years left, 5 with 2 years left. Rookie contracts unlimited.
                   </p>
                 </div>
 

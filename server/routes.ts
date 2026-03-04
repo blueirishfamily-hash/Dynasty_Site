@@ -2834,15 +2834,7 @@ export async function registerRoutes(
       for (const contract of contractsToAssign) {
         let contractData: any = null;
         try {
-          // Double-check: exclude players with rookie contract designation
-          const existingContract = existingContracts.find(
-            c => c.playerId === contract.playerId && c.rosterId === contract.rosterId
-          );
-          if (existingContract && existingContract.isRookieContract === 1) {
-            console.log(`[Assign Contracts] Skipping player ${contract.playerId} - has rookie contract designation`);
-            continue;
-          }
-          
+          // Allow assignment for all eligible players; re-signing from FA drops rookie contract tag (contractData below has isRookieContract: 0)
           contractData = {
             leagueId,
             rosterId: contract.rosterId,
@@ -6077,6 +6069,8 @@ export async function registerRoutes(
           ? contract.salaries
           : JSON.stringify(contract.salaries || {});
 
+        // Drop rookie contract tag when franchise tag is applied (or when extended / FA, handled elsewhere)
+        const isRookieContract = isApplyingFranchiseTag ? 0 : (contract.isRookieContract || 0);
         const result = await storage.upsertPlayerContract({
           leagueId,
           rosterId: contract.rosterId,
@@ -6087,7 +6081,7 @@ export async function registerRoutes(
           franchiseTagUsed: contract.franchiseTagUsed,
           franchiseTagYear: contract.franchiseTagYear,
           originalContractYears: contract.originalContractYears,
-          isRookieContract: contract.isRookieContract || 0,
+          isRookieContract,
           extensionApplied: contract.extensionApplied,
           extensionYear: contract.extensionYear,
           extensionSalary: contract.extensionSalary,
@@ -6780,7 +6774,7 @@ export async function registerRoutes(
       const extensionSalary3 = extension.extensionType >= 3 ? extensionSalary1 : null;
       const extensionSalary4 = extension.extensionType >= 4 ? extensionSalary1 : null;
 
-      // Update the player's contract with extension info
+      // Update the player's contract with extension info. Drop rookie contract tag once extended.
       const updatedSalaries: Record<string, number> = { ...existingSalaries };
       const salaryUpdates: any = {
         leagueId,
@@ -6791,6 +6785,7 @@ export async function registerRoutes(
         franchiseTagUsed: playerContract.franchiseTagUsed,
         franchiseTagYear: playerContract.franchiseTagYear,
         originalContractYears: playerContract.originalContractYears,
+        isRookieContract: 0,
         extensionApplied: 1,
         extensionYear: extension.extensionYear,
         extensionSalary: extensionSalary1,
