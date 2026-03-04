@@ -6007,8 +6007,8 @@ export async function registerRoutes(
       if (!league) {
         return res.status(404).json({ error: "League not found" });
       }
-      const isCommissioner = userId && league.owner_id === userId;
-      if (!isCommissioner) {
+      const isComm = userId && await isCommissioner(userId, leagueId);
+      if (!isComm) {
         return res.status(403).json({ error: "Only the league commissioner can save contracts directly" });
       }
 

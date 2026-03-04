@@ -478,12 +478,13 @@ interface ContractInputTabProps {
   onContractChange: (rosterId: string, playerId: string, field: "salaries" | "fifthYearOption" | "isOnIr" | "originalContractYears" | "isRookieContract", value: any) => void;
   onSave: () => void;
   hasChanges: boolean;
+  isSaving?: boolean;
   isCommissioner?: boolean;
   deadCapEnabled?: boolean;
   onDeadCapToggle?: (enabled: boolean) => void;
 }
 
-function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isCommissioner = false, deadCapEnabled = true, onDeadCapToggle }: ContractInputTabProps) {
+function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isSaving = false, isCommissioner = false, deadCapEnabled = true, onDeadCapToggle }: ContractInputTabProps) {
   const { toast } = useToast();
   const { season, league, user, isOffseason } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
@@ -1229,10 +1230,14 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
 
         <Button 
           onClick={onSave} 
-          disabled={!hasChanges}
+          disabled={!hasChanges || isSaving}
           data-testid="button-save-contracts"
         >
-          <Save className="w-4 h-4 mr-2" />
+          {isSaving ? (
+            <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          ) : (
+            <Save className="w-4 h-4 mr-2" />
+          )}
           Save Contracts
         </Button>
       </div>
@@ -7640,6 +7645,7 @@ export default function Contracts() {
                 onContractChange={handleContractChange}
                 onSave={handleSave}
                 hasChanges={hasChanges}
+                isSaving={saveContractsMutation.isPending}
                 isCommissioner={isCommissioner}
                 deadCapEnabled={deadCapEnabled}
                 onDeadCapToggle={handleDeadCapToggle}
