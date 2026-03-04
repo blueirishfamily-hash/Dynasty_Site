@@ -485,7 +485,7 @@ interface ContractInputTabProps {
 
 function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isCommissioner = false, deadCapEnabled = true, onDeadCapToggle }: ContractInputTabProps) {
   const { toast } = useToast();
-  const { season, league, user } = useSleeper();
+  const { season, league, user, isOffseason } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
   const OPTION_YEAR = CURRENT_YEAR + 4;
@@ -1203,6 +1203,15 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-[140px] p-2" align="start">
+              <label className="flex items-center gap-2 py-1.5 cursor-pointer border-b border-border mb-1">
+                <Checkbox
+                  checked={selectedPositions.length === 0}
+                  onCheckedChange={checked => {
+                    if (checked) setSelectedPositions([]);
+                  }}
+                />
+                <span className="text-sm font-medium">All</span>
+              </label>
               {["QB", "RB", "WR", "TE", "K", "DEF"].map(pos => (
                 <label key={pos} className="flex items-center gap-2 py-1.5 cursor-pointer">
                   <Checkbox
@@ -1500,7 +1509,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           {(() => {
                             const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.salaries[y] || 0) > 0);
                             const lastYear = contractYears.length > 0 ? Math.max(...contractYears) : 0;
-                            const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + 1 : 0;
+                            const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + (isOffseason ? 0 : 1) : 0;
                             
                             if (isCommissioner) {
                               return (
@@ -2500,12 +2509,12 @@ function ManageTeamContractsTab({
     return contract.originalContractYears || 0;
   };
 
-  // Helper function to calculate years remaining on contract
+  // Helper function to calculate years remaining on contract (offseason: current year does not count)
   const getYearsRemaining = (playerId: string, hypotheticalSalaries: Record<number, number>): number => {
     const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(year => (hypotheticalSalaries[year] || 0) > 0);
     if (contractYears.length === 0) return 0;
     const lastYear = Math.max(...contractYears);
-    return Math.max(0, lastYear - CURRENT_YEAR + 1);
+    return Math.max(0, lastYear - CURRENT_YEAR + (isOffseason ? 0 : 1));
   };
 
   const rosterPlayers: HypotheticalPlayer[] = userTeam.players
@@ -3397,6 +3406,15 @@ function ManageTeamContractsTab({
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[140px] p-2" align="start">
+                  <label className="flex items-center gap-2 py-1.5 cursor-pointer border-b border-border mb-1">
+                    <Checkbox
+                      checked={selectedPositions.length === 0}
+                      onCheckedChange={checked => {
+                        if (checked) setSelectedPositions([]);
+                      }}
+                    />
+                    <span className="text-sm font-medium">All</span>
+                  </label>
                   {["QB", "RB", "WR", "TE", "K", "DEF"].map(pos => (
                     <label key={pos} className="flex items-center gap-2 py-1.5 cursor-pointer">
                       <Checkbox
@@ -3423,6 +3441,15 @@ function ManageTeamContractsTab({
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[160px] p-2" align="start">
+                  <label className="flex items-center gap-2 py-1.5 cursor-pointer border-b border-border mb-1">
+                    <Checkbox
+                      checked={selectedContractLengths.length === 0}
+                      onCheckedChange={checked => {
+                        if (checked) setSelectedContractLengths([]);
+                      }}
+                    />
+                    <span className="text-sm font-medium">All</span>
+                  </label>
                   {[
                     { value: "0", label: "No Contract" },
                     { value: "1", label: "1 Year" },
@@ -3456,6 +3483,15 @@ function ManageTeamContractsTab({
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[140px] p-2" align="start">
+                  <label className="flex items-center gap-2 py-1.5 cursor-pointer border-b border-border mb-1">
+                    <Checkbox
+                      checked={selectedYearsRemaining.length === 0}
+                      onCheckedChange={checked => {
+                        if (checked) setSelectedYearsRemaining([]);
+                      }}
+                    />
+                    <span className="text-sm font-medium">All</span>
+                  </label>
                   {[
                     { value: "0", label: "0 Years" },
                     { value: "1", label: "1 Year" },
@@ -3488,6 +3524,15 @@ function ManageTeamContractsTab({
                   </Button>
                 </PopoverTrigger>
                 <PopoverContent className="w-[160px] p-2" align="start">
+                  <label className="flex items-center gap-2 py-1.5 cursor-pointer border-b border-border mb-1">
+                    <Checkbox
+                      checked={selectedPlayerTypes.length === 0}
+                      onCheckedChange={checked => {
+                        if (checked) setSelectedPlayerTypes([]);
+                      }}
+                    />
+                    <span className="text-sm font-medium">All</span>
+                  </label>
                   {["Roster Player", "Free Agent"].map(type => (
                     <label key={type} className="flex items-center gap-2 py-1.5 cursor-pointer">
                       <Checkbox
@@ -3529,10 +3574,8 @@ function ManageTeamContractsTab({
                 {allHypotheticalPlayers.map((player) => {
                   const isModified = player.isRosterPlayer && 
                     Object.keys(hypotheticalData.salaryOverrides[player.playerId] || {}).length > 0;
-                  const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.hypotheticalSalaries[y] || 0) > 0);
-                  const lastYearWithSalary = contractYears.length > 0 ? Math.max(...contractYears) : 0;
-                  const remainingYears = lastYearWithSalary >= CURRENT_YEAR ? lastYearWithSalary - CURRENT_YEAR + 1 : 0;
-                  const isExpiring = player.isRosterPlayer && !player.isFreeAgent && remainingYears === 1;
+                  const remainingYears = getYearsRemaining(player.playerId, player.hypotheticalSalaries);
+                  const isExpiring = player.isRosterPlayer && !player.isFreeAgent && player.position !== "DEF" && remainingYears === 0;
 
                   return (
                     <TableRow 
@@ -3583,9 +3626,7 @@ function ManageTeamContractsTab({
                       </TableCell>
                       <TableCell className="text-center">
                         {(() => {
-                          const contractYears = [...CONTRACT_YEARS, OPTION_YEAR].filter(y => (player.hypotheticalSalaries[y] || 0) > 0);
-                          const lastYear = contractYears.length > 0 ? Math.max(...contractYears) : 0;
-                          const remainingYears = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + 1 : 0;
+                          const remainingYears = getYearsRemaining(player.playerId, player.hypotheticalSalaries);
                           return (
                             <span className="text-sm tabular-nums font-medium">
                               {remainingYears > 0 ? remainingYears : "-"}
@@ -4309,7 +4350,7 @@ interface PlayerBiddingTabProps {
 }
 
 function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts, teamCapData, expiringPlayerIds }: PlayerBiddingTabProps) {
-  const { league, user, season } = useSleeper();
+  const { league, user, season, isOffseason } = useSleeper();
   const leagueId = league?.leagueId;
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const { toast } = useToast();
@@ -4359,13 +4400,13 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
       const salaries = contract.salaries || {};
       const yearsWithSalary = Object.keys(salaries).map(Number).filter((y) => (salaries[y] ?? 0) > 0);
       const lastYearWithSalary = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : CURRENT_YEAR - 1;
-      const yearsRemaining = lastYearWithSalary >= CURRENT_YEAR ? lastYearWithSalary - CURRENT_YEAR + 1 : 0;
+      const yearsRemaining = lastYearWithSalary >= CURRENT_YEAR ? lastYearWithSalary - CURRENT_YEAR + (isOffseason ? 0 : 1) : 0;
       const bucket = Math.min(Math.max(yearsRemaining, 0), 4) as 1 | 2 | 3 | 4;
       if (bucket >= 1 && bucket <= 4) counts[bucket]++;
     }
     
     return counts;
-  }, [teamContracts, CURRENT_YEAR]);
+  }, [teamContracts, CURRENT_YEAR, isOffseason]);
 
   // Fetch bidding status
   const { data: biddingStatus, refetch: refetchBiddingStatus } = useQuery<{ isOpen: boolean }>({
