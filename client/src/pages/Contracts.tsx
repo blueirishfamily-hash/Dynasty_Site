@@ -564,6 +564,13 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
     return (teamExtensionsData?.extensions || []).filter(e => e.status === "confirmed");
   }, [teamExtensionsData]);
 
+  const hasAnyFranchiseTagged = useMemo(() => {
+    if (!selectedRosterId || !contractData[selectedRosterId]) return false;
+    return Object.keys(contractData[selectedRosterId]).some(
+      (playerId) => (contractData[selectedRosterId][playerId] as any)?.hasBeenFranchiseTagged === 1
+    );
+  }, [selectedRosterId, contractData]);
+
   const undoExtensionMutation = useMutation({
     mutationFn: async (extensionId: string) => {
       return apiRequest("DELETE", `/api/league/${league?.leagueId}/extensions/${extensionId}/undo`);
@@ -580,6 +587,30 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
       toast({
         title: "Failed to Undo Extension",
         description: error.message || "Failed to undo extension",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const undoFranchiseTagMutation = useMutation({
+    mutationFn: async ({ rosterId, playerId }: { rosterId: string; playerId: string }) => {
+      return apiRequest("DELETE", `/api/league/${league?.leagueId}/franchise-tag/undo`, {
+        userId: user?.userId,
+        rosterId,
+        playerId,
+      });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Franchise Tag Undone",
+        description: "The franchise tag has been removed and the team can use their tag again.",
+      });
+      queryClient.invalidateQueries({ queryKey: ['/api/league', league?.leagueId, 'contracts'] });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to Undo Franchise Tag",
+        description: error.message || "Failed to undo franchise tag",
         variant: "destructive",
       });
     },
@@ -1295,6 +1326,9 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     {confirmedExtensions.length > 0 && (
                       <TableHead className="text-center w-[70px]">Ext</TableHead>
                     )}
+                    {hasAnyFranchiseTagged && (
+                      <TableHead className="text-center w-[70px]">Tag</TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1569,12 +1603,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
                           const deadCapValue = deadCapEnabled ? (salaryValue * deadCapPercent) : 0;
                           const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
-                          const isVetOnlyYear = year === OPTION_YEAR;
-                          const hasExtensionCoveringYear = confirmedExtensions.some(
-                            e => e.playerId === player.playerId &&
-                              year >= e.extensionYear && year < e.extensionYear + e.extensionType
-                          );
-                          const canEditYear = !isVetOnlyYear || !isRookie || hasExtensionCoveringYear || salaryValue > 0;
+                          // Manage League: all years from current through current+4 are editable
+                          const canEditYear = true;
 
                           return (
                             <TableCell key={year} className="text-center">
@@ -1675,12 +1705,38 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                             })()}
                           </TableCell>
                         )}
+                        {hasAnyFranchiseTagged && (
+                          <TableCell className="text-center">
+                            {(() => {
+                              const contract = contractData[selectedRosterId]?.[player.playerId] as any;
+                              if (contract?.hasBeenFranchiseTagged !== 1) return "-";
+                              return (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      size="sm"
+                                      variant="ghost"
+                                      className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                                      onClick={() => undoFranchiseTagMutation.mutate({ rosterId: selectedRosterId, playerId: player.playerId })}
+                                      disabled={undoFranchiseTagMutation.isPending}
+                                    >
+                                      <Undo2 className="h-4 w-4" />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    <p>Undo franchise tag</p>
+                                  </TooltipContent>
+                                </Tooltip>
+                              );
+                            })()}
+                          </TableCell>
+                        )}
                       </TableRow>
                     );
                   })}
                   {playerInputs.length === 0 && (
                     <TableRow>
-                      <TableCell colSpan={confirmedExtensions.length > 0 ? 13 : 12} className="text-center text-muted-foreground py-8">
+                      <TableCell colSpan={12 + (confirmedExtensions.length > 0 ? 1 : 0) + (hasAnyFranchiseTagged ? 1 : 0)} className="text-center text-muted-foreground py-8">
                         No players on this roster
                       </TableCell>
                     </TableRow>
@@ -2885,6 +2941,34 @@ function ManageTeamContractsTab({
     setPendingFranchiseTagPlayerId(null);
   }, [leagueContractData, userTeam, OPTION_YEAR]);
 
+  // Apply franchise tag via API (persists immediately; no commissioner approval)
+  const applyFranchiseTagMutation = useMutation({
+    mutationFn: async ({ playerId, position }: { playerId: string; position: string }) => {
+      return apiRequest("POST", `/api/league/${leagueId}/franchise-tag`, {
+        userId: user?.userId,
+        rosterId: userTeam?.rosterId,
+        playerId,
+        position,
+      });
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contracts"] });
+      toast({
+        title: "Franchise tag applied",
+        description: "The franchise tag has been applied to the contract.",
+      });
+      setFranchiseTaggedPlayers(prev => new Set(prev).add(variables.playerId));
+      setPendingFranchiseTagPlayerId(null);
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to apply franchise tag",
+        description: error.message || "Please try again.",
+        variant: "destructive",
+      });
+    },
+  });
+
   const hasHypotheticalChanges = Object.keys(hypotheticalData.salaryOverrides).length > 0 || 
     hypotheticalData.addedFreeAgents.length > 0;
 
@@ -3777,8 +3861,9 @@ function ManageTeamContractsTab({
                                         className="h-6 w-6 p-0 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50"
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          applyFranchiseTag(player.playerId, player.position);
+                                          applyFranchiseTagMutation.mutate({ playerId: player.playerId, position: player.position });
                                         }}
+                                        disabled={applyFranchiseTagMutation.isPending}
                                         title="Confirm franchise tag"
                                       >
                                         <Check className="h-3.5 w-3.5" />
@@ -3791,6 +3876,7 @@ function ManageTeamContractsTab({
                                           e.stopPropagation();
                                           cancelPendingFranchiseTag(player.playerId);
                                         }}
+                                        disabled={applyFranchiseTagMutation.isPending}
                                         title="Cancel franchise tag"
                                       >
                                         <X className="h-3.5 w-3.5" />
@@ -6748,6 +6834,9 @@ export default function Contracts() {
           isOnIr: contract.isOnIr === 1,
           originalContractYears: contract.originalContractYears || 0,
           isRookieContract: contract.isRookieContract === 1,
+          ...((contract as any).franchiseTagUsed !== undefined && { franchiseTagUsed: (contract as any).franchiseTagUsed }),
+          ...((contract as any).franchiseTagYear !== undefined && (contract as any).franchiseTagYear !== null && { franchiseTagYear: (contract as any).franchiseTagYear }),
+          ...((contract as any).hasBeenFranchiseTagged !== undefined && { hasBeenFranchiseTagged: (contract as any).hasBeenFranchiseTagged }),
         };
       }
       setContractData(contractStore);

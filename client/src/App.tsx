@@ -21,6 +21,7 @@ import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
 import RuleChanges from "@/pages/RuleChanges";
 import Historical from "@/pages/Historical";
+import YearRecap from "@/pages/YearRecap";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ function Router() {
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
       <Route path="/historical" component={Historical} />
+      <Route path="/year-recap" component={YearRecap} />
       <Route component={NotFound} />
     </Switch>
   );

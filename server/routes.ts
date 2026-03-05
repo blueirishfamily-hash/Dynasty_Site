@@ -4742,6 +4742,448 @@ export async function registerRoutes(
     }
   });
 
+  // Year Recap - Full season stats, charts, and awards
+  app.get("/api/league/:leagueId/year-recap", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const [league, rosters, users, players, nflState] = await Promise.all([
+        getLeague(leagueId),
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getAllPlayers(),
+        getNFLState().catch(() => ({ week: 18, season: league?.season || "2025", season_type: "post" })),
+      ]);
+      const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
+      const lastRegularWeek = playoffWeekStart - 1;
+      let matchupLeagueId = leagueId;
+      const testMatchup = await getLeagueMatchups(leagueId, 1).catch(() => []);
+      const hasCurrentData = testMatchup.length > 0 && testMatchup.some((m: SleeperMatchup) => m.points !== undefined && m.points > 0);
+      if (!hasCurrentData && (league as any).previous_league_id) {
+        matchupLeagueId = (league as any).previous_league_id;
+      }
+      const lastPlayoffWeek = 17;
+      const matchupPromises: Promise<{ week: number; matchups: SleeperMatchup[] }>[] = [];
+      for (let w = 1; w <= lastPlayoffWeek; w++) {
+        matchupPromises.push(
+          getLeagueMatchups(matchupLeagueId, w).then(matchups => ({ week: w, matchups })).catch(() => ({ week: w, matchups: [] }))
+        );
+      }
+      const [winnersBracket, allWeeklyMatchups, allTransactions] = await Promise.all([
+        getWinnersBracket(leagueId).catch(() => []),
+        Promise.all(matchupPromises),
+        getAllLeagueTransactions(matchupLeagueId, lastPlayoffWeek).catch(() => []),
+      ]);
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+      const rosterPositions = (league?.roster_positions || []).filter((p: string) => !["BN", "IR", "TAXI"].includes(p));
+      const playoffTeams = new Set<number>();
+      const championRosterId = winnersBracket.find((m: any) => m.p === 1)?.w ?? null;
+      if (championRosterId) playoffTeams.add(championRosterId);
+      winnersBracket.forEach((m: any) => {
+        if (m.t1) playoffTeams.add(m.t1);
+        if (m.t2) playoffTeams.add(m.t2);
+      });
+      const getTeamInfo = (rosterId: number) => {
+        const roster = rosters.find((r: SleeperRoster) => r.roster_id === rosterId);
+        const user = roster ? userMap.get(roster.owner_id) : null;
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${rosterId}`;
+        const avatar = user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null;
+        return { name, avatar };
+      };
+
+      const regularMatchups = allWeeklyMatchups.filter(({ week }) => week <= lastRegularWeek);
+      const playoffMatchups = allWeeklyMatchups.filter(({ week }) => week >= playoffWeekStart);
+
+      const pointsByRosterByWeek = new Map<number, Map<number, number>>();
+      const allPlayWinsByRoster = new Map<number, number>();
+      const allPlayLossesByRoster = new Map<number, number>();
+      const matchupHistory = new Map<number, Array<{ week: number; won: boolean | null }>>();
+      const uniqueStartersByRoster = new Map<number, Set<string>>();
+      const startersAgesByRoster = new Map<number, number[]>();
+      const rosterWeeklyPoints = new Map<number, Map<number, Record<string, number>>>();
+      const rosterWeeklyRoster = new Map<number, Map<number, string[]>>();
+      const rosterWeeklyStarters = new Map<number, Map<number, string[]>>();
+      rosters.forEach((r: SleeperRoster) => {
+        pointsByRosterByWeek.set(r.roster_id, new Map());
+        allPlayWinsByRoster.set(r.roster_id, 0);
+        allPlayLossesByRoster.set(r.roster_id, 0);
+        matchupHistory.set(r.roster_id, []);
+        uniqueStartersByRoster.set(r.roster_id, new Set());
+        startersAgesByRoster.set(r.roster_id, []);
+        rosterWeeklyPoints.set(r.roster_id, new Map());
+        rosterWeeklyRoster.set(r.roster_id, new Map());
+        rosterWeeklyStarters.set(r.roster_id, new Map());
+      });
+
+      const numTeams = rosters.length;
+      regularMatchups.forEach(({ week, matchups }) => {
+        matchups.forEach((m: SleeperMatchup) => {
+          const roster = m.players || [];
+          rosterWeeklyRoster.get(m.roster_id)?.set(week, roster);
+          const pts = m.points ?? 0;
+          pointsByRosterByWeek.get(m.roster_id)?.set(week, pts);
+          const pp = m.players_points || {};
+          rosterWeeklyPoints.get(m.roster_id)?.set(week, pp);
+          const starters = m.starters || [];
+          rosterWeeklyStarters.get(m.roster_id)?.set(week, starters);
+          starters.forEach((pid: string) => uniqueStartersByRoster.get(m.roster_id)?.add(pid));
+          starters.forEach((pid: string) => {
+            const p = players[pid];
+            if (p?.age != null) startersAgesByRoster.get(m.roster_id)?.push(p.age);
+          });
+        });
+        const weekScores = matchups.filter((m: SleeperMatchup) => m.points != null).map((m: SleeperMatchup) => ({ rosterId: m.roster_id, points: m.points || 0 }));
+        weekScores.sort((a: { points: number }, b: { points: number }) => b.points - a.points);
+        weekScores.forEach((team: { rosterId: number; points: number }, idx: number) => {
+          const wins = numTeams - idx - 1;
+          const losses = idx;
+          allPlayWinsByRoster.set(team.rosterId, (allPlayWinsByRoster.get(team.rosterId) || 0) + wins);
+          allPlayLossesByRoster.set(team.rosterId, (allPlayLossesByRoster.get(team.rosterId) || 0) + losses);
+        });
+        const groups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach((m: SleeperMatchup) => {
+          if (!groups.has(m.matchup_id)) groups.set(m.matchup_id, []);
+          groups.get(m.matchup_id)!.push(m);
+        });
+        groups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const s1 = t1.points || 0, s2 = t2.points || 0;
+          if (s1 === 0 && s2 === 0) return;
+          const h1 = matchupHistory.get(t1.roster_id), h2 = matchupHistory.get(t2.roster_id);
+          if (s1 > s2) { h1?.push({ week, won: true }); h2?.push({ week, won: false }); }
+          else if (s2 > s1) { h1?.push({ week, won: false }); h2?.push({ week, won: true }); }
+          else { h1?.push({ week, won: null }); h2?.push({ week, won: null }); }
+        });
+      });
+
+      const cumulativeAllPlayPctByWeek = new Map<number, Map<number, number>>();
+      rosters.forEach((r: SleeperRoster) => cumulativeAllPlayPctByWeek.set(r.roster_id, new Map()));
+      let runningWins = new Map<number, number>();
+      let runningLosses = new Map<number, number>();
+      rosters.forEach((r: SleeperRoster) => { runningWins.set(r.roster_id, 0); runningLosses.set(r.roster_id, 0); });
+      regularMatchups.forEach(({ week, matchups }) => {
+        const weekScores = matchups.filter((m: SleeperMatchup) => m.points != null).map((m: SleeperMatchup) => ({ rosterId: m.roster_id, points: m.points || 0 }));
+        weekScores.sort((a: { points: number }, b: { points: number }) => b.points - a.points);
+        weekScores.forEach((team: { rosterId: number; points: number }, idx: number) => {
+          const w = numTeams - idx - 1, l = idx;
+          runningWins.set(team.rosterId, (runningWins.get(team.rosterId) || 0) + w);
+          runningLosses.set(team.rosterId, (runningLosses.get(team.rosterId) || 0) + l);
+        });
+        rosters.forEach((r: SleeperRoster) => {
+          const tw = runningWins.get(r.roster_id) || 0, tl = runningLosses.get(r.roster_id) || 0;
+          const pct = tw + tl > 0 ? (tw / (tw + tl)) * 100 : 0;
+          cumulativeAllPlayPctByWeek.get(r.roster_id)?.set(week, Math.round(pct * 10) / 10);
+        });
+      });
+
+      const isEligibleForSlot = (position: string, slot: string) => {
+        if (slot === "FLEX") return ["RB", "WR", "TE"].includes(position);
+        if (slot === "SUPER_FLEX") return ["QB", "RB", "WR", "TE"].includes(position);
+        if (slot === "WRRB") return ["WR", "RB"].includes(position);
+        if (slot === "WRRBTE") return ["WR", "RB", "TE"].includes(position);
+        return position === slot;
+      };
+      const buildSlotOrder = (slots: string[]) => {
+        const priority = ["QB", "RB", "WR", "TE", "K", "DEF"];
+        const flexes = ["SUPER_FLEX", "WRRBTE", "WRRB", "FLEX"];
+        const fixed = slots.filter((s: string) => priority.includes(s));
+        const remaining = slots.filter((s: string) => !priority.includes(s) && flexes.includes(s));
+        return [...fixed, ...remaining];
+      };
+      const slotOrder = buildSlotOrder(rosterPositions);
+
+      const powerWinVsAge = rosters.map((r: SleeperRoster) => {
+        const ages = startersAgesByRoster.get(r.roster_id) || [];
+        const avgAge = ages.length > 0 ? ages.reduce((a, b) => a + b, 0) / ages.length : 0;
+        const wins = allPlayWinsByRoster.get(r.roster_id) || 0, losses = allPlayLossesByRoster.get(r.roster_id) || 0;
+        const pct = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 1000) / 10 : 0;
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, avatar: info.avatar, allPlayWinPct: pct, avgAge: Math.round(avgAge * 10) / 10, isChampion: r.roster_id === championRosterId, isPlayoff: playoffTeams.has(r.roster_id) };
+      });
+
+      const powerWinVsUniqueStarters = rosters.map((r: SleeperRoster) => {
+        const unique = uniqueStartersByRoster.get(r.roster_id)?.size || 0;
+        const wins = allPlayWinsByRoster.get(r.roster_id) || 0, losses = allPlayLossesByRoster.get(r.roster_id) || 0;
+        const pct = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 1000) / 10 : 0;
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, avatar: info.avatar, allPlayWinPct: pct, uniqueStarters: unique, isChampion: r.roster_id === championRosterId, isPlayoff: playoffTeams.has(r.roster_id) };
+      });
+
+      const streaks = rosters.map((r: SleeperRoster) => {
+        const hist = (matchupHistory.get(r.roster_id) || []).sort((a, b) => a.week - b.week);
+        let maxWin = 0, maxLoss = 0, curWin = 0, curLoss = 0;
+        hist.forEach(({ won }) => {
+          if (won === true) { curWin++; curLoss = 0; maxWin = Math.max(maxWin, curWin); }
+          else if (won === false) { curLoss++; curWin = 0; maxLoss = Math.max(maxLoss, curLoss); }
+          else { curWin = 0; curLoss = 0; }
+        });
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, longestWinStreak: maxWin, longestLossStreak: maxLoss };
+      });
+
+      const bouncebacks = rosters.map((r: SleeperRoster) => {
+        const hist = (matchupHistory.get(r.roster_id) || []).sort((a, b) => a.week - b.week);
+        let bouncebacks = 0, losses = 0;
+        for (let i = 0; i < hist.length - 1; i++) {
+          if (hist[i].won === false) { losses++; if (hist[i + 1].won === true) bouncebacks++; }
+        }
+        if (hist[hist.length - 1]?.won === false) losses++;
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, bouncebacks, losses, bouncebackPct: losses > 0 ? Math.round((bouncebacks / losses) * 1000) / 10 : 0 };
+      });
+
+      const allGames: Array<{ week: number; team1: string; team2: string; score1: number; score2: number; combined: number; margin: number }> = [];
+      regularMatchups.forEach(({ week, matchups }) => {
+        const groups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach((m: SleeperMatchup) => {
+          if (!groups.has(m.matchup_id)) groups.set(m.matchup_id, []);
+          groups.get(m.matchup_id)!.push(m);
+        });
+        groups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const s1 = t1.points || 0, s2 = t2.points || 0;
+          if (s1 === 0 && s2 === 0) return;
+          const info1 = getTeamInfo(t1.roster_id), info2 = getTeamInfo(t2.roster_id);
+          allGames.push({ week, team1: info1.name, team2: info2.name, score1: s1, score2: s2, combined: s1 + s2, margin: Math.abs(s1 - s2) });
+        });
+      });
+      const byCombined = [...allGames].sort((a, b) => b.combined - a.combined);
+      const highestScoring = byCombined.slice(0, 3);
+      const lowestScoring = byCombined.slice(-3).reverse();
+      const byMargin = [...allGames].sort((a, b) => a.margin - b.margin);
+      const closest = byMargin.filter(g => g.margin > 0).slice(0, 3);
+      const blowouts = [...allGames].sort((a, b) => b.margin - a.margin).slice(0, 3);
+
+      const upsets: Array<{ week: number; winner: string; loser: string; winnerPctAtWeek: number; loserPctAtWeek: number; upsetMargin: number; winnerScore: number; loserScore: number }> = [];
+      regularMatchups.forEach(({ week, matchups }) => {
+        const groups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach((m: SleeperMatchup) => {
+          if (!groups.has(m.matchup_id)) groups.set(m.matchup_id, []);
+          groups.get(m.matchup_id)!.push(m);
+        });
+        groups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const s1 = t1.points || 0, s2 = t2.points || 0;
+          if (s1 === 0 && s2 === 0) return;
+          const pct1 = cumulativeAllPlayPctByWeek.get(t1.roster_id)?.get(week) ?? 50;
+          const pct2 = cumulativeAllPlayPctByWeek.get(t2.roster_id)?.get(week) ?? 50;
+          const lowerWon = s1 < s2 ? t1 : t2;
+          const higherPct = s1 > s2 ? pct1 : pct2;
+          const lowerPct = s1 > s2 ? pct2 : pct1;
+          const margin = Math.abs(higherPct - lowerPct);
+          if (margin >= 5) {
+            upsets.push({
+              week,
+              winner: getTeamInfo(lowerWon.roster_id).name,
+              loser: getTeamInfo(s1 > s2 ? t2.roster_id : t1.roster_id).name,
+              winnerPctAtWeek: lowerPct,
+              loserPctAtWeek: higherPct,
+              upsetMargin: Math.round(margin * 10) / 10,
+              winnerScore: Math.min(s1, s2),
+              loserScore: Math.max(s1, s2),
+            });
+          }
+        });
+      });
+      upsets.sort((a, b) => b.upsetMargin - a.upsetMargin);
+
+      const wrongDecisionsByRoster = new Map<number, Array<{ week: number; starterName: string; starterPoints: number; benchName: string; benchPoints: number }>>();
+      const correctDecisionsByRoster = new Map<number, number>();
+      const totalDecisionsByRoster = new Map<number, number>();
+      rosters.forEach((r: SleeperRoster) => { wrongDecisionsByRoster.set(r.roster_id, []); correctDecisionsByRoster.set(r.roster_id, 0); totalDecisionsByRoster.set(r.roster_id, 0); });
+      regularMatchups.forEach(({ week, matchups }) => {
+        matchups.forEach((m: SleeperMatchup) => {
+          const starters = m.starters || [];
+          const pp = m.players_points || {};
+          const roster = rosterWeeklyRoster.get(m.roster_id)?.get(week) || [];
+          const bench = roster.filter((pid: string) => !starters.includes(pid));
+          const slotOrderCopy = [...slotOrder];
+          let slotIdx = 0;
+          starters.forEach((starterId: string) => {
+            const slot = slotOrderCopy[slotIdx];
+            if (!slot) return;
+            const starterPos = players[starterId]?.position || "FLEX";
+            if (!isEligibleForSlot(starterPos, slot)) return;
+            slotIdx++;
+            const starterPts = pp[starterId] ?? 0;
+            const benchEligible = bench.filter((pid: string) => isEligibleForSlot(players[pid]?.position || "FLEX", slot));
+            const bestBench = benchEligible.map((pid: string) => ({ pid, pts: pp[pid] ?? 0 })).sort((a, b) => b.pts - a.pts)[0];
+            totalDecisionsByRoster.set(m.roster_id, (totalDecisionsByRoster.get(m.roster_id) || 0) + 1);
+            if (bestBench && bestBench.pts > starterPts) {
+              wrongDecisionsByRoster.get(m.roster_id)?.push({
+                week,
+                starterName: players[starterId]?.full_name || players[starterId]?.first_name + " " + players[starterId]?.last_name || starterId,
+                starterPoints: starterPts,
+                benchName: players[bestBench.pid]?.full_name || players[bestBench.pid]?.first_name + " " + players[bestBench.pid]?.last_name || bestBench.pid,
+                benchPoints: bestBench.pts,
+              });
+            } else {
+              correctDecisionsByRoster.set(m.roster_id, (correctDecisionsByRoster.get(m.roster_id) || 0) + 1);
+            }
+          });
+        });
+      });
+
+      const managementEfficiencyVsPoints = rosters.map((r: SleeperRoster) => {
+        const correct = correctDecisionsByRoster.get(r.roster_id) || 0;
+        const total = totalDecisionsByRoster.get(r.roster_id) || 0;
+        const eff = total > 0 ? Math.round((correct / total) * 1000) / 10 : 100;
+        const pts = r.settings?.fpts || 0;
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, avatar: info.avatar, managementEfficiency: eff, totalPoints: pts, isChampion: r.roster_id === championRosterId, isPlayoff: playoffTeams.has(r.roster_id) };
+      });
+
+      const wrongDecisions = rosters.map((r: SleeperRoster) => {
+        const details = wrongDecisionsByRoster.get(r.roster_id) || [];
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, wrongDecisions: details.length, details };
+      });
+
+      const peakByPosition: Record<string, Array<{ playerName: string; teamName: string; week: number; points: number; isHonorableMention: boolean }>> = { QB: [], RB: [], WR: [], TE: [], K: [], DEF: [] };
+      regularMatchups.forEach(({ week, matchups }) => {
+        matchups.forEach((m: SleeperMatchup) => {
+          const starters = m.starters || [];
+          const pp = m.players_points || {};
+          const info = getTeamInfo(m.roster_id);
+          starters.forEach((pid: string) => {
+            const pos = players[pid]?.position || "FLEX";
+            const key = ["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos) ? pos : "FLEX";
+            if (!peakByPosition[key]) peakByPosition[key] = [];
+            const pts = pp[pid] ?? 0;
+            peakByPosition[key].push({ playerName: players[pid]?.full_name || players[pid]?.first_name + " " + players[pid]?.last_name || pid, teamName: info.name, week, points: pts, isHonorableMention: false });
+          });
+        });
+      });
+      Object.keys(peakByPosition).forEach(pos => {
+        peakByPosition[pos].sort((a, b) => b.points - a.points);
+        const top3 = peakByPosition[pos].slice(0, 3);
+        top3.forEach((e, i) => { e.isHonorableMention = i > 0; });
+        peakByPosition[pos] = top3;
+      });
+
+      const hiddenPeaks: Array<{ playerName: string; teamName: string; week: number; points: number; position: string; wouldHaveBeenRank: number }> = [];
+      regularMatchups.forEach(({ week, matchups }) => {
+        const weekPeaks = new Map<string, number>();
+        matchups.forEach((m: SleeperMatchup) => {
+          (m.starters || []).forEach((pid: string) => {
+            const pos = players[pid]?.position || "FLEX";
+            const key = ["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos) ? pos : "FLEX";
+            const pts = (m.players_points || {})[pid] ?? 0;
+            const cur = weekPeaks.get(key) ?? 0;
+            if (pts > cur) weekPeaks.set(key, pts);
+          });
+        });
+        matchups.forEach((m: SleeperMatchup) => {
+          const starters = new Set(m.starters || []);
+          const roster = rosterWeeklyRoster.get(m.roster_id)?.get(week) || [];
+          const pp = m.players_points || {};
+          const info = getTeamInfo(m.roster_id);
+          roster.filter((pid: string) => !starters.has(pid)).forEach((pid: string) => {
+            const pos = players[pid]?.position || "FLEX";
+            const key = ["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos) ? pos : "FLEX";
+            const pts = pp[pid] ?? 0;
+            const threshold = weekPeaks.get(key) ?? 0;
+            if (pts >= threshold && pts > 0) {
+              const allScores = [...matchups.flatMap((mm: SleeperMatchup) => (mm.starters || []).map((id: string) => ((mm.players_points || {})[id] ?? 0))), pts];
+              allScores.sort((a, b) => b - a);
+              const rank = allScores.indexOf(pts) + 1;
+              hiddenPeaks.push({ playerName: players[pid]?.full_name || players[pid]?.first_name + " " + players[pid]?.last_name || pid, teamName: info.name, week, points: pts, position: key, wouldHaveBeenRank: rank });
+            }
+          });
+        });
+      });
+
+      const playerAvgAsStarter = new Map<string, { total: number; games: number; rosterId: number; position: string }>();
+      regularMatchups.forEach(({ week, matchups }) => {
+        matchups.forEach((m: SleeperMatchup) => {
+          const starters = m.starters || [];
+          const pp = m.players_points || {};
+          starters.forEach((pid: string) => {
+            const pts = pp[pid] ?? 0;
+            const pos = players[pid]?.position || "FLEX";
+            const cur = playerAvgAsStarter.get(pid);
+            if (!cur) playerAvgAsStarter.set(pid, { total: pts, games: 1, rosterId: m.roster_id, position: pos });
+            else { cur.total += pts; cur.games++; }
+          });
+        });
+      });
+      const slotToPlayerPositions: Record<string, string[]> = { QB: ["QB"], RB: ["RB"], WR: ["WR"], TE: ["TE"], K: ["K"], DEF: ["DEF"], FLEX: ["RB", "WR", "TE"], SUPER_FLEX: ["QB", "RB", "WR", "TE"], WRRB: ["WR", "RB"], WRRBTE: ["WR", "RB", "TE"] };
+      const allLeagueTeams: Array<{ team: 1 | 2; slot: string; playerName: string; position: string; avgPoints: number; teamName: string; gamesStarted: number }> = [];
+      const used1 = new Set<string>();
+      const used2 = new Set<string>();
+      slotOrder.forEach(slot => {
+        const positions = slotToPlayerPositions[slot] || [slot];
+        const candidates = Array.from(playerAvgAsStarter.entries())
+          .filter(([pid, data]) => positions.includes(data.position) && data.games >= 1)
+          .map(([pid, data]) => ({ pid, ...data, avg: data.total / data.games }))
+          .sort((a, b) => b.avg - a.avg);
+        const pick1 = candidates.find(c => !used1.has(c.pid));
+        const pick2 = candidates.find(c => !used2.has(c.pid) && c.pid !== pick1?.pid);
+        if (pick1) {
+          used1.add(pick1.pid);
+          allLeagueTeams.push({ team: 1, slot, playerName: players[pick1.pid]?.full_name || players[pick1.pid]?.first_name + " " + players[pick1.pid]?.last_name || pick1.pid, position: pick1.position, avgPoints: Math.round((pick1.total / pick1.games) * 10) / 10, teamName: getTeamInfo(pick1.rosterId).name, gamesStarted: pick1.games });
+        }
+        if (pick2) {
+          used2.add(pick2.pid);
+          allLeagueTeams.push({ team: 2, slot, playerName: players[pick2.pid]?.full_name || players[pick2.pid]?.first_name + " " + players[pick2.pid]?.last_name || pick2.pid, position: pick2.position, avgPoints: Math.round((pick2.total / pick2.games) * 10) / 10, teamName: getTeamInfo(pick2.rosterId).name, gamesStarted: pick2.games });
+        }
+      });
+
+      const activityByRoster = new Map<number, number>();
+      rosters.forEach((r: SleeperRoster) => activityByRoster.set(r.roster_id, 0));
+      allTransactions.filter((t: SleeperTransaction) => ["waiver", "free_agent", "trade"].includes(t.type) && t.status === "complete").forEach((t: SleeperTransaction) => {
+        (t.roster_ids || []).forEach((rid: number) => activityByRoster.set(rid, (activityByRoster.get(rid) || 0) + 1));
+      });
+      const activityVsPower = rosters.map((r: SleeperRoster) => {
+        const wins = allPlayWinsByRoster.get(r.roster_id) || 0, losses = allPlayLossesByRoster.get(r.roster_id) || 0;
+        const pct = wins + losses > 0 ? Math.round((wins / (wins + losses)) * 1000) / 10 : 0;
+        const info = getTeamInfo(r.roster_id);
+        return { rosterId: r.roster_id, teamName: info.name, avatar: info.avatar, activity: activityByRoster.get(r.roster_id) || 0, allPlayWinPct: pct, isChampion: r.roster_id === championRosterId, isPlayoff: playoffTeams.has(r.roster_id) };
+      });
+
+      const playoffGames: typeof allGames = [];
+      playoffMatchups.forEach(({ week, matchups }) => {
+        const groups = new Map<number, SleeperMatchup[]>();
+        matchups.forEach((m: SleeperMatchup) => {
+          if (!groups.has(m.matchup_id)) groups.set(m.matchup_id, []);
+          groups.get(m.matchup_id)!.push(m);
+        });
+        groups.forEach(group => {
+          if (group.length !== 2) return;
+          const [t1, t2] = group;
+          const s1 = t1.points || 0, s2 = t2.points || 0;
+          if (s1 === 0 && s2 === 0) return;
+          const info1 = getTeamInfo(t1.roster_id), info2 = getTeamInfo(t2.roster_id);
+          playoffGames.push({ week, team1: info1.name, team2: info2.name, score1: s1, score2: s2, combined: s1 + s2, margin: Math.abs(s1 - s2) });
+        });
+      });
+
+      res.json({
+        powerWinVsAge,
+        powerWinVsUniqueStarters,
+        streaks,
+        bouncebacks,
+        superlativeGames: { highestScoring, lowestScoring, closest, blowouts },
+        biggestUpsets: upsets.slice(0, 10),
+        managementEfficiencyVsPoints,
+        wrongDecisions,
+        peakPerformance: peakByPosition,
+        hiddenPeaks,
+        allLeagueTeams,
+        activityVsPower,
+        playoffGames,
+        championRosterId,
+        playoffTeams: Array.from(playoffTeams),
+      });
+    } catch (error) {
+      console.error("Error calculating year recap:", error);
+      res.status(500).json({ error: "Failed to calculate year recap", message: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
   // Trophy Room - Get historical champions, highest scorers, and award winners
   app.get("/api/sleeper/league/:leagueId/trophies", async (req, res) => {
     try {
@@ -6823,6 +7265,181 @@ export async function registerRoutes(
     }
   });
 
+  // Apply franchise tag (team applies for own roster; no commissioner approval)
+  app.post("/api/league/:leagueId/franchise-tag", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { userId, rosterId, playerId, position } = req.body;
+
+      if (!userId || rosterId == null || !playerId || !position) {
+        return res.status(400).json({ error: "userId, rosterId, playerId, and position are required" });
+      }
+
+      const league = await getLeague(leagueId).catch(() => null);
+      if (!league) {
+        return res.status(404).json({ error: "League not found" });
+      }
+
+      const rosters = await getLeagueRosters(leagueId);
+      const roster = rosters.find((r: SleeperRoster) => r.roster_id === Number(rosterId));
+      if (!roster) {
+        return res.status(404).json({ error: "Roster not found" });
+      }
+      if (String(roster.owner_id) !== String(userId)) {
+        return res.status(403).json({ error: "Only the roster owner can apply a franchise tag" });
+      }
+
+      const currentYear = parseInt(league.season || String(new Date().getFullYear()), 10) || new Date().getFullYear();
+      const optionYear = currentYear + 4;
+
+      const allContracts = await storage.getPlayerContracts(leagueId);
+      const contract = allContracts.find((c: any) => c.playerId === playerId && c.rosterId === Number(rosterId));
+      if (!contract) {
+        return res.status(404).json({ error: "Player contract not found" });
+      }
+      if ((contract as any).hasBeenFranchiseTagged === 1) {
+        return res.status(400).json({
+          error: "Player has already been franchise tagged on this team. Must be extended or go to free agency first.",
+        });
+      }
+
+      const salaries: Record<string, number> = (() => {
+        try {
+          const raw = typeof (contract as any).salaries === "string"
+            ? JSON.parse((contract as any).salaries || "{}")
+            : (contract as any).salaries || {};
+          const out: Record<string, number> = {};
+          Object.entries(raw).forEach(([year, value]) => {
+            const v = Number(value);
+            if (!isNaN(v)) out[year] = v;
+          });
+          return out;
+        } catch {
+          return {};
+        }
+      })();
+
+      const yearsWithSalary = Object.entries(salaries)
+        .filter(([, v]) => v > 0)
+        .map(([y]) => parseInt(y, 10))
+        .filter((y) => !isNaN(y));
+      const lastYearWithSalary = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : currentYear - 1;
+      const franchiseYear = lastYearWithSalary < optionYear ? lastYearWithSalary + 1 : optionYear;
+
+      const players = await getAllPlayers();
+      const salariesByPosition: Record<string, number[]> = {};
+      for (const c of allContracts) {
+        const p = players[c.playerId];
+        const pos = p?.position || (c as any).position;
+        if (!pos) continue;
+        const raw = typeof (c as any).salaries === "string" ? JSON.parse((c as any).salaries || "{}") : (c as any).salaries || {};
+        const currentSalary = raw[String(currentYear)];
+        if (currentSalary == null || Number(currentSalary) <= 0) continue;
+        if (!salariesByPosition[pos]) salariesByPosition[pos] = [];
+        salariesByPosition[pos].push(Number(currentSalary));
+      }
+      const positionSalaries = salariesByPosition[position] || [];
+      const top5 = positionSalaries.sort((a, b) => b - a).slice(0, 5);
+      const franchiseSalaryTenths = top5.length > 0 ? Math.ceil(top5.reduce((s, n) => s + n, 0) / top5.length) : 0;
+
+      salaries[String(franchiseYear)] = franchiseSalaryTenths;
+      const salariesPayload = JSON.stringify(salaries);
+
+      await storage.upsertPlayerContract({
+        leagueId,
+        rosterId: Number(rosterId),
+        playerId,
+        salaries: salariesPayload,
+        fifthYearOption: (contract as any).fifthYearOption ?? null,
+        isOnIr: (contract as any).isOnIr ?? 0,
+        franchiseTagUsed: 1,
+        franchiseTagYear: franchiseYear,
+        originalContractYears: (contract as any).originalContractYears ?? 0,
+        isRookieContract: 0,
+        extensionApplied: (contract as any).extensionApplied ?? 0,
+        extensionYear: (contract as any).extensionYear ?? null,
+        extensionSalary: (contract as any).extensionSalary ?? null,
+        hasBeenExtended: (contract as any).hasBeenExtended ?? 0,
+        hasBeenFranchiseTagged: 1,
+      } as any);
+
+      res.json({ success: true });
+    } catch (error) {
+      console.error("Error applying franchise tag:", error);
+      res.status(500).json({ error: "Failed to apply franchise tag", message: dbErrorMessage(error) });
+    }
+  });
+
+  // Undo franchise tag (commissioner only) - removes tag and sets hasBeenFranchiseTagged to 0
+  app.delete("/api/league/:leagueId/franchise-tag/undo", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { userId, rosterId, playerId } = req.body;
+
+      if (!userId || rosterId == null || !playerId) {
+        return res.status(400).json({ error: "userId, rosterId, and playerId are required" });
+      }
+
+      const isComm = await isCommissioner(userId, leagueId);
+      if (!isComm) {
+        return res.status(403).json({ error: "Only the league commissioner can undo a franchise tag" });
+      }
+
+      const allContracts = await storage.getPlayerContracts(leagueId);
+      const contract = allContracts.find((c: any) => c.playerId === playerId && c.rosterId === Number(rosterId));
+      if (!contract) {
+        return res.status(404).json({ error: "Player contract not found" });
+      }
+      if ((contract as any).hasBeenFranchiseTagged !== 1) {
+        return res.status(400).json({ error: "Player has not been franchise tagged; nothing to undo" });
+      }
+
+      const franchiseTagYear = (contract as any).franchiseTagYear;
+      const salaries: Record<string, number> = (() => {
+        try {
+          const raw = typeof (contract as any).salaries === "string"
+            ? JSON.parse((contract as any).salaries || "{}")
+            : (contract as any).salaries || {};
+          const out: Record<string, number> = {};
+          Object.entries(raw).forEach(([year, value]) => {
+            const v = Number(value);
+            if (!isNaN(v)) out[year] = v;
+          });
+          return out;
+        } catch {
+          return {};
+        }
+      })();
+
+      if (franchiseTagYear != null) {
+        delete salaries[String(franchiseTagYear)];
+      }
+
+      await storage.upsertPlayerContract({
+        leagueId,
+        rosterId: Number(rosterId),
+        playerId,
+        salaries: JSON.stringify(salaries),
+        fifthYearOption: (contract as any).fifthYearOption ?? null,
+        isOnIr: (contract as any).isOnIr ?? 0,
+        franchiseTagUsed: 0,
+        franchiseTagYear: null,
+        originalContractYears: (contract as any).originalContractYears ?? 0,
+        isRookieContract: (contract as any).isRookieContract ?? 0,
+        extensionApplied: (contract as any).extensionApplied ?? 0,
+        extensionYear: (contract as any).extensionYear ?? null,
+        extensionSalary: (contract as any).extensionSalary ?? null,
+        hasBeenExtended: (contract as any).hasBeenExtended ?? 0,
+        hasBeenFranchiseTagged: 0,
+      } as any);
+
+      res.json({ success: true, message: "Franchise tag undone successfully" });
+    } catch (error) {
+      console.error("Error undoing franchise tag:", error);
+      res.status(500).json({ error: "Failed to undo franchise tag", message: dbErrorMessage(error) });
+    }
+  });
+
   // Cancel a pending extension (user can cancel their own; no contract revert needed)
   app.delete("/api/league/:leagueId/extensions/pending/:extensionId", async (req, res) => {
     try {
@@ -6909,7 +7526,7 @@ export async function registerRoutes(
           extensionYear: null,
           extensionSalary: null,
           extensionType: null,
-          hasBeenExtended: (playerContract as any).hasBeenExtended ?? 0,
+          hasBeenExtended: 0,
           hasBeenFranchiseTagged: (playerContract as any).hasBeenFranchiseTagged ?? 0,
         });
       }
