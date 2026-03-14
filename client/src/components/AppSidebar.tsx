@@ -27,6 +27,7 @@ import {
   Scale,
   Database,
   CalendarCheck,
+  MessageSquare,
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -45,6 +46,7 @@ const baseNavItems = [
   { title: "Contracts", url: "/contracts", icon: FileText },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Year Recap", url: "/year-recap", icon: CalendarCheck },
+  { title: "Suggestions", url: "/suggestions", icon: MessageSquare },
   { title: "Historical", url: "/historical", icon: Database },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
@@ -74,7 +76,7 @@ export default function AppSidebar({
 
   const navItems = isCommissioner
     ? baseNavItems
-    : baseNavItems.filter((item) => item.title !== "Settings" && item.title !== "Year Recap");
+    : baseNavItems.filter((item) => item.title !== "Settings");
 
   const getRoundColor = (round: number) => {
     if (round === 1) return "bg-primary text-primary-foreground";

@@ -5,6 +5,7 @@ import {
   ruleSuggestionsTable,
   ruleVotesTable,
   ruleRankedVotesTable,
+  suggestionsTable,
   awardNominationsTable,
   awardBallotsTable,
   leagueSettingsTable,
@@ -28,6 +29,7 @@ import {
 } from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
+  Suggestion, InsertSuggestion,
   AwardNomination, InsertAwardNomination,
   AwardBallot, InsertAwardBallot,
   RuleVote, InsertRuleVote,
@@ -79,6 +81,11 @@ export interface IStorage {
   castRuleRankedVote(ruleId: string, rosterId: number, voterName: string, pointsByOption: number[]): Promise<void>;
   getRuleRankedVotes(ruleId: string): Promise<{ pointsByOption: number[]; firstPlaceVotesByOption: number[]; voterCount: number }>;
   getRuleRankedVoteByRoster(ruleId: string, rosterId: number): Promise<number[] | undefined>;
+
+  getSuggestions(leagueId: string): Promise<Suggestion[]>;
+  createSuggestion(data: InsertSuggestion): Promise<Suggestion>;
+  deleteSuggestion(id: string): Promise<void>;
+  updateSuggestionStatus(id: string, status: string): Promise<Suggestion | undefined>;
   
   getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]>;
   createAwardNomination(data: InsertAwardNomination): Promise<AwardNomination>;
@@ -586,6 +593,69 @@ export class DatabaseStorage implements IStorage {
       .orderBy(asc(ruleRankedVotesTable.optionIndex));
     if (rows.length === 0) return undefined;
     return rows.map(r => r.points);
+  }
+
+  async getSuggestions(leagueId: string): Promise<Suggestion[]> {
+    const rows = await db
+      .select()
+      .from(suggestionsTable)
+      .where(eq(suggestionsTable.leagueId, leagueId))
+      .orderBy(desc(suggestionsTable.createdAt));
+    return rows.map(row => ({
+      id: row.id,
+      leagueId: row.leagueId,
+      authorId: row.authorId,
+      authorName: row.authorName,
+      content: row.content,
+      status: row.status,
+      createdAt: row.createdAt,
+    }));
+  }
+
+  async createSuggestion(data: InsertSuggestion): Promise<Suggestion> {
+    const id = randomUUID();
+    const now = Date.now();
+    await db.insert(suggestionsTable).values({
+      id,
+      leagueId: data.leagueId,
+      authorId: data.authorId,
+      authorName: data.authorName,
+      content: data.content,
+      status: "pending",
+      createdAt: now,
+    });
+    return {
+      id,
+      leagueId: data.leagueId,
+      authorId: data.authorId,
+      authorName: data.authorName,
+      content: data.content,
+      status: "pending",
+      createdAt: now,
+    };
+  }
+
+  async deleteSuggestion(id: string): Promise<void> {
+    await db.delete(suggestionsTable).where(eq(suggestionsTable.id, id));
+  }
+
+  async updateSuggestionStatus(id: string, status: string): Promise<Suggestion | undefined> {
+    const rows = await db
+      .update(suggestionsTable)
+      .set({ status })
+      .where(eq(suggestionsTable.id, id))
+      .returning();
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      id: row.id,
+      leagueId: row.leagueId,
+      authorId: row.authorId,
+      authorName: row.authorName,
+      content: row.content,
+      status: row.status,
+      createdAt: row.createdAt,
+    };
   }
 
   async getAwardNominations(leagueId: string, season: string, awardType: "mvp" | "roy" | "gm"): Promise<AwardNomination[]> {

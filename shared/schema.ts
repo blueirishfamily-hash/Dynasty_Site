@@ -38,6 +38,16 @@ export const ruleRankedVotesTable = pgTable("rule_ranked_votes", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
+export const suggestionsTable = pgTable("suggestions", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  authorId: varchar("author_id", { length: 64 }).notNull(),
+  authorName: varchar("author_name", { length: 128 }).notNull(),
+  content: text("content").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
 export const awardNominationsTable = pgTable("award_nominations", {
   id: varchar("id", { length: 36 }).primaryKey(),
   leagueId: varchar("league_id", { length: 64 }).notNull(),
@@ -302,6 +312,7 @@ export const favoriteExpiringPlayersTable = pgTable("favorite_expiring_players",
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertRuleVoteDbSchema = createInsertSchema(ruleVotesTable).omit({ id: true, createdAt: true });
 export const insertRuleRankedVoteDbSchema = createInsertSchema(ruleRankedVotesTable).omit({ id: true, createdAt: true });
+export const insertSuggestionDbSchema = createInsertSchema(suggestionsTable).omit({ id: true, createdAt: true, status: true });
 export const insertAwardNominationDbSchema = createInsertSchema(awardNominationsTable).omit({ id: true, createdAt: true });
 export const insertAwardBallotDbSchema = createInsertSchema(awardBallotsTable).omit({ id: true, createdAt: true });
 export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTable).omit({ id: true, updatedAt: true });
@@ -563,6 +574,20 @@ export const insertRuleRankedVoteSchema = ruleRankedVoteSchema.omit({
   createdAt: true,
 });
 export type InsertRuleRankedVote = z.infer<typeof insertRuleRankedVoteSchema>;
+
+export const suggestionSchema = z.object({
+  id: z.string(),
+  leagueId: z.string(),
+  authorId: z.string(),
+  authorName: z.string(),
+  content: z.string(),
+  status: z.string(),
+  createdAt: z.number(),
+});
+export type Suggestion = z.infer<typeof suggestionSchema>;
+
+export const insertSuggestionSchema = suggestionSchema.omit({ id: true, createdAt: true, status: true });
+export type InsertSuggestion = z.infer<typeof insertSuggestionSchema>;
 
 export const awardNominationSchema = z.object({
   id: z.string(),

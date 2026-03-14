@@ -1,9 +1,12 @@
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import TradeCenter from "@/components/TradeCenter";
 import TradeHistory from "@/components/TradeHistory";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BarChart2, History } from "lucide-react";
 
 export default function Trades() {
   const { user, league } = useSleeper();
@@ -78,53 +81,82 @@ export default function Trades() {
   const userTeamStanding = standings?.find((s: any) => s.isUser);
   const userRosterId = userTeamStanding?.rosterId;
 
-  const userTeam = userTeamStanding && roster ? {
-    teamId: user.userId,
-    teamName: userTeamStanding.name,
-    teamInitials: userTeamStanding.initials,
-    teamAvatar: userTeamStanding.avatar,
-    players: (roster || []).map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      position: p.position as "QB" | "RB" | "WR" | "TE",
-      team: p.team || "FA",
-    })),
-    draftPicks: (draftPicks || [])
-      .filter((p: any) => p.currentOwnerId === userRosterId)
-      .map((p: any) => ({
-        id: p.id,
-        year: parseInt(p.season),
-        round: p.round,
-        originalOwner: p.originalOwnerId !== p.currentOwnerId ? p.originalOwnerName : undefined,
-      })),
-  } : null;
+  const rosterByOwner = new Map<string, any>();
+  (allRosters || []).forEach((r: any) => rosterByOwner.set(r.ownerId, r));
 
-  const rosterMap = new Map<string, any>();
-  (allRosters || []).forEach((r: any) => rosterMap.set(r.ownerId, r));
+  const userTeam = userTeamStanding
+    ? (() => {
+        const ownerId = userTeamStanding.ownerId ?? user?.userId;
+        const r = rosterByOwner.get(ownerId);
+        const basePlayers = r?.players ?? (Array.isArray(roster) ? roster : []);
+        const players = basePlayers.map((p: any) => ({
+          id: p.id,
+          name: p.name,
+          position: (p.position || "FLEX") as "QB" | "RB" | "WR" | "TE",
+          team: p.team || "FA",
+          seasonPoints: p.seasonPoints ?? null,
+          weeklyAvg: p.weeklyAvg ?? null,
+          positionRank: p.positionRank ?? null,
+          positionRankTotal: p.positionRankTotal ?? null,
+          age: p.age ?? null,
+          yearsExp: p.yearsExp ?? null,
+          injuryStatus: p.injuryStatus ?? null,
+          tradeValue: p.tradeValue ?? null,
+          gamesStarted: p.gamesStarted ?? null,
+        }));
+        return {
+          teamId: user.userId,
+          teamName: userTeamStanding.name,
+          teamInitials: userTeamStanding.initials,
+          teamAvatar: userTeamStanding.avatar ?? r?.teamAvatar,
+          players,
+          draftPicks: (draftPicks || [])
+            .filter((p: any) => p.currentOwnerId === userRosterId)
+            .map((p: any) => ({
+              id: p.id,
+              year: parseInt(p.season),
+              round: p.round,
+              originalOwner: p.originalOwnerId !== p.currentOwnerId ? p.originalOwnerName : undefined,
+              grade: p.grade,
+              draftSlot: p.draftSlot,
+            })),
+        };
+      })()
+    : null;
 
   const leagueTeams = standings
     ?.filter((s: any) => !s.isUser)
     .map((team: any) => {
-      const rosterData = rosterMap.get(team.ownerId);
+      const r = rosterByOwner.get(team.ownerId);
       return {
         teamId: team.ownerId,
         teamName: team.name,
         teamInitials: team.initials,
-        teamAvatar: team.avatar,
-        players: (rosterData?.players || []).map((p: any) => ({
+        teamAvatar: team.avatar ?? r?.teamAvatar,
+        players: (r?.players || []).map((p: any) => ({
           id: p.id,
           name: p.name,
-          position: p.position as "QB" | "RB" | "WR" | "TE",
+          position: (p.position || "FLEX") as "QB" | "RB" | "WR" | "TE",
           team: p.team || "FA",
+          seasonPoints: p.seasonPoints ?? null,
+          weeklyAvg: p.weeklyAvg ?? null,
+          positionRank: p.positionRank ?? null,
+          positionRankTotal: p.positionRankTotal ?? null,
+          age: p.age ?? null,
+          yearsExp: p.yearsExp ?? null,
+          injuryStatus: p.injuryStatus ?? null,
+          tradeValue: p.tradeValue ?? null,
+          gamesStarted: p.gamesStarted ?? null,
         })),
         draftPicks: (draftPicks || [])
           .filter((p: any) => p.currentOwnerId === team.rosterId)
-          .slice(0, 6)
           .map((p: any) => ({
             id: p.id,
             year: parseInt(p.season),
             round: p.round,
             originalOwner: p.originalOwnerId !== p.currentOwnerId ? p.originalOwnerName : undefined,
+            grade: p.grade,
+            draftSlot: p.draftSlot,
           })),
       };
     }) || [];
@@ -143,45 +175,61 @@ export default function Trades() {
         <p className="text-muted-foreground">Build and propose trades with other managers</p>
       </div>
 
-      {userTeam ? (
-        <TradeCenter
-          userTeam={userTeam}
-          leagueTeams={leagueTeams}
-          leagueId={league?.leagueId}
-          userRosterId={userRosterId}
-          getRosterId={(teamId: string) => {
-            const team = standings?.find((s: any) => s.ownerId === teamId);
-            return team?.rosterId;
-          }}
-        />
-      ) : (
-        <Card>
-          <CardContent className="py-8 text-center text-muted-foreground">
-            Loading trade center...
-          </CardContent>
-        </Card>
-      )}
+      <Tabs defaultValue="builder" className="space-y-4">
+        <TabsList className="grid w-full max-w-md grid-cols-2">
+          <TabsTrigger value="builder" className="flex items-center gap-2">
+            <BarChart2 className="w-4 h-4" />
+            Trade Builder
+          </TabsTrigger>
+          <TabsTrigger value="history" className="flex items-center gap-2">
+            <History className="w-4 h-4" />
+            Trade History
+          </TabsTrigger>
+        </TabsList>
 
-      {tradesLoading ? (
-        <Card>
-          <CardHeader>
-            <Skeleton className="h-6 w-32" />
-          </CardHeader>
-          <CardContent>
-            {[...Array(3)].map((_, i) => (
-              <Skeleton key={i} className="h-24 w-full mb-2" />
-            ))}
-          </CardContent>
-        </Card>
-      ) : formattedTrades.length > 0 ? (
-        <TradeHistory trades={formattedTrades} />
-      ) : (
-        <Card>
-          <CardContent className="py-8 text-center text-muted-foreground">
-            No trades have been made in this league yet
-          </CardContent>
-        </Card>
-      )}
+        <TabsContent value="builder" className="space-y-4">
+          {userTeam ? (
+            <TradeCenter
+              userTeam={userTeam}
+              leagueTeams={leagueTeams}
+              leagueId={league?.leagueId}
+              userRosterId={userRosterId}
+              getRosterId={(teamId: string) => {
+                const team = standings?.find((s: any) => s.ownerId === teamId);
+                return team?.rosterId;
+              }}
+            />
+          ) : (
+            <Card>
+              <CardContent className="py-8 text-center text-muted-foreground">
+                Loading trade center...
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+
+        <TabsContent value="history" className="space-y-4">
+          {tradesLoading ? (
+            <Card>
+              <CardContent className="py-8">
+                <div className="space-y-4">
+                  {[...Array(3)].map((_, i) => (
+                    <Skeleton key={i} className="h-24 w-full" />
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          ) : formattedTrades.length > 0 ? (
+            <TradeHistory trades={formattedTrades} />
+          ) : (
+            <Card>
+              <CardContent className="py-8 text-center text-muted-foreground">
+                No trades have been made in this league yet
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }

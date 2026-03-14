@@ -95,6 +95,9 @@ interface PowerRankingTeam {
   allPlayWins: number;
   allPlayLosses: number;
   allPlayWinPct: number;
+  week1AllPlayWinPct?: number;
+  week1Rank?: number;
+  currentRank?: number;
   actualWins: number;
   actualLosses: number;
   weeklyRankings: { week: number; rank: number; points: number }[];
@@ -751,7 +754,7 @@ export default function Metrics() {
             </CardContent>
           </Card>
 
-          {/* Heat Check Rankings Table */}
+          {/* Heat Check Rankings - Dumbbell Chart */}
           <Card>
             <CardHeader>
               <CardTitle className="font-heading text-lg flex items-center gap-2">
@@ -764,6 +767,17 @@ export default function Metrics() {
                   : "Calculating heat based on recent performance"
                 }
               </CardDescription>
+              <div className="flex items-center gap-4 text-xs text-muted-foreground mt-2">
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-muted-foreground/60" /> Prior Avg
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-500" /> Recent (Hot)
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-500" /> Recent (Cold)
+                </span>
+              </div>
             </CardHeader>
             <CardContent>
               {heatLoading ? (
@@ -773,49 +787,115 @@ export default function Metrics() {
                   ))}
                 </div>
               ) : heatData?.teams && heatData.teams.length > 0 ? (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="w-10 text-center">#</TableHead>
-                      <TableHead>Team</TableHead>
-                      <TableHead className="text-center">
-                        <Tooltip>
-                          <TooltipTrigger className="flex items-center gap-1 mx-auto">
-                            Recent Avg
-                            <Info className="w-3 h-3" />
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p>Average points over last 4 weeks</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TableHead>
-                      <TableHead className="text-center">
-                        <Tooltip>
-                          <TooltipTrigger className="flex items-center gap-1 mx-auto">
-                            Prior Avg
-                            <Info className="w-3 h-3" />
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p>Average points before the last 4 weeks</p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TableHead>
-                      <TableHead className="text-center">Difference</TableHead>
-                      <TableHead className="text-center">Status</TableHead>
-                      <TableHead className="text-center">Change</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {heatData.teams.map((team, idx) => (
-                      <HeatCheckTeamRow 
-                        key={team.rosterId}
-                        team={team}
-                        rank={idx + 1}
-                        isUser={team.ownerId === user?.userId}
-                      />
-                    ))}
-                  </TableBody>
-                </Table>
+                <div className="space-y-1">
+                  {[...heatData.teams]
+                    .sort((a, b) => b.difference - a.difference)
+                    .map((team, idx) => {
+                      const isUser = team.ownerId === user?.userId;
+                      const isHot = team.isHot;
+                      const allVals = heatData.teams.flatMap((t) => [t.seasonAvg, t.recentAvg]);
+                      const minVal = Math.min(...allVals);
+                      const maxVal = Math.max(...allVals);
+                      const range = maxVal - minVal || 1;
+                      const toPct = (v: number) => ((v - minVal) / range) * 100;
+                      const left = Math.min(team.seasonAvg, team.recentAvg);
+                      const right = Math.max(team.seasonAvg, team.recentAvg);
+                      const leftPct = toPct(left);
+                      const rightPct = toPct(right);
+                      const barWidth = rightPct - leftPct;
+                      const priorPct = toPct(team.seasonAvg);
+                      const recentPct = toPct(team.recentAvg);
+                      const barGradient = isHot
+                        ? "linear-gradient(to right, hsl(var(--muted-foreground) / 0.5), hsl(0 84% 60%))"
+                        : "linear-gradient(to right, hsl(var(--muted-foreground) / 0.5), hsl(217 91% 60%))";
+                      return (
+                        <div
+                          key={team.rosterId}
+                          className={`flex items-center gap-4 rounded-lg px-3 py-2.5 ${
+                            isUser ? "bg-primary/10 border-l-4 border-l-primary" : idx % 2 === 0 ? "bg-muted/30" : ""
+                          }`}
+                          data-testid={`row-heat-check-${team.rosterId}`}
+                        >
+                          <div className="w-6 text-center text-sm font-medium text-muted-foreground shrink-0">
+                            {idx + 1}
+                          </div>
+                          <div className="flex items-center gap-2 min-w-[120px] shrink-0">
+                            <Avatar className="w-8 h-8">
+                              {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+                              <AvatarFallback className={`text-xs ${isUser ? "bg-primary text-primary-foreground" : ""}`}>
+                                {team.initials}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className={`font-medium truncate ${isUser ? "text-primary" : ""}`}>{team.name}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="relative h-14 flex items-center overflow-visible">
+                              {/* Background track */}
+                              <div className="absolute inset-0 flex items-center">
+                                <div className="absolute left-0 right-0 h-2 rounded-full bg-muted/40" />
+                              </div>
+                              {/* Gradient connecting bar */}
+                              <div
+                                className="absolute h-2 rounded-full"
+                                style={{
+                                  left: `${leftPct}%`,
+                                  width: `${barWidth}%`,
+                                  background: barGradient,
+                                }}
+                              />
+                              {/* Prior dot - hollow/outlined with value label above */}
+                              <div
+                                className="absolute flex flex-col items-center z-10"
+                                style={{ left: `${priorPct}%`, transform: "translateX(-50%)", top: "50%", marginTop: -22 }}
+                              >
+                                <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap mb-0.5" title={`Prior: ${team.seasonAvg.toFixed(1)}`}>
+                                  {team.seasonAvg.toFixed(1)}
+                                </span>
+                                <div className="w-4 h-4 rounded-full border-2 border-muted-foreground/70 bg-background shrink-0 shadow-sm" />
+                              </div>
+                              {/* Recent dot - filled with glow and value label below */}
+                              <div
+                                className="absolute flex flex-col items-center z-10"
+                                style={{ left: `${recentPct}%`, transform: "translateX(-50%)", top: "50%", marginTop: -8 }}
+                              >
+                                <div
+                                  className={`w-4 h-4 rounded-full border-2 border-background shrink-0 shadow-md ${
+                                    isHot
+                                      ? "bg-red-500 ring-2 ring-red-500/40 ring-offset-2 ring-offset-background"
+                                      : "bg-blue-500 ring-2 ring-blue-500/40 ring-offset-2 ring-offset-background"
+                                  }`}
+                                />
+                                <span
+                                  className={`text-[10px] font-medium whitespace-nowrap mt-0.5 ${
+                                    isHot ? "text-red-600 dark:text-red-400" : "text-blue-600 dark:text-blue-400"
+                                  }`}
+                                  title={`Recent: ${team.recentAvg.toFixed(1)}`}
+                                >
+                                  {team.recentAvg.toFixed(1)}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                              <span>{minVal.toFixed(0)}</span>
+                              <span>{maxVal.toFixed(0)}</span>
+                            </div>
+                          </div>
+                          <div className="w-20 shrink-0 flex justify-end">
+                            <Badge
+                              className={`gap-1 ${
+                                isHot
+                                  ? "bg-red-500/20 text-red-600 dark:text-red-400 border-red-500/30"
+                                  : "bg-blue-500/20 text-blue-600 dark:text-blue-400 border-blue-500/30"
+                              }`}
+                            >
+                              {isHot ? <Flame className="w-3 h-3" /> : <Snowflake className="w-3 h-3" />}
+                              {team.difference >= 0 ? "+" : ""}{team.difference.toFixed(1)}
+                            </Badge>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
               ) : (
                 <div className="text-center py-8 text-muted-foreground">
                   <ThermometerSun className="w-12 h-12 mx-auto mb-4 opacity-50" />
@@ -888,7 +968,7 @@ export default function Metrics() {
                       <div className="flex items-center gap-2">
                         <Avatar className="w-8 h-8">
                           {powerData.teams[powerData.teams.length - 1].avatar && (
-                            <AvatarImage src={powerData.teams[powerData.teams.length - 1].avatar} alt={powerData.teams[powerData.teams.length - 1].name} />
+                            <AvatarImage src={powerData.teams[powerData.teams.length - 1].avatar ?? undefined} alt={powerData.teams[powerData.teams.length - 1].name ?? ""} />
                           )}
                           <AvatarFallback className="text-xs bg-red-500 text-white">
                             {powerData.teams[powerData.teams.length - 1].initials}
@@ -938,6 +1018,141 @@ export default function Metrics() {
                 </CardContent>
               </Card>
             </div>
+          )}
+
+          {/* Projected vs Current Power Rankings Dumbbell (numerical rank: 1 = best) */}
+          {powerData?.teams && powerData.teams.length > 0 && powerData.teams.some((t) => t.week1Rank != null && t.currentRank != null) && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="font-heading text-lg flex items-center gap-2">
+                  <TrendingUp className="w-5 h-5 text-primary" />
+                  Projected vs Current Power Rankings
+                </CardTitle>
+                <CardDescription>
+                  Week 1 rank vs current rank (1 = best)
+                </CardDescription>
+                <div className="flex items-center gap-4 text-xs text-muted-foreground mt-2">
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-muted-foreground/60" /> Week 1 Rank
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" /> Improved
+                  </span>
+                  <span className="flex items-center gap-1.5">
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500" /> Declined
+                  </span>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-1">
+                  {[...powerData.teams]
+                    .filter((t) => t.week1Rank != null && t.currentRank != null)
+                    .sort((a, b) => {
+                      const diffA = (a.week1Rank ?? 0) - (a.currentRank ?? 0);
+                      const diffB = (b.week1Rank ?? 0) - (b.currentRank ?? 0);
+                      return diffB - diffA;
+                    })
+                    .map((team, idx) => {
+                      const week1Rank = team.week1Rank!;
+                      const currentRank = team.currentRank!;
+                      const improved = currentRank < week1Rank;
+                      const isUser = team.ownerId === user?.userId;
+                      const numTeams = powerData.teams.length;
+                      const rankToPct = (rank: number) => ((numTeams - rank) / (numTeams - 1 || 1)) * 100;
+                      const week1Pct = rankToPct(week1Rank);
+                      const currentPct = rankToPct(currentRank);
+                      const leftPct = Math.min(week1Pct, currentPct);
+                      const barWidth = Math.abs(currentPct - week1Pct);
+                      const barGradient = improved
+                        ? "linear-gradient(to right, hsl(var(--muted-foreground) / 0.5), hsl(142 71% 45%))"
+                        : "linear-gradient(to right, hsl(var(--muted-foreground) / 0.5), hsl(0 84% 60%))";
+                      const rankChange = week1Rank - currentRank;
+                      return (
+                        <div
+                          key={team.rosterId}
+                          className={`flex items-center gap-4 rounded-lg px-3 py-2.5 ${
+                            isUser ? "bg-primary/10 border-l-4 border-l-primary" : idx % 2 === 0 ? "bg-muted/30" : ""
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 min-w-[140px] shrink-0">
+                            <Avatar className="w-8 h-8">
+                              {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+                              <AvatarFallback className={`text-xs ${isUser ? "bg-primary text-primary-foreground" : ""}`}>
+                                {team.initials}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className={`font-medium truncate ${isUser ? "text-primary" : ""}`}>{team.name}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="relative h-14 flex items-center overflow-visible">
+                              {/* Background track */}
+                              <div className="absolute inset-0 flex items-center">
+                                <div className="absolute left-0 right-0 h-2 rounded-full bg-muted/40" />
+                              </div>
+                              {/* Gradient connecting bar */}
+                              <div
+                                className="absolute h-2 rounded-full"
+                                style={{
+                                  left: `${leftPct}%`,
+                                  width: `${barWidth}%`,
+                                  background: barGradient,
+                                }}
+                              />
+                              {/* Week 1 dot - hollow/outlined with value label above */}
+                              <div
+                                className="absolute flex flex-col items-center z-10"
+                                style={{ left: `${week1Pct}%`, transform: "translateX(-50%)", top: "50%", marginTop: -22 }}
+                              >
+                                <span className="text-[10px] font-medium text-muted-foreground whitespace-nowrap mb-0.5" title={`Week 1 rank: ${week1Rank}`}>
+                                  #{week1Rank}
+                                </span>
+                                <div className="w-4 h-4 rounded-full border-2 border-muted-foreground/70 bg-background shrink-0 shadow-sm" />
+                              </div>
+                              {/* Current dot - filled with glow and value label below */}
+                              <div
+                                className="absolute flex flex-col items-center z-10"
+                                style={{ left: `${currentPct}%`, transform: "translateX(-50%)", top: "50%", marginTop: -8 }}
+                              >
+                                <div
+                                  className={`w-4 h-4 rounded-full border-2 border-background shrink-0 shadow-md ${
+                                    improved
+                                      ? "bg-emerald-500 ring-2 ring-emerald-500/40 ring-offset-2 ring-offset-background"
+                                      : "bg-red-500 ring-2 ring-red-500/40 ring-offset-2 ring-offset-background"
+                                  }`}
+                                />
+                                <span
+                                  className={`text-[10px] font-medium whitespace-nowrap mt-0.5 ${
+                                    improved ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"
+                                  }`}
+                                  title={`Current rank: ${currentRank}`}
+                                >
+                                  #{currentRank}
+                                </span>
+                              </div>
+                            </div>
+                            <div className="flex justify-between text-[10px] text-muted-foreground mt-1">
+                              <span>#{numTeams}</span>
+                              <span>#1</span>
+                            </div>
+                          </div>
+                          <div className="w-20 shrink-0 flex justify-end">
+                            <Badge
+                              className={`gap-1 ${
+                                improved
+                                  ? "bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border-emerald-500/30"
+                                  : "bg-red-500/20 text-red-600 dark:text-red-400 border-red-500/30"
+                              }`}
+                            >
+                              {improved ? <TrendingUp className="w-3 h-3" /> : <TrendingDown className="w-3 h-3" />}
+                              {rankChange > 0 ? "+" : ""}{rankChange}
+                            </Badge>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </CardContent>
+            </Card>
           )}
 
           {/* Explanation Card */}
