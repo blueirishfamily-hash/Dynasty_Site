@@ -31,6 +31,7 @@ import {
   Snowflake,
   ThermometerSun,
   Crown,
+  Zap,
 } from "lucide-react";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { useState } from "react";
@@ -108,6 +109,41 @@ interface PowerRankingsResponse {
   currentWeek: number;
   completedWeeks: number;
   season?: string;
+  message?: string;
+}
+
+interface FlukePlayerEntry {
+  playerId: string;
+  playerName: string;
+  position: string;
+  points: number;
+  rollingAvg: number;
+  stdDev: number;
+  deviations: number;
+}
+
+interface FlukeWeekEntry {
+  week: number;
+  goodFlukes: FlukePlayerEntry[];
+  badFlukes: FlukePlayerEntry[];
+}
+
+interface FlukeTrackerTeam {
+  rosterId: number;
+  name: string;
+  ownerId: string;
+  initials: string;
+  avatar: string | null;
+  goodFlukeCount: number;
+  badFlukeCount: number;
+  flukeScore: number;
+  weeklyFlukes: FlukeWeekEntry[];
+}
+
+interface FlukeTrackerResponse {
+  teams: FlukeTrackerTeam[];
+  currentWeek: number;
+  completedWeeks: number;
   message?: string;
 }
 
@@ -347,7 +383,7 @@ export default function Metrics() {
   const { user, league } = useSleeper();
   const [expandedTeam, setExpandedTeam] = useState<number | null>(null);
   
-  const { data: luckData, isLoading: luckLoading } = useQuery<TeamLuckResponse>({
+  const { data: teamLuck, isLoading: luckLoading } = useQuery<TeamLuckResponse>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "team-luck"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/team-luck`);
@@ -357,7 +393,7 @@ export default function Metrics() {
     enabled: !!league?.leagueId,
   });
 
-  const { data: heatData, isLoading: heatLoading } = useQuery<HeatCheckResponse>({
+  const { data: heatCheck, isLoading: heatLoading } = useQuery<HeatCheckResponse>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "heat-check"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/heat-check`);
@@ -367,7 +403,7 @@ export default function Metrics() {
     enabled: !!league?.leagueId,
   });
 
-  const { data: powerData, isLoading: powerLoading } = useQuery<PowerRankingsResponse>({
+  const { data: powerRankings, isLoading: powerLoading } = useQuery<PowerRankingsResponse>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "power-rankings"],
     queryFn: async () => {
       const res = await fetch(`/api/sleeper/league/${league?.leagueId}/power-rankings`);
@@ -377,19 +413,137 @@ export default function Metrics() {
     enabled: !!league?.leagueId,
   });
 
+  const { data: flukeTracker, isLoading: flukeLoading } = useQuery<FlukeTrackerResponse>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "fluke-tracker"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/fluke-tracker`);
+      if (!res.ok) throw new Error("Failed to fetch fluke tracker");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+
+  const [flukeExpandedTeam, setFlukeExpandedTeam] = useState<number | null>(null);
+  const [flukeExpandedWeek, setFlukeExpandedWeek] = useState<string | null>(null);
+
   const toggleExpanded = (rosterId: number) => {
     setExpandedTeam(expandedTeam === rosterId ? null : rosterId);
   };
 
-  const luckiestTeam = luckData?.teams[0];
-  const unluckiestTeam = luckData?.teams[luckData.teams.length - 1];
-  const userLuckTeam = luckData?.teams.find(t => t.ownerId === user?.userId);
+  const luckiestTeam = teamLuck?.teams[0];
+  const unluckiestTeam = teamLuck?.teams[teamLuck.teams.length - 1];
+  const userLuckTeam = teamLuck?.teams.find(t => t.ownerId === user?.userId);
 
-  const hottestTeam = heatData?.teams?.filter(t => t.isHot)[0];
-  const coldestTeam = heatData?.teams?.filter(t => !t.isHot).slice(-1)[0];
-  const userHeatTeam = heatData?.teams?.find(t => t.ownerId === user?.userId);
-  const hotTeams = heatData?.teams?.filter(t => t.isHot) || [];
-  const coldTeams = heatData?.teams?.filter(t => !t.isHot) || [];
+  const hottestTeam = heatCheck?.teams?.filter(t => t.isHot)[0];
+  const coldestTeam = heatCheck?.teams?.filter(t => !t.isHot).slice(-1)[0];
+  const userHeatTeam = heatCheck?.teams?.find(t => t.ownerId === user?.userId);
+  const hotTeams = heatCheck?.teams?.filter(t => t.isHot) || [];
+  const coldTeams = heatCheck?.teams?.filter(t => !t.isHot) || [];
+
+  const isLoading = luckLoading || heatLoading || powerLoading;
+  if (isLoading) {
+    return (
+      <div className="p-6 space-y-6">
+        <Skeleton className="h-12 w-64" />
+        <div className="grid gap-4 md:grid-cols-3">
+          {[1, 2, 3].map(i => (
+            <Card key={i}>
+              <CardHeader className="pb-2">
+                <Skeleton className="h-4 w-24" />
+              </CardHeader>
+              <CardContent>
+                <Skeleton className="h-8 w-full" />
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <MetricsDisplay
+      teamLuck={teamLuck}
+      heatCheck={heatCheck}
+      powerRankings={powerRankings}
+      flukeTracker={flukeTracker}
+      flukeLoading={flukeLoading}
+      userId={user?.userId}
+      luckiestTeam={luckiestTeam}
+      unluckiestTeam={unluckiestTeam}
+      userLuckTeam={userLuckTeam}
+      hottestTeam={hottestTeam}
+      coldestTeam={coldestTeam}
+      userHeatTeam={userHeatTeam}
+      hotTeams={hotTeams}
+      coldTeams={coldTeams}
+      expandedTeam={expandedTeam}
+      toggleExpanded={toggleExpanded}
+      flukeExpandedTeam={flukeExpandedTeam}
+      setFlukeExpandedTeam={setFlukeExpandedTeam}
+      flukeExpandedWeek={flukeExpandedWeek}
+      setFlukeExpandedWeek={setFlukeExpandedWeek}
+    />
+  );
+}
+
+export function MetricsDisplay({
+  teamLuck,
+  heatCheck,
+  powerRankings,
+  flukeTracker,
+  flukeLoading,
+  userId,
+  luckiestTeam,
+  unluckiestTeam,
+  userLuckTeam,
+  hottestTeam,
+  coldestTeam,
+  userHeatTeam,
+  hotTeams,
+  coldTeams,
+  expandedTeam,
+  toggleExpanded,
+  flukeExpandedTeam,
+  setFlukeExpandedTeam,
+  flukeExpandedWeek,
+  setFlukeExpandedWeek,
+}: {
+  teamLuck?: TeamLuckResponse | null;
+  heatCheck?: HeatCheckResponse | null;
+  powerRankings?: PowerRankingsResponse | null;
+  flukeTracker?: FlukeTrackerResponse | null;
+  flukeLoading?: boolean;
+  userId?: string;
+  luckiestTeam?: TeamLuck;
+  unluckiestTeam?: TeamLuck;
+  userLuckTeam?: TeamLuck;
+  hottestTeam?: HeatCheckTeam;
+  coldestTeam?: HeatCheckTeam;
+  userHeatTeam?: HeatCheckTeam;
+  hotTeams: HeatCheckTeam[];
+  coldTeams: HeatCheckTeam[];
+  expandedTeam: number | null;
+  toggleExpanded: (rosterId: number) => void;
+  flukeExpandedTeam: number | null;
+  setFlukeExpandedTeam: (id: number | null) => void;
+  flukeExpandedWeek: string | null;
+  setFlukeExpandedWeek: (key: string | null) => void;
+}) {
+  function flukeProb(zScore: number): string {
+    const z = Math.abs(zScore);
+    const t = 1 / (1 + 0.2316419 * z);
+    const poly =
+      t * (0.319381530 +
+      t * (-0.356563782 +
+      t * (1.781477937 +
+      t * (-1.821255978 +
+      t * 1.330274429))));
+    const pdf = Math.exp(-0.5 * z * z) / Math.sqrt(2 * Math.PI);
+    const p = pdf * poly;
+    const pct = p * 100;
+    return pct < 0.1 ? "<0.1%" : `${pct.toFixed(1)}%`;
+  }
 
   return (
     <div className="p-6 space-y-6">
@@ -416,11 +570,15 @@ export default function Metrics() {
             <Crown className="w-4 h-4 mr-2" />
             Power Rankings
           </TabsTrigger>
+          <TabsTrigger value="flukes" data-testid="tab-fluke-tracker">
+            <Zap className="w-4 h-4 mr-2" />
+            Fluke Tracker
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="luck" className="space-y-6">
           {/* Summary Cards */}
-          {luckLoading ? (
+          {!teamLuck ? (
             <div className="grid gap-4 md:grid-cols-3">
               {[1, 2, 3].map(i => (
                 <Card key={i}>
@@ -556,20 +714,20 @@ export default function Metrics() {
                 Team Luck Rankings
               </CardTitle>
               <CardDescription>
-                {luckData?.completedWeeks 
-                  ? `Based on ${luckData.completedWeeks} completed week${luckData.completedWeeks !== 1 ? "s" : ""}`
+                {teamLuck?.completedWeeks 
+                  ? `Based on ${teamLuck.completedWeeks} completed week${teamLuck.completedWeeks !== 1 ? "s" : ""}`
                   : "Calculating luck based on completed weeks"
                 }
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {luckLoading ? (
+              {!teamLuck ? (
                 <div className="space-y-2">
                   {[1, 2, 3, 4, 5, 6].map(i => (
                     <Skeleton key={i} className="h-14 w-full" />
                   ))}
                 </div>
-              ) : luckData?.teams && luckData.teams.length > 0 ? (
+              ) : teamLuck?.teams && teamLuck.teams.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -603,12 +761,12 @@ export default function Metrics() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {luckData.teams.map((team, idx) => (
+                    {teamLuck.teams.map((team, idx) => (
                       <TeamLuckRow 
                         key={team.rosterId}
                         team={team}
                         rank={idx + 1}
-                        isUser={team.ownerId === user?.userId}
+                        isUser={team.ownerId === userId}
                         expanded={expandedTeam === team.rosterId}
                         onToggle={() => toggleExpanded(team.rosterId)}
                       />
@@ -628,7 +786,7 @@ export default function Metrics() {
 
         <TabsContent value="heat" className="space-y-6">
           {/* Heat Check Summary Cards */}
-          {heatLoading ? (
+          {!heatCheck ? (
             <div className="grid gap-4 md:grid-cols-3">
               {[1, 2, 3].map(i => (
                 <Card key={i}>
@@ -762,8 +920,8 @@ export default function Metrics() {
                 Team Heat Rankings
               </CardTitle>
               <CardDescription>
-                {heatData?.currentWeek 
-                  ? `Comparing last 4 weeks to weeks 1-${Math.max(1, heatData.currentWeek - 4)}`
+                {heatCheck?.currentWeek 
+                  ? `Comparing last 4 weeks to weeks 1-${Math.max(1, heatCheck.currentWeek - 4)}`
                   : "Calculating heat based on recent performance"
                 }
               </CardDescription>
@@ -780,20 +938,20 @@ export default function Metrics() {
               </div>
             </CardHeader>
             <CardContent>
-              {heatLoading ? (
+              {!heatCheck ? (
                 <div className="space-y-2">
                   {[1, 2, 3, 4, 5, 6].map(i => (
                     <Skeleton key={i} className="h-14 w-full" />
                   ))}
                 </div>
-              ) : heatData?.teams && heatData.teams.length > 0 ? (
+              ) : heatCheck?.teams && heatCheck.teams.length > 0 ? (
                 <div className="space-y-1">
-                  {[...heatData.teams]
+                  {[...heatCheck.teams]
                     .sort((a, b) => b.difference - a.difference)
                     .map((team, idx) => {
-                      const isUser = team.ownerId === user?.userId;
+                      const isUser = team.ownerId === userId;
                       const isHot = team.isHot;
-                      const allVals = heatData.teams.flatMap((t) => [t.seasonAvg, t.recentAvg]);
+                      const allVals = heatCheck.teams.flatMap((t) => [t.seasonAvg, t.recentAvg]);
                       const minVal = Math.min(...allVals);
                       const maxVal = Math.max(...allVals);
                       const range = maxVal - minVal || 1;
@@ -901,7 +1059,7 @@ export default function Metrics() {
                   <ThermometerSun className="w-12 h-12 mx-auto mb-4 opacity-50" />
                   <p className="font-medium">No heat check data available yet.</p>
                   <p className="text-sm mt-1">
-                    {heatData?.message || "Check back after at least 5 weeks of the season."}
+                    {heatCheck?.message || "Check back after at least 5 weeks of the season."}
                   </p>
                 </div>
               )}
@@ -911,7 +1069,7 @@ export default function Metrics() {
 
         <TabsContent value="power" className="space-y-6">
           {/* Power Rankings Summary */}
-          {powerLoading ? (
+          {!powerRankings ? (
             <div className="grid gap-4 md:grid-cols-3">
               {[1, 2, 3].map(i => (
                 <Card key={i}>
@@ -934,19 +1092,19 @@ export default function Metrics() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {powerData?.teams?.[0] ? (
+                  {powerRankings?.teams?.[0] ? (
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Avatar className="w-8 h-8">
-                          {powerData.teams[0].avatar && <AvatarImage src={powerData.teams[0].avatar} alt={powerData.teams[0].name} />}
+                          {powerRankings.teams[0].avatar && <AvatarImage src={powerRankings.teams[0].avatar} alt={powerRankings.teams[0].name} />}
                           <AvatarFallback className="text-xs bg-yellow-500 text-white">
-                            {powerData.teams[0].initials}
+                            {powerRankings.teams[0].initials}
                           </AvatarFallback>
                         </Avatar>
-                        <span className="font-medium">{powerData.teams[0].name}</span>
+                        <span className="font-medium">{powerRankings.teams[0].name}</span>
                       </div>
                       <Badge className="bg-yellow-500/20 text-yellow-600 border-yellow-500/30">
-                        {powerData.teams[0].allPlayWins}-{powerData.teams[0].allPlayLosses}
+                        {powerRankings.teams[0].allPlayWins}-{powerRankings.teams[0].allPlayLosses}
                       </Badge>
                     </div>
                   ) : (
@@ -963,21 +1121,21 @@ export default function Metrics() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {powerData?.teams?.[powerData.teams.length - 1] ? (
+                  {powerRankings?.teams?.[powerRankings.teams.length - 1] ? (
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                         <Avatar className="w-8 h-8">
-                          {powerData.teams[powerData.teams.length - 1].avatar && (
-                            <AvatarImage src={powerData.teams[powerData.teams.length - 1].avatar ?? undefined} alt={powerData.teams[powerData.teams.length - 1].name ?? ""} />
+                          {powerRankings.teams[powerRankings.teams.length - 1].avatar && (
+                            <AvatarImage src={powerRankings.teams[powerRankings.teams.length - 1].avatar ?? undefined} alt={powerRankings.teams[powerRankings.teams.length - 1].name ?? ""} />
                           )}
                           <AvatarFallback className="text-xs bg-red-500 text-white">
-                            {powerData.teams[powerData.teams.length - 1].initials}
+                            {powerRankings.teams[powerRankings.teams.length - 1].initials}
                           </AvatarFallback>
                         </Avatar>
-                        <span className="font-medium">{powerData.teams[powerData.teams.length - 1].name}</span>
+                        <span className="font-medium">{powerRankings.teams[powerRankings.teams.length - 1].name}</span>
                       </div>
                       <Badge className="bg-red-500/20 text-red-500 border-red-500/30">
-                        {powerData.teams[powerData.teams.length - 1].allPlayWins}-{powerData.teams[powerData.teams.length - 1].allPlayLosses}
+                        {powerRankings.teams[powerRankings.teams.length - 1].allPlayWins}-{powerRankings.teams[powerRankings.teams.length - 1].allPlayLosses}
                       </Badge>
                     </div>
                   ) : (
@@ -995,7 +1153,7 @@ export default function Metrics() {
                 </CardHeader>
                 <CardContent>
                   {(() => {
-                    const userTeam = powerData?.teams?.find(t => t.ownerId === user?.userId);
+                    const userTeam = powerRankings?.teams?.find(t => t.ownerId === userId);
                     return userTeam ? (
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -1021,7 +1179,7 @@ export default function Metrics() {
           )}
 
           {/* Projected vs Current Power Rankings Dumbbell (numerical rank: 1 = best) */}
-          {powerData?.teams && powerData.teams.length > 0 && powerData.teams.some((t) => t.week1Rank != null && t.currentRank != null) && (
+          {powerRankings?.teams && powerRankings.teams.length > 0 && powerRankings.teams.some((t) => t.week1Rank != null && t.currentRank != null) && (
             <Card>
               <CardHeader>
                 <CardTitle className="font-heading text-lg flex items-center gap-2">
@@ -1045,7 +1203,7 @@ export default function Metrics() {
               </CardHeader>
               <CardContent>
                 <div className="space-y-1">
-                  {[...powerData.teams]
+                  {[...powerRankings.teams]
                     .filter((t) => t.week1Rank != null && t.currentRank != null)
                     .sort((a, b) => {
                       const diffA = (a.week1Rank ?? 0) - (a.currentRank ?? 0);
@@ -1056,8 +1214,8 @@ export default function Metrics() {
                       const week1Rank = team.week1Rank!;
                       const currentRank = team.currentRank!;
                       const improved = currentRank < week1Rank;
-                      const isUser = team.ownerId === user?.userId;
-                      const numTeams = powerData.teams.length;
+                      const isUser = team.ownerId === userId;
+                      const numTeams = powerRankings.teams.length;
                       const rankToPct = (rank: number) => ((numTeams - rank) / (numTeams - 1 || 1)) * 100;
                       const week1Pct = rankToPct(week1Rank);
                       const currentPct = rankToPct(currentRank);
@@ -1192,20 +1350,20 @@ export default function Metrics() {
                 All-Play Standings
               </CardTitle>
               <CardDescription>
-                {powerData?.completedWeeks 
-                  ? `${powerData.season || ""} Season - ${powerData.completedWeeks} completed week${powerData.completedWeeks !== 1 ? "s" : ""}`
+                {powerRankings?.completedWeeks 
+                  ? `${powerRankings.season || ""} Season - ${powerRankings.completedWeeks} completed week${powerRankings.completedWeeks !== 1 ? "s" : ""}`
                   : "Calculating all-play records"
                 }
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {powerLoading ? (
+              {!powerRankings ? (
                 <div className="space-y-2">
                   {[1, 2, 3, 4, 5, 6].map(i => (
                     <Skeleton key={i} className="h-14 w-full" />
                   ))}
                 </div>
-              ) : powerData?.teams && powerData.teams.length > 0 ? (
+              ) : powerRankings?.teams && powerRankings.teams.length > 0 ? (
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -1228,11 +1386,11 @@ export default function Metrics() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {powerData.teams.map((team, idx) => {
-                      const isUser = team.ownerId === user?.userId;
-                      const numTeams = powerData.teams.length;
+                    {powerRankings.teams.map((team, idx) => {
+                      const isUser = team.ownerId === userId;
+                      const numTeams = powerRankings.teams.length;
                       const expectedWinsPerWeek = (numTeams - 1) / 2;
-                      const totalExpectedWins = expectedWinsPerWeek * powerData.completedWeeks;
+                      const totalExpectedWins = expectedWinsPerWeek * powerRankings.completedWeeks;
                       const allPlayDiff = team.allPlayWins - Math.round(totalExpectedWins);
                       const recordDiff = team.allPlayWins - (team.actualWins * (numTeams - 1));
                       
@@ -1281,7 +1439,7 @@ export default function Metrics() {
                           </TableCell>
                           <TableCell className="text-center">
                             {(() => {
-                              const diff = team.allPlayWins / (powerData.completedWeeks || 1) - (numTeams - 1) / 2;
+                              const diff = team.allPlayWins / (powerRankings.completedWeeks || 1) - (numTeams - 1) / 2;
                               const scaledDiff = Math.round(diff * 10) / 10;
                               return (
                                 <span className={
@@ -1317,20 +1475,20 @@ export default function Metrics() {
                 Weekly Scoring Rankings
               </CardTitle>
               <CardDescription>
-                {powerData?.season ? `${powerData.season} Season - ` : ""}Each team's scoring rank (1 = highest scorer) by week
+                {powerRankings?.season ? `${powerRankings.season} Season - ` : ""}Each team's scoring rank (1 = highest scorer) by week
               </CardDescription>
             </CardHeader>
             <CardContent>
-              {powerLoading ? (
+              {!powerRankings ? (
                 <Skeleton className="h-64 w-full" />
-              ) : powerData?.teams && powerData.teams.length > 0 && powerData.completedWeeks > 0 ? (
+              ) : powerRankings?.teams && powerRankings.teams.length > 0 && powerRankings.completedWeeks > 0 ? (
                 <ScrollArea className="w-full">
                   <div className="min-w-max">
                     <Table>
                       <TableHeader>
                         <TableRow>
                           <TableHead className="sticky left-0 bg-background z-10 min-w-[150px]">Team</TableHead>
-                          {Array.from({ length: powerData.completedWeeks }, (_, i) => (
+                          {Array.from({ length: powerRankings.completedWeeks }, (_, i) => (
                             <TableHead key={i + 1} className="text-center w-12 px-2">
                               W{i + 1}
                             </TableHead>
@@ -1339,8 +1497,8 @@ export default function Metrics() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {powerData.teams.map((team) => {
-                          const isUser = team.ownerId === user?.userId;
+                        {powerRankings.teams.map((team) => {
+                          const isUser = team.ownerId === userId;
                           const avgRank = team.weeklyRankings.length > 0
                             ? team.weeklyRankings.reduce((sum, wr) => sum + wr.rank, 0) / team.weeklyRankings.length
                             : 0;
@@ -1373,10 +1531,10 @@ export default function Metrics() {
                                   </span>
                                 </div>
                               </TableCell>
-                              {Array.from({ length: powerData.completedWeeks }, (_, i) => {
+                              {Array.from({ length: powerRankings.completedWeeks }, (_, i) => {
                                 const weekRanking = team.weeklyRankings.find(wr => wr.week === i + 1);
                                 const rank = weekRanking?.rank || "-";
-                                const numTeams = powerData.teams.length;
+                                const numTeams = powerRankings.teams.length;
                                 
                                 return (
                                   <TableCell key={i + 1} className="text-center p-1">
@@ -1445,6 +1603,313 @@ export default function Metrics() {
               <span>Bottom 25%</span>
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="flukes" className="space-y-6 mt-0">
+          {flukeLoading ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              {[1, 2, 3].map(i => (
+                <Card key={i}>
+                  <CardHeader className="pb-2">
+                    <Skeleton className="h-4 w-24" />
+                  </CardHeader>
+                  <CardContent>
+                    <Skeleton className="h-8 w-full" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          ) : !flukeTracker || flukeTracker.teams.length === 0 ? (
+            <Card>
+              <CardContent className="pt-8 pb-8 text-center">
+                <Zap className="w-12 h-12 mx-auto mb-4 text-muted-foreground opacity-50" />
+                <p className="text-muted-foreground">
+                  {flukeTracker?.message || "Need at least 5 completed weeks for Fluke Tracker analysis."}
+                </p>
+              </CardContent>
+            </Card>
+          ) : (
+            <>
+              <div className="grid gap-4 md:grid-cols-3">
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardDescription className="flex items-center gap-1">
+                      <Zap className="w-3.5 h-3.5 text-amber-500" />
+                      Most Positive Flukes
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {flukeTracker.teams[0] ? (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Avatar className="w-8 h-8">
+                              {flukeTracker.teams[0].avatar && <AvatarImage src={flukeTracker.teams[0].avatar} alt={flukeTracker.teams[0].name} />}
+                              <AvatarFallback className="text-xs bg-amber-500 text-white">
+                                {flukeTracker.teams[0].initials}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="font-medium">{flukeTracker.teams[0].name}</span>
+                          </div>
+                          <Badge className="bg-emerald-500/20 text-emerald-500 border-emerald-500/30">
+                            +{flukeTracker.teams[0].flukeScore}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          +{flukeTracker.teams[0].goodFlukeCount} good / -{flukeTracker.teams[0].badFlukeCount} bad
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No data</p>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardDescription className="flex items-center gap-1">
+                      <TrendingDown className="w-3.5 h-3.5 text-red-500" />
+                      Most Negative Flukes
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {flukeTracker.teams[flukeTracker.teams.length - 1] ? (
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Avatar className="w-8 h-8">
+                              {flukeTracker.teams[flukeTracker.teams.length - 1].avatar && (
+                                <AvatarImage src={flukeTracker.teams[flukeTracker.teams.length - 1].avatar!} alt={flukeTracker.teams[flukeTracker.teams.length - 1].name} />
+                              )}
+                              <AvatarFallback className="text-xs bg-red-500 text-white">
+                                {flukeTracker.teams[flukeTracker.teams.length - 1].initials}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="font-medium">{flukeTracker.teams[flukeTracker.teams.length - 1].name}</span>
+                          </div>
+                          <Badge className="bg-red-500/20 text-red-500 border-red-500/30">
+                            {flukeTracker.teams[flukeTracker.teams.length - 1].flukeScore}
+                          </Badge>
+                        </div>
+                        <p className="text-xs text-muted-foreground">
+                          +{flukeTracker.teams[flukeTracker.teams.length - 1].goodFlukeCount} good / -{flukeTracker.teams[flukeTracker.teams.length - 1].badFlukeCount} bad
+                        </p>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">No data</p>
+                    )}
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardDescription className="flex items-center gap-1">
+                      <Sparkles className="w-3.5 h-3.5 text-primary" />
+                      Your Team
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {flukeTracker.teams.find(t => t.ownerId === userId) ? (
+                      (() => {
+                        const userTeam = flukeTracker.teams.find(t => t.ownerId === userId)!;
+                        return (
+                          <div className="flex flex-col gap-1">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <Avatar className="w-8 h-8">
+                                  {userTeam.avatar && <AvatarImage src={userTeam.avatar} alt={userTeam.name} />}
+                                  <AvatarFallback className="text-xs bg-primary text-primary-foreground">
+                                    {userTeam.initials}
+                                  </AvatarFallback>
+                                </Avatar>
+                                <span className="font-medium">{userTeam.name}</span>
+                              </div>
+                              <Badge
+                                className={userTeam.flukeScore >= 0 ? "bg-emerald-500/20 text-emerald-500 border-emerald-500/30" : "bg-red-500/20 text-red-500 border-red-500/30"}
+                              >
+                                {userTeam.flukeScore >= 0 ? "+" : ""}{userTeam.flukeScore}
+                              </Badge>
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                              +{userTeam.goodFlukeCount} good / -{userTeam.badFlukeCount} bad
+                            </p>
+                          </div>
+                        );
+                      })()
+                    ) : (
+                      <p className="text-sm text-muted-foreground">Connect your account to see your team</p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+
+              <div className="flex items-center justify-center gap-4 text-sm text-muted-foreground py-2">
+                <span>
+                  Total Flukes: <span className="font-medium text-foreground">+{flukeTracker.teams.reduce((s, t) => s + t.goodFlukeCount, 0)} good</span>
+                  {" / "}
+                  <span className="font-medium text-foreground">-{flukeTracker.teams.reduce((s, t) => s + t.badFlukeCount, 0)} bad</span>
+                </span>
+                <span>|</span>
+                <span>Analysis: Weeks 5–14</span>
+              </div>
+
+              <div className="space-y-3">
+                {flukeTracker.teams.map((team, idx) => {
+                  const isExpanded = flukeExpandedTeam === team.rosterId;
+                  return (
+                    <Card key={team.rosterId}>
+                      <div
+                        className="flex items-center gap-3 p-4 cursor-pointer hover:bg-muted/50 transition-colors"
+                        onClick={() => setFlukeExpandedTeam(isExpanded ? null : team.rosterId)}
+                      >
+                        <span className="text-lg font-bold text-muted-foreground w-8 text-center shrink-0">{idx + 1}</span>
+                        <Avatar className="w-8 h-8">
+                          {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+                          <AvatarFallback className={team.ownerId === userId ? "bg-primary text-primary-foreground" : "bg-muted"}>
+                            {team.initials}
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium truncate">{team.name}</p>
+                          <div className="flex gap-2 mt-1">
+                            <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 text-xs">
+                              +{team.goodFlukeCount} good
+                            </Badge>
+                            <Badge variant="outline" className="bg-red-500/10 text-red-600 border-red-500/30 text-xs">
+                              -{team.badFlukeCount} bad
+                            </Badge>
+                            <Badge variant="secondary" className="text-xs">
+                              Net: {team.flukeScore >= 0 ? "+" : ""}{team.flukeScore}
+                            </Badge>
+                          </div>
+                        </div>
+                        {isExpanded ? (
+                          <ChevronUp className="w-5 h-5 shrink-0 text-muted-foreground" />
+                        ) : (
+                          <ChevronDown className="w-5 h-5 shrink-0 text-muted-foreground" />
+                        )}
+                      </div>
+                      {isExpanded && (
+                        <CardContent className="pt-0 pb-4">
+                          <div className="space-y-2 pl-2 border-l-2 border-muted">
+                            {team.weeklyFlukes.map((weekEntry) => {
+                              const weekKey = `${team.rosterId}-${weekEntry.week}`;
+                              const isWeekExpanded = flukeExpandedWeek === weekKey;
+                              const hasFlukes = weekEntry.goodFlukes.length > 0 || weekEntry.badFlukes.length > 0;
+                              if (!hasFlukes) return null;
+                              return (
+                                <div key={weekKey}>
+                                  <div
+                                    className="flex items-center gap-2 py-2 px-3 rounded-md hover:bg-muted/50 cursor-pointer"
+                                    onClick={() => setFlukeExpandedWeek(isWeekExpanded ? null : weekKey)}
+                                  >
+                                    <span className="font-medium text-sm">Week {weekEntry.week}</span>
+                                    <Badge variant="outline" className="bg-emerald-500/10 text-emerald-600 border-emerald-500/30 text-xs">
+                                      +{weekEntry.goodFlukes.length}
+                                    </Badge>
+                                    <Badge variant="outline" className="bg-red-500/10 text-red-600 border-red-500/30 text-xs">
+                                      -{weekEntry.badFlukes.length}
+                                    </Badge>
+                                    {isWeekExpanded ? (
+                                      <ChevronUp className="w-4 h-4 ml-auto text-muted-foreground" />
+                                    ) : (
+                                      <ChevronDown className="w-4 h-4 ml-auto text-muted-foreground" />
+                                    )}
+                                  </div>
+                                  {isWeekExpanded && (
+                                    <div className="ml-4 mt-2 space-y-2">
+                                      {weekEntry.goodFlukes.map((p) => (
+                                        <div
+                                          key={p.playerId}
+                                          className="flex flex-col gap-0.5 py-2 px-3 rounded bg-emerald-500/10 border border-emerald-500/20"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-2 min-w-0">
+                                              <Badge className="text-[10px] bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 shrink-0">
+                                                {p.position}
+                                              </Badge>
+                                              <span className="text-sm font-medium truncate">{p.playerName}</span>
+                                            </div>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <span className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                                                {p.points} pts
+                                              </span>
+                                              <Badge className="bg-emerald-500/30 text-emerald-700 dark:text-emerald-300 border-emerald-500/40 text-xs font-semibold">
+                                                {flukeProb(p.deviations)} chance
+                                              </Badge>
+                                            </div>
+                                          </div>
+                                          <p className="text-xs text-muted-foreground">
+                                            Avg: {p.rollingAvg} | +{p.deviations} SD above average
+                                          </p>
+                                        </div>
+                                      ))}
+                                      {weekEntry.badFlukes.map((p) => (
+                                        <div
+                                          key={p.playerId}
+                                          className="flex flex-col gap-0.5 py-2 px-3 rounded bg-red-500/10 border border-red-500/20"
+                                        >
+                                          <div className="flex items-center justify-between gap-2">
+                                            <div className="flex items-center gap-2 min-w-0">
+                                              <Badge className="text-[10px] bg-red-500/20 text-red-700 dark:text-red-400 shrink-0">
+                                                {p.position}
+                                              </Badge>
+                                              <span className="text-sm font-medium truncate">{p.playerName}</span>
+                                            </div>
+                                            <div className="flex items-center gap-2 shrink-0">
+                                              <span className="text-sm font-bold text-red-600 dark:text-red-400">
+                                                {p.points} pts
+                                              </span>
+                                              <Badge className="bg-red-500/30 text-red-700 dark:text-red-300 border-red-500/40 text-xs font-semibold">
+                                                {flukeProb(p.deviations)} chance
+                                              </Badge>
+                                            </div>
+                                          </div>
+                                          <p className="text-xs text-muted-foreground">
+                                            Avg: {p.rollingAvg} | -{p.deviations} SD below average
+                                          </p>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </CardContent>
+                      )}
+                    </Card>
+                  );
+                })}
+              </div>
+
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Info className="w-4 h-4" />
+                    How Fluke Tracking Works
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="text-sm text-muted-foreground space-y-2">
+                  <p>
+                    Identifies starter performances that deviate significantly from their recent trend.
+                  </p>
+                  <ul className="list-disc list-inside space-y-1 ml-2">
+                    <li>
+                      <span className="text-emerald-500 font-medium">Good Fluke:</span> scored 2+ standard deviations above their rolling 4-week average
+                    </li>
+                    <li>
+                      <span className="text-red-500 font-medium">Bad Fluke:</span> scored 2+ standard deviations below their rolling 4-week average
+                    </li>
+                    <li>
+                      <span className="font-medium">Fluke Score:</span> good flukes minus bad flukes (net performance luck)
+                    </li>
+                    <li>
+                      Only regular season weeks 5–14 are analyzed (4 prior weeks needed for baseline)
+                    </li>
+                  </ul>
+                </CardContent>
+              </Card>
+            </>
+          )}
         </TabsContent>
       </Tabs>
     </div>

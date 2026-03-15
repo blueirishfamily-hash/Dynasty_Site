@@ -285,6 +285,26 @@ export const transactionSnapshotsTable = pgTable("transaction_snapshots", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
+// Year recap snapshots - full computed year recap data stored at advance-year
+export const yearRecapSnapshotsTable = pgTable("year_recap_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  data: text("data").notNull(), // JSON - full year recap response
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+// Metrics snapshots - team luck, heat check, power rankings stored at advance-year
+export const metricsSnapshotsTable = pgTable("metrics_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  teamLuckData: text("team_luck_data").notNull().default("{}"),
+  heatCheckData: text("heat_check_data").notNull().default("{}"),
+  powerRankingsData: text("power_rankings_data").notNull().default("{}"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
 // Contract approval requests - submitted by teams for commissioner approval
 export const contractApprovalRequestsTable = pgTable("contract_approval_requests", {
   id: varchar("id", { length: 36 }).primaryKey(),
@@ -332,6 +352,8 @@ export const insertTeamStatsSnapshotDbSchema = createInsertSchema(teamStatsSnaps
 export const insertDraftSnapshotDbSchema = createInsertSchema(draftSnapshotsTable).omit({ id: true, createdAt: true });
 export const insertMatchupSnapshotDbSchema = createInsertSchema(matchupSnapshotsTable).omit({ id: true, createdAt: true });
 export const insertTransactionSnapshotDbSchema = createInsertSchema(transactionSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertYearRecapSnapshotDbSchema = createInsertSchema(yearRecapSnapshotsTable).omit({ id: true, createdAt: true });
+export const insertMetricsSnapshotDbSchema = createInsertSchema(metricsSnapshotsTable).omit({ id: true, createdAt: true });
 export const insertFavoriteExpiringPlayerDbSchema = createInsertSchema(favoriteExpiringPlayersTable).omit({ id: true, createdAt: true });
 
 // Player Contract types
@@ -375,6 +397,10 @@ export type MatchupSnapshot = typeof matchupSnapshotsTable.$inferSelect;
 export type InsertMatchupSnapshot = z.infer<typeof insertMatchupSnapshotDbSchema>;
 export type TransactionSnapshot = typeof transactionSnapshotsTable.$inferSelect;
 export type InsertTransactionSnapshot = z.infer<typeof insertTransactionSnapshotDbSchema>;
+export type YearRecapSnapshot = typeof yearRecapSnapshotsTable.$inferSelect;
+export type InsertYearRecapSnapshot = z.infer<typeof insertYearRecapSnapshotDbSchema>;
+export type MetricsSnapshot = typeof metricsSnapshotsTable.$inferSelect;
+export type InsertMetricsSnapshot = z.infer<typeof insertMetricsSnapshotDbSchema>;
 
 // Favorite Expiring Player types
 export type FavoriteExpiringPlayer = typeof favoriteExpiringPlayersTable.$inferSelect;

@@ -9,6 +9,9 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
+import { YearRecapDisplay, type YearRecapData } from "@/pages/YearRecap";
+import { MetricsDisplay } from "@/pages/Metrics";
 
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
@@ -117,6 +120,36 @@ export default function Historical() {
     },
     enabled: !!effectiveLeagueId && !!season && !!week,
   });
+
+  const { data: yearRecapData, isLoading: yearRecapLoading } = useQuery<YearRecapData>({
+    queryKey: ["/api/league", effectiveLeagueId, "historical", "year-recap", season],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${effectiveLeagueId}/historical/year-recap?season=${season}`);
+      if (!res.ok) throw new Error("Failed to fetch year recap");
+      return res.json();
+    },
+    enabled: !!effectiveLeagueId && !!season,
+    retry: false,
+  });
+
+  const { data: metricsData, isLoading: metricsLoading } = useQuery<{
+    teamLuck: any;
+    heatCheck: any;
+    powerRankings: any;
+  }>({
+    queryKey: ["/api/league", effectiveLeagueId, "historical", "metrics", season],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${effectiveLeagueId}/historical/metrics?season=${season}`);
+      if (!res.ok) throw new Error("Failed to fetch metrics");
+      return res.json();
+    },
+    enabled: !!effectiveLeagueId && !!season,
+    retry: false,
+  });
+
+  const [metricsExpandedTeam, setMetricsExpandedTeam] = useState<number | null>(null);
+  const [flukeExpandedTeam, setFlukeExpandedTeam] = useState<number | null>(null);
+  const [flukeExpandedWeek, setFlukeExpandedWeek] = useState<string | null>(null);
 
   const standingsRows = useMemo(() => {
     const rows: Array<{
@@ -268,6 +301,8 @@ export default function Historical() {
           <TabsTrigger value="drafts">Drafts</TabsTrigger>
           <TabsTrigger value="matchups">Matchups</TabsTrigger>
           <TabsTrigger value="transactions">Transactions</TabsTrigger>
+          <TabsTrigger value="year-recap">Year Recap</TabsTrigger>
+          <TabsTrigger value="metrics">Metrics</TabsTrigger>
         </TabsList>
 
         <TabsContent value="standings">
@@ -333,7 +368,7 @@ export default function Historical() {
                       </tr>
                     </thead>
                     <tbody>
-                      {teamStatsRows.map((row, idx) => (
+                      {teamStatsRows.map((row: { rosterId: number; week: number | null; wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }, idx: number) => (
                         <tr key={`${row.rosterId}-${idx}`} className="border-t border-border">
                           <td className="py-1">{row.week ?? "Season"}</td>
                           <td className="py-1">{row.rosterId}</td>
@@ -462,6 +497,81 @@ export default function Historical() {
               </ScrollArea>
             </CardContent>
           </Card>
+        </TabsContent>
+        <TabsContent value="year-recap" className="mt-0">
+          {yearRecapLoading ? (
+            <div className="space-y-6">
+              <Skeleton className="h-12 w-64" />
+              <div className="grid gap-4 md:grid-cols-2">
+                {[...Array(4)].map((_, i) => (
+                  <Skeleton key={i} className="h-[320px] w-full" />
+                ))}
+              </div>
+            </div>
+          ) : yearRecapData ? (
+            <YearRecapDisplay
+              data={yearRecapData}
+              leagueId={effectiveLeagueId}
+              seasonLabel={season}
+              playerAwards={undefined}
+            />
+          ) : (
+            <Card>
+              <CardContent className="pt-8 pb-8 text-center">
+                <p className="text-muted-foreground">No year recap snapshot available for this season.</p>
+                <p className="text-sm text-muted-foreground mt-2">Year recap data is saved when advancing the league year.</p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+        <TabsContent value="metrics" className="mt-0">
+          {metricsLoading ? (
+            <div className="space-y-6">
+              <Skeleton className="h-12 w-64" />
+              <div className="grid gap-4 md:grid-cols-3">
+                {[1, 2, 3].map((i) => (
+                  <Card key={i}>
+                    <CardHeader className="pb-2">
+                      <Skeleton className="h-4 w-24" />
+                    </CardHeader>
+                    <CardContent>
+                      <Skeleton className="h-8 w-full" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          ) : metricsData ? (
+            <MetricsDisplay
+              teamLuck={metricsData.teamLuck}
+              heatCheck={metricsData.heatCheck}
+              powerRankings={metricsData.powerRankings}
+              flukeTracker={undefined}
+              flukeLoading={false}
+              userId={undefined}
+              luckiestTeam={metricsData.teamLuck?.teams?.[0]}
+              unluckiestTeam={metricsData.teamLuck?.teams?.[metricsData.teamLuck?.teams?.length - 1]}
+              userLuckTeam={undefined}
+              hottestTeam={metricsData.heatCheck?.teams?.filter((t: any) => t.isHot)?.[0]}
+              coldestTeam={metricsData.heatCheck?.teams?.filter((t: any) => !t.isHot)?.slice(-1)?.[0]}
+              userHeatTeam={undefined}
+              hotTeams={metricsData.heatCheck?.teams?.filter((t: any) => t.isHot) || []}
+              coldTeams={metricsData.heatCheck?.teams?.filter((t: any) => !t.isHot) || []}
+              expandedTeam={metricsExpandedTeam}
+              toggleExpanded={(rosterId) => setMetricsExpandedTeam((prev) => (prev === rosterId ? null : rosterId))}
+              flukeExpandedTeam={flukeExpandedTeam}
+              setFlukeExpandedTeam={setFlukeExpandedTeam}
+              flukeExpandedWeek={flukeExpandedWeek}
+              setFlukeExpandedWeek={setFlukeExpandedWeek}
+            />
+          ) : (
+            <Card>
+              <CardContent className="pt-8 pb-8 text-center">
+                <p className="text-muted-foreground">No metrics snapshot available for this season.</p>
+                <p className="text-sm text-muted-foreground mt-2">Metrics data is saved when advancing the league year.</p>
+              </CardContent>
+            </Card>
+          )}
         </TabsContent>
       </Tabs>
     </div>

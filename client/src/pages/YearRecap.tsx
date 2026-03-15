@@ -52,7 +52,7 @@ import {
   ArrowRight,
 } from "lucide-react";
 
-interface YearRecapData {
+export interface YearRecapData {
   powerWinVsAge: Array<{ rosterId: number; teamName: string; avatar: string | null; allPlayWinPct: number; avgAge: number; isChampion: boolean; isPlayoff: boolean }>;
   powerWinVsUniqueStarters: Array<{ rosterId: number; teamName: string; avatar?: string | null; allPlayWinPct: number; uniqueStarters: number; isChampion: boolean; isPlayoff: boolean }>;
   streaks: Array<{ rosterId: number; teamName: string; longestWinStreak: number; longestLossStreak: number }>;
@@ -1730,6 +1730,27 @@ export default function YearRecap() {
   }
 
   return (
+    <YearRecapDisplay
+      data={data}
+      leagueId={league?.leagueId}
+      seasonLabel={league?.season || "the season"}
+      playerAwards={playerAwards}
+    />
+  );
+}
+
+export function YearRecapDisplay({
+  data,
+  leagueId,
+  seasonLabel,
+  playerAwards,
+}: {
+  data: YearRecapData;
+  leagueId?: string;
+  seasonLabel?: string;
+  playerAwards?: Record<string, PlayerAwardCounts>;
+}) {
+  return (
     <div className="p-6 space-y-8">
       <div>
         <h1 className="font-heading text-3xl font-bold flex items-center gap-2">
@@ -1737,7 +1758,7 @@ export default function YearRecap() {
           Year Recap
         </h1>
         <p className="text-muted-foreground mt-1">
-          Full season stats, charts, and awards for {league.season || "the season"}
+          Full season stats, charts, and awards for {seasonLabel || "the season"}
         </p>
       </div>
 
@@ -1810,7 +1831,7 @@ export default function YearRecap() {
               games={data.superlativeGames.highestScoring}
               statType="combined"
               headerGradient="bg-gradient-to-r from-amber-500 to-orange-600"
-              leagueId={league?.leagueId}
+              leagueId={leagueId}
             />
             <NotableGameCard
               title="Lowest Scoring Game"
@@ -1818,7 +1839,7 @@ export default function YearRecap() {
               games={data.superlativeGames.lowestScoring}
               statType="combined"
               headerGradient="bg-gradient-to-r from-slate-500 to-blue-600"
-              leagueId={league?.leagueId}
+              leagueId={leagueId}
             />
             <NotableGameCard
               title="Closest Game"
@@ -1826,7 +1847,7 @@ export default function YearRecap() {
               games={data.superlativeGames.closest}
               statType="margin"
               headerGradient="bg-gradient-to-r from-violet-500 to-purple-600"
-              leagueId={league?.leagueId}
+              leagueId={leagueId}
             />
             <NotableGameCard
               title="Largest Blowout"
@@ -1834,7 +1855,7 @@ export default function YearRecap() {
               games={data.superlativeGames.blowouts}
               statType="margin"
               headerGradient="bg-gradient-to-r from-red-500 to-rose-600"
-              leagueId={league?.leagueId}
+              leagueId={leagueId}
             />
           </div>
 
@@ -1897,7 +1918,7 @@ export default function YearRecap() {
                 <ChampionshipMvpCard mvp={data.championshipMvp} />
               )}
               <PlayoffStatCards playoffGames={data.playoffGames.filter(g => g.bracket !== "losers")} />
-              <PlayoffBracket playoffGames={data.playoffGames} championName={data.championName} playoffWeekStart={data.playoffWeekStart} leagueId={league?.leagueId} />
+              <PlayoffBracket playoffGames={data.playoffGames} championName={data.championName} playoffWeekStart={data.playoffWeekStart} leagueId={leagueId} />
               <PlayoffTeamSummary playoffGames={data.playoffGames.filter(g => g.bracket !== "losers")} championName={data.championName} />
             </>
           )}

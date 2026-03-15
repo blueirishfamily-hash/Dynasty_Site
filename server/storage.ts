@@ -24,6 +24,8 @@ import {
   draftSnapshotsTable,
   matchupSnapshotsTable,
   transactionSnapshotsTable,
+  yearRecapSnapshotsTable,
+  metricsSnapshotsTable,
   favoriteExpiringPlayersTable,
   draftProspectsTable,
 } from "../shared/schema";
@@ -165,8 +167,17 @@ export interface IStorage {
   getMatchupSnapshots(leagueId: string, season: string, week: number): Promise<MatchupSnapshot[]>;
   getTransactionSnapshots(leagueId: string, season: string, week: number): Promise<TransactionSnapshot[]>;
 
+  upsertYearRecapSnapshot(leagueId: string, season: string, data: string): Promise<void>;
+  getYearRecapSnapshot(leagueId: string, season: string): Promise<{ data: string } | undefined>;
+  upsertMetricsSnapshot(leagueId: string, season: string, teamLuckData: string, heatCheckData: string, powerRankingsData: string): Promise<void>;
+  getMetricsSnapshot(leagueId: string, season: string): Promise<{ teamLuckData: string; heatCheckData: string; powerRankingsData: string } | undefined>;
+
   // Bidding reset
   deleteAllPlayerBids(leagueId: string): Promise<void>;
+
+  // League migration - dead cap and team extensions
+  migrateDeadCapEntries(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void>;
+  migrateTeamExtensions(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void>;
   
   // Favorite expiring players
   getFavoriteExpiringPlayers(leagueId: string, rosterId: number): Promise<FavoriteExpiringPlayer[]>;
@@ -1440,6 +1451,47 @@ export class DatabaseStorage implements IStorage {
       .where(eq(deadCapEntriesTable.id, id));
   }
 
+  async migrateDeadCapEntries(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void> {
+    const entries = await this.getDeadCapEntriesByLeague(oldLeagueId);
+    for (const entry of entries) {
+      const mapping = mappingByOldRoster.get(entry.rosterId);
+      if (!mapping) continue;
+      await this.createDeadCapEntry({
+        leagueId: newLeagueId,
+        rosterId: mapping.newRosterId,
+        playerId: entry.playerId,
+        playerName: entry.playerName,
+        playerPosition: entry.playerPosition,
+        reason: entry.reason,
+        deadCapSalaries: (entry as any).deadCapSalaries ?? "{}",
+      });
+    }
+  }
+
+  async migrateTeamExtensions(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void> {
+    const allExtensions = await db
+      .select()
+      .from(teamExtensionsTable)
+      .where(eq(teamExtensionsTable.leagueId, oldLeagueId));
+    for (const ext of allExtensions) {
+      const mapping = mappingByOldRoster.get(ext.rosterId);
+      if (!mapping) continue;
+      await this.createTeamExtension({
+        leagueId: newLeagueId,
+        rosterId: mapping.newRosterId,
+        season: ext.season,
+        playerId: ext.playerId,
+        playerName: ext.playerName,
+        extensionSalary: ext.extensionSalary,
+        extensionYear: ext.extensionYear,
+        extensionType: ext.extensionType ?? 1,
+        extensionSalary2: ext.extensionSalary2 ?? undefined,
+        isRookieExtension: ext.isRookieExtension ?? 0,
+        status: ext.status ?? "confirmed",
+      });
+    }
+  }
+
   async getSavedContractDrafts(leagueId: string, rosterId: number): Promise<SavedContractDraft[]> {
     const rows = await db
       .select()
@@ -1944,6 +1996,88 @@ export class DatabaseStorage implements IStorage {
         eq(transactionSnapshotsTable.season, season),
         eq(transactionSnapshotsTable.week, week)
       ));
+  }
+
+  async upsertYearRecapSnapshot(leagueId: string, season: string, data: string): Promise<void> {
+    const existing = await db
+      .select()
+      .from(yearRecapSnapshotsTable)
+      .where(and(
+        eq(yearRecapSnapshotsTable.leagueId, leagueId),
+        eq(yearRecapSnapshotsTable.season, season)
+      ))
+      .limit(1);
+    const now = Date.now();
+    if (existing.length > 0) {
+      await db
+        .update(yearRecapSnapshotsTable)
+        .set({ data, createdAt: now })
+        .where(eq(yearRecapSnapshotsTable.id, existing[0].id));
+    } else {
+      await db.insert(yearRecapSnapshotsTable).values({
+        id: randomUUID(),
+        leagueId,
+        season,
+        data,
+        createdAt: now,
+      });
+    }
+  }
+
+  async getYearRecapSnapshot(leagueId: string, season: string): Promise<{ data: string } | undefined> {
+    const [row] = await db
+      .select({ data: yearRecapSnapshotsTable.data })
+      .from(yearRecapSnapshotsTable)
+      .where(and(
+        eq(yearRecapSnapshotsTable.leagueId, leagueId),
+        eq(yearRecapSnapshotsTable.season, season)
+      ))
+      .limit(1);
+    return row;
+  }
+
+  async upsertMetricsSnapshot(leagueId: string, season: string, teamLuckData: string, heatCheckData: string, powerRankingsData: string): Promise<void> {
+    const existing = await db
+      .select()
+      .from(metricsSnapshotsTable)
+      .where(and(
+        eq(metricsSnapshotsTable.leagueId, leagueId),
+        eq(metricsSnapshotsTable.season, season)
+      ))
+      .limit(1);
+    const now = Date.now();
+    if (existing.length > 0) {
+      await db
+        .update(metricsSnapshotsTable)
+        .set({ teamLuckData, heatCheckData, powerRankingsData, createdAt: now })
+        .where(eq(metricsSnapshotsTable.id, existing[0].id));
+    } else {
+      await db.insert(metricsSnapshotsTable).values({
+        id: randomUUID(),
+        leagueId,
+        season,
+        teamLuckData,
+        heatCheckData,
+        powerRankingsData,
+        createdAt: now,
+      });
+    }
+  }
+
+  async getMetricsSnapshot(leagueId: string, season: string): Promise<{ teamLuckData: string; heatCheckData: string; powerRankingsData: string } | undefined> {
+    const [row] = await db
+      .select({
+        teamLuckData: metricsSnapshotsTable.teamLuckData,
+        heatCheckData: metricsSnapshotsTable.heatCheckData,
+        powerRankingsData: metricsSnapshotsTable.powerRankingsData,
+      })
+      .from(metricsSnapshotsTable)
+      .where(and(
+        eq(metricsSnapshotsTable.leagueId, leagueId),
+        eq(metricsSnapshotsTable.season, season)
+      ))
+      .limit(1);
+    return row;
   }
 
   async deleteAllPlayerBids(leagueId: string): Promise<void> {

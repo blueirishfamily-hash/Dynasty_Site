@@ -5046,6 +5046,200 @@ export async function registerRoutes(
     }
   });
 
+  // Fluke Tracker - rolling 4-week avg, flag starters 2+ std devs above (good) or below (bad) their average
+  app.get("/api/sleeper/league/:leagueId/fluke-tracker", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const [rosters, users, nflState, league, players] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getNFLState(),
+        getLeague(leagueId).catch(() => null),
+        getAllPlayers(),
+      ]);
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach((u: SleeperLeagueUser) => userMap.set(u.user_id, u));
+
+      const currentWeek = getEffectiveWeek(nflState, league);
+      const completedWeeks = Math.max(0, currentWeek - 1);
+
+      if (completedWeeks < 5) {
+        return res.json({
+          teams: [],
+          currentWeek,
+          completedWeeks,
+          message: "Need at least 5 completed weeks for Fluke Tracker analysis",
+        });
+      }
+
+      const playoffWeekStart = (league as any)?.settings?.playoff_week_start ?? 15;
+      const lastRegularSeasonWeek = playoffWeekStart - 1;
+      const analysisEndWeek = Math.min(lastRegularSeasonWeek, completedWeeks);
+
+      let matchupLeagueId = leagueId;
+      const testMatchup = await getLeagueMatchups(leagueId, 1).catch(() => []);
+      const hasData = testMatchup.length > 0 && testMatchup.some((m: SleeperMatchup) => m.points !== undefined && m.points > 0);
+      if (!hasData && (league as any)?.previous_league_id) {
+        matchupLeagueId = (league as any).previous_league_id;
+      }
+
+      const matchupPromises: Promise<{ week: number; matchups: SleeperMatchup[] }>[] = [];
+      const weeksToFetch = Math.min(lastRegularSeasonWeek, completedWeeks);
+      for (let w = 1; w <= weeksToFetch; w++) {
+        matchupPromises.push(
+          getLeagueMatchups(matchupLeagueId, w)
+            .then(matchups => ({ week: w, matchups }))
+            .catch(() => ({ week: w, matchups: [] as SleeperMatchup[] }))
+        );
+      }
+      const weeklyMatchups = await Promise.all(matchupPromises);
+
+      // playerWeeklyData[playerId][week] = { points, rosterId }
+      const playerWeeklyData = new Map<string, Map<number, { points: number; rosterId: number }>>();
+
+      weeklyMatchups.forEach(({ week, matchups }) => {
+        matchups.forEach((m: SleeperMatchup) => {
+          const starters = m.starters || [];
+          const pp = m.players_points || {};
+          starters.forEach((pid: string) => {
+            const pts = pp[pid] ?? pp[String(pid)] ?? 0;
+            if (!playerWeeklyData.has(pid)) {
+              playerWeeklyData.set(pid, new Map());
+            }
+            playerWeeklyData.get(pid)!.set(week, { points: pts, rosterId: m.roster_id });
+          });
+        });
+      });
+
+      function stdDev(arr: number[]): number {
+        if (arr.length < 2) return 0;
+        const avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+        const variance = arr.reduce((sum, x) => sum + (x - avg) ** 2, 0) / arr.length;
+        return Math.sqrt(variance);
+      }
+
+      // Build team info
+      const teamInfoMap = new Map<number, { name: string; ownerId: string; initials: string; avatar: string | null }>();
+      rosters.forEach((r: SleeperRoster) => {
+        const user = userMap.get(r.owner_id);
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${r.roster_id}`;
+        teamInfoMap.set(r.roster_id, {
+          name,
+          ownerId: r.owner_id,
+          initials: getTeamInitials(name),
+          avatar: user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null,
+        });
+      });
+
+      const playersRecord = players as Record<string, SleeperPlayer>;
+      const getPlayerName = (pid: string) => {
+        const p = playersRecord[pid] ?? playersRecord[String(pid)];
+        return p?.full_name || (p?.first_name && p?.last_name ? `${p.first_name} ${p.last_name}` : pid);
+      };
+      const getPlayerPosition = (pid: string) => {
+        const p = playersRecord[pid] ?? playersRecord[String(pid)];
+        return p?.position || "FLEX";
+      };
+
+      // rosterId -> { goodFlukeCount, badFlukeCount, weeklyFlukes }
+      const teamFlukes = new Map<number, {
+        goodFlukeCount: number;
+        badFlukeCount: number;
+        weeklyFlukes: Array<{
+          week: number;
+          goodFlukes: Array<{ playerId: string; playerName: string; position: string; points: number; rollingAvg: number; stdDev: number; deviations: number }>;
+          badFlukes: Array<{ playerId: string; playerName: string; position: string; points: number; rollingAvg: number; stdDev: number; deviations: number }>;
+        }>;
+      }>();
+
+      rosters.forEach((r: SleeperRoster) => {
+        teamFlukes.set(r.roster_id, { goodFlukeCount: 0, badFlukeCount: 0, weeklyFlukes: [] });
+      });
+
+      for (let w = 5; w <= analysisEndWeek; w++) {
+        const priorWeeks = [w - 4, w - 3, w - 2, w - 1];
+        const goodByRoster = new Map<number, Array<{ playerId: string; playerName: string; position: string; points: number; rollingAvg: number; stdDev: number; deviations: number }>>();
+        const badByRoster = new Map<number, Array<{ playerId: string; playerName: string; position: string; points: number; rollingAvg: number; stdDev: number; deviations: number }>>();
+
+        playerWeeklyData.forEach((weekMap, playerId) => {
+          const currentEntry = weekMap.get(w);
+          if (!currentEntry) return;
+          const { points: currentPts, rosterId } = currentEntry;
+
+          const priorPts: number[] = [];
+          priorWeeks.forEach(pw => {
+            const e = weekMap.get(pw);
+            if (e && e.rosterId === rosterId) priorPts.push(e.points);
+          });
+
+          if (priorPts.length < 3) return;
+          const avg = priorPts.reduce((a, b) => a + b, 0) / priorPts.length;
+          const sd = stdDev(priorPts);
+          if (sd < 1) return;
+
+          const deviations = (currentPts - avg) / sd;
+          if (deviations >= 2) {
+            const arr = goodByRoster.get(rosterId) || [];
+            arr.push({
+              playerId,
+              playerName: getPlayerName(playerId),
+              position: getPlayerPosition(playerId),
+              points: Math.round(currentPts * 100) / 100,
+              rollingAvg: Math.round(avg * 100) / 100,
+              stdDev: Math.round(sd * 100) / 100,
+              deviations: Math.round(deviations * 100) / 100,
+            });
+            goodByRoster.set(rosterId, arr);
+          } else if (deviations <= -2) {
+            const arr = badByRoster.get(rosterId) || [];
+            arr.push({
+              playerId,
+              playerName: getPlayerName(playerId),
+              position: getPlayerPosition(playerId),
+              points: Math.round(currentPts * 100) / 100,
+              rollingAvg: Math.round(avg * 100) / 100,
+              stdDev: Math.round(sd * 100) / 100,
+              deviations: Math.round(Math.abs(deviations) * 100) / 100,
+            });
+            badByRoster.set(rosterId, arr);
+          }
+        });
+
+        rosters.forEach((r: SleeperRoster) => {
+          const teamData = teamFlukes.get(r.roster_id)!;
+          const good = goodByRoster.get(r.roster_id) || [];
+          const bad = badByRoster.get(r.roster_id) || [];
+          teamData.goodFlukeCount += good.length;
+          teamData.badFlukeCount += bad.length;
+          teamData.weeklyFlukes.push({ week: w, goodFlukes: good, badFlukes: bad });
+        });
+      }
+
+      const teams = Array.from(teamFlukes.entries())
+        .map(([rosterId, data]) => {
+          const info = teamInfoMap.get(rosterId)!;
+          return {
+            rosterId,
+            name: info.name,
+            ownerId: info.ownerId,
+            initials: info.initials,
+            avatar: info.avatar,
+            goodFlukeCount: data.goodFlukeCount,
+            badFlukeCount: data.badFlukeCount,
+            flukeScore: data.goodFlukeCount - data.badFlukeCount,
+            weeklyFlukes: data.weeklyFlukes,
+          };
+        })
+        .sort((a, b) => b.flukeScore - a.flukeScore);
+
+      res.json({ teams, currentWeek, completedWeeks });
+    } catch (error) {
+      console.error("Error calculating fluke tracker:", error);
+      res.status(500).json({ error: "Failed to calculate fluke tracker" });
+    }
+  });
+
   // Game details - starter performance for a specific week and roster pair (for Year Recap expandable cards)
   app.get("/api/league/:leagueId/game-details", async (req, res) => {
     try {
@@ -9391,6 +9585,41 @@ export async function registerRoutes(
         });
       }
 
+      // Snapshot year recap and metrics for historical viewing (fetch from internal endpoints)
+      try {
+        const baseUrl = process.env.ORIGIN || `${req.protocol}://${req.get("host") || "localhost:5000"}`;
+        const [yearRecapRes, teamLuckRes, heatCheckRes, powerRankingsRes] = await Promise.all([
+          fetch(`${baseUrl}/api/league/${oldLeagueId}/year-recap`),
+          fetch(`${baseUrl}/api/sleeper/league/${oldLeagueId}/team-luck`),
+          fetch(`${baseUrl}/api/sleeper/league/${oldLeagueId}/heat-check`),
+          fetch(`${baseUrl}/api/sleeper/league/${oldLeagueId}/power-rankings`),
+        ]);
+        if (yearRecapRes.ok) {
+          const yearRecapData = await yearRecapRes.json();
+          await storage.upsertYearRecapSnapshot(oldLeagueId, oldLeague.season, JSON.stringify(yearRecapData));
+        }
+        if (teamLuckRes.ok && heatCheckRes.ok && powerRankingsRes.ok) {
+          const [teamLuckData, heatCheckData, powerRankingsData] = await Promise.all([
+            teamLuckRes.json(),
+            heatCheckRes.json(),
+            powerRankingsRes.json(),
+          ]);
+          await storage.upsertMetricsSnapshot(
+            oldLeagueId,
+            oldLeague.season,
+            JSON.stringify(teamLuckData),
+            JSON.stringify(heatCheckData),
+            JSON.stringify(powerRankingsData)
+          );
+        }
+      } catch (snapshotErr) {
+        console.error("Error snapshotting year recap/metrics during advance-year (non-fatal):", snapshotErr);
+      }
+
+      // Migrate dead cap entries and team extensions to new league (before contracts)
+      await storage.migrateDeadCapEntries(oldLeagueId, newLeagueId, mappingByOldRoster);
+      await storage.migrateTeamExtensions(oldLeagueId, newLeagueId, mappingByOldRoster);
+
       // Migrate contracts
       const contracts = await storage.getPlayerContracts(oldLeagueId);
       for (const contract of contracts) {
@@ -9411,8 +9640,8 @@ export async function registerRoutes(
           extensionYear: contract.extensionYear ?? null,
           extensionSalary: contract.extensionSalary ?? null,
           extensionType: contract.extensionType ?? null,
-          hasBeenExtended: 0,
-          hasBeenFranchiseTagged: 0,
+          hasBeenExtended: (contract as any).hasBeenExtended ?? 0,
+          hasBeenFranchiseTagged: (contract as any).hasBeenFranchiseTagged ?? 0,
         });
       }
 
@@ -9780,6 +10009,39 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching transaction snapshots:", error);
       res.status(500).json({ error: "Failed to fetch transaction snapshots" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/year-recap", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season } = req.query as { season?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+      const snapshot = await storage.getYearRecapSnapshot(leagueId, season);
+      if (!snapshot) return res.status(404).json({ error: "No year recap snapshot found for this season" });
+      const data = JSON.parse(snapshot.data);
+      res.json(data);
+    } catch (error) {
+      console.error("Error fetching year recap snapshot:", error);
+      res.status(500).json({ error: "Failed to fetch year recap snapshot" });
+    }
+  });
+
+  app.get("/api/league/:leagueId/historical/metrics", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { season } = req.query as { season?: string };
+      if (!season) return res.status(400).json({ error: "season is required" });
+      const snapshot = await storage.getMetricsSnapshot(leagueId, season);
+      if (!snapshot) return res.status(404).json({ error: "No metrics snapshot found for this season" });
+      res.json({
+        teamLuck: JSON.parse(snapshot.teamLuckData),
+        heatCheck: JSON.parse(snapshot.heatCheckData),
+        powerRankings: JSON.parse(snapshot.powerRankingsData),
+      });
+    } catch (error) {
+      console.error("Error fetching metrics snapshot:", error);
+      res.status(500).json({ error: "Failed to fetch metrics snapshot" });
     }
   });
 
