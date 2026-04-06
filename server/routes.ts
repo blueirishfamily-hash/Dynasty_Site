@@ -8033,6 +8033,53 @@ export async function registerRoutes(
         }
       }
 
+      // Validate contract tier limits (same limits as bidding system):
+      //   bucket 4 (4+ yrs remaining): max 3 contracts
+      //   bucket 3 (3 yrs remaining):  max 4 contracts
+      //   bucket 2 (2 yrs remaining):  max 5 contracts
+      // Only non-rookie contracts count toward limits; rookie contracts are excluded.
+      const CONTRACT_LIMITS: Record<number, number> = { 4: 3, 3: 4, 2: 5 };
+      {
+        // Compute post-extension last year and years-remaining bucket
+        const postExtLastYear = extensionYear + extensionType - 1;
+        // Offseason: count current year as remaining; in-season: current year is already played
+        const isOffseason = (() => {
+          // We don't have NFL state here yet; approximate using season vs current calendar year
+          // A proper check happens for rookies above; for limits we conservatively use 0 adjustment
+          // (the client enforces the offseason adjustment; server is a safety net)
+          return false;
+        })();
+        const postExtYearsRemaining = postExtLastYear >= season
+          ? postExtLastYear - season + (isOffseason ? 0 : 1)
+          : 0;
+        const bucket = Math.min(Math.max(postExtYearsRemaining, 1), 4);
+        const limit = CONTRACT_LIMITS[bucket];
+
+        if (limit !== undefined) {
+          // Count existing non-rookie contracts for this roster in this bucket
+          const rosterContracts = playerContracts.filter(c => c.rosterId === rosterId && c.isRookieContract !== 1);
+          let bucketCount = 0;
+          for (const c of rosterContracts) {
+            const salaries: Record<string, number> = (() => {
+              try {
+                if (typeof (c as any).salaries === "string") return JSON.parse((c as any).salaries || "{}");
+                return (c as any).salaries || {};
+              } catch { return {}; }
+            })();
+            const yearsWithSalary = Object.keys(salaries).map(Number).filter(y => (salaries[y] ?? 0) > 0);
+            const lastYear = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : season - 1;
+            const yrsRemaining = lastYear >= season ? lastYear - season + 1 : 0;
+            const cBucket = Math.min(Math.max(yrsRemaining, 0), 4);
+            if (cBucket === bucket) bucketCount++;
+          }
+          if (bucketCount >= limit) {
+            return res.status(400).json({
+              error: `Roster limit for ${bucket}-year contracts is full (max ${limit}). Cannot apply this extension.`
+            });
+          }
+        }
+      }
+
       // Rookie contracts: must be offseason and use PPG-based pricing
       if (isRookieContract) {
         // Validate offseason: rookie extensions only allowed after season ends

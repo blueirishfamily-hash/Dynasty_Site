@@ -1296,7 +1296,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
               {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
                 <div key={year} className="text-center">
                   <div className="text-xs text-muted-foreground mb-1">
-                    {idx === 4 ? `${year} (Ext)` : year} Total
+                    {year} Total
                   </div>
                   <div className="font-bold" style={{ color: (totalSalaryByYear[year] || 0) > TOTAL_CAP ? COLORS.deadCap : COLORS.salaries }}>
                     ${(totalSalaryByYear[year] || 0).toFixed(1)}M
@@ -1318,7 +1318,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                     <TableHead className="text-center w-[70px]">IR Void</TableHead>
                     {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
                       <TableHead key={year} className="text-center w-[90px]">
-                        {year}{idx === 4 ? " (Ext)" : ""}
+                        {year}
                       </TableHead>
                     ))}
                     <TableHead className="text-center w-[80px]">Total</TableHead>
@@ -1786,6 +1786,26 @@ function ManageTeamContractsTab({
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
   const OPTION_YEAR = CURRENT_YEAR + 4;
+
+  // Contract tier limits (same as bidding): max contracts per years-remaining bucket
+  const CONTRACT_LIMITS: Record<number, number> = { 4: 3, 3: 4, 2: 5 };
+
+  // Count existing non-rookie contracts by years-remaining bucket (used to gate extensions)
+  const existingContractCounts = useMemo(() => {
+    const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
+    for (const contract of dbContracts) {
+      if (contract.rosterId !== userTeam?.rosterId) continue;
+      if (contract.isRookieContract === 1) continue;
+      const salaries = (contract as any).salaries || {};
+      const yearsWithSalary = Object.keys(salaries).map(Number).filter(y => (salaries[y] ?? 0) > 0);
+      const lastYear = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : CURRENT_YEAR - 1;
+      const yearsRemaining = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + (isOffseason ? 0 : 1) : 0;
+      const bucket = Math.min(Math.max(yearsRemaining, 0), 4) as 1 | 2 | 3 | 4;
+      if (bucket >= 1 && bucket <= 4) counts[bucket]++;
+    }
+    return counts;
+  }, [dbContracts, userTeam?.rosterId, CURRENT_YEAR, isOffseason]);
+
   const [hypotheticalData, setHypotheticalData] = useState<HypotheticalContractData>({
     salaryOverrides: {},
     addedFreeAgents: [],
@@ -2373,6 +2393,18 @@ function ManageTeamContractsTab({
     requiresQuartilePricing: boolean;
     requiresPPGPricing: boolean;
   }
+
+  // Returns true if applying this extension type would exceed the contract tier limit
+  const wouldExceedContractLimit = (extensionYear: number, extensionType: number): boolean => {
+    const postExtLastYear = extensionYear + extensionType - 1;
+    const postExtYearsRemaining = postExtLastYear >= CURRENT_YEAR
+      ? postExtLastYear - CURRENT_YEAR + (isOffseason ? 0 : 1)
+      : 0;
+    const bucket = Math.min(Math.max(postExtYearsRemaining, 1), 4);
+    const limit = CONTRACT_LIMITS[bucket];
+    if (limit === undefined) return false;
+    return (existingContractCounts[bucket] ?? 0) >= limit;
+  };
 
   const isPlayerEligibleForExtension = (playerId: string): ExtensionEligibility => {
     const defaultResult: ExtensionEligibility = {
@@ -3262,7 +3294,7 @@ function ManageTeamContractsTab({
                     <Card key={year} className="p-4">
                       <div className="text-center mb-2">
                         <h3 className="font-semibold text-lg">
-                          {idx === 4 ? `${year} (Ext)` : year}
+                          {year}
                         </h3>
                         <p className="text-sm text-muted-foreground">
                           Total: ${totalSalary.toFixed(1)}M
@@ -3464,7 +3496,7 @@ function ManageTeamContractsTab({
                 <Card key={year} className="p-3">
                   <div className="text-center">
                     <div className="text-xs text-muted-foreground mb-1">
-                      {idx === 4 ? `${year} (Ext)` : year}
+                      {year}
                     </div>
                     <div className="font-bold" style={{ color: isOverCap ? COLORS.deadCap : COLORS.salaries }}>
                       ${hypotheticalTotal.toFixed(1)}M
@@ -3647,9 +3679,9 @@ function ManageTeamContractsTab({
                   <TableHead className="text-center w-[60px]">Team</TableHead>
                   <TableHead className="text-center w-[55px]">Len</TableHead>
                   <TableHead className="text-center w-[55px]">Rem</TableHead>
-                  {[...CONTRACT_YEARS, OPTION_YEAR].map((year, idx) => (
+                  {[...CONTRACT_YEARS, OPTION_YEAR].map((year) => (
                     <TableHead key={year} className="text-center w-[100px]">
-                      {idx === 4 ? `${year} (Ext)` : year}
+                      {year}
                     </TableHead>
                   ))}
                   <TableHead className="text-center w-[80px]">Total</TableHead>
@@ -3962,13 +3994,23 @@ function ManageTeamContractsTab({
                           const isRookiePlayer = extensionEligibility.isRookieContract;
                           let allOptionsExhausted = false;
                           if (isRookiePlayer) {
-                            // Rookie: exhausted if 3 rookie extensions used, or if only 4-year left but 4-year already used
-                            const can3YrRookie = extensionEligibility.canDo3Year && rookieExtCount < 3;
-                            const can4YrRookie = extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year;
+                            // Rookie: exhausted if 3 rookie extensions used, or if only 4-year left but 4-year already used,
+                            // or if all available year lengths are blocked by contract tier limits
+                            const can3YrRookie = extensionEligibility.canDo3Year && rookieExtCount < 3 && !wouldExceedContractLimit(extensionEligibility.extensionYear, 3);
+                            const can4YrRookie = extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 4);
                             allOptionsExhausted = !can3YrRookie && !can4YrRookie;
                           } else {
-                            // Non-rookie: exhausted if team already used both non-rookie extensions (2 per season)
-                            allOptionsExhausted = nonRookieExtCount >= 2;
+                            // Non-rookie: exhausted if team already used both non-rookie extensions (2 per season),
+                            // or if all available year lengths are blocked by contract tier limits
+                            if (nonRookieExtCount >= 2) {
+                              allOptionsExhausted = true;
+                            } else {
+                              const can1Yr = extensionEligibility.canDo1Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 1);
+                              const can2Yr = extensionEligibility.canDo2Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 2);
+                              const can3Yr = extensionEligibility.canDo3Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 3);
+                              const can4Yr = extensionEligibility.canDo4Year && !extensionEligibility.wouldExceedMaxYearFor4Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 4);
+                              allOptionsExhausted = !can1Yr && !can2Yr && !can3Yr && !can4Yr;
+                            }
                           }
 
                           // Disable if can't apply extension or all options exhausted; exception: pending extension can always be toggled off (cancel)
@@ -4203,52 +4245,60 @@ function ManageTeamContractsTab({
                                           </div>
                                           {isRookiePlayer ? (
                                             <>
-                                              {extensionEligibility.canDo3Year && (
-                                                <Button
-                                                  size="sm"
-                                                  variant="outline"
-                                                  className="w-full justify-between"
-                                                  onClick={() => {
-                                                    handleApplyExtension(
-                                                      player.playerId,
-                                                      player.name,
-                                                      extensionEligibility.extensionYear,
-                                                      extensionEligibility.currentSalaryTenths,
-                                                      3,
-                                                      true,
-                                                      d.extensionSalary
-                                                    );
-                                                    setOpenExtensionPopover(null);
-                                                  }}
-                                                  disabled={applyExtensionMutation.isPending || rookieExtCount >= 3}
-                                                >
-                                                  <span>3-Year Extension</span>
-                                                  <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(0)}M/yr</span>
-                                                </Button>
-                                              )}
-                                              {extensionEligibility.canDo4Year && (
-                                                <Button
-                                                  size="sm"
-                                                  variant="outline"
-                                                  className="w-full justify-between"
-                                                  onClick={() => {
-                                                    handleApplyExtension(
-                                                      player.playerId,
-                                                      player.name,
-                                                      extensionEligibility.extensionYear,
-                                                      extensionEligibility.currentSalaryTenths,
-                                                      4,
-                                                      true,
-                                                      d.extensionSalary
-                                                    );
-                                                    setOpenExtensionPopover(null);
-                                                  }}
-                                                  disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || rookieUsed4Year}
-                                                >
-                                                  <span>4-Year Extension</span>
-                                                  <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(0)}M/yr</span>
-                                                </Button>
-                                              )}
+                                              {extensionEligibility.canDo3Year && (() => {
+                                                const limitHit = wouldExceedContractLimit(extensionEligibility.extensionYear, 3);
+                                                return (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="w-full justify-between"
+                                                    onClick={() => {
+                                                      handleApplyExtension(
+                                                        player.playerId,
+                                                        player.name,
+                                                        extensionEligibility.extensionYear,
+                                                        extensionEligibility.currentSalaryTenths,
+                                                        3,
+                                                        true,
+                                                        d.extensionSalary
+                                                      );
+                                                      setOpenExtensionPopover(null);
+                                                    }}
+                                                    disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || limitHit}
+                                                    title={limitHit ? "Roster limit for 3-year contracts is full" : undefined}
+                                                  >
+                                                    <span>3-Year Extension</span>
+                                                    <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(0)}M/yr</span>
+                                                  </Button>
+                                                );
+                                              })()}
+                                              {extensionEligibility.canDo4Year && (() => {
+                                                const limitHit = wouldExceedContractLimit(extensionEligibility.extensionYear, 4);
+                                                return (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="w-full justify-between"
+                                                    onClick={() => {
+                                                      handleApplyExtension(
+                                                        player.playerId,
+                                                        player.name,
+                                                        extensionEligibility.extensionYear,
+                                                        extensionEligibility.currentSalaryTenths,
+                                                        4,
+                                                        true,
+                                                        d.extensionSalary
+                                                      );
+                                                      setOpenExtensionPopover(null);
+                                                    }}
+                                                    disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || rookieUsed4Year || limitHit}
+                                                    title={limitHit ? "Roster limit for 4-year contracts is full" : undefined}
+                                                  >
+                                                    <span>4-Year Extension</span>
+                                                    <span className="text-emerald-600 font-medium">${d.extensionSalaryMillions.toFixed(0)}M/yr</span>
+                                                  </Button>
+                                                );
+                                              })()}
                                               {!extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
                                                 <div className="text-xs text-muted-foreground italic">
                                                   Extension unavailable (would exceed {CURRENT_YEAR + 4})
@@ -4257,99 +4307,115 @@ function ManageTeamContractsTab({
                                             </>
                                           ) : (
                                             <>
-                                              {extensionEligibility.canDo1Year && (
-                                                <Button
-                                                  size="sm"
-                                                  variant="outline"
-                                                  className="w-full justify-between"
-                                                  onClick={() => {
-                                                    handleApplyExtension(
-                                                      player.playerId,
-                                                      player.name,
-                                                      extensionEligibility.extensionYear,
-                                                      extensionEligibility.currentSalaryTenths,
-                                                      1,
-                                                      true,
-                                                      d.extensionSalary
-                                                    );
-                                                    setOpenExtensionPopover(null);
-                                                  }}
-                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2}
-                                                >
-                                                  <span>1-Year (80%)</span>
-                                                  <span className="text-emerald-600 font-medium">${(d.salary1YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.8)).toFixed(0)}M/yr</span>
-                                                </Button>
-                                              )}
-                                              {extensionEligibility.canDo2Year && (
-                                                <Button
-                                                  size="sm"
-                                                  variant="outline"
-                                                  className="w-full justify-between"
-                                                  onClick={() => {
-                                                    handleApplyExtension(
-                                                      player.playerId,
-                                                      player.name,
-                                                      extensionEligibility.extensionYear,
-                                                      extensionEligibility.currentSalaryTenths,
-                                                      2,
-                                                      true,
-                                                      d.extensionSalary
-                                                    );
-                                                    setOpenExtensionPopover(null);
-                                                  }}
-                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2}
-                                                >
-                                                  <span>2-Year (90%)</span>
-                                                  <span className="text-emerald-600 font-medium">${(d.salary2YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.9)).toFixed(0)}M/yr</span>
-                                                </Button>
-                                              )}
-                                              {extensionEligibility.canDo3Year && (
-                                                <Button
-                                                  size="sm"
-                                                  variant="outline"
-                                                  className="w-full justify-between"
-                                                  onClick={() => {
-                                                    handleApplyExtension(
-                                                      player.playerId,
-                                                      player.name,
-                                                      extensionEligibility.extensionYear,
-                                                      extensionEligibility.currentSalaryTenths,
-                                                      3,
-                                                      true,
-                                                      d.extensionSalary
-                                                    );
-                                                    setOpenExtensionPopover(null);
-                                                  }}
-                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2}
-                                                >
-                                                  <span>3-Year (100%)</span>
-                                                  <span className="text-emerald-600 font-medium">${(d.salary3YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.0)).toFixed(0)}M/yr</span>
-                                                </Button>
-                                              )}
-                                              {extensionEligibility.canDo4Year && (
-                                                <Button
-                                                  size="sm"
-                                                  variant="outline"
-                                                  className="w-full justify-between"
-                                                  onClick={() => {
-                                                    handleApplyExtension(
-                                                      player.playerId,
-                                                      player.name,
-                                                      extensionEligibility.extensionYear,
-                                                      extensionEligibility.currentSalaryTenths,
-                                                      4,
-                                                      true,
-                                                      d.extensionSalary
-                                                    );
-                                                    setOpenExtensionPopover(null);
-                                                  }}
-                                                  disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || extensionEligibility.wouldExceedMaxYearFor4Year}
-                                                  title={extensionEligibility.wouldExceedMaxYearFor4Year ? `4-year extension would exceed max contract year (${OPTION_YEAR}). Use 3-year or less.` : undefined}
-                                                >
-                                                  <span>4-Year (110%)</span>
-                                                  <span className="text-emerald-600 font-medium">${(d.salary4YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.1)).toFixed(0)}M/yr</span>
-                                                </Button>
-                                              )}
+                                              {extensionEligibility.canDo1Year && (() => {
+                                                const limitHit = wouldExceedContractLimit(extensionEligibility.extensionYear, 1);
+                                                return (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="w-full justify-between"
+                                                    onClick={() => {
+                                                      handleApplyExtension(
+                                                        player.playerId,
+                                                        player.name,
+                                                        extensionEligibility.extensionYear,
+                                                        extensionEligibility.currentSalaryTenths,
+                                                        1,
+                                                        true,
+                                                        d.extensionSalary
+                                                      );
+                                                      setOpenExtensionPopover(null);
+                                                    }}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || limitHit}
+                                                    title={limitHit ? "Roster limit for 1-year contracts is full" : undefined}
+                                                  >
+                                                    <span>1-Year (80%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary1YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.8)).toFixed(0)}M/yr</span>
+                                                  </Button>
+                                                );
+                                              })()}
+                                              {extensionEligibility.canDo2Year && (() => {
+                                                const limitHit = wouldExceedContractLimit(extensionEligibility.extensionYear, 2);
+                                                return (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="w-full justify-between"
+                                                    onClick={() => {
+                                                      handleApplyExtension(
+                                                        player.playerId,
+                                                        player.name,
+                                                        extensionEligibility.extensionYear,
+                                                        extensionEligibility.currentSalaryTenths,
+                                                        2,
+                                                        true,
+                                                        d.extensionSalary
+                                                      );
+                                                      setOpenExtensionPopover(null);
+                                                    }}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || limitHit}
+                                                    title={limitHit ? "Roster limit for 2-year contracts is full" : undefined}
+                                                  >
+                                                    <span>2-Year (90%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary2YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.9)).toFixed(0)}M/yr</span>
+                                                  </Button>
+                                                );
+                                              })()}
+                                              {extensionEligibility.canDo3Year && (() => {
+                                                const limitHit = wouldExceedContractLimit(extensionEligibility.extensionYear, 3);
+                                                return (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="w-full justify-between"
+                                                    onClick={() => {
+                                                      handleApplyExtension(
+                                                        player.playerId,
+                                                        player.name,
+                                                        extensionEligibility.extensionYear,
+                                                        extensionEligibility.currentSalaryTenths,
+                                                        3,
+                                                        true,
+                                                        d.extensionSalary
+                                                      );
+                                                      setOpenExtensionPopover(null);
+                                                    }}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || limitHit}
+                                                    title={limitHit ? "Roster limit for 3-year contracts is full" : undefined}
+                                                  >
+                                                    <span>3-Year (100%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary3YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.0)).toFixed(0)}M/yr</span>
+                                                  </Button>
+                                                );
+                                              })()}
+                                              {extensionEligibility.canDo4Year && (() => {
+                                                const limitHit = wouldExceedContractLimit(extensionEligibility.extensionYear, 4);
+                                                const exceedsMaxYear = extensionEligibility.wouldExceedMaxYearFor4Year;
+                                                return (
+                                                  <Button
+                                                    size="sm"
+                                                    variant="outline"
+                                                    className="w-full justify-between"
+                                                    onClick={() => {
+                                                      handleApplyExtension(
+                                                        player.playerId,
+                                                        player.name,
+                                                        extensionEligibility.extensionYear,
+                                                        extensionEligibility.currentSalaryTenths,
+                                                        4,
+                                                        true,
+                                                        d.extensionSalary
+                                                      );
+                                                      setOpenExtensionPopover(null);
+                                                    }}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || exceedsMaxYear || limitHit}
+                                                    title={exceedsMaxYear ? `4-year extension would exceed max contract year (${OPTION_YEAR}). Use 3-year or less.` : limitHit ? "Roster limit for 4-year contracts is full" : undefined}
+                                                  >
+                                                    <span>4-Year (110%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary4YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.1)).toFixed(0)}M/yr</span>
+                                                  </Button>
+                                                );
+                                              })()}
                                               {!extensionEligibility.canDo1Year && !extensionEligibility.canDo2Year && !extensionEligibility.canDo3Year && !extensionEligibility.canDo4Year && (
                                                 <div className="text-xs text-muted-foreground italic">
                                                   Extension unavailable (would exceed {CURRENT_YEAR + 4})
@@ -6424,8 +6490,8 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                           <TableRow>
                             <TableHead>Player</TableHead>
                             <TableHead className="text-center">Pos</TableHead>
-                            {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR].map((year, idx) => (
-                              <TableHead key={year} className="text-center">{idx === 4 ? `${year} (Ext)` : year}</TableHead>
+                            {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR].map((year) => (
+                              <TableHead key={year} className="text-center">{year}</TableHead>
                             ))}
                             <TableHead className="text-center">Total</TableHead>
                             <TableHead className="text-center">Remaining</TableHead>
@@ -6576,8 +6642,8 @@ function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
                           <TableRow>
                             <TableHead>Player</TableHead>
                             <TableHead className="text-center">Pos</TableHead>
-                            {[2025, 2026, 2027, 2028, 2029].map((year, idx) => (
-                              <TableHead key={year} className="text-center">{idx === 4 ? `${year} (Ext)` : year}</TableHead>
+                            {[2025, 2026, 2027, 2028, 2029].map((year) => (
+                              <TableHead key={year} className="text-center">{year}</TableHead>
                             ))}
                             <TableHead className="text-center">Total</TableHead>
                             <TableHead className="text-center">Remaining</TableHead>
