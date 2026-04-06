@@ -1790,7 +1790,7 @@ function ManageTeamContractsTab({
   // Contract tier limits (same as bidding): max contracts per years-remaining bucket
   const CONTRACT_LIMITS: Record<number, number> = { 4: 3, 3: 4, 2: 5 };
 
-  // Count existing non-rookie contracts by years-remaining bucket (used to gate extensions)
+  // Count existing non-rookie contracts by contract length bucket (used to gate extensions)
   const existingContractCounts = useMemo(() => {
     const counts: Record<number, number> = { 4: 0, 3: 0, 2: 0, 1: 0 };
     for (const contract of dbContracts) {
@@ -1798,13 +1798,12 @@ function ManageTeamContractsTab({
       if (contract.isRookieContract === 1) continue;
       const salaries = (contract as any).salaries || {};
       const yearsWithSalary = Object.keys(salaries).map(Number).filter(y => (salaries[y] ?? 0) > 0);
-      const lastYear = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : CURRENT_YEAR - 1;
-      const yearsRemaining = lastYear >= CURRENT_YEAR ? lastYear - CURRENT_YEAR + (isOffseason ? 0 : 1) : 0;
-      const bucket = Math.min(Math.max(yearsRemaining, 0), 4) as 1 | 2 | 3 | 4;
+      const contractLength = yearsWithSalary.length;
+      const bucket = Math.min(Math.max(contractLength, 0), 4) as 1 | 2 | 3 | 4;
       if (bucket >= 1 && bucket <= 4) counts[bucket]++;
     }
     return counts;
-  }, [dbContracts, userTeam?.rosterId, CURRENT_YEAR, isOffseason]);
+  }, [dbContracts, userTeam?.rosterId]);
 
   const [hypotheticalData, setHypotheticalData] = useState<HypotheticalContractData>({
     salaryOverrides: {},
@@ -2394,13 +2393,10 @@ function ManageTeamContractsTab({
     requiresPPGPricing: boolean;
   }
 
-  // Returns true if applying this extension type would exceed the contract tier limit
-  const wouldExceedContractLimit = (extensionYear: number, extensionType: number): boolean => {
-    const postExtLastYear = extensionYear + extensionType - 1;
-    const postExtYearsRemaining = postExtLastYear >= CURRENT_YEAR
-      ? postExtLastYear - CURRENT_YEAR + (isOffseason ? 0 : 1)
-      : 0;
-    const bucket = Math.min(Math.max(postExtYearsRemaining, 1), 4);
+  // Returns true if applying this extension type would exceed the contract tier limit.
+  // The bucket is the extension length itself (3-year ext → 3-year limit, etc.).
+  const wouldExceedContractLimit = (_extensionYear: number, extensionType: number): boolean => {
+    const bucket = Math.min(Math.max(extensionType, 1), 4);
     const limit = CONTRACT_LIMITS[bucket];
     if (limit === undefined) return false;
     return (existingContractCounts[bucket] ?? 0) >= limit;

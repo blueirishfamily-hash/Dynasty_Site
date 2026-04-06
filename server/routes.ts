@@ -8040,23 +8040,12 @@ export async function registerRoutes(
       // Only non-rookie contracts count toward limits; rookie contracts are excluded.
       const CONTRACT_LIMITS: Record<number, number> = { 4: 3, 3: 4, 2: 5 };
       {
-        // Compute post-extension last year and years-remaining bucket
-        const postExtLastYear = extensionYear + extensionType - 1;
-        // Offseason: count current year as remaining; in-season: current year is already played
-        const isOffseason = (() => {
-          // We don't have NFL state here yet; approximate using season vs current calendar year
-          // A proper check happens for rookies above; for limits we conservatively use 0 adjustment
-          // (the client enforces the offseason adjustment; server is a safety net)
-          return false;
-        })();
-        const postExtYearsRemaining = postExtLastYear >= season
-          ? postExtLastYear - season + (isOffseason ? 0 : 1)
-          : 0;
-        const bucket = Math.min(Math.max(postExtYearsRemaining, 1), 4);
+        // The bucket is the extension length itself (3-year ext → 3-year limit, etc.)
+        const bucket = Math.min(Math.max(extensionType, 1), 4);
         const limit = CONTRACT_LIMITS[bucket];
 
         if (limit !== undefined) {
-          // Count existing non-rookie contracts for this roster in this bucket
+          // Count existing non-rookie contracts for this roster whose contract length matches the bucket
           const rosterContracts = playerContracts.filter(c => c.rosterId === rosterId && c.isRookieContract !== 1);
           let bucketCount = 0;
           for (const c of rosterContracts) {
@@ -8067,9 +8056,8 @@ export async function registerRoutes(
               } catch { return {}; }
             })();
             const yearsWithSalary = Object.keys(salaries).map(Number).filter(y => (salaries[y] ?? 0) > 0);
-            const lastYear = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : season - 1;
-            const yrsRemaining = lastYear >= season ? lastYear - season + 1 : 0;
-            const cBucket = Math.min(Math.max(yrsRemaining, 0), 4);
+            const contractLength = yearsWithSalary.length;
+            const cBucket = Math.min(Math.max(contractLength, 0), 4);
             if (cBucket === bucket) bucketCount++;
           }
           if (bucketCount >= limit) {
