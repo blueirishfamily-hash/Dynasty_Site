@@ -7,7 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -45,32 +44,25 @@ import {
   Trash2,
   ChevronUp,
   ChevronDown,
-  Award,
-  Activity,
   Star,
   FileUp,
 } from "lucide-react";
-import {
-  RadarChart,
-  Radar,
-  PolarGrid,
-  PolarAngleAxis,
-  PolarRadiusAxis,
-  ResponsiveContainer,
-  Tooltip,
-} from "recharts";
 import type { DraftProspect } from "@shared/schema";
+import { ProspectCard } from "@/components/ProspectCard";
+import {
+  type ProspectEnriched,
+  parseCombineData,
+  parseAdvancedStats,
+  getSpeedScoreTier,
+  STAT_TIER_CLASS,
+  getNflTeamLogoUrl,
+  applyNflTeamLogoFallback,
+} from "@/lib/draftProspectMetrics";
 
 const COMMISSIONER_USER_IDS = ["900186363130503168"];
 
 const DEFAULT_SEASON = "2026";
 const ADP_RANGE_TOLERANCE = 2;
-
-type ProspectEnriched = DraftProspect & {
-  photoUrl?: string | null;
-  sleeperTeam?: string | null;
-  sleeperCollege?: string | null;
-};
 
 const POSITION_COLORS: Record<string, string> = {
   QB: "bg-red-500/90 text-white",
@@ -78,199 +70,6 @@ const POSITION_COLORS: Record<string, string> = {
   WR: "bg-blue-500/90 text-white",
   TE: "bg-orange-500/90 text-white",
 };
-
-function parseCombineData(combineData: string | null): Record<string, string> {
-  if (!combineData) return {};
-  try {
-    return JSON.parse(combineData) as Record<string, string>;
-  } catch {
-    return {};
-  }
-}
-
-function parseCollegeAwards(collegeAwards: string | null): string[] {
-  if (!collegeAwards) return [];
-  try {
-    const arr = JSON.parse(collegeAwards);
-    return Array.isArray(arr) ? arr.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
-type AdvancedStatsPayload = {
-  speedScore: number | null;
-  dominatorByYear: { year: number; dominator: number }[];
-  bestDominator: number | null;
-  breakoutSeason: number | null;
-  yprrByYear: { year: number; yprr: number }[];
-  bestYprr: number | null;
-  dominatorUnavailableReason?: string | null;
-};
-
-function toFiniteNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string") {
-    const parsed = parseFloat(value.replace(/,/g, ""));
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function toRate(value: unknown): number | null {
-  const n = toFiniteNumber(value);
-  if (n == null || n < 0) return null;
-  // Guard against payloads that may send a percentage instead of a fraction.
-  if (n > 1 && n <= 100) return n / 100;
-  return n;
-}
-
-function parseAdvancedStats(advancedStats: string | null): AdvancedStatsPayload | null {
-  if (!advancedStats) return null;
-  try {
-    const parsed = JSON.parse(advancedStats) as unknown;
-    if (!parsed || typeof parsed !== "object") return null;
-    const raw = parsed as Record<string, unknown>;
-
-    const dominatorByYear = Array.isArray(raw.dominatorByYear)
-      ? raw.dominatorByYear
-          .map((item) => {
-            if (!item || typeof item !== "object") return null;
-            const row = item as Record<string, unknown>;
-            const year = toFiniteNumber(row.year);
-            const dominator = toRate(row.dominator);
-            if (year == null || dominator == null) return null;
-            return { year: Math.round(year), dominator };
-          })
-          .filter((x): x is { year: number; dominator: number } => x != null)
-      : [];
-
-    const yprrByYear = Array.isArray(raw.yprrByYear)
-      ? raw.yprrByYear
-          .map((item) => {
-            if (!item || typeof item !== "object") return null;
-            const row = item as Record<string, unknown>;
-            const year = toFiniteNumber(row.year);
-            const yprr = toFiniteNumber(row.yprr);
-            if (year == null || yprr == null) return null;
-            return { year: Math.round(year), yprr };
-          })
-          .filter((x): x is { year: number; yprr: number } => x != null)
-      : [];
-
-    const speedScore = toFiniteNumber(raw.speedScore);
-    const bestDominator = toRate(raw.bestDominator);
-    const breakoutSeasonRaw = toFiniteNumber(raw.breakoutSeason);
-    const breakoutSeason = breakoutSeasonRaw != null ? Math.round(breakoutSeasonRaw) : null;
-    const bestYprr = toFiniteNumber(raw.bestYprr);
-    const dominatorUnavailableReason =
-      typeof raw.dominatorUnavailableReason === "string" && raw.dominatorUnavailableReason.trim()
-        ? raw.dominatorUnavailableReason.trim()
-        : null;
-
-    return {
-      speedScore,
-      dominatorByYear,
-      bestDominator,
-      breakoutSeason,
-      yprrByYear,
-      bestYprr,
-      dominatorUnavailableReason,
-    };
-  } catch {
-    return null;
-  }
-}
-
-type StatTier = "elite" | "mediocre" | "below";
-
-function getSpeedScoreTier(score: number): StatTier {
-  if (score >= 110) return "elite";
-  if (score >= 100) return "mediocre";
-  return "below";
-}
-
-function getDominatorTier(rate: number): StatTier {
-  if (rate >= 0.3) return "elite";
-  if (rate >= 0.2) return "mediocre";
-  return "below";
-}
-
-function getYprrTier(yprr: number): StatTier {
-  if (yprr >= 2) return "elite";
-  if (yprr >= 1.2) return "mediocre";
-  return "below";
-}
-
-const STAT_TIER_CLASS: Record<StatTier, string> = {
-  elite: "font-mono font-medium text-emerald-600 dark:text-emerald-400",
-  mediocre: "font-mono font-medium text-amber-600 dark:text-amber-400",
-  below: "font-mono font-medium text-red-600 dark:text-red-400",
-};
-
-// Combine metrics for radar: key in combineData -> { label, lowerIsBetter }
-const COMBINE_RADAR_METRICS: Record<
-  string,
-  { label: string; lowerIsBetter: boolean }
-> = {
-  "40Yd": { label: "40 yd", lowerIsBetter: true },
-  "10YdSplit": { label: "10 yd", lowerIsBetter: true },
-  vertical: { label: "Vertical", lowerIsBetter: false },
-  broad: { label: "Broad", lowerIsBetter: false },
-  bench: { label: "Bench", lowerIsBetter: false },
-  "3cone": { label: "3-cone", lowerIsBetter: true },
-  shuttle: { label: "Shuttle", lowerIsBetter: true },
-};
-
-function parseCombineNumber(v: string): number | null {
-  if (v == null || v === "") return null;
-  const n = parseFloat(String(v).replace(/[^\d.-]/g, ""));
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Build radar data: rank vs other prospects in same position (100 = best, further out = better). */
-function buildCombineRadarData(
-  prospect: ProspectEnriched,
-  allProspects: ProspectEnriched[]
-): { subject: string; value: number; fullMark: 100 }[] {
-  const rows: { subject: string; value: number; fullMark: 100 }[] = [];
-  const myCombine = parseCombineData(prospect.combineData);
-  const position = (prospect.position ?? "").trim().toUpperCase().replace(/[0-9]/g, "") || null;
-  const samePositionProspects =
-    position != null
-      ? allProspects.filter((p) => {
-          const pPos = (p.position ?? "").trim().toUpperCase().replace(/[0-9]/g, "") || null;
-          return pPos === position;
-        })
-      : [];
-
-  for (const [key, { label, lowerIsBetter }] of Object.entries(COMBINE_RADAR_METRICS)) {
-    const myVal = parseCombineNumber(myCombine[key] ?? "");
-    if (myVal === null) continue;
-
-    const valuesWithId = samePositionProspects
-      .map((p) => {
-        const val = parseCombineNumber(
-          (parseCombineData(p.combineData)[key] ?? "") as string
-        );
-        return val !== null ? { id: p.id, val } : null;
-      })
-      .filter((x): x is { id: string; val: number } => x != null);
-
-    if (valuesWithId.length < 2) continue;
-
-    if (lowerIsBetter) valuesWithId.sort((a, b) => a.val - b.val);
-    else valuesWithId.sort((a, b) => b.val - a.val);
-
-    const rank = valuesWithId.findIndex((x) => x.id === prospect.id) + 1;
-    if (rank < 1) continue;
-    const n = valuesWithId.length;
-    const score = n <= 1 ? 100 : ((n - rank + 1) / n) * 100;
-    rows.push({ subject: label, value: Math.round(score), fullMark: 100 });
-  }
-
-  return rows;
-}
 
 export default function DraftProspects() {
   const { user, league } = useSleeper();
@@ -530,6 +329,34 @@ export default function DraftProspects() {
     },
   });
 
+  const matchSleeperMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(
+        `/api/league/${league!.leagueId}/draft-prospects/match-sleeper`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ userId: user?.userId, season }),
+        }
+      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Sleeper match failed");
+      }
+      return res.json() as Promise<{ matched: number; skipped: number; total: number }>;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey });
+      toast({
+        title: "Sleeper IDs matched",
+        description: `${data.matched ?? 0} linked, ${data.skipped ?? 0} skipped (${data.total ?? 0} total).`,
+      });
+    },
+    onError: (e: Error) => {
+      toast({ variant: "destructive", title: "Sleeper match failed", description: e.message });
+    },
+  });
+
   const bulkAddMutation = useMutation({
     mutationFn: async (items: Array<{ displayName: string; position?: string; school?: string; age?: number; adp?: number }>) => {
       const res = await fetch(
@@ -689,7 +516,6 @@ export default function DraftProspects() {
     if (editForm.adp !== undefined) data.adp = editForm.adp;
     if (editForm.overview !== undefined) data.overview = editForm.overview;
     if (editForm.sleeperPlayerId !== undefined) data.sleeperPlayerId = editForm.sleeperPlayerId;
-    if (editForm.nflTeam !== undefined) data.nflTeam = editForm.nflTeam;
     if (Object.keys(data).length === 0) {
       setEditProspect(null);
       return;
@@ -746,6 +572,17 @@ export default function DraftProspects() {
                 >
                   <Plus className="w-4 h-4 mr-1" />
                   Bulk add
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => matchSleeperMutation.mutate()}
+                  disabled={matchSleeperMutation.isPending || prospects.length === 0}
+                >
+                  <RefreshCw
+                    className={`w-4 h-4 mr-1 ${matchSleeperMutation.isPending ? "animate-spin" : ""}`}
+                  />
+                  Match Sleeper IDs
                 </Button>
                 <Button
                   variant="outline"
@@ -898,7 +735,7 @@ export default function DraftProspects() {
                       {prospects.map((p, idx) => {
                         const combine = parseCombineData(p.combineData);
                         const forty = combine["40Yd"] ?? "";
-                        const nflTeam = p.sleeperTeam ?? p.nflTeam ?? "";
+                        const nflTeam = p.sleeperTeam ?? "";
                         const adv = parseAdvancedStats(p.advancedStats ?? null);
                         const prospectPos = (p.position ?? "")
                           .trim()
@@ -950,7 +787,21 @@ export default function DraftProspects() {
                             <TableCell>{p.adp != null ? Number(p.adp).toFixed(1) : "—"}</TableCell>
                             <TableCell>{p.age ?? "—"}</TableCell>
                             <TableCell>{p.school ?? p.sleeperCollege ?? "—"}</TableCell>
-                            <TableCell>{nflTeam || "—"}</TableCell>
+                            <TableCell>
+                              {nflTeam ? (
+                                <span className="flex items-center gap-1.5">
+                                  <img
+                                    src={getNflTeamLogoUrl(nflTeam)}
+                                    alt=""
+                                    className="h-5 w-5 shrink-0 object-contain"
+                                    onError={(ev) => applyNflTeamLogoFallback(ev.currentTarget, nflTeam)}
+                                  />
+                                  <span className="text-sm tabular-nums">{nflTeam}</span>
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </TableCell>
                             <TableCell className="font-mono text-muted-foreground">
                               {forty || "—"}
                             </TableCell>
@@ -981,7 +832,6 @@ export default function DraftProspects() {
                                         adp: p.adp ?? undefined,
                                         overview: p.overview ?? undefined,
                                         sleeperPlayerId: p.sleeperPlayerId ?? undefined,
-                                        nflTeam: p.nflTeam ?? undefined,
                                       });
                                     }}
                                   >
@@ -1031,276 +881,25 @@ export default function DraftProspects() {
 
       {/* Detail dialog */}
       <Dialog open={!!detailProspect} onOpenChange={(open) => !open && setDetailProspect(null)}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          {detailProspect && (
+        <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+          {detailProspect ? (
             <>
-              <DialogHeader>
-                <div className="flex items-center gap-4">
-                  <Avatar className="h-16 w-16">
-                    {detailProspect.photoUrl ? (
-                      <AvatarImage src={detailProspect.photoUrl} alt={detailProspect.displayName} />
-                    ) : null}
-                    <AvatarFallback className="text-lg">
-                      {detailProspect.displayName.slice(0, 2).toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <DialogTitle>{detailProspect.displayName}</DialogTitle>
-                    <DialogDescription>
-                      {detailProspect.position && (
-                        <Badge
-                          className={
-                            POSITION_COLORS[detailProspect.position] ||
-                            "bg-muted text-muted-foreground"
-                          }
-                        >
-                          {detailProspect.position}
-                        </Badge>
-                      )}{" "}
-                      ADP {detailProspect.adp != null ? Number(detailProspect.adp).toFixed(1) : "—"}
-                      {" · "}
-                      Age {detailProspect.age ?? "—"}
-                      {" · "}
-                      {detailProspect.school ?? detailProspect.sleeperCollege ?? "—"}
-                      {" · "}
-                      {detailProspect.sleeperTeam ?? detailProspect.nflTeam ?? "—"}
-                    </DialogDescription>
-                  </div>
-                </div>
-              </DialogHeader>
-              <div className="space-y-4">
-                {detailProspect.overview && (
-                  <div>
-                    <h4 className="text-sm font-medium mb-1">Overview</h4>
-                    <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                      {detailProspect.overview}
-                    </p>
-                  </div>
-                )}
-                {parseCollegeAwards(detailProspect.collegeAwards).length > 0 && (
-                  <div>
-                    <h4 className="text-sm font-medium mb-1 flex items-center gap-1">
-                      <Award className="w-4 h-4" />
-                      College awards
-                    </h4>
-                    <ul className="text-sm text-muted-foreground list-disc list-inside space-y-0.5">
-                      {parseCollegeAwards(detailProspect.collegeAwards).map((a, i) => (
-                        <li key={i}>{a}</li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Activity className="w-4 h-4" />
-                      Combine results
-                    </CardTitle>
-                    <CardDescription>
-                      Rank vs same position — further out is better.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {Object.keys(parseCombineData(detailProspect.combineData)).length > 0 ? (
-                      <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                        {Object.entries(parseCombineData(detailProspect.combineData)).map(
-                          ([k, v]) =>
-                            v && (
-                              <div key={k} className="flex justify-between gap-4 border-b border-border/50 pb-1 last:border-0">
-                                <span className="text-muted-foreground capitalize">
-                                  {k.replace(/([A-Z0-9]+)/g, " $1").trim()}
-                                </span>
-                                <span className="font-medium tabular-nums">{v}</span>
-                              </div>
-                            )
-                        )}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">No combine data available.</p>
-                    )}
-                    {(() => {
-                      const radarData = buildCombineRadarData(detailProspect, prospects);
-                      if (radarData.length < 2) return null;
-                      return (
-                        <div className="mt-4 h-[240px] w-full">
-                          <ResponsiveContainer width="100%" height="100%">
-                            <RadarChart data={radarData} margin={{ top: 8, right: 8, bottom: 8, left: 8 }}>
-                              <PolarGrid stroke="hsl(var(--border))" />
-                              <PolarAngleAxis
-                                dataKey="subject"
-                                tick={{ fill: "hsl(var(--muted-foreground))", fontSize: 11 }}
-                              />
-                              <PolarRadiusAxis
-                                angle={90}
-                                domain={[0, 100]}
-                                tick={false}
-                              />
-                              <Radar
-                                name="Rank"
-                                dataKey="value"
-                                stroke="hsl(var(--primary))"
-                                fill="hsl(var(--primary))"
-                                fillOpacity={0.4}
-                                strokeWidth={1.5}
-                              />
-                              <Tooltip
-                                content={({ active, payload }) =>
-                                  active && payload?.[0] ? (
-                                    <div className="rounded-md border bg-card px-3 py-2 text-sm shadow">
-                                      {payload[0].payload.subject}: {payload[0].value}% (vs same position)
-                                    </div>
-                                  ) : null
-                                }
-                              />
-                            </RadarChart>
-                          </ResponsiveContainer>
-                        </div>
-                      );
-                    })()}
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">RAS (Raw Athletic Score)</CardTitle>
-                    <CardDescription>
-                      Score and link from ras.football when available.
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {detailProspect.ras != null ? (
-                      <div className="space-y-2 text-sm">
-                        <p className="font-medium tabular-nums">
-                          {Number(detailProspect.ras).toFixed(2)}
-                        </p>
-                        {detailProspect.rasLink ? (
-                          <a
-                            href={detailProspect.rasLink}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-primary hover:underline"
-                          >
-                            View on ras.football
-                          </a>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <p className="text-sm text-muted-foreground">No RAS data available.</p>
-                    )}
-                  </CardContent>
-                </Card>
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-base">Advanced stats</CardTitle>
-                    <CardDescription>
-                      <div className="space-y-1.5 text-xs mt-1">
-                        <p className="font-medium text-foreground/90">Definitions:</p>
-                        <ul className="list-inside list-disc space-y-0.5 text-muted-foreground">
-                          <li><strong className="text-foreground/80">Speed score</strong> — Combines 40-yard dash and weight; 100 = NFL average, 110+ = elite. From combine data.</li>
-                          <li><strong className="text-foreground/80">College dominator</strong> — Share of team&#39;s yards and TDs (receiving for WR/TE; rushing + receiving for RB). Higher = more market share in college.</li>
-                          <li><strong className="text-foreground/80">Breakout season</strong> — First college season in which the player&#39;s dominator rating met the breakout threshold (indicator of early production).</li>
-                          <li><strong className="text-foreground/80">YPRR</strong> — Yards per team pass attempt (receiving yards ÷ team pass attempts). Proxy for efficiency in the passing game; WR/TE only.</li>
-                        </ul>
-                      </div>
-                    </CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {(() => {
-                      const adv = parseAdvancedStats(detailProspect.advancedStats ?? null);
-                      if (!adv) {
-                        return <p className="text-sm text-muted-foreground">No advanced stats. Commissioner can run &quot;Refresh advanced stats&quot; (requires COLLEGE_FOOTBALL_DATA_API_KEY).</p>;
-                      }
-                      const hasAny =
-                        adv.speedScore != null ||
-                        adv.bestDominator != null ||
-                        adv.dominatorByYear.length > 0 ||
-                        adv.breakoutSeason != null ||
-                        adv.bestYprr != null ||
-                        adv.yprrByYear.length > 0;
-                      return (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                          {adv.speedScore != null && (
-                            <div className="rounded-md bg-muted/30 px-3 py-2">
-                              <p className="text-muted-foreground text-xs uppercase tracking-wide">Speed score</p>
-                              <p className="mt-0.5">
-                                <span className={STAT_TIER_CLASS[getSpeedScoreTier(adv.speedScore)]}>{adv.speedScore}</span>
-                              </p>
-                              <p className="text-xs text-muted-foreground mt-0.5">100 = NFL avg, 110+ = elite</p>
-                            </div>
-                          )}
-                          {(adv.bestDominator != null || adv.dominatorByYear.length > 0) && (
-                            <div className="rounded-md bg-muted/30 px-3 py-2">
-                              <p className="text-muted-foreground text-xs uppercase tracking-wide">College dominator</p>
-                              {adv.bestDominator != null && (
-                                <p className="mt-0.5">
-                                  <span className={STAT_TIER_CLASS[getDominatorTier(adv.bestDominator)]}>
-                                    {(adv.bestDominator * 100).toFixed(1)}%
-                                  </span>
-                                  {adv.dominatorByYear.length > 0 && " (best)"}
-                                </p>
-                              )}
-                              {adv.dominatorByYear.length > 0 && (
-                                <ul className="mt-1 list-inside list-disc text-muted-foreground text-xs">
-                                  {adv.dominatorByYear.map(({ year, dominator }) => (
-                                    <li key={year}>
-                                      {year}: <span className={STAT_TIER_CLASS[getDominatorTier(dominator)]}>{(dominator * 100).toFixed(1)}%</span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                              <p className="text-xs text-muted-foreground mt-0.5">Share of team yards + TDs</p>
-                            </div>
-                          )}
-                          {adv.bestDominator == null && adv.dominatorByYear.length === 0 && adv.dominatorUnavailableReason && (
-                            <div className="sm:col-span-2 rounded-md bg-muted/30 px-3 py-2">
-                              <p className="text-muted-foreground text-xs">{adv.dominatorUnavailableReason}</p>
-                            </div>
-                          )}
-                          {adv.breakoutSeason != null && (
-                            <div className="rounded-md bg-muted/30 px-3 py-2">
-                              <p className="text-muted-foreground text-xs uppercase tracking-wide">Breakout season</p>
-                              <p className="mt-0.5 font-mono font-medium text-emerald-600 dark:text-emerald-400">{adv.breakoutSeason}</p>
-                              <p className="text-xs text-muted-foreground mt-0.5">First season above dominator threshold. Breakout age: N/A (DOB not in API)</p>
-                            </div>
-                          )}
-                          {(adv.bestYprr != null || adv.yprrByYear.length > 0) && (
-                            <div className="rounded-md bg-muted/30 px-3 py-2">
-                              <p className="text-muted-foreground text-xs uppercase tracking-wide">YPRR (team pass att proxy)</p>
-                              {adv.bestYprr != null && (
-                                <p className="mt-0.5">
-                                  <span className={STAT_TIER_CLASS[getYprrTier(adv.bestYprr)]}>{adv.bestYprr}</span>
-                                  {adv.yprrByYear.length > 0 && " (best)"}
-                                </p>
-                              )}
-                              {adv.yprrByYear.length > 0 && (
-                                <ul className="mt-1 list-inside list-disc text-muted-foreground text-xs">
-                                  {adv.yprrByYear.map(({ year, yprr }) => (
-                                    <li key={year}>
-                                      {year}: <span className={STAT_TIER_CLASS[getYprrTier(yprr)]}>{yprr}</span>
-                                    </li>
-                                  ))}
-                                </ul>
-                              )}
-                              <p className="text-xs text-muted-foreground mt-0.5">Receiving yards ÷ team pass attempts (WR/TE)</p>
-                            </div>
-                          )}
-                          {!hasAny && (
-                            <div className="sm:col-span-2">
-                              <p className="text-muted-foreground">No data for this prospect.</p>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </CardContent>
-                </Card>
+              <DialogTitle className="sr-only">
+                {detailProspect.displayName} — draft prospect
+              </DialogTitle>
+              <DialogDescription className="sr-only">
+                Combine, RAS, advanced stats, and scouting notes for {detailProspect.displayName}.
+              </DialogDescription>
+              <div className="min-h-0 flex-1 overflow-y-auto">
+                <ProspectCard prospect={detailProspect} allProspects={prospects} />
               </div>
-              {isCommissioner && (
-                <DialogFooter>
+              {isCommissioner ? (
+                <DialogFooter className="border-t border-border/60 bg-muted/25 px-6 py-4 sm:justify-end">
                   <Button
                     variant="outline"
                     onClick={() => {
-                      setDetailProspect(null);
                       const d = detailProspect;
+                      setDetailProspect(null);
                       setEditProspect(d);
                       setEditForm({
                         displayName: d.displayName,
@@ -1310,7 +909,6 @@ export default function DraftProspects() {
                         adp: d.adp ?? undefined,
                         overview: d.overview ?? undefined,
                         sleeperPlayerId: d.sleeperPlayerId ?? undefined,
-                        nflTeam: d.nflTeam ?? undefined,
                       });
                     }}
                   >
@@ -1320,9 +918,9 @@ export default function DraftProspects() {
                     Delete
                   </Button>
                 </DialogFooter>
-              )}
+              ) : null}
             </>
-          )}
+          ) : null}
         </DialogContent>
       </Dialog>
 
@@ -1386,15 +984,6 @@ export default function DraftProspects() {
                     onChange={(e) =>
                       setEditForm((f) => ({ ...f, adp: e.target.value ? parseFloat(e.target.value) : undefined }))
                     }
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="edit-nfl">NFL Team</Label>
-                  <Input
-                    id="edit-nfl"
-                    className="col-span-3"
-                    value={editForm.nflTeam ?? ""}
-                    onChange={(e) => setEditForm((f) => ({ ...f, nflTeam: e.target.value }))}
                   />
                 </div>
                 <div className="grid grid-cols-4 items-center gap-4">

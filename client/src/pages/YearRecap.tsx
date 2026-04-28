@@ -832,7 +832,7 @@ function BouncebackGrid({ data }: { data: YearRecapData["bouncebacks"] }) {
                   <span className="font-semibold" style={{ color }}>{b.bouncebacks}</span> bouncebacks
                 </p>
                 <p className="text-xs text-muted-foreground">{b.losses} total losses</p>
-              </div>
+                    </div>
             </div>
           );
         })}

@@ -6427,7 +6427,22 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Player not found" });
       }
       
-      const season = league?.season || nflState.season || new Date().getFullYear().toString();
+      // Determine the correct season for stats, handling offseason correctly.
+      // Sleeper may report a stale league.season (e.g. "2024" when 2025 just ended if the
+      // commissioner hasn't advanced the league yet). Use the highest of league and NFL state
+      // seasons and subtract 1 during the offseason to get the last completed season.
+      const rawSeason = parseInt(league?.season || nflState.season || String(new Date().getFullYear()));
+      const nflStateSeason = parseInt(nflState.season || String(new Date().getFullYear()));
+      const seasonType = nflState.season_type;
+      const currentMonth = new Date().getMonth() + 1; // 1 = Jan
+      const isDetailOffseason =
+        seasonType === "off" ||
+        seasonType === "post" ||
+        (nflState.week <= 5 && currentMonth >= 1 && currentMonth <= 8);
+      // In the offseason use the last completed season; in-season use the current season.
+      const season = isDetailOffseason
+        ? String(Math.max(rawSeason, nflStateSeason) - 1)
+        : String(Math.max(rawSeason, nflStateSeason));
       const currentWeek = getEffectiveWeek(nflState, league);
       
       // Fetch weekly stats and projections for all weeks played so far
@@ -10637,6 +10652,131 @@ export async function registerRoutes(
     } catch (error: any) {
       console.error("Error refreshing draft prospects:", error);
       res.status(500).json({ error: error?.message || "Failed to refresh combine & awards data" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/draft-prospects/match-sleeper", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, season = "2026" } = req.body;
+      if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
+      if (!(await isCommissioner(userId, leagueId))) {
+        return res.status(403).json({ error: "Only the commissioner can match Sleeper player IDs" });
+      }
+      const prospects = await storage.getDraftProspects(leagueId, season);
+      if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
+
+      const normalizeName = (s: string) =>
+        String(s || "").trim().toLowerCase().replace(/\s+/g, " ").replace(/\b(jr\.?|sr\.?|iii?|iv)\b/gi, "").trim();
+      const normalizePos = (pos: string | null | undefined) => {
+        if (!pos || typeof pos !== "string") return null;
+        const t = pos.trim().toUpperCase().replace(/[0-9]/g, "");
+        return t || null;
+      };
+      const nameAliases: Record<string, string> = {
+        "k.c. concepcion": "kc concepcion",
+        "mike washington jr.": "mike washington",
+        "mike washington jr": "mike washington",
+      };
+
+      const sleeperDisplayNorm = (sp: SleeperPlayer): string => {
+        const full = (sp.full_name ?? "").trim();
+        const composed = `${(sp.first_name ?? "").trim()} ${(sp.last_name ?? "").trim()}`.trim();
+        return normalizeName(full || composed);
+      };
+
+      const lastNameFirstInitial = (normalizedFull: string): { last: string; initial: string } | null => {
+        const parts = normalizedFull.split(/\s+/).filter(Boolean);
+        if (parts.length < 2) return null;
+        const last = parts[parts.length - 1]!;
+        const initial = parts[0]!.charAt(0);
+        if (!last || !initial) return null;
+        return { last, initial };
+      };
+
+      let playersMap: Record<string, SleeperPlayer> = {};
+      try {
+        playersMap = await getAllPlayers();
+      } catch (e: any) {
+        console.error("getAllPlayers for match-sleeper:", e);
+        return res.status(502).json({ error: e?.message || "Failed to load Sleeper players" });
+      }
+
+      const byPos = new Map<string, SleeperPlayer[]>();
+      for (const sp of Object.values(playersMap)) {
+        if (!sp?.player_id) continue;
+        const pos = normalizePos(sp.position);
+        if (!pos) continue;
+        const disp = sleeperDisplayNorm(sp);
+        if (!disp) continue;
+        const list = byPos.get(pos) ?? [];
+        list.push(sp);
+        byPos.set(pos, list);
+      }
+
+      let matched = 0;
+      let skipped = 0;
+      for (const p of prospects) {
+        const existingId = p.sleeperPlayerId != null ? String(p.sleeperPlayerId).trim() : "";
+        if (existingId) {
+          skipped++;
+          continue;
+        }
+        const pos = normalizePos(p.position);
+        if (!pos) {
+          skipped++;
+          continue;
+        }
+        const candidates = byPos.get(pos) ?? [];
+        if (candidates.length === 0) {
+          skipped++;
+          continue;
+        }
+
+        let normProspect = normalizeName(p.displayName);
+        const alias = nameAliases[normProspect];
+        if (alias) normProspect = alias;
+
+        const exactMatches = candidates.filter((sp) => sleeperDisplayNorm(sp) === normProspect);
+        let chosen: SleeperPlayer | null = null;
+        if (exactMatches.length === 1) {
+          chosen = exactMatches[0]!;
+        } else if (exactMatches.length > 1) {
+          skipped++;
+          continue;
+        } else {
+          const pi = lastNameFirstInitial(normProspect);
+          if (!pi) {
+            skipped++;
+            continue;
+          }
+          const liMatches = candidates.filter((sp) => {
+            const sn = sleeperDisplayNorm(sp);
+            const si = lastNameFirstInitial(sn);
+            return si && si.last === pi.last && si.initial === pi.initial;
+          });
+          if (liMatches.length === 1) {
+            chosen = liMatches[0]!;
+          } else {
+            skipped++;
+            continue;
+          }
+        }
+
+        const updated = await storage.updateDraftProspect(p.id, leagueId, { sleeperPlayerId: chosen.player_id });
+        if (updated) matched++;
+        else skipped++;
+      }
+
+      res.json({
+        success: true,
+        matched,
+        skipped,
+        total: prospects.length,
+      });
+    } catch (error: any) {
+      console.error("Error matching Sleeper IDs:", error);
+      res.status(500).json({ error: error?.message || "Failed to match Sleeper player IDs" });
     }
   });
 

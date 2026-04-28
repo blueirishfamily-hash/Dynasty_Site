@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import PlayerTable from "@/components/PlayerTable";
 import PositionDepthChart from "@/components/PositionDepthChart";
-import PlayerModal from "@/components/PlayerModal";
+import { PlayerDetailModal } from "@/components/PlayerDetailModal";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -66,7 +66,6 @@ interface DepthApiResponse extends Record<string, DepthData> {
   positionRanks?: Record<string, { rank: number; totalTeams: number; totalPpg: number }>;
 }
 
-type ModalPosition = "QB" | "RB" | "WR" | "TE";
 
 interface RivalryMatchup {
   season: string;
@@ -95,30 +94,6 @@ interface RivalryResponse {
   totalSeasons: number;
 }
 
-const getPlayerDetails = (player: Player) => ({
-  id: player.id,
-  name: player.name,
-  position: player.position as ModalPosition,
-  team: player.team || "FA",
-  age: player.age || 0,
-  seasonPoints: player.seasonPoints,
-  weeklyAvg: player.weeklyAvg,
-  positionRank: player.positionRank,
-  weeklyStats: Array.from({ length: 11 }, (_, i) => ({
-    week: i + 1,
-    points: player.weeklyAvg + (Math.random() - 0.5) * 15,
-  })),
-  news: [
-    `${player.name} had a strong performance in the recent game`,
-    `${player.team || "The"} offense continues to feature ${player.name} heavily`,
-  ],
-  schedule: [
-    { week: 12, opponent: "KC", isHome: true },
-    { week: 13, opponent: "SF", isHome: false },
-    { week: 14, opponent: "LAR", isHome: true },
-    { week: 15, opponent: "DET", isHome: false },
-  ],
-});
 
 function RivalryRow({ 
   rivalry, 
@@ -266,9 +241,9 @@ function RivalryRow({
 }
 
 export default function Team() {
-  const { user, league } = useSleeper();
-  const [selectedPlayer, setSelectedPlayer] = useState<ReturnType<typeof getPlayerDetails> | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  const { user, league, currentWeek, isOffseason, season } = useSleeper();
+  const [selectedPlayerId, setSelectedPlayerId] = useState<string | null>(null);
+  const [selectedPlayerName, setSelectedPlayerName] = useState<string>("");
   const [expandedRivalry, setExpandedRivalry] = useState<string | null>(null);
 
   const { data: roster, isLoading: rosterLoading } = useQuery<Player[]>({
@@ -308,8 +283,8 @@ export default function Team() {
   });
 
   const handlePlayerClick = (player: Player) => {
-    setSelectedPlayer(getPlayerDetails(player));
-    setModalOpen(true);
+    setSelectedPlayerId(player.id);
+    setSelectedPlayerName(player.name);
   };
 
   const toggleRivalry = (ownerId: string) => {
@@ -580,7 +555,15 @@ export default function Team() {
         </TabsContent>
       </Tabs>
 
-      <PlayerModal player={selectedPlayer} open={modalOpen} onOpenChange={setModalOpen} />
+      <PlayerDetailModal
+        playerId={selectedPlayerId}
+        playerName={selectedPlayerName}
+        week={currentWeek}
+        leagueId={league?.leagueId}
+        isOffseason={isOffseason}
+        season={season}
+        onClose={() => setSelectedPlayerId(null)}
+      />
     </div>
   );
 }
