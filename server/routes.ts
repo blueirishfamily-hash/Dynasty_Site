@@ -7662,7 +7662,7 @@ export async function registerRoutes(
         .sort((a, b) => a.year - b.year);
       const lastPaidYear = salaryEntries.length > 0 ? salaryEntries[salaryEntries.length - 1].year : 0;
       if (lastPaidYear !== currentSeasonNum) {
-        return res.status(400).json({ error: "Player is not in the final year of their contract" });
+        return res.status(400).json({ error: "Player is not in the final year of their rookie contract" });
       }
 
       // ── Compute adjusted PPG for the rookie using shared helpers ──
@@ -8083,13 +8083,25 @@ export async function registerRoutes(
         }
       }
 
-      // Rookie contracts: must be offseason and use PPG-based pricing
+      // Rookie contracts: must be in final year; use PPG-based pricing
       if (isRookieContract) {
-        // Validate offseason: rookie extensions only allowed after season ends
-        const nflState = await getNFLState();
-        const seasonType = nflState.season_type || (nflState as any).seasonType;
-        if (seasonType !== "off" && seasonType !== "post") {
-          return res.status(400).json({ error: "Rookie extensions are only available after the season has ended (offseason)" });
+        const contractSalaries: Record<string, number> = (() => {
+          try {
+            if (typeof (playerContract as any).salaries === "string") {
+              return JSON.parse((playerContract as any).salaries || "{}");
+            }
+            return (playerContract as any).salaries || {};
+          } catch {
+            return {};
+          }
+        })();
+        const salaryEntries = Object.entries(contractSalaries)
+          .map(([year, value]) => ({ year: Number(year), value: Number(value) }))
+          .filter(e => !isNaN(e.year) && e.value > 0)
+          .sort((a, b) => a.year - b.year);
+        const lastPaidYear = salaryEntries.length > 0 ? salaryEntries[salaryEntries.length - 1].year : 0;
+        if (lastPaidYear !== season) {
+          return res.status(400).json({ error: "Player is not in the final year of their rookie contract" });
         }
         // Validate extension type: rookies can only do 3-year or 4-year
         if (extensionType !== 3 && extensionType !== 4) {

@@ -2457,13 +2457,10 @@ function ManageTeamContractsTab({
     const isInLastYear = lastYearWithSalary === CURRENT_YEAR;
     const isInSecondToLastYear = secondToLastYearWithSalary === CURRENT_YEAR;
 
-    // Rookie contracts: must be in the FINAL year only, and the season must be over (offseason)
+    // Rookie contracts: must be in the FINAL year only
     if (isRookieContract) {
       if (!isInLastYear) {
         return { ...defaultResult, isRookieContract: true, requiresPPGPricing: true, reason: "Player is not in the final year of their rookie contract" };
-      }
-      if (!isOffseason) {
-        return { ...defaultResult, isRookieContract: true, requiresPPGPricing: true, reason: "Rookie extensions are only available after the season has ended (offseason)" };
       }
     } else {
       // Non-rookie: must be in last year OR second-to-last year of contract
@@ -2499,7 +2496,7 @@ function ManageTeamContractsTab({
     return {
       eligible: isRookieContract ? (canDo3Year || canDo4Year) : (canDo1Year || canDo2Year || canDo3Year || canDo4Year),
       reason: isRookieContract
-        ? "Eligible for PPG-based extension (rookie contract — offseason)"
+        ? "Eligible for PPG-based extension (rookie contract — final year)"
         : (canDo1Year || canDo2Year || canDo3Year || canDo4Year) 
           ? "Eligible for PPG-based extension" 
           : `Cannot extend - would exceed ${maxYear}`,
@@ -4425,7 +4422,7 @@ function ManageTeamContractsTab({
                                   </div>
                                   <div className="text-xs text-muted-foreground border-t pt-2">
                                     {isRookiePlayer
-                                      ? `Rookie extensions: ${rookieExtCount}/3 used this season. PPG-based pricing (offseason only).`
+                                      ? `Rookie extensions: ${rookieExtCount}/3 used this season. PPG-based pricing (final year of rookie contract).`
                                       : `Non-rookie extensions: ${nonRookieExtCount}/2 used this season. PPG-based pricing (80-110%).`
                                     }
                                   </div>
@@ -4483,7 +4480,7 @@ function ManageTeamContractsTab({
             </p>
             <p className="flex items-center gap-2">
               <ArrowRightLeft className="w-4 h-4" />
-              <span>Extensions use PPG-based pricing. Non-rookies: 1-year (80%), 2-year (90%), 3-year (100%), 4-year (110%) of adjusted PPG salary. Rookies: 3 or 4-year at full PPG salary (offseason only). Each team gets up to 2 non-rookie and 3 rookie extensions per season.</span>
+              <span>Extensions use PPG-based pricing. Non-rookies: 1-year (80%), 2-year (90%), 3-year (100%), 4-year (110%) of adjusted PPG salary. Rookies: 3 or 4-year at full PPG salary (final year of rookie contract). Each team gets up to 2 non-rookie and 3 rookie extensions per season.</span>
             </p>
           </div>
         </CardContent>
