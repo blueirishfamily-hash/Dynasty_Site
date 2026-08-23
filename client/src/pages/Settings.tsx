@@ -36,6 +36,7 @@ export default function Settings() {
     if (user && league && !isCommissioner) setLocation("/");
   }, [user, league, isCommissioner, setLocation]);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isAdvancing, setIsAdvancing] = useState(false);
   const [advanceLeagueId, setAdvanceLeagueId] = useState("");
   const [manualLeagueId, setManualLeagueId] = useState("");
   const [unmatchedRosters, setUnmatchedRosters] = useState<Array<{ oldRosterId: number; ownerId: string | null }>>([]);
@@ -203,48 +204,66 @@ export default function Settings() {
   if (user && league && !isCommissioner) return null;
 
   const handleAdvanceLeagueYear = async () => {
-    if (!advanceLeagueId.trim() || !user?.userId) return;
-
-    const manualMappingArray = Object.entries(manualMappings)
-      .filter(([, newRosterId]) => !!newRosterId)
-      .map(([oldRosterId, newRosterId]) => ({
-        oldRosterId: parseInt(oldRosterId, 10),
-        newRosterId,
-      }));
-
-    const res = await fetch("/api/league/advance-year", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        newLeagueId: advanceLeagueId.trim(),
-        userId: user.userId,
-        manualMappings: manualMappingArray,
-      }),
-    });
-
-    if (!res.ok) {
-      const error = await res.json().catch(() => ({}));
-      if (error?.unmatched) {
-        setUnmatchedRosters(error.unmatched);
-        toast({
-          title: "Roster mapping required",
-          description: "Please map all unmatched rosters before continuing.",
-        });
-        return;
-      }
+    if (!advanceLeagueId.trim() || !user?.userId) {
       toast({
-        title: "Advance failed",
-        description: error?.error || "Failed to advance league year.",
+        title: "Missing information",
+        description: !advanceLeagueId.trim() ? "Please enter the new league ID." : "You must be logged in.",
         variant: "destructive",
       });
       return;
     }
 
-    toast({
-      title: "League advanced",
-      description: "League year advanced successfully. Reloading...",
-    });
-    window.location.reload();
+    setIsAdvancing(true);
+    try {
+      const manualMappingArray = Object.entries(manualMappings)
+        .filter(([, newRosterId]) => !!newRosterId)
+        .map(([oldRosterId, newRosterId]) => ({
+          oldRosterId: parseInt(oldRosterId, 10),
+          newRosterId,
+        }));
+
+      const res = await fetch("/api/league/advance-year", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          newLeagueId: advanceLeagueId.trim(),
+          userId: user.userId,
+          manualMappings: manualMappingArray,
+        }),
+      });
+
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        if (error?.unmatched) {
+          setUnmatchedRosters(error.unmatched);
+          toast({
+            title: "Roster mapping required",
+            description: "Please map all unmatched rosters before continuing.",
+          });
+          return;
+        }
+        toast({
+          title: "Advance failed",
+          description: error?.details ? `${error.error}: ${error.details}` : (error?.error || "Failed to advance league year."),
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "League advanced",
+        description: "League year advanced successfully. Reloading...",
+      });
+      window.location.reload();
+    } catch (err: any) {
+      toast({
+        title: "Advance failed",
+        description: err?.message || "A network error occurred. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsAdvancing(false);
+    }
   };
 
   return (
@@ -389,8 +408,9 @@ export default function Settings() {
                   ))}
                 </div>
               )}
-              <Button onClick={handleAdvanceLeagueYear} data-testid="button-advance-league-year">
-                Advance League Year
+              <Button onClick={handleAdvanceLeagueYear} disabled={isAdvancing} data-testid="button-advance-league-year">
+                <RefreshCw className={`w-4 h-4 mr-2 ${isAdvancing ? "animate-spin" : "hidden"}`} />
+                {isAdvancing ? "Advancing..." : "Advance League Year"}
               </Button>
             </CardContent>
           </Card>

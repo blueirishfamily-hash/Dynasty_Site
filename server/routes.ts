@@ -9589,29 +9589,7 @@ export async function registerRoutes(
           week,
           transactionData: JSON.stringify(weekTransactions),
         });
-
-        const weekStats = await getPlayerStats(oldLeague.season, week).catch(() => ({}));
-        for (const [playerId, stats] of Object.entries(weekStats)) {
-          await storage.createPlayerStatsSnapshot({
-            leagueId: oldLeagueId,
-            season: oldLeague.season,
-            week,
-            playerId,
-            statsData: JSON.stringify(stats),
-          });
-        }
-      }
-
-      // End-of-season snapshots
-      const seasonStats = await getPlayerStats(oldLeague.season).catch(() => ({}));
-      for (const [playerId, stats] of Object.entries(seasonStats)) {
-        await storage.createPlayerStatsSnapshot({
-          leagueId: oldLeagueId,
-          season: oldLeague.season,
-          week: null,
-          playerId,
-          statsData: JSON.stringify(stats),
-        });
+        // Per-week player stats snapshots skipped (too slow; use end-of-season aggregate instead)
       }
 
       await storage.createStandingsSnapshot({
