@@ -826,6 +826,11 @@ export default function Draft() {
     // Run Monte Carlo simulations (regular season still ongoing)
     // Filter out locked teams from simulations
     const unlockedTeams = teamsWithData.filter(t => !t.isLocked);
+
+    // Locked playoff teams already occupy playoff spots — subtract them from the target
+    // so eliminated unlocked teams are never pulled into madePlayoffs to fill phantom slots
+    const lockedPlayoffCount = teamsWithData.filter(t => t.isLocked && t.status !== "eliminated").length;
+    const effectivePlayoffTarget = Math.max(0, playoffTeams - lockedPlayoffCount);
     
     for (let sim = 0; sim < SIMULATIONS; sim++) {
       // For each simulation, determine which teams make playoffs
@@ -841,15 +846,15 @@ export default function Draft() {
         }
       });
 
-      // Ensure we have exactly playoffTeams making playoffs
+      // Ensure we have exactly effectivePlayoffTarget unlocked teams making playoffs
       // If too many made it, remove the ones with lowest probability
-      while (madePlayoffs.length > playoffTeams) {
+      while (madePlayoffs.length > effectivePlayoffTarget) {
         madePlayoffs.sort((a, b) => (a.makePlayoffsPct ?? 0) - (b.makePlayoffsPct ?? 0));
         const removed = madePlayoffs.shift()!;
         missedPlayoffs.push(removed);
       }
       // If too few made it, add the ones with highest probability
-      while (madePlayoffs.length < playoffTeams && missedPlayoffs.length > 0) {
+      while (madePlayoffs.length < effectivePlayoffTarget && missedPlayoffs.length > 0) {
         missedPlayoffs.sort((a, b) => (b.makePlayoffsPct ?? 0) - (a.makePlayoffsPct ?? 0));
         const added = missedPlayoffs.shift()!;
         madePlayoffs.push(added);
