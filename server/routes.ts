@@ -2,6 +2,8 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { createHash } from "crypto";
+import { computeStandingsAnalysis } from "./standingsAnalysis";
+import type { AnalysisTeam } from "../shared/standingsAnalysis";
 import os from "os";
 import {
   getSleeperUser,
@@ -1039,6 +1041,64 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching standings:", error);
       res.status(500).json({ error: "Failed to fetch standings" });
+    }
+  });
+
+  // Cumulative points race + schedule simulator data for the standings page
+  app.get("/api/sleeper/league/:leagueId/standings-analysis", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const userId = req.query.userId as string | undefined;
+      const [rosters, users, nflState, league] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getNFLState(),
+        getLeague(leagueId).catch(() => null),
+      ]);
+
+      const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
+      const regularSeasonWeeks = playoffWeekStart - 1;
+      const currentWeek = getEffectiveWeek(nflState, league);
+      const isPastSeason =
+        !!league?.season && parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
+      const regularSeasonComplete =
+        isPastSeason ||
+        league?.status === "complete" ||
+        nflState.season_type === "post" ||
+        nflState.season_type === "off" ||
+        currentWeek >= playoffWeekStart;
+      // Skip the in-progress week so partial scores don't distort results
+      const lastWeek = regularSeasonComplete
+        ? regularSeasonWeeks
+        : Math.max(0, Math.min(currentWeek - 1, regularSeasonWeeks));
+
+      const weekly = await Promise.all(
+        Array.from({ length: lastWeek }, (_, i) => i + 1).map((week) =>
+          getLeagueMatchups(leagueId, week)
+            .then((matchups) => ({ week, matchups }))
+            .catch(() => ({ week, matchups: [] as SleeperMatchup[] })),
+        ),
+      );
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach((u) => userMap.set(u.user_id, u));
+
+      const teams: AnalysisTeam[] = rosters.map((roster) => {
+        const owner = userMap.get(roster.owner_id);
+        const name = owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`;
+        return {
+          rosterId: roster.roster_id,
+          name,
+          initials: getTeamInitials(name),
+          avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
+          isUser: !!userId && roster.owner_id === userId,
+        };
+      });
+
+      res.json(computeStandingsAnalysis(teams, weekly));
+    } catch (error) {
+      console.error("Error computing standings analysis:", error);
+      res.status(500).json({ error: "Failed to compute standings analysis" });
     }
   });
 

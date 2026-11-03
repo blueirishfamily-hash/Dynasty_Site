@@ -3,6 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import StandingsTable from "@/components/StandingsTable";
 import PlayoffPredictor from "@/components/PlayoffPredictor";
+import PointsRaceChart from "@/components/PointsRaceChart";
+import ScheduleSimulator from "@/components/ScheduleSimulator";
+import type { StandingsAnalysis } from "@shared/standingsAnalysis";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -16,7 +19,7 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { ListOrdered, Target, Trophy, Crown } from "lucide-react";
+import { ListOrdered, Target, Trophy, Crown, LineChart as LineChartIcon, Shuffle } from "lucide-react";
 
 function getOrdinalSuffix(num: number): string {
   const j = num % 10;
@@ -63,7 +66,7 @@ interface BracketData {
 
 export default function Standings() {
   const { user, league } = useSleeper();
-  const [activeTab, setActiveTab] = useState<"standings" | "predictions" | "bracket">("standings");
+  const [activeTab, setActiveTab] = useState<"standings" | "race" | "simulator" | "predictions" | "bracket">("standings");
 
   const { data: standings, isLoading: standingsLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "standings", user?.userId],
@@ -98,6 +101,20 @@ export default function Standings() {
       return res.json();
     },
     enabled: !!league?.leagueId,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const analysisNeeded = activeTab === "race" || activeTab === "simulator";
+  const { data: analysis, isLoading: analysisLoading, isError: analysisError } = useQuery<StandingsAnalysis>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "standings-analysis", user?.userId],
+    queryFn: async () => {
+      const res = await fetch(
+        `/api/sleeper/league/${league?.leagueId}/standings-analysis?userId=${user?.userId}`
+      );
+      if (!res.ok) throw new Error("Failed to fetch standings analysis");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!user?.userId && analysisNeeded,
     staleTime: 5 * 60 * 1000,
   });
 
@@ -147,6 +164,43 @@ export default function Standings() {
 
   const playoffTeams = league.playoffTeams || 6;
 
+  const renderAnalysis = (render: (data: StandingsAnalysis) => JSX.Element) => {
+    if (analysisLoading) {
+      return (
+        <Card>
+          <CardHeader>
+            <Skeleton className="h-6 w-56" />
+          </CardHeader>
+          <CardContent>
+            <Skeleton className="h-96 w-full" />
+          </CardContent>
+        </Card>
+      );
+    }
+    if (analysisError) {
+      return (
+        <Card>
+          <CardContent className="py-12 text-center text-muted-foreground">
+            Unable to load season analysis right now. Please try again in a moment.
+          </CardContent>
+        </Card>
+      );
+    }
+    if (!analysis || analysis.weeks.length === 0) {
+      return (
+        <Card>
+          <CardContent className="py-12 text-center">
+            <h3 className="font-heading text-lg font-semibold mb-2">No Games Played Yet</h3>
+            <p className="text-muted-foreground">
+              This view will appear once at least one regular-season week has been completed.
+            </p>
+          </CardContent>
+        </Card>
+      );
+    }
+    return render(analysis);
+  };
+
   return (
     <div className="p-6 space-y-6">
       <div>
@@ -156,11 +210,19 @@ export default function Standings() {
         </p>
       </div>
 
-      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "standings" | "predictions" | "bracket")}>
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "standings" | "race" | "simulator" | "predictions" | "bracket")}>
         <TabsList className="mb-4">
           <TabsTrigger value="standings" className="gap-2" data-testid="tab-standings">
             <ListOrdered className="w-4 h-4" />
             Standings
+          </TabsTrigger>
+          <TabsTrigger value="race" className="gap-2" data-testid="tab-race">
+            <LineChartIcon className="w-4 h-4" />
+            Points Race
+          </TabsTrigger>
+          <TabsTrigger value="simulator" className="gap-2" data-testid="tab-simulator">
+            <Shuffle className="w-4 h-4" />
+            Schedule Simulator
           </TabsTrigger>
           <TabsTrigger value="predictions" className="gap-2" data-testid="tab-predictions">
             <Target className="w-4 h-4" />
@@ -320,6 +382,14 @@ export default function Standings() {
               </Card>
             </div>
           </div>
+        </TabsContent>
+
+        <TabsContent value="race" className="mt-0">
+          {renderAnalysis((data) => <PointsRaceChart analysis={data} />)}
+        </TabsContent>
+
+        <TabsContent value="simulator" className="mt-0">
+          {renderAnalysis((data) => <ScheduleSimulator analysis={data} />)}
         </TabsContent>
 
         <TabsContent value="predictions" className="mt-0">
