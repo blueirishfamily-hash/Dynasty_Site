@@ -98,6 +98,15 @@ export interface ReportSeed {
   division?: number;
 }
 
+export interface ReportOdds {
+  rosterId: number;
+  makePlayoffsPct: number;
+  divisionWinnerPct?: number;
+  oneSeedPct: number;
+  projectedPointsPerWeek: number;
+  projectedWins?: number;
+}
+
 export interface WeeklyReportData {
   league: { name: string; season: string };
   generatedAt: string;
@@ -114,6 +123,11 @@ export interface WeeklyReportData {
   playoffWeekStart: number;
   /** Standard deviation of a single team's weekly score, used for win probability. */
   scoreStdDev: number;
+  /**
+   * Set for past weeks: the standings below, every team's record and these odds are as they stood
+   * after `throughWeek` (the week before the report week), not today.
+   */
+  asOf?: { throughWeek: number; odds: ReportOdds[]; simulationCount: number };
   teams: Record<number, WeeklyReportTeam>;
   recap: { games: RecapGame[]; callouts: RecapCallouts } | null;
   highPerformers: WeeklyHighPerformers | null;

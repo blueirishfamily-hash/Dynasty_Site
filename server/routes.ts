@@ -15,7 +15,8 @@ import {
   pairMatchups,
   type ReportMatchupEntry,
 } from "./weeklyReport";
-import type { WeeklyReportData, WeeklyReportTeam } from "../shared/weeklyReport";
+import type { ReportOdds, WeeklyReportData, WeeklyReportTeam } from "../shared/weeklyReport";
+import { hashSeed, simulatePlayoffOdds, type OddsResult } from "./playoffOdds";
 import type { AnalysisTeam } from "../shared/standingsAnalysis";
 import os from "os";
 import {
@@ -4473,13 +4474,61 @@ export async function registerRoutes(
       users.forEach((u) => userMap.set(u.user_id, u));
 
       const divisionCount = Number((league.settings as any)?.divisions) || 0;
-      const seeding = computePlayoffSeeding(
-        rosters.map((roster) => ({
-          rosterId: roster.roster_id,
+      const isPastSeason = parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
+      const phase: WeeklyReportData["phase"] =
+        league.status === "complete" || isPastSeason ? "complete" : week >= playoffWeekStart ? "playoffs" : "regular";
+
+      // Past weeks use standings and odds as they stood entering that week, not today's
+      const useAsOf = week < effectiveWeek || phase === "complete";
+      const throughWeek = Math.min(Math.max(0, week - 1), playoffWeekStart - 1);
+      const asOfRecords = new Map<number, { wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }>();
+      const asOfScores = new Map<number, number[]>();
+      if (useAsOf) {
+        rosters.forEach((r) => asOfRecords.set(r.roster_id, { wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0 }));
+        for (let w = 1; w <= throughWeek; w++) {
+          pairMatchups(matchupsFor(w)).forEach(({ a, b }) => {
+            const pa = a.points || 0;
+            const pb = b.points || 0;
+            if (pa === 0 && pb === 0) return;
+            const ra = asOfRecords.get(a.roster_id);
+            const rb = asOfRecords.get(b.roster_id);
+            if (!ra || !rb) return;
+            ra.pointsFor += pa;
+            ra.pointsAgainst += pb;
+            rb.pointsFor += pb;
+            rb.pointsAgainst += pa;
+            if (pa > pb) {
+              ra.wins++;
+              rb.losses++;
+            } else if (pb > pa) {
+              rb.wins++;
+              ra.losses++;
+            } else {
+              ra.ties++;
+              rb.ties++;
+            }
+            asOfScores.set(a.roster_id, [...(asOfScores.get(a.roster_id) ?? []), pa]);
+            asOfScores.set(b.roster_id, [...(asOfScores.get(b.roster_id) ?? []), pb]);
+          });
+        }
+      }
+      const recordOf = (roster: SleeperRoster) => {
+        const asOf = useAsOf ? asOfRecords.get(roster.roster_id) : undefined;
+        if (asOf) return asOf;
+        return {
           wins: roster.settings.wins || 0,
           losses: roster.settings.losses || 0,
           ties: roster.settings.ties || 0,
           pointsFor: roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100,
+          pointsAgainst:
+            (roster.settings as any).fpts_against + ((roster.settings as any).fpts_against_decimal || 0) / 100 || 0,
+        };
+      };
+
+      const seeding = computePlayoffSeeding(
+        rosters.map((roster) => ({
+          rosterId: roster.roster_id,
+          ...recordOf(roster),
           division: (roster.settings as any).division ?? null,
         })),
         divisionCount,
@@ -4489,6 +4538,7 @@ export async function registerRoutes(
         rosters.map(async (roster): Promise<[number, WeeklyReportTeam]> => {
           const owner = userMap.get(roster.owner_id);
           const name = owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`;
+          const record = recordOf(roster);
           return [
             roster.roster_id,
             {
@@ -4497,26 +4547,86 @@ export async function registerRoutes(
               initials: getTeamInitials(name),
               avatar: await fetchAvatarDataUri(owner?.avatar),
               isUser: !!userId && roster.owner_id === userId,
-              wins: roster.settings.wins || 0,
-              losses: roster.settings.losses || 0,
-              ties: roster.settings.ties || 0,
-              pointsFor: Math.round((roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100) * 100) / 100,
-              pointsAgainst:
-                Math.round(
-                  ((roster.settings as any).fpts_against + ((roster.settings as any).fpts_against_decimal || 0) / 100 || 0) * 100,
-                ) / 100,
+              wins: record.wins,
+              losses: record.losses,
+              ties: record.ties,
+              pointsFor: Math.round(record.pointsFor * 100) / 100,
+              pointsAgainst: Math.round(record.pointsAgainst * 100) / 100,
               division: seeding.hasDivisions ? (roster.settings as any).division : undefined,
             },
           ];
         }),
       );
 
-      const isPastSeason = parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
-      const phase: WeeklyReportData["phase"] =
-        league.status === "complete" || isPastSeason ? "complete" : week >= playoffWeekStart ? "playoffs" : "regular";
+      let asOfOdds: WeeklyReportData["asOf"];
+      if (useAsOf) {
+        try {
+          const season = String(league.season);
+          let result: OddsResult | null = null;
+          const stored = await storage.getPlayoffOddsSnapshot(leagueId, season, week).catch(() => undefined);
+          if (stored) {
+            try {
+              result = JSON.parse(stored) as OddsResult;
+            } catch {
+              result = null;
+            }
+          }
+          if (!result) {
+            const remainingWeekNumbers = Array.from(
+              { length: Math.max(0, playoffWeekStart - 1 - throughWeek) },
+              (_, i) => throughWeek + 1 + i,
+            );
+            const remainingMatchups = await Promise.all(
+              remainingWeekNumbers.map((w) =>
+                w <= week ? Promise.resolve(matchupsFor(w)) : getLeagueMatchups(leagueId, w).then((m) => m as ReportMatchupEntry[]).catch(() => []),
+              ),
+            );
+            const remainingWeeks = remainingMatchups.map((m) =>
+              pairMatchups(m).map(({ a, b }): [number, number] => [a.roster_id, b.roster_id]),
+            );
+            result = simulatePlayoffOdds({
+              teams: rosters.map((roster) => {
+                const record = recordOf(roster);
+                return {
+                  rosterId: roster.roster_id,
+                  wins: record.wins,
+                  ties: record.ties,
+                  pointsFor: record.pointsFor,
+                  division: (roster.settings as any).division ?? null,
+                };
+              }),
+              weeklyScores: asOfScores,
+              remainingWeeks,
+              gamesPlayed: throughWeek,
+              playoffTeams: Number(league.settings?.playoff_teams) || 6,
+              divisionCount,
+              seed: hashSeed(`${leagueId}:${season}:${week}`),
+            });
+            const saved = await storage.savePlayoffOddsSnapshot(leagueId, season, week, JSON.stringify(result)).catch((error) => {
+              console.error("Could not store playoff odds snapshot:", error?.message || error);
+              return null;
+            });
+            if (saved) {
+              try {
+                result = JSON.parse(saved) as OddsResult;
+              } catch {
+                /* keep the freshly computed result */
+              }
+            }
+          }
+          asOfOdds = {
+            throughWeek,
+            odds: result.predictions as ReportOdds[],
+            simulationCount: result.simulationCount,
+          };
+        } catch (error) {
+          console.error("Error generating past-week playoff odds:", error);
+          asOfOdds = { throughWeek, odds: [], simulationCount: 0 };
+        }
+      }
 
       // Clinch / elimination stakes only make sense for the week standings currently reflect
-      const previewIsLive = phase === "regular" && week === effectiveWeek;
+      const previewIsLive = phase === "regular" && week === effectiveWeek && !useAsOf;
       if (previewIsLive && preview.games.length > 0) {
         try {
           const futureWeeks = Array.from({ length: Math.max(0, playoffWeekStart - 1 - week) }, (_, i) => week + 1 + i);
@@ -4571,6 +4681,7 @@ export async function registerRoutes(
         currentWeek: effectiveWeek,
         playoffWeekStart,
         scoreStdDev: Math.round(computeScoreStdDev(weeklyPoints) * 10) / 10,
+        asOf: asOfOdds,
         teams: Object.fromEntries(teamEntries),
         recap,
         highPerformers,

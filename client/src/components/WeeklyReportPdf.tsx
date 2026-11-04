@@ -965,10 +965,11 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
   const { seeds, playoffTeams, hasDivisions, divisions } = report.seeding;
   const hasOdds = predictions.length > 0;
   const winnerSeeds = seeds.filter((x) => x.isDivisionWinner).length;
-  const stale =
-    report.week < report.currentWeek
-      ? ` Standings and odds reflect the latest results (Week ${report.currentWeek}), not Week ${report.week}.`
-      : "";
+  const stale = report.asOf
+    ? ` Standings and odds are as of the start of Week ${report.week}${report.asOf.throughWeek > 0 ? ` (after Week ${report.asOf.throughWeek})` : ""}, generated once from each team's scoring up to then.`
+    : report.week < report.currentWeek
+    ? ` Standings and odds reflect the latest results (Week ${report.currentWeek}), not Week ${report.week}.`
+    : "";
   const sims = hasOdds && input.simulationCount ? ` Odds from ${input.simulationCount.toLocaleString()} season simulations.` : "";
 
   const statusOf = (rosterId: number) => {
@@ -1142,8 +1143,12 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
   );
 }
 
-export default function WeeklyReportPdf({ input }: { input: WeeklyReportInput }) {
-  const { report } = input;
+export default function WeeklyReportPdf({ input: rawInput }: { input: WeeklyReportInput }) {
+  const { report } = rawInput;
+  // Past weeks carry their own odds; today's odds and power rankings would be misleading there
+  const input: WeeklyReportInput = report.asOf
+    ? { ...rawInput, predictions: report.asOf.odds, simulationCount: report.asOf.simulationCount, powerRank: {} }
+    : rawInput;
   const theme = input.theme ?? "dark";
   const ctx = useMemo<Ctx>(() => {
     const C = PALETTES[theme];

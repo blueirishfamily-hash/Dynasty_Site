@@ -237,6 +237,18 @@ export const standingsSnapshotsTable = pgTable("standings_snapshots", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
+// One-time playoff odds generated for a past week, so reports for that week stay stable
+export const playoffOddsSnapshotsTable = pgTable("playoff_odds_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  week: integer("week").notNull(),
+  data: text("data").notNull(), // JSON
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (t) => ({
+  leagueSeasonWeekUnique: unique().on(t.leagueId, t.season, t.week),
+}));
+
 export const playerStatsSnapshotsTable = pgTable("player_stats_snapshots", {
   id: varchar("id", { length: 36 }).primaryKey(),
   leagueId: varchar("league_id", { length: 64 }).notNull(),
@@ -387,6 +399,7 @@ export type ActiveLeague = typeof activeLeaguesTable.$inferSelect;
 export type InsertActiveLeague = z.infer<typeof insertActiveLeagueDbSchema>;
 export type StandingsSnapshot = typeof standingsSnapshotsTable.$inferSelect;
 export type InsertStandingsSnapshot = z.infer<typeof insertStandingsSnapshotDbSchema>;
+export type PlayoffOddsSnapshot = typeof playoffOddsSnapshotsTable.$inferSelect;
 export type PlayerStatsSnapshot = typeof playerStatsSnapshotsTable.$inferSelect;
 export type InsertPlayerStatsSnapshot = z.infer<typeof insertPlayerStatsSnapshotDbSchema>;
 export type TeamStatsSnapshot = typeof teamStatsSnapshotsTable.$inferSelect;
