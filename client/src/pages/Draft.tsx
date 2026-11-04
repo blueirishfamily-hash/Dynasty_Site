@@ -731,7 +731,7 @@ export default function Draft() {
         const remainingAfterSf1 = remaining.filter(t => t.rosterId !== sf1.rosterId);
         const sf2 = weightedPick(remainingAfterSf1, weight);
         const sfLosers = [sf1, sf2].sort((a, b) => (b.rank ?? 99) - (a.rank ?? 99));
-        sfLosers.forEach((t, i) => assignment.set(t.rosterId, NON_PLAYOFF_PICKS + 2 + i));
+        sfLosers.forEach((t, i) => assignment.set(t.rosterId, NON_PLAYOFF_PICKS + 3 + i));
         remaining = remainingAfterSf1.filter(t => t.rosterId !== sf2.rosterId);
       }
       // QF losers → picks 6, 7, 8 (indices 5, 6, 7). Worse seed first.
