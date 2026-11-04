@@ -3984,13 +3984,18 @@ export async function registerRoutes(
       // Convert to percentages and format response
       // Apply Bayesian smoothing to prevent 0%/100% unless mathematically certain
       // This accounts for upset potential and uncertainty in remaining games
+      const round2 = (value: number) => Math.round(value * 100) / 100;
       const smoothProbability = (successes: number, trials: number): number => {
         // Bayesian smoothing with prior: (successes + 1) / (trials + 2)
         // This ensures even 0/10000 becomes 0.01% and 10000/10000 becomes 99.99%
-        const smoothed = (successes + 1) / (trials + 2);
-        const pct = smoothed * 100;
-        // Round to 1 decimal place
-        return Math.round(pct * 10) / 10;
+        return round2(((successes + 1) / (trials + 2)) * 100);
+      };
+      // Exact 0 and 100 are reserved for outcomes that never/always happened in the simulation;
+      // anything else keeps at least 0.01% of room on either side.
+      const rawProbability = (successes: number, trials: number): number => {
+        if (successes <= 0) return 0;
+        if (successes >= trials) return 100;
+        return Math.min(99.99, Math.max(0.01, round2((successes / trials) * 100)));
       };
 
       // Only apply smoothing if regular season hasn't ended AND we're not in postseason
@@ -4007,10 +4012,10 @@ export async function registerRoutes(
           const projectedPointsFor = Math.round((r.avgFinalPoints / SIMULATIONS) * 10) / 10;
           
           // Calculate raw percentages
-          const rawMakePlayoffsPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
-          const rawOneSeedPct = Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10;
+          const rawMakePlayoffsPct = rawProbability(r.makePlayoffs, SIMULATIONS);
+          const rawOneSeedPct = rawProbability(r.oneSeed, SIMULATIONS);
           const rawDivisionWinnerPct = hasDivisions 
-            ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
+            ? rawProbability(r.divisionWinner, SIMULATIONS) 
             : undefined;
           
           // Apply smoothing for probabilities when season is ongoing

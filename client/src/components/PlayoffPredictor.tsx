@@ -1,3 +1,4 @@
+import { formatPct } from "@shared/formatPct";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -68,8 +69,8 @@ function ProbabilityBar({
           style={{ width: `${Math.min(value, 100)}%` }}
         />
       </div>
-      <span className="text-sm font-medium tabular-nums w-12 text-right">
-        {value.toFixed(1)}%
+      <span className="text-sm font-medium tabular-nums w-16 text-right">
+        {formatPct(value)}
       </span>
     </div>
   );
@@ -177,7 +178,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                   <span className="text-sm">1-Seed</span>
                 </div>
                 <span className={`text-2xl font-bold ${getTextColor(userTeam.oneSeedPct)}`}>
-                  {userTeam.oneSeedPct.toFixed(1)}%
+                  {formatPct(userTeam.oneSeedPct)}
                 </span>
               </div>
               {hasDivisions && userTeam.divisionWinnerPct !== undefined && (
@@ -187,7 +188,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                     <span className="text-sm">Win Division</span>
                   </div>
                   <span className={`text-2xl font-bold ${getTextColor(userTeam.divisionWinnerPct)}`}>
-                    {userTeam.divisionWinnerPct.toFixed(1)}%
+                    {formatPct(userTeam.divisionWinnerPct)}
                   </span>
                 </div>
               )}
@@ -197,7 +198,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                   <span className="text-sm">Make Playoffs</span>
                 </div>
                 <span className={`text-2xl font-bold ${getTextColor(userTeam.makePlayoffsPct)}`}>
-                  {userTeam.makePlayoffsPct.toFixed(1)}%
+                  {formatPct(userTeam.makePlayoffsPct)}
                 </span>
               </div>
             </div>
@@ -595,7 +596,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       </div>
                       <div className="text-right">
                         <Badge className={getStandingsBadgeClass(team.makePlayoffsPct)}>
-                          {team.makePlayoffsPct.toFixed(1)}%
+                          {formatPct(team.makePlayoffsPct)}
                         </Badge>
                         <p className="text-xs text-muted-foreground mt-1">
                           {isInPlayoffPosition ? "In playoff position" : "Outside looking in"}

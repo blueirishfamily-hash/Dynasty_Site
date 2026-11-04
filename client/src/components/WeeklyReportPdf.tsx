@@ -1,5 +1,6 @@
 import { createContext, useContext, useMemo } from "react";
 import { Circle, Document, Image, Line, Page, Path, StyleSheet, Svg, Text, View } from "@react-pdf/renderer";
+import { formatPct } from "@shared/formatPct";
 import type {
   GameCallout,
   HighPerformerPlayer,
@@ -147,8 +148,7 @@ const useCtx = (): Ctx => {
 };
 
 const fmt = (n: number, digits = 1) => n.toFixed(digits);
-const pct = (n: number | undefined) =>
-  n == null ? "-" : n >= 99.95 ? "100%" : n <= 0.05 ? "0%" : `${n.toFixed(n < 10 ? 1 : 0)}%`;
+const pct = (n: number | undefined) => formatPct(n);
 const recordOf = (t: WeeklyReportTeam) => `${t.wins}-${t.losses}${t.ties ? `-${t.ties}` : ""}`;
 
 function normalCdf(x: number): number {
@@ -903,8 +903,10 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
   const statusOf = (rosterId: number) => {
     const p = predictionOf.get(rosterId);
     if (!p) return null;
-    if (p.makePlayoffsPct >= 99.95) return { text: "CLINCHED", bg: C.accentSoft, color: C.accent };
-    if (p.makePlayoffsPct <= 0.05) return { text: "OUT", bg: C.redSoft, color: C.red };
+    if (p.makePlayoffsPct >= 100) return { text: "CLINCHED", bg: C.accentSoft, color: C.accent };
+    if (p.makePlayoffsPct >= 99.9) return { text: "LOCK", bg: C.accentSoft, color: C.accent };
+    if (p.makePlayoffsPct <= 0) return { text: "OUT", bg: C.redSoft, color: C.red };
+    if (p.makePlayoffsPct <= 0.1) return { text: "LONG SHOT", bg: C.redSoft, color: C.red };
     return null;
   };
 
@@ -996,7 +998,7 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
                       <View style={[s.track, { marginRight: 6, backgroundColor: C.bg }]}>
                         <View style={{ height: 5, borderRadius: 3, width: `${Math.max(makePct, makePct > 0 ? 3 : 0)}%`, backgroundColor: oddsColor(makePct) }} />
                       </View>
-                      <Text style={[s.bold, { width: 28, textAlign: "right", color: oddsColor(makePct) }]}>{pct(p?.makePlayoffsPct)}</Text>
+                      <Text style={[s.bold, { width: 36, textAlign: "right", color: oddsColor(makePct) }]}>{pct(p?.makePlayoffsPct)}</Text>
                     </View>
                     {hasDivisions && <Text style={{ width: 36, textAlign: "right", color: C.muted }}>{pct(p?.divisionWinnerPct)}</Text>}
                     <Text style={{ width: 38, textAlign: "right", color: C.muted }}>{pct(p?.oneSeedPct)}</Text>
@@ -1039,7 +1041,7 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
                       <TeamName team={team} size={14} showForm={false} />
                       <Text style={[s.small, { width: 28, textAlign: "right" }]}>{team ? recordOf(team) : ""}</Text>
                       {hasOdds && (
-                        <Text style={[s.bold, { width: 28, textAlign: "right", fontSize: 7.5, color: rank === 0 ? C.gold : C.muted }]}>
+                        <Text style={[s.bold, { width: 34, textAlign: "right", fontSize: 7.5, color: rank === 0 ? C.gold : C.muted }]}>
                           {pct(p?.divisionWinnerPct)}
                         </Text>
                       )}
