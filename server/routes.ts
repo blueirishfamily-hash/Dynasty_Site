@@ -4495,6 +4495,7 @@ export async function registerRoutes(
         previewHasScores: preview.hasScores,
         previewFinal: preview.hasScores && (week < effectiveWeek || phase === "complete"),
         currentWeek: effectiveWeek,
+        playoffWeekStart,
         scoreStdDev: Math.round(computeScoreStdDev(weeklyPoints) * 10) / 10,
         teams: Object.fromEntries(teamEntries),
         recap,

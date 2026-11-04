@@ -1,8 +1,10 @@
-import { Document, Image, Page, StyleSheet, Text, View } from "@react-pdf/renderer";
+import { createContext, useContext, useMemo } from "react";
+import { Circle, Document, Image, Line, Page, Path, StyleSheet, Svg, Text, View } from "@react-pdf/renderer";
 import type {
   GameCallout,
   HighPerformerPlayer,
   PreviewGame,
+  TeamTrend,
   WeeklyReportData,
   WeeklyReportTeam,
 } from "@shared/weeklyReport";
@@ -16,106 +18,137 @@ export interface ReportPrediction {
   projectedWins?: number;
 }
 
+export type ReportTheme = "dark" | "light";
+
 export interface WeeklyReportInput {
   report: WeeklyReportData;
   predictions: ReportPrediction[];
   simulationCount?: number;
   powerRank: Record<number, number>;
+  theme?: ReportTheme;
 }
 
-const C = {
-  ink: "#0f172a",
-  muted: "#64748b",
-  line: "#e2e8f0",
-  soft: "#f1f5f9",
-  green: "#059669",
-  greenSoft: "#d1fae5",
-  gold: "#b45309",
-  goldSoft: "#fef3c7",
-  red: "#dc2626",
-  white: "#ffffff",
+interface Palette {
+  bg: string;
+  surface: string;
+  surface2: string;
+  border: string;
+  ink: string;
+  muted: string;
+  accent: string;
+  accentSoft: string;
+  onAccent: string;
+  gold: string;
+  goldSoft: string;
+  red: string;
+  redSoft: string;
+  hot: string;
+  hotSoft: string;
+  cold: string;
+  coldSoft: string;
+  hero: string;
+}
+
+const PALETTES: Record<ReportTheme, Palette> = {
+  dark: {
+    bg: "#0a0f1d",
+    surface: "#111a2e",
+    surface2: "#18233b",
+    border: "#243049",
+    ink: "#f1f5f9",
+    muted: "#8fa0bf",
+    accent: "#34d399",
+    accentSoft: "#0e3a33",
+    onAccent: "#04130f",
+    gold: "#fbbf24",
+    goldSoft: "#2f2610",
+    red: "#f87171",
+    redSoft: "#3a1b21",
+    hot: "#fb923c",
+    hotSoft: "#3a2212",
+    cold: "#38bdf8",
+    coldSoft: "#0e2f44",
+    hero: "#0f1c38",
+  },
+  light: {
+    bg: "#ffffff",
+    surface: "#f8fafc",
+    surface2: "#eef2f7",
+    border: "#e2e8f0",
+    ink: "#0f172a",
+    muted: "#64748b",
+    accent: "#059669",
+    accentSoft: "#d1fae5",
+    onAccent: "#ffffff",
+    gold: "#b45309",
+    goldSoft: "#fef3c7",
+    red: "#dc2626",
+    redSoft: "#fee2e2",
+    hot: "#ea580c",
+    hotSoft: "#ffedd5",
+    cold: "#0284c7",
+    coldSoft: "#e0f2fe",
+    hero: "#0f172a",
+  },
 };
 
-const s = StyleSheet.create({
-  page: { padding: 32, paddingBottom: 48, fontSize: 9, fontFamily: "Helvetica", color: C.ink },
-  header: {
-    backgroundColor: C.ink,
-    color: C.white,
-    borderRadius: 6,
-    padding: 14,
-    marginBottom: 14,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-end",
-  },
-  headerTitle: { fontSize: 20, fontFamily: "Helvetica-Bold", color: C.white },
-  headerSub: { fontSize: 9, color: "#cbd5e1", marginTop: 3 },
-  headerWeek: { fontSize: 11, fontFamily: "Helvetica-Bold", color: "#6ee7b7" },
-  sectionTitle: {
-    fontSize: 13,
-    fontFamily: "Helvetica-Bold",
-    marginBottom: 2,
-  },
-  sectionSub: { fontSize: 8, color: C.muted, marginBottom: 8 },
-  section: { marginBottom: 14 },
-  rule: { height: 2, backgroundColor: C.green, width: 28, marginBottom: 6 },
-  row: { flexDirection: "row", alignItems: "center" },
-  chip: { width: 16, height: 16, borderRadius: 8, marginRight: 5 },
-  chipFallback: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    marginRight: 5,
-    backgroundColor: C.soft,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  chipText: { fontSize: 6, fontFamily: "Helvetica-Bold", color: C.muted },
-  card: { borderWidth: 1, borderColor: C.line, borderRadius: 5, padding: 7 },
-  cardLabel: { fontSize: 7, color: C.muted, fontFamily: "Helvetica-Bold", marginBottom: 3 },
-  small: { fontSize: 7.5, color: C.muted },
-  bold: { fontFamily: "Helvetica-Bold" },
-  tableHead: {
-    flexDirection: "row",
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-    backgroundColor: C.soft,
-    borderRadius: 3,
-  },
-  th: { fontSize: 7, fontFamily: "Helvetica-Bold", color: C.muted },
-  tr: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingVertical: 4,
-    paddingHorizontal: 4,
-    borderBottomWidth: 1,
-    borderBottomColor: C.line,
-  },
-  barTrack: { height: 5, backgroundColor: C.soft, borderRadius: 3, flex: 1 },
-  tag: {
-    fontSize: 6,
-    fontFamily: "Helvetica-Bold",
-    paddingVertical: 1.5,
-    paddingHorizontal: 3,
-    borderRadius: 2,
-  },
-  footer: {
-    position: "absolute",
-    bottom: 22,
-    left: 32,
-    right: 32,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    fontSize: 7,
-    color: C.muted,
-    borderTopWidth: 1,
-    borderTopColor: C.line,
-    paddingTop: 5,
-  },
-});
+function makeStyles(C: Palette) {
+  return StyleSheet.create({
+    page: { padding: 30, paddingBottom: 50, fontSize: 9, fontFamily: "Helvetica", color: C.ink, backgroundColor: C.bg },
+    row: { flexDirection: "row", alignItems: "center" },
+    small: { fontSize: 7.5, color: C.muted },
+    bold: { fontFamily: "Helvetica-Bold" },
+    label: { fontSize: 6.5, color: C.muted, fontFamily: "Helvetica-Bold", letterSpacing: 0.8, marginBottom: 4 },
+    card: {
+      backgroundColor: C.surface,
+      borderWidth: 1,
+      borderColor: C.border,
+      borderRadius: 8,
+      padding: 9,
+    },
+    tag: {
+      fontSize: 6,
+      fontFamily: "Helvetica-Bold",
+      paddingVertical: 1.5,
+      paddingHorizontal: 3.5,
+      borderRadius: 3,
+    },
+    tr: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingVertical: 5,
+      paddingHorizontal: 8,
+    },
+    track: { height: 5, backgroundColor: C.surface2, borderRadius: 3, flex: 1 },
+    footer: {
+      position: "absolute",
+      bottom: 20,
+      left: 30,
+      right: 30,
+      flexDirection: "row",
+      justifyContent: "space-between",
+      fontSize: 7,
+      color: C.muted,
+    },
+  });
+}
+
+type Styles = ReturnType<typeof makeStyles>;
+interface Ctx {
+  C: Palette;
+  s: Styles;
+  form: Map<number, "hot" | "cold">;
+}
+const StyleContext = createContext<Ctx | null>(null);
+const useCtx = (): Ctx => {
+  const ctx = useContext(StyleContext);
+  if (!ctx) throw new Error("Report style context missing");
+  return ctx;
+};
 
 const fmt = (n: number, digits = 1) => n.toFixed(digits);
-const pct = (n: number | undefined) => (n == null ? "-" : n >= 99.95 ? "100%" : n <= 0.05 ? "0%" : `${n.toFixed(n < 10 ? 1 : 0)}%`);
+const pct = (n: number | undefined) =>
+  n == null ? "-" : n >= 99.95 ? "100%" : n <= 0.05 ? "0%" : `${n.toFixed(n < 10 ? 1 : 0)}%`;
 const recordOf = (t: WeeklyReportTeam) => `${t.wins}-${t.losses}${t.ties ? `-${t.ties}` : ""}`;
 
 function normalCdf(x: number): number {
@@ -125,11 +158,49 @@ function normalCdf(x: number): number {
   return x > 0 ? 1 - p : p;
 }
 
-function Chip({ team }: { team: WeeklyReportTeam | undefined }) {
-  if (team?.avatar) return <Image src={team.avatar} style={s.chip} />;
+function FlameIcon({ size = 10, color }: { size?: number; color: string }) {
   return (
-    <View style={s.chipFallback}>
-      <Text style={s.chipText}>{team?.initials ?? "?"}</Text>
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      <Path
+        d="M12 2 C12 2 5 8.5 5 14.5 C5 18.6 8.1 22 12 22 C15.9 22 19 18.6 19 14.5 C19 12 17.8 10 16.5 8.5 C16.3 10.4 15.4 11.6 14.2 12 C14.6 8.6 13.6 5 12 2 Z"
+        fill={color}
+      />
+      <Path
+        d="M12 22 C9.8 22 8.2 20.3 8.2 18.2 C8.2 16.2 10 14.8 11 13 C12 14.6 15.8 16 15.8 18.2 C15.8 20.3 14.2 22 12 22 Z"
+        fill="#fde68a"
+      />
+    </Svg>
+  );
+}
+
+function SnowIcon({ size = 10, color }: { size?: number; color: string }) {
+  const arms = [0, 60, 120].map((deg) => {
+    const rad = (deg * Math.PI) / 180;
+    const dx = Math.cos(rad) * 10;
+    const dy = Math.sin(rad) * 10;
+    return { x1: 12 - dx, y1: 12 - dy, x2: 12 + dx, y2: 12 + dy };
+  });
+  return (
+    <Svg width={size} height={size} viewBox="0 0 24 24">
+      {arms.map((a, i) => (
+        <Line key={i} x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} stroke={color} strokeWidth={2.2} strokeLinecap="round" />
+      ))}
+      <Circle cx={12} cy={12} r={2.2} fill={color} />
+      <Path d="M9.5 3.5 L12 6 L14.5 3.5" stroke={color} strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Path d="M9.5 20.5 L12 18 L14.5 20.5" stroke={color} strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    </Svg>
+  );
+}
+
+function Chip({ team, size = 18 }: { team: WeeklyReportTeam | undefined; size?: number }) {
+  const { C } = useCtx();
+  const base = { width: size, height: size, borderRadius: size / 2, marginRight: 6 };
+  if (team?.avatar) {
+    return <Image src={team.avatar} style={{ ...base, borderWidth: 1, borderColor: C.border }} />;
+  }
+  return (
+    <View style={{ ...base, backgroundColor: C.surface2, alignItems: "center", justifyContent: "center" }}>
+      <Text style={{ fontSize: 6, fontFamily: "Helvetica-Bold", color: C.muted }}>{team?.initials ?? "?"}</Text>
     </View>
   );
 }
@@ -139,59 +210,154 @@ function TeamName({
   align = "left",
   bold = false,
   width,
-  suffix,
   grow = true,
+  size = 18,
+  showForm = true,
 }: {
   team: WeeklyReportTeam | undefined;
   align?: "left" | "right";
   bold?: boolean;
   width?: number;
-  suffix?: string;
   grow?: boolean;
+  size?: number;
+  showForm?: boolean;
 }) {
-  const label = team?.name ?? "Unknown";
+  const { C, s, form } = useCtx();
+  const trend = team && showForm ? form.get(team.rosterId) : undefined;
+  const formIcon = trend ? (
+    <View style={{ marginHorizontal: 3 }}>
+      {trend === "hot" ? <FlameIcon size={9} color={C.hot} /> : <SnowIcon size={9} color={C.cold} />}
+    </View>
+  ) : null;
+  const youTag = team?.isUser ? (
+    <Text style={[s.tag, { backgroundColor: C.accent, color: C.onAccent, marginHorizontal: 3 }]}>YOU</Text>
+  ) : null;
   return (
-    <View style={[s.row, { flex: width || !grow ? undefined : 1, width, justifyContent: align === "right" ? "flex-end" : "flex-start" }]}>
-      {align === "left" && <Chip team={team} />}
-      <Text
-        style={[ [bold ? s.bold : {}, { flexShrink: 1, textAlign: align }], { maxLines: 1 } ] as any}
-      >
-        {label}
-        {suffix ? <Text style={s.small}> {suffix}</Text> : null}
+    <View
+      style={[
+        s.row,
+        { flex: width || !grow ? undefined : 1, width, justifyContent: align === "right" ? "flex-end" : "flex-start" },
+      ]}
+    >
+      {align === "left" && <Chip team={team} size={size} />}
+      <Text style={[bold ? s.bold : {}, { flexShrink: 1, textAlign: align, maxLines: 1, textOverflow: "ellipsis" } as any]}>
+        {team?.name ?? "Unknown"}
       </Text>
-      {team?.isUser && (
-        <Text style={[s.tag, { backgroundColor: C.greenSoft, color: C.green, marginLeft: 3 }]}>YOU</Text>
-      )}
+      {formIcon}
+      {youTag}
       {align === "right" && (
-        <View style={{ marginLeft: 5 }}>
-          <Chip team={team} />
+        <View style={{ marginLeft: 6 }}>
+          <Chip team={team} size={size} />
         </View>
       )}
     </View>
   );
 }
 
-function SectionHeader({ title, sub }: { title: string; sub?: string }) {
+function SectionHeader({ kicker, title, sub }: { kicker: string; title: string; sub?: string }) {
+  const { C, s } = useCtx();
   return (
-    <View>
-      <View style={s.rule} />
-      <Text style={s.sectionTitle}>{title}</Text>
-      {sub ? <Text style={s.sectionSub}>{sub}</Text> : <View style={{ height: 6 }} />}
+    <View style={{ marginBottom: 10 }}>
+      <View style={[s.row, { marginBottom: 3 }]}>
+        <View style={{ width: 14, height: 2.5, borderRadius: 2, backgroundColor: C.accent, marginRight: 6 }} />
+        <Text style={{ fontSize: 7, letterSpacing: 1.2, color: C.accent, fontFamily: "Helvetica-Bold" }}>{kicker.toUpperCase()}</Text>
+      </View>
+      <Text style={{ fontSize: 17, fontFamily: "Helvetica-Bold" }}>{title}</Text>
+      {sub ? <Text style={[s.small, { marginTop: 2 }]}>{sub}</Text> : null}
     </View>
   );
 }
 
 function PageShell({ report, children }: { report: WeeklyReportData; children: React.ReactNode }) {
+  const { s } = useCtx();
   return (
     <Page size="LETTER" style={s.page}>
       {children}
       <View style={s.footer} fixed>
         <Text>
-          {report.league.name} - {report.league.season} Season - Week {report.week} Report
+          {report.league.name}  |  {report.league.season} Season  |  Week {report.week} Report
         </Text>
-        <Text render={({ pageNumber, totalPages }) => `Page ${pageNumber} of ${totalPages}`} />
+        <Text render={({ pageNumber, totalPages }) => `${pageNumber} / ${totalPages}`} />
       </View>
     </Page>
+  );
+}
+
+function Hero({ report }: { report: WeeklyReportData }) {
+  const { C, s } = useCtx();
+  const generated = new Date(report.generatedAt).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+  const regularWeeks = Math.max(1, report.playoffWeekStart - 1);
+  const total = Math.min(regularWeeks, 18);
+  return (
+    <View
+      style={{
+        backgroundColor: C.hero,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: C.border,
+        padding: 16,
+        marginBottom: 16,
+        overflow: "hidden",
+      }}
+    >
+      <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 5, backgroundColor: C.accent }} />
+      <View style={[s.row, { justifyContent: "space-between", alignItems: "flex-start" }]}>
+        <View style={{ marginLeft: 6 }}>
+          <Text style={{ fontSize: 7, letterSpacing: 1.6, color: C.accent, fontFamily: "Helvetica-Bold" }}>WEEKLY LEAGUE REPORT</Text>
+          <Text style={{ fontSize: 26, fontFamily: "Helvetica-Bold", color: "#f8fafc", marginTop: 3 }}>{report.league.name}</Text>
+          <Text style={{ fontSize: 9, color: "#a5b4d0", marginTop: 3 }}>
+            {report.league.season} Season  -  {generated}
+          </Text>
+        </View>
+        <View style={{ alignItems: "flex-end" }}>
+          <View style={{ backgroundColor: C.accent, borderRadius: 14, paddingVertical: 5, paddingHorizontal: 12 }}>
+            <Text style={{ fontSize: 12, fontFamily: "Helvetica-Bold", color: C.onAccent }}>WEEK {report.week}</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={{ marginTop: 14, marginLeft: 6 }}>
+        <View style={[s.row, { marginBottom: 4 }]}>
+          {Array.from({ length: total }, (_, i) => {
+            const w = i + 1;
+            const done = w < report.week;
+            const current = w === report.week;
+            return (
+              <View
+                key={w}
+                style={{
+                  flex: 1,
+                  height: current ? 7 : 5,
+                  marginRight: 3,
+                  borderRadius: 3,
+                  backgroundColor: current ? C.gold : done ? C.accent : "#26334f",
+                }}
+              />
+            );
+          })}
+        </View>
+        <Text style={{ fontSize: 6.5, color: "#8fa0bf", letterSpacing: 0.6 }}>
+          {report.week <= total
+            ? `REGULAR SEASON PROGRESS  -  WEEK ${report.week} OF ${total}`
+            : "REGULAR SEASON COMPLETE  -  PLAYOFFS"}
+        </Text>
+      </View>
+    </View>
+  );
+}
+
+function Stat({ label, value, sub, color }: { label: string; value: string; sub?: string; color?: string }) {
+  const { C, s } = useCtx();
+  return (
+    <View style={[s.card, { flex: 1, marginRight: 6, padding: 8 }]}>
+      <Text style={s.label}>{label}</Text>
+      <Text style={{ fontSize: 15, fontFamily: "Helvetica-Bold", color: color ?? C.ink }}>{value}</Text>
+      {sub ? <Text style={[s.small, { marginTop: 1 }]}>{sub}</Text> : null}
+    </View>
   );
 }
 
@@ -200,242 +366,396 @@ function CalloutCard({
   callout,
   teams,
   detail,
+  color,
 }: {
   label: string;
   callout: GameCallout | null;
   teams: Record<number, WeeklyReportTeam>;
   detail: (c: GameCallout) => string;
+  color: string;
 }) {
+  const { s } = useCtx();
   if (!callout) return null;
   const team = teams[callout.rosterId];
   const opp = teams[callout.opponentId];
   return (
-    <View style={[s.card, { width: "32.2%", marginRight: 6, marginBottom: 6 }]} wrap={false}>
-      <Text style={s.cardLabel}>{label.toUpperCase()}</Text>
+    <View style={[s.card, { width: "31.8%", marginRight: 6, marginBottom: 6, paddingLeft: 11, overflow: "hidden" }]} wrap={false}>
+      <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: color }} />
+      <Text style={[s.label, { color }]}>{label.toUpperCase()}</Text>
       <View style={s.row}>
-        <Chip team={team} />
-        <Text style={[ [s.bold, { flexShrink: 1 }], { maxLines: 1 } ] as any}>
-          {team?.name}
-        </Text>
+        <Chip team={team} size={16} />
+        <Text style={[s.bold, { flexShrink: 1, maxLines: 1, textOverflow: "ellipsis" } as any]}>{team?.name}</Text>
       </View>
-      <Text style={[s.small, { marginTop: 2 }]}>{detail(callout)}</Text>
-      <Text style={[ s.small, { maxLines: 1 } ] as any}>
-        vs {opp?.name}
-      </Text>
+      <Text style={[s.bold, { marginTop: 3, fontSize: 8.5 }]}>{detail(callout)}</Text>
+      <Text style={[s.small, { maxLines: 1, textOverflow: "ellipsis" } as any]}>vs {opp?.name}</Text>
     </View>
   );
 }
 
 function RecapSection({ report }: { report: WeeklyReportData }) {
+  const { C, s } = useCtx();
   if (!report.recap || report.recapWeek == null) {
     return (
-      <View style={s.section}>
-        <SectionHeader title="Last Week Recap" />
-        <Text style={s.small}>No completed games yet. The recap will appear once Week 1 is final.</Text>
+      <View style={{ marginBottom: 14 }}>
+        <SectionHeader kicker="Last week" title="Recap" sub="No completed games yet. The recap will appear once Week 1 is final." />
       </View>
     );
   }
   const { games, callouts } = report.recap;
   const teams = report.teams;
-  return (
-    <View style={s.section}>
-      <SectionHeader title={`Week ${report.recapWeek} Recap`} sub="Final scores from last week's games." />
-      {games.map((g) => {
-        const t1 = teams[g.team1];
-        const t2 = teams[g.team2];
-        const w1 = g.winner === g.team1;
-        const w2 = g.winner === g.team2;
-        const mine = t1?.isUser || t2?.isUser;
-        return (
-          <View key={g.matchupId} style={[s.tr, mine ? { backgroundColor: C.greenSoft } : {}]} wrap={false}>
-            <View style={[s.row, { flex: 1 }]}>
-              <TeamName team={t1} bold={w1} />
-              <Text style={[{ width: 40, textAlign: "right" }, w1 ? [s.bold, { color: C.green }] : { color: C.muted }]}>
-                {fmt(g.score1, 2)}
-              </Text>
-            </View>
-            <Text style={[s.small, { width: 62, textAlign: "center" }]}>
-              {g.winner == null ? "Tie" : `by ${fmt(g.margin, 1)}`}
-            </Text>
-            <View style={[s.row, { flex: 1 }]}>
-              <Text style={[{ width: 40, textAlign: "left" }, w2 ? [s.bold, { color: C.green }] : { color: C.muted }]}>
-                {fmt(g.score2, 2)}
-              </Text>
-              <TeamName team={t2} align="right" bold={w2} />
-            </View>
-          </View>
-        );
-      })}
+  const scores = games.flatMap((g) => [g.score1, g.score2]);
+  const total = scores.reduce((a, b) => a + b, 0);
+  const avg = scores.length ? total / scores.length : 0;
+  const margins = games.filter((g) => g.winner != null).map((g) => g.margin);
+  const avgMargin = margins.length ? margins.reduce((a, b) => a + b, 0) / margins.length : 0;
+  const nailBiters = margins.filter((m) => m < 10).length;
 
-      <Text style={[s.cardLabel, { marginTop: 12 }]}>WEEK IN NUMBERS</Text>
+  return (
+    <View style={{ marginBottom: 14 }}>
+      <SectionHeader kicker={`Week ${report.recapWeek}`} title="Last Week's Results" sub="Final scores from every game." />
+
+      <View style={{ borderRadius: 8, borderWidth: 1, borderColor: C.border, overflow: "hidden", backgroundColor: C.surface }}>
+        {games.map((g, i) => {
+          const t1 = teams[g.team1];
+          const t2 = teams[g.team2];
+          const w1 = g.winner === g.team1;
+          const w2 = g.winner === g.team2;
+          const mine = t1?.isUser || t2?.isUser;
+          return (
+            <View
+              key={g.matchupId}
+              style={[
+                s.tr,
+                { paddingVertical: 7, backgroundColor: mine ? C.accentSoft : i % 2 === 0 ? C.surface : C.surface2 },
+              ]}
+              wrap={false}
+            >
+              <View style={[s.row, { flex: 1 }]}>
+                <TeamName team={t1} bold={w1} showForm={false} />
+                <Text
+                  style={[
+                    { width: 44, textAlign: "right", fontSize: 10.5 },
+                    w1 ? [s.bold, { color: C.accent }] : { color: C.muted },
+                  ]}
+                >
+                  {fmt(g.score1, 2)}
+                </Text>
+              </View>
+              <View style={{ width: 58, alignItems: "center" }}>
+                <Text
+                  style={{
+                    fontSize: 6.5,
+                    fontFamily: "Helvetica-Bold",
+                    color: C.muted,
+                    backgroundColor: C.bg,
+                    borderRadius: 6,
+                    paddingVertical: 2,
+                    paddingHorizontal: 5,
+                  }}
+                >
+                  {g.winner == null ? "TIE" : `+${fmt(g.margin, 1)}`}
+                </Text>
+              </View>
+              <View style={[s.row, { flex: 1 }]}>
+                <Text
+                  style={[
+                    { width: 44, textAlign: "left", fontSize: 10.5 },
+                    w2 ? [s.bold, { color: C.accent }] : { color: C.muted },
+                  ]}
+                >
+                  {fmt(g.score2, 2)}
+                </Text>
+                <TeamName team={t2} align="right" bold={w2} showForm={false} />
+              </View>
+            </View>
+          );
+        })}
+      </View>
+
+      <View style={[s.row, { marginTop: 12 }]}>
+        <Stat label="LEAGUE AVG SCORE" value={fmt(avg, 1)} sub="per team" />
+        <Stat label="TOTAL POINTS" value={fmt(total, 0)} sub={`${games.length} games`} />
+        <Stat label="AVG MARGIN" value={fmt(avgMargin, 1)} sub="points per game" />
+        <View style={[s.card, { flex: 1, padding: 8 }]}>
+          <Text style={s.label}>NAIL-BITERS</Text>
+          <Text style={{ fontSize: 15, fontFamily: "Helvetica-Bold", color: C.gold }}>{nailBiters}</Text>
+          <Text style={[s.small, { marginTop: 1 }]}>decided by under 10</Text>
+        </View>
+      </View>
+
+      <Text style={[s.label, { marginTop: 14 }]}>WEEK IN NUMBERS</Text>
       <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-        <CalloutCard
-          label="Top score"
-          callout={callouts.highestScore}
-          teams={teams}
-          detail={(c) => `${fmt(c.points, 2)} pts`}
-        />
-        <CalloutCard
-          label="Lowest score"
-          callout={callouts.lowestScore}
-          teams={teams}
-          detail={(c) => `${fmt(c.points, 2)} pts`}
-        />
-        <CalloutCard
-          label="Closest finish"
-          callout={callouts.closestGame}
-          teams={teams}
-          detail={(c) => `Won by ${fmt(c.points - c.opponentPoints, 2)}`}
-        />
-        <CalloutCard
-          label="Biggest blowout"
-          callout={callouts.biggestBlowout}
-          teams={teams}
-          detail={(c) => `Won by ${fmt(c.points - c.opponentPoints, 1)}`}
-        />
-        <CalloutCard
-          label="Unluckiest loss"
-          callout={callouts.unluckiestLoss}
-          teams={teams}
-          detail={(c) => `Lost with ${fmt(c.points, 2)} pts`}
-        />
-        <CalloutCard
-          label="Luckiest win"
-          callout={callouts.luckiestWin}
-          teams={teams}
-          detail={(c) => `Won with only ${fmt(c.points, 2)} pts`}
-        />
+        <CalloutCard label="Top score" callout={callouts.highestScore} teams={teams} color={C.accent} detail={(c) => `${fmt(c.points, 2)} pts`} />
+        <CalloutCard label="Lowest score" callout={callouts.lowestScore} teams={teams} color={C.red} detail={(c) => `${fmt(c.points, 2)} pts`} />
+        <CalloutCard label="Closest finish" callout={callouts.closestGame} teams={teams} color={C.gold} detail={(c) => `Won by ${fmt(c.points - c.opponentPoints, 2)}`} />
+        <CalloutCard label="Biggest blowout" callout={callouts.biggestBlowout} teams={teams} color={C.hot} detail={(c) => `Won by ${fmt(c.points - c.opponentPoints, 1)}`} />
+        <CalloutCard label="Unluckiest loss" callout={callouts.unluckiestLoss} teams={teams} color={C.cold} detail={(c) => `Lost with ${fmt(c.points, 2)} pts`} />
+        <CalloutCard label="Luckiest win" callout={callouts.luckiestWin} teams={teams} color={C.accent} detail={(c) => `Won with only ${fmt(c.points, 2)}`} />
       </View>
     </View>
   );
 }
 
-function PlayerRow({ rank, player, teams }: { rank: number; player: HighPerformerPlayer; teams: Record<number, WeeklyReportTeam> }) {
+function PlayerRow({
+  rank,
+  player,
+  teams,
+  zebra,
+}: {
+  rank: number;
+  player: HighPerformerPlayer;
+  teams: Record<number, WeeklyReportTeam>;
+  zebra: boolean;
+}) {
+  const { C, s } = useCtx();
   return (
-    <View style={s.tr} wrap={false}>
-      <Text style={[s.small, { width: 16 }]}>{rank}</Text>
+    <View style={[s.tr, { backgroundColor: zebra ? C.surface2 : C.surface }]} wrap={false}>
+      <View
+        style={{
+          width: 16,
+          height: 16,
+          borderRadius: 8,
+          backgroundColor: rank <= 3 ? C.gold : C.surface2,
+          alignItems: "center",
+          justifyContent: "center",
+          marginRight: 7,
+        }}
+      >
+        <Text style={{ fontSize: 7, fontFamily: "Helvetica-Bold", color: rank <= 3 ? C.bg : C.muted }}>{rank}</Text>
+      </View>
       <View style={{ flex: 1 }}>
-        <Text style={[ s.bold, { maxLines: 1 } ] as any}>
-          {player.name}
-        </Text>
+        <Text style={s.bold}>{player.name}</Text>
         <Text style={s.small}>
           {player.position}
-          {player.nflTeam ? ` - ${player.nflTeam}` : ""}
+          {player.nflTeam ? `  -  ${player.nflTeam}` : ""}
         </Text>
       </View>
-      <Text style={[ [{ width: 120 }, s.small], { maxLines: 1 } ] as any}>
-        {teams[player.rosterId]?.name}
-      </Text>
-      <Text style={[s.bold, { width: 36, textAlign: "right", color: C.green }]}>{fmt(player.points, 1)}</Text>
+      <Text style={[s.small, { width: 92, maxLines: 1, textOverflow: "ellipsis" } as any]}>{teams[player.rosterId]?.name}</Text>
+      <Text style={[s.bold, { width: 34, textAlign: "right", color: C.accent, fontSize: 10.5 }]}>{fmt(player.points, 1)}</Text>
     </View>
   );
 }
 
-function EfficiencyBar({ label, team, value, detail }: { label?: string; team?: WeeklyReportTeam; value: number; detail: string }) {
+function EfficiencyRow({ team, value, detail }: { team?: WeeklyReportTeam; value: number; detail: string }) {
+  const { C, s } = useCtx();
+  const color = value >= 0.9 ? C.accent : value >= 0.8 ? "#a3e635" : value >= 0.7 ? C.gold : C.red;
   return (
-    <View style={[s.row, { marginBottom: 4 }]} wrap={false}>
-      <View style={{ width: 130 }}>
-        <TeamName team={team} width={130} />
+    <View style={[s.row, { marginBottom: 5 }]} wrap={false}>
+      <View style={{ width: 138 }}>
+        <TeamName team={team} width={138} size={15} showForm={false} />
       </View>
-      <View style={[s.barTrack, { marginHorizontal: 6 }]}>
-        <View style={{ height: 5, borderRadius: 3, width: `${Math.max(2, value * 100)}%`, backgroundColor: value >= 0.9 ? C.green : value >= 0.8 ? "#34d399" : "#fbbf24" }} />
+      <View style={[s.track, { marginHorizontal: 8 }]}>
+        <View style={{ height: 5, borderRadius: 3, width: `${Math.max(3, value * 100)}%`, backgroundColor: color }} />
       </View>
-      <Text style={[s.small, { width: 28, textAlign: "right" }]}>{label ?? `${Math.round(value * 100)}%`}</Text>
-      <Text style={[s.small, { width: 78, textAlign: "right" }]}>{detail}</Text>
+      <Text style={[s.bold, { width: 28, textAlign: "right", color }]}>{Math.round(value * 100)}%</Text>
+      <Text style={[s.small, { width: 74, textAlign: "right" }]}>{detail}</Text>
     </View>
   );
 }
 
 function HighPerformersSection({ report }: { report: WeeklyReportData }) {
+  const { C, s } = useCtx();
   const hp = report.highPerformers;
   const teams = report.teams;
   if (!hp) return null;
   return (
-    <View style={s.section}>
-      <SectionHeader
-        title="High Performers"
-        sub={`Standout starters and lineups from Week ${report.recapWeek}.`}
-      />
+    <View>
+      <SectionHeader kicker={`Week ${report.recapWeek}`} title="High Performers" sub="Standout starters and lineups." />
 
       <View style={{ flexDirection: "row" }}>
-        <View style={{ flex: 1.55, marginRight: 14 }}>
-          <Text style={s.cardLabel}>TOP INDIVIDUAL PERFORMANCES</Text>
-          {hp.topPlayers.map((p, i) => (
-            <PlayerRow key={`${p.playerId}-${p.rosterId}`} rank={i + 1} player={p} teams={teams} />
-          ))}
+        <View style={{ flex: 1.55, marginRight: 12 }}>
+          <Text style={s.label}>TOP INDIVIDUAL PERFORMANCES</Text>
+          <View style={{ borderRadius: 8, borderWidth: 1, borderColor: C.border, overflow: "hidden" }}>
+            {hp.topPlayers.map((p, i) => (
+              <PlayerRow key={`${p.playerId}-${p.rosterId}`} rank={i + 1} player={p} teams={teams} zebra={i % 2 === 1} />
+            ))}
+          </View>
         </View>
 
         <View style={{ flex: 1 }}>
-          <Text style={s.cardLabel}>POSITION LEADERS</Text>
-          {hp.positionLeaders.map((p) => (
-            <View key={p.position} style={[s.tr, { paddingHorizontal: 0 }]} wrap={false}>
-              <Text style={[s.tag, { backgroundColor: C.soft, color: C.muted, width: 22, textAlign: "center" }]}>{p.position}</Text>
-              <View style={{ flex: 1, marginLeft: 5 }}>
-                <Text style={[ s.bold, { maxLines: 1 } ] as any}>
-                  {p.name}
+          <Text style={s.label}>POSITION LEADERS</Text>
+          <View style={{ borderRadius: 8, borderWidth: 1, borderColor: C.border, overflow: "hidden", marginBottom: 12 }}>
+            {hp.positionLeaders.map((p, i) => (
+              <View key={p.position} style={[s.tr, { backgroundColor: i % 2 === 1 ? C.surface2 : C.surface }]} wrap={false}>
+                <Text
+                  style={[
+                    s.tag,
+                    { backgroundColor: C.accentSoft, color: C.accent, width: 24, textAlign: "center", paddingVertical: 2.5 },
+                  ]}
+                >
+                  {p.position}
                 </Text>
-                <Text style={[ s.small, { maxLines: 1 } ] as any}>
-                  {teams[p.rosterId]?.name}
-                </Text>
+                <View style={{ flex: 1, marginLeft: 7 }}>
+                  <Text style={[s.bold, { maxLines: 1, textOverflow: "ellipsis" } as any]}>{p.name}</Text>
+                  <Text style={[s.small, { maxLines: 1, textOverflow: "ellipsis" } as any]}>{teams[p.rosterId]?.name}</Text>
+                </View>
+                <Text style={[s.bold, { color: C.accent }]}>{fmt(p.points, 1)}</Text>
               </View>
-              <Text style={[s.bold, { color: C.green }]}>{fmt(p.points, 1)}</Text>
-            </View>
-          ))}
+            ))}
+          </View>
 
-          <Text style={[s.cardLabel, { marginTop: 12 }]}>HIGHEST TEAM SCORES</Text>
-          {hp.topTeamScores.map((t, i) => (
-            <View key={t.rosterId} style={[s.tr, { paddingHorizontal: 0 }]} wrap={false}>
-              <Text style={[s.small, { width: 14 }]}>{i + 1}</Text>
-              <TeamName team={teams[t.rosterId]} />
-              <Text style={[s.bold, { color: C.green }]}>{fmt(t.points, 2)}</Text>
-            </View>
-          ))}
+          <Text style={s.label}>HIGHEST TEAM SCORES</Text>
+          <View style={{ borderRadius: 8, borderWidth: 1, borderColor: C.border, overflow: "hidden" }}>
+            {hp.topTeamScores.map((t, i) => (
+              <View key={t.rosterId} style={[s.tr, { backgroundColor: i % 2 === 1 ? C.surface2 : C.surface }]} wrap={false}>
+                <Text style={[s.small, { width: 12 }]}>{i + 1}</Text>
+                <TeamName team={teams[t.rosterId]} size={15} showForm={false} />
+                <Text style={[s.bold, { color: C.accent }]}>{fmt(t.points, 2)}</Text>
+              </View>
+            ))}
+          </View>
         </View>
       </View>
 
-      <View style={{ marginTop: 14 }} wrap={false}>
-        <Text style={s.cardLabel}>LINEUP EFFICIENCY (POINTS SCORED VS BEST POSSIBLE LINEUP)</Text>
+      <View style={[s.card, { marginTop: 16 }]} wrap={false}>
+        <Text style={s.label}>LINEUP EFFICIENCY  -  POINTS SCORED VS BEST POSSIBLE LINEUP</Text>
         {hp.efficiency.map((e) => (
-          <EfficiencyBar
-            key={e.rosterId}
-            team={teams[e.rosterId]}
-            value={e.efficiency}
-            detail={`${fmt(e.points, 1)} / ${fmt(e.optimalPoints, 1)}`}
-          />
+          <EfficiencyRow key={e.rosterId} team={teams[e.rosterId]} value={e.efficiency} detail={`${fmt(e.points, 1)} / ${fmt(e.optimalPoints, 1)}`} />
         ))}
       </View>
+    </View>
+  );
+}
 
+function TrendRow({ trend, max, kind, team }: { trend: TeamTrend; max: number; kind: "hot" | "cold"; team?: WeeklyReportTeam }) {
+  const { C, s } = useCtx();
+  const color = kind === "hot" ? C.hot : C.cold;
+  const width = Math.max(8, (Math.abs(trend.difference) / max) * 100);
+  return (
+    <View style={{ marginBottom: 8 }} wrap={false}>
+      <View style={s.row}>
+        <TeamName team={team} size={16} showForm={false} />
+        <Text style={[s.bold, { color, fontSize: 11 }]}>
+          {trend.difference > 0 ? "+" : ""}
+          {fmt(trend.difference, 1)}
+        </Text>
+      </View>
+      <View style={[s.row, { marginTop: 3 }]}>
+        <View style={[s.track, { backgroundColor: C.bg }]}>
+          <View style={{ height: 5, borderRadius: 3, width: `${width}%`, backgroundColor: color }} />
+        </View>
+      </View>
+      <Text style={[s.small, { marginTop: 2 }]}>
+        Last {trend.recentWeeks} wks avg {fmt(trend.recentAvg, 1)}  vs  {fmt(trend.earlierAvg, 1)} earlier
+      </Text>
+    </View>
+  );
+}
+
+function TemperatureChart({ report }: { report: WeeklyReportData }) {
+  const { C, s } = useCtx();
+  const trends = report.highPerformers?.trends ?? [];
+  const teams = report.teams;
+  if (trends.length === 0) return null;
+  const max = Math.max(1, ...trends.map((t) => Math.abs(t.difference)));
+  return (
+    <View style={[s.card, { marginTop: 14 }]}>
+      <Text style={s.label}>TEMPERATURE CHECK  -  EVERY TEAM, RECENT SCORING VS EARLIER SEASON</Text>
+      <View style={[s.row, { marginBottom: 4 }]}>
+        <View style={{ width: 140 }} />
+        <View style={[s.row, { flex: 1, justifyContent: "space-between" }]}>
+          <View style={s.row}>
+            <SnowIcon size={9} color={C.cold} />
+            <Text style={[s.small, { marginLeft: 3, color: C.cold }]}>COOLER</Text>
+          </View>
+          <View style={s.row}>
+            <Text style={[s.small, { marginRight: 3, color: C.hot }]}>HOTTER</Text>
+            <FlameIcon size={9} color={C.hot} />
+          </View>
+        </View>
+        <View style={{ width: 40 }} />
+      </View>
+      {trends.map((t) => {
+        const hot = t.difference >= 0;
+        const color = hot ? C.hot : C.cold;
+        const width = Math.max(2, (Math.abs(t.difference) / max) * 100);
+        return (
+          <View key={t.rosterId} style={[s.row, { marginBottom: 5 }]} wrap={false}>
+            <View style={{ width: 140 }}>
+              <TeamName team={teams[t.rosterId]} width={140} size={15} showForm={false} />
+            </View>
+            <View style={[s.row, { flex: 1, height: 9 }]}>
+              <View style={{ flex: 1, height: 9, alignItems: "flex-end", justifyContent: "center", backgroundColor: C.surface2, borderTopLeftRadius: 4, borderBottomLeftRadius: 4 }}>
+                {!hot && <View style={{ height: 7, width: `${width}%`, backgroundColor: color, borderTopLeftRadius: 3, borderBottomLeftRadius: 3 }} />}
+              </View>
+              <View style={{ width: 1.5, height: 13, backgroundColor: C.muted }} />
+              <View style={{ flex: 1, height: 9, alignItems: "flex-start", justifyContent: "center", backgroundColor: C.surface2, borderTopRightRadius: 4, borderBottomRightRadius: 4 }}>
+                {hot && <View style={{ height: 7, width: `${width}%`, backgroundColor: color, borderTopRightRadius: 3, borderBottomRightRadius: 3 }} />}
+              </View>
+            </View>
+            <Text style={[s.bold, { width: 40, textAlign: "right", color, fontSize: 8.5 }]}>
+              {hot ? "+" : ""}
+              {fmt(t.difference, 1)}
+            </Text>
+          </View>
+        );
+      })}
     </View>
   );
 }
 
 function FormGuide({ report }: { report: WeeklyReportData }) {
+  const { C, s } = useCtx();
   const hp = report.highPerformers;
   const teams = report.teams;
-  if (!hp || (hp.hot.length === 0 && hp.cold.length === 0)) return null;
+  if (!hp) return null;
+  const max = Math.max(1, ...[...hp.hot, ...hp.cold].map((t) => Math.abs(t.difference)));
+  const panels: Array<{ kind: "hot" | "cold"; title: string; sub: string; list: TeamTrend[] }> = [
+    { kind: "hot", title: "HEATING UP", sub: "Scoring well above their season pace", list: hp.hot },
+    { kind: "cold", title: "COOLING OFF", sub: "Scoring well below their season pace", list: hp.cold },
+  ];
   return (
-    <View style={{ marginTop: 6 }} wrap={false}>
-      <Text style={s.cardLabel}>FORM GUIDE</Text>
-      <View style={{ flexDirection: "row" }}>
-        {[
-          { title: "HEATING UP", list: hp.hot, color: C.green },
-          { title: "COOLING OFF", list: hp.cold, color: C.red },
-        ].map(({ title, list, color }) => (
-          <View key={title} style={[s.card, { flex: 1, marginRight: title === "HEATING UP" ? 8 : 0 }]}>
-            <Text style={s.cardLabel}>{title} (RECENT AVG VS EARLIER SEASON AVG)</Text>
-            {list.length === 0 ? <Text style={s.small}>None</Text> : null}
-            {list.map((t) => (
-              <View key={t.rosterId} style={[s.row, { marginBottom: 3 }]}>
-                <TeamName team={teams[t.rosterId]} />
-                <Text style={[s.bold, { color }]}>
-                  {t.difference > 0 ? "+" : ""}
-                  {fmt(t.difference, 1)}
-                </Text>
+    <View>
+      <SectionHeader
+        kicker="Momentum"
+        title="Hot & Cold"
+        sub="Compares each team's recent scoring average with the rest of their season."
+      />
+      <View style={s.row}>
+        {panels.map(({ kind, title, sub, list }, idx) => {
+          const color = kind === "hot" ? C.hot : C.cold;
+          return (
+            <View
+              key={kind}
+              style={[
+                s.card,
+                {
+                  flex: 1,
+                  alignSelf: "flex-start",
+                  marginRight: idx === 0 ? 8 : 0,
+                  backgroundColor: kind === "hot" ? C.hotSoft : C.coldSoft,
+                  borderColor: color,
+                },
+              ]}
+            >
+              <View style={[s.row, { marginBottom: 8 }]}>
+                <View
+                  style={{
+                    width: 26,
+                    height: 26,
+                    borderRadius: 13,
+                    backgroundColor: C.bg,
+                    alignItems: "center",
+                    justifyContent: "center",
+                    marginRight: 8,
+                  }}
+                >
+                  {kind === "hot" ? <FlameIcon size={15} color={color} /> : <SnowIcon size={15} color={color} />}
+                </View>
+                <View>
+                  <Text style={[s.bold, { color, fontSize: 11, letterSpacing: 0.6 }]}>{title}</Text>
+                  <Text style={s.small}>{sub}</Text>
+                </View>
               </View>
-            ))}
-          </View>
-        ))}
+              {list.length === 0 ? <Text style={s.small}>Nobody stands out this week.</Text> : null}
+              {list.map((t) => (
+                <TrendRow key={t.rosterId} trend={t} max={max} kind={kind} team={teams[t.rosterId]} />
+              ))}
+            </View>
+          );
+        })}
       </View>
+      <TemperatureChart report={report} />
     </View>
   );
 }
@@ -448,6 +768,7 @@ interface PreviewRow {
 }
 
 function PreviewSection({ input }: { input: WeeklyReportInput }) {
+  const { C, s } = useCtx();
   const { report, predictions, powerRank } = input;
   const teams = report.teams;
   const projection = new Map(predictions.map((p) => [p.rosterId, p.projectedPointsPerWeek]));
@@ -467,24 +788,24 @@ function PreviewSection({ input }: { input: WeeklyReportInput }) {
   const mismatch = [...rows].sort((a, b) => Math.abs(b.win1 - 0.5) - Math.abs(a.win1 - 0.5))[0];
   const shootout = [...rows].sort((a, b) => b.p1 + b.p2 - (a.p1 + a.p2))[0];
 
-  const label = (row: PreviewRow | undefined, kind: "toss" | "mismatch" | "shootout") => {
+  const callout = (row: PreviewRow | undefined, kind: "toss" | "mismatch" | "shootout") => {
     if (!row) return null;
     const t1 = teams[row.game.team1];
     const t2 = teams[row.game.team2];
     const detail =
       kind === "shootout"
         ? `Projected combined ${fmt(row.p1 + row.p2, 1)} pts`
-        : `${t1?.name} ${Math.round(row.win1 * 100)}% / ${t2?.name} ${Math.round((1 - row.win1) * 100)}%`;
+        : `${t1?.initials} ${Math.round(row.win1 * 100)}%  /  ${t2?.initials} ${Math.round((1 - row.win1) * 100)}%`;
     const title = kind === "toss" ? "TOSS-UP" : kind === "mismatch" ? "BIGGEST MISMATCH" : "SHOOTOUT WATCH";
+    const color = kind === "toss" ? C.gold : kind === "mismatch" ? C.red : C.accent;
     return (
-      <View style={[s.card, { flex: 1, marginRight: 6 }]} wrap={false}>
-        <Text style={s.cardLabel}>{title}</Text>
-        <Text style={[ s.bold, { maxLines: 1 } ] as any}>
+      <View style={[s.card, { flex: 1, marginRight: 6, paddingLeft: 11, overflow: "hidden" }]} wrap={false}>
+        <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: color }} />
+        <Text style={[s.label, { color }]}>{title}</Text>
+        <Text style={[s.bold, { maxLines: 1, textOverflow: "ellipsis" } as any]}>
           {t1?.name} vs {t2?.name}
         </Text>
-        <Text style={[ [s.small, { marginTop: 2 }], { maxLines: 2 } ] as any}>
-          {detail}
-        </Text>
+        <Text style={[s.small, { marginTop: 2 }]}>{detail}</Text>
       </View>
     );
   };
@@ -497,13 +818,13 @@ function PreviewSection({ input }: { input: WeeklyReportInput }) {
     : "Projections use each team's optimal-lineup projection; win odds assume typical weekly scoring variance.";
 
   return (
-    <View style={s.section}>
-      <SectionHeader title={title} sub={sub} />
+    <View>
+      <SectionHeader kicker="Look ahead" title={title} sub={sub} />
       {!report.previewHasScores && rows.length > 1 && (
-        <View style={{ flexDirection: "row", marginBottom: 10 }}>
-          {label(tossUp, "toss")}
-          {label(mismatch, "mismatch")}
-          <View style={{ flex: 1 }}>{label(shootout, "shootout")}</View>
+        <View style={[s.row, { marginBottom: 10, alignItems: "stretch" }]}>
+          {callout(tossUp, "toss")}
+          {callout(mismatch, "mismatch")}
+          <View style={{ flex: 1 }}>{callout(shootout, "shootout")}</View>
         </View>
       )}
       {rows.map(({ game, p1, p2, win1 }) => {
@@ -511,69 +832,79 @@ function PreviewSection({ input }: { input: WeeklyReportInput }) {
         const t2 = teams[game.team2];
         const mine = t1?.isUser || t2?.isUser;
         const live = game.score1 != null && game.score2 != null;
+        const favored1 = win1 >= 0.5;
         return (
           <View
             key={game.matchupId}
-            style={[s.card, { marginBottom: 6, padding: 8 }, mine ? { backgroundColor: C.greenSoft, borderColor: C.green } : {}]}
+            style={[s.card, { marginBottom: 7, padding: 9 }, mine ? { backgroundColor: C.accentSoft, borderColor: C.accent } : {}]}
             wrap={false}
           >
             <View style={s.row}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row" }}>
-                  <TeamName team={t1} bold={win1 >= 0.5 && !live} />
+                  <TeamName team={t1} bold={favored1 && !live} size={20} />
                 </View>
-                <Text style={[s.small, { marginLeft: 21 }]}>
+                <Text style={[s.small, { marginLeft: 26 }]}>
                   {t1 ? recordOf(t1) : ""}
-                  {powerRank[game.team1] ? `  -  Power rank #${powerRank[game.team1]}` : ""}
+                  {powerRank[game.team1] ? `   Power #${powerRank[game.team1]}` : ""}
                 </Text>
               </View>
-              <View style={{ width: 120, alignItems: "center" }}>
-                <Text style={[s.bold, { fontSize: 11 }]}>
+              <View style={{ width: 118, alignItems: "center" }}>
+                <Text style={{ fontSize: 13, fontFamily: "Helvetica-Bold" }}>
                   {live ? `${fmt(game.score1!, 1)} - ${fmt(game.score2!, 1)}` : `${fmt(p1, 1)} - ${fmt(p2, 1)}`}
                 </Text>
-                <Text style={s.small}>{live ? (report.previewFinal ? "Final" : "Current score") : "Projected"}</Text>
+                <Text style={[s.small, { fontSize: 6.5, letterSpacing: 0.8 }]}>
+                  {live ? (report.previewFinal ? "FINAL" : "CURRENT") : "PROJECTED"}
+                </Text>
               </View>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row" }}>
-                  <TeamName team={t2} align="right" bold={win1 < 0.5 && !live} />
+                  <TeamName team={t2} align="right" bold={!favored1 && !live} size={20} />
                 </View>
-                <Text style={[s.small, { textAlign: "right", marginRight: 21 }]}>
+                <Text style={[s.small, { textAlign: "right", marginRight: 26 }]}>
                   {t2 ? recordOf(t2) : ""}
-                  {powerRank[game.team2] ? `  -  Power rank #${powerRank[game.team2]}` : ""}
+                  {powerRank[game.team2] ? `   Power #${powerRank[game.team2]}` : ""}
                 </Text>
               </View>
             </View>
             {!live && (
-              <View style={[s.row, { marginTop: 5 }]}>
-                <Text style={[s.small, { width: 26 }]}>{Math.round(win1 * 100)}%</Text>
-                <View style={{ flex: 1, height: 4, borderRadius: 2, backgroundColor: "#cbd5e1", flexDirection: "row" }}>
-                  <View style={{ width: `${Math.round(win1 * 100)}%`, backgroundColor: C.green, borderRadius: 2 }} />
+              <View style={[s.row, { marginTop: 7 }]}>
+                <Text style={[s.bold, { width: 28, fontSize: 8, color: favored1 ? C.accent : C.muted }]}>{Math.round(win1 * 100)}%</Text>
+                <View style={{ flex: 1, height: 5, borderRadius: 3, backgroundColor: C.surface2, flexDirection: "row", overflow: "hidden" }}>
+                  <View style={{ width: `${Math.round(win1 * 100)}%`, backgroundColor: favored1 ? C.accent : C.muted }} />
+                  <View style={{ flex: 1, backgroundColor: favored1 ? C.border : C.accent }} />
                 </View>
-                <Text style={[s.small, { width: 26, textAlign: "right" }]}>{Math.round((1 - win1) * 100)}%</Text>
+                <Text style={[s.bold, { width: 28, textAlign: "right", fontSize: 8, color: !favored1 ? C.accent : C.muted }]}>
+                  {Math.round((1 - win1) * 100)}%
+                </Text>
               </View>
             )}
           </View>
         );
       })}
-      <FormGuide report={report} />
     </View>
   );
 }
 
 function PlayoffSection({ input }: { input: WeeklyReportInput }) {
+  const { C, s } = useCtx();
   const { report, predictions } = input;
   const teams = report.teams;
   const predictionOf = new Map(predictions.map((p) => [p.rosterId, p]));
   const { seeds, playoffTeams, hasDivisions, divisions } = report.seeding;
   const hasOdds = predictions.length > 0;
   const winnerSeeds = seeds.filter((x) => x.isDivisionWinner).length;
-  const stale = report.week < report.currentWeek ? ` Standings and odds reflect the latest results (Week ${report.currentWeek}), not Week ${report.week}.` : "";
+  const stale =
+    report.week < report.currentWeek
+      ? ` Standings and odds reflect the latest results (Week ${report.currentWeek}), not Week ${report.week}.`
+      : "";
+  const sims = hasOdds && input.simulationCount ? ` Odds from ${input.simulationCount.toLocaleString()} season simulations.` : "";
 
   const statusOf = (rosterId: number) => {
     const p = predictionOf.get(rosterId);
     if (!p) return null;
-    if (p.makePlayoffsPct >= 99.95) return { text: "CLINCHED", bg: C.greenSoft, color: C.green };
-    if (p.makePlayoffsPct <= 0.05) return { text: "OUT", bg: "#fee2e2", color: C.red };
+    if (p.makePlayoffsPct >= 99.95) return { text: "CLINCHED", bg: C.accentSoft, color: C.accent };
+    if (p.makePlayoffsPct <= 0.05) return { text: "OUT", bg: C.redSoft, color: C.red };
     return null;
   };
 
@@ -581,106 +912,137 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
     .filter((p) => p.makePlayoffsPct > 5 && p.makePlayoffsPct < 95)
     .sort((a, b) => b.makePlayoffsPct - a.makePlayoffsPct);
 
+  const oddsColor = (v: number) => (v >= 75 ? C.accent : v >= 25 ? C.gold : C.red);
+
   return (
-    <View style={s.section}>
+    <View>
       <SectionHeader
+        kicker="Race to the playoffs"
         title="Playoff Picture"
         sub={
           hasDivisions
-            ? `Seeds 1-${winnerSeeds} go to division winners (current leaders shown in gold). The remaining ${playoffTeams - winnerSeeds} spots go to the best records.${
-                hasOdds && input.simulationCount ? ` Odds from ${input.simulationCount.toLocaleString()} season simulations.` : ""
-              }${stale}`
-            : `Top ${playoffTeams} teams by record make the playoffs.${hasOdds && input.simulationCount ? ` Odds from ${input.simulationCount.toLocaleString()} season simulations.` : ""}${stale}`
+            ? `Seeds 1-${winnerSeeds} go to division winners (gold). The remaining ${playoffTeams - winnerSeeds} spots go to the best records.${sims}${stale}`
+            : `Top ${playoffTeams} teams by record make the playoffs.${sims}${stale}`
         }
       />
 
-      <View style={s.tableHead}>
-        <Text style={[s.th, { width: 24 }]}>SEED</Text>
-        <Text style={[s.th, { flex: 1 }]}>TEAM</Text>
-        <Text style={[s.th, { width: 40 }]}>REC</Text>
-        <Text style={[s.th, { width: 46, textAlign: "right" }]}>PF</Text>
-        {hasOdds && (
-          <>
-            <Text style={[s.th, { width: 120, marginLeft: 10 }]}>MAKE PLAYOFFS</Text>
-            {hasDivisions && <Text style={[s.th, { width: 38, textAlign: "right" }]}>DIV</Text>}
-            <Text style={[s.th, { width: 38, textAlign: "right" }]}>#1 SEED</Text>
-            <Text style={[s.th, { width: 50, textAlign: "right" }]}>STATUS</Text>
-          </>
-        )}
-      </View>
+      <View style={{ borderRadius: 8, borderWidth: 1, borderColor: C.border, overflow: "hidden" }}>
+        <View style={[s.tr, { backgroundColor: C.surface2 }]}>
+          {[
+            { t: "SEED", w: 26 },
+            { t: "TEAM", flex: 1 },
+            { t: "REC", w: 38 },
+            { t: "PF", w: 46, right: true },
+          ].map((c) => (
+            <Text key={c.t} style={[{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: C.muted, letterSpacing: 0.6 }, c.w ? { width: c.w } : { flex: 1 }, c.right ? { textAlign: "right" } : {}]}>
+              {c.t}
+            </Text>
+          ))}
+          {hasOdds && (
+            <>
+              <Text style={[{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: C.muted, width: 120, marginLeft: 10, letterSpacing: 0.6 }]}>MAKE PLAYOFFS</Text>
+              {hasDivisions && <Text style={{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: C.muted, width: 36, textAlign: "right" }}>DIV</Text>}
+              <Text style={{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: C.muted, width: 38, textAlign: "right" }}>#1 SEED</Text>
+              <Text style={{ fontSize: 6.5, fontFamily: "Helvetica-Bold", color: C.muted, width: 52, textAlign: "right" }}>STATUS</Text>
+            </>
+          )}
+        </View>
 
-      {seeds.map((seed) => {
-        const team = teams[seed.rosterId];
-        const p = predictionOf.get(seed.rosterId);
-        const status = statusOf(seed.rosterId);
-        const inField = seed.seed <= playoffTeams;
-        return (
-          <View key={seed.rosterId}>
-            <View
-              style={[
-                s.tr,
-                seed.isDivisionWinner ? { backgroundColor: C.goldSoft } : {},
-                team?.isUser ? { borderLeftWidth: 3, borderLeftColor: C.green } : {},
-                !inField ? { opacity: 0.8 } : {},
-              ]}
-              wrap={false}
-            >
-              <Text style={[s.bold, { width: 24, color: inField ? C.ink : C.muted }]}>{seed.seed}</Text>
-              <View style={[s.row, { flex: 1 }]}>
-                <TeamName team={team} bold={inField} grow={false} />
-                {seed.isDivisionWinner && (
-                  <Text style={[s.tag, { backgroundColor: C.gold, color: C.white, marginLeft: 3 }]}>DIV</Text>
+        {seeds.map((seed, i) => {
+          const team = teams[seed.rosterId];
+          const p = predictionOf.get(seed.rosterId);
+          const status = statusOf(seed.rosterId);
+          const inField = seed.seed <= playoffTeams;
+          const makePct = p?.makePlayoffsPct ?? 0;
+          return (
+            <View key={seed.rosterId}>
+              <View
+                style={[
+                  s.tr,
+                  { paddingVertical: 6, backgroundColor: seed.isDivisionWinner ? C.goldSoft : i % 2 === 1 ? C.surface2 : C.surface },
+                  !inField ? { opacity: 0.85 } : {},
+                ]}
+                wrap={false}
+              >
+                {seed.isDivisionWinner && <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: C.gold }} />}
+                {team?.isUser && !seed.isDivisionWinner && (
+                  <View style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: 3, backgroundColor: C.accent }} />
+                )}
+                <View style={{ width: 26 }}>
+                  <View
+                    style={{
+                      width: 17,
+                      height: 17,
+                      borderRadius: 9,
+                      alignItems: "center",
+                      justifyContent: "center",
+                      backgroundColor: seed.isDivisionWinner ? C.gold : inField ? C.accent : C.surface2,
+                    }}
+                  >
+                    <Text style={{ fontSize: 8, fontFamily: "Helvetica-Bold", color: inField ? C.onAccent : C.muted }}>{seed.seed}</Text>
+                  </View>
+                </View>
+                <View style={[s.row, { flex: 1 }]}>
+                  <TeamName team={team} bold={inField} grow={false} />
+                  {seed.isDivisionWinner && (
+                    <Text style={[s.tag, { backgroundColor: C.gold, color: C.bg, marginLeft: 3 }]}>DIV</Text>
+                  )}
+                </View>
+                <Text style={{ width: 38 }}>{team ? recordOf(team) : ""}</Text>
+                <Text style={{ width: 46, textAlign: "right", color: C.muted }}>{team ? fmt(team.pointsFor, 1) : ""}</Text>
+                {hasOdds && (
+                  <>
+                    <View style={[s.row, { width: 120, marginLeft: 10 }]}>
+                      <View style={[s.track, { marginRight: 6, backgroundColor: C.bg }]}>
+                        <View style={{ height: 5, borderRadius: 3, width: `${Math.max(makePct, makePct > 0 ? 3 : 0)}%`, backgroundColor: oddsColor(makePct) }} />
+                      </View>
+                      <Text style={[s.bold, { width: 28, textAlign: "right", color: oddsColor(makePct) }]}>{pct(p?.makePlayoffsPct)}</Text>
+                    </View>
+                    {hasDivisions && <Text style={{ width: 36, textAlign: "right", color: C.muted }}>{pct(p?.divisionWinnerPct)}</Text>}
+                    <Text style={{ width: 38, textAlign: "right", color: C.muted }}>{pct(p?.oneSeedPct)}</Text>
+                    <View style={{ width: 52, alignItems: "flex-end" }}>
+                      {status && <Text style={[s.tag, { backgroundColor: status.bg, color: status.color }]}>{status.text}</Text>}
+                    </View>
+                  </>
                 )}
               </View>
-              <Text style={{ width: 40 }}>{team ? recordOf(team) : ""}</Text>
-              <Text style={{ width: 46, textAlign: "right" }}>{team ? fmt(team.pointsFor, 1) : ""}</Text>
-              {hasOdds && (
-                <>
-                  <View style={[s.row, { width: 120, marginLeft: 10 }]}>
-                    <View style={[s.barTrack, { marginRight: 5 }]}>
-                      <View
-                        style={{
-                          height: 5,
-                          borderRadius: 3,
-                          width: `${p?.makePlayoffsPct ?? 0}%`,
-                          backgroundColor: (p?.makePlayoffsPct ?? 0) >= 75 ? C.green : (p?.makePlayoffsPct ?? 0) >= 25 ? "#fbbf24" : "#f87171",
-                        }}
-                      />
-                    </View>
-                    <Text style={{ width: 28, textAlign: "right" }}>{pct(p?.makePlayoffsPct)}</Text>
-                  </View>
-                  {hasDivisions && <Text style={{ width: 38, textAlign: "right" }}>{pct(p?.divisionWinnerPct)}</Text>}
-                  <Text style={{ width: 38, textAlign: "right" }}>{pct(p?.oneSeedPct)}</Text>
-                  <View style={{ width: 50, alignItems: "flex-end" }}>
-                    {status && <Text style={[s.tag, { backgroundColor: status.bg, color: status.color }]}>{status.text}</Text>}
-                  </View>
-                </>
+              {seed.seed === playoffTeams && (
+                <View style={{ backgroundColor: C.accentSoft, paddingVertical: 2 }}>
+                  <Text style={{ textAlign: "center", fontSize: 6, letterSpacing: 1.4, color: C.accent, fontFamily: "Helvetica-Bold" }}>
+                    PLAYOFF LINE
+                  </Text>
+                </View>
               )}
             </View>
-            {seed.seed === playoffTeams && (
-              <View style={{ borderTopWidth: 1.5, borderTopColor: C.green, borderStyle: "dashed", marginVertical: 1 }}>
-                <Text style={[s.small, { color: C.green, textAlign: "center", fontSize: 6.5, marginTop: 1 }]}>PLAYOFF LINE</Text>
-              </View>
-            )}
-          </View>
-        );
-      })}
+          );
+        })}
+      </View>
 
       {hasDivisions && (
         <View style={{ marginTop: 14 }} wrap={false}>
-          <Text style={s.cardLabel}>DIVISION RACES</Text>
+          <Text style={s.label}>DIVISION RACES</Text>
           <View style={{ flexDirection: "row" }}>
             {divisions.map((division, idx) => (
-              <View key={division.division} style={[s.card, { flex: 1, padding: 6, marginRight: idx < divisions.length - 1 ? 6 : 0 }]}>
-                <Text style={[s.bold, { marginBottom: 4 }]}>{division.name}</Text>
+              <View key={division.division} style={[s.card, { flex: 1, padding: 7, marginRight: idx < divisions.length - 1 ? 6 : 0 }]}>
+                <Text style={[s.bold, { marginBottom: 5, color: C.gold, fontSize: 9 }]}>{division.name.toUpperCase()}</Text>
                 {division.rosterIds.map((rosterId, rank) => {
                   const team = teams[rosterId];
                   const p = predictionOf.get(rosterId);
                   return (
-                    <View key={rosterId} style={[s.row, { marginBottom: 3, backgroundColor: rank === 0 ? C.goldSoft : undefined, padding: 2, borderRadius: 2 }]}>
-                      <TeamName team={team} />
-                      <Text style={[s.small, { width: 30, textAlign: "right" }]}>{team ? recordOf(team) : ""}</Text>
-                      {hasOdds && <Text style={[s.small, { width: 30, textAlign: "right" }]}>{pct(p?.divisionWinnerPct)}</Text>}
+                    <View
+                      key={rosterId}
+                      style={[
+                        s.row,
+                        { marginBottom: 3, paddingVertical: 3, paddingHorizontal: 3, borderRadius: 4, backgroundColor: rank === 0 ? C.goldSoft : "transparent" },
+                      ]}
+                    >
+                      <TeamName team={team} size={14} showForm={false} />
+                      <Text style={[s.small, { width: 28, textAlign: "right" }]}>{team ? recordOf(team) : ""}</Text>
+                      {hasOdds && (
+                        <Text style={[s.bold, { width: 28, textAlign: "right", fontSize: 7.5, color: rank === 0 ? C.gold : C.muted }]}>
+                          {pct(p?.divisionWinnerPct)}
+                        </Text>
+                      )}
                     </View>
                   );
                 })}
@@ -692,15 +1054,15 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
 
       {hasOdds && bubble.length > 0 && (
         <View style={[s.card, { marginTop: 12 }]} wrap={false}>
-          <Text style={s.cardLabel}>BUBBLE WATCH</Text>
-          <Text style={s.small}>
-            Teams with a real shot either way:{" "}
-            {bubble
-              .slice(0, 6)
-              .map((p) => `${teams[p.rosterId]?.name} (${pct(p.makePlayoffsPct)})`)
-              .join(", ")}
-            .
-          </Text>
+          <Text style={s.label}>BUBBLE WATCH</Text>
+          <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
+            {bubble.slice(0, 6).map((p) => (
+              <View key={p.rosterId} style={[s.row, { marginRight: 12, marginBottom: 3 }]}>
+                <Text style={[s.bold, { fontSize: 8 }]}>{teams[p.rosterId]?.name}</Text>
+                <Text style={[s.bold, { fontSize: 8, marginLeft: 4, color: oddsColor(p.makePlayoffsPct) }]}>{pct(p.makePlayoffsPct)}</Text>
+              </View>
+            ))}
+          </View>
         </View>
       )}
     </View>
@@ -709,41 +1071,43 @@ function PlayoffSection({ input }: { input: WeeklyReportInput }) {
 
 export default function WeeklyReportPdf({ input }: { input: WeeklyReportInput }) {
   const { report } = input;
-  const generated = new Date(report.generatedAt).toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year: "numeric",
-  });
+  const theme = input.theme ?? "dark";
+  const ctx = useMemo<Ctx>(() => {
+    const C = PALETTES[theme];
+    const form = new Map<number, "hot" | "cold">();
+    report.highPerformers?.hot.forEach((t) => form.set(t.rosterId, "hot"));
+    report.highPerformers?.cold.forEach((t) => form.set(t.rosterId, "cold"));
+    return { C, s: makeStyles(C), form };
+  }, [theme, report]);
 
   return (
-    <Document title={`${report.league.name} Week ${report.week} Report`} author="Dynasty Command">
-      <PageShell report={report}>
-        <View style={s.header}>
-          <View>
-            <Text style={s.headerTitle}>{report.league.name}</Text>
-            <Text style={s.headerSub}>Weekly League Report - {report.league.season} Season</Text>
-          </View>
-          <View style={{ alignItems: "flex-end" }}>
-            <Text style={s.headerWeek}>WEEK {report.week}</Text>
-            <Text style={s.headerSub}>{generated}</Text>
-          </View>
-        </View>
-        <RecapSection report={report} />
-      </PageShell>
-
-      {report.highPerformers && (
+    <StyleContext.Provider value={ctx}>
+      <Document title={`${report.league.name} Week ${report.week} Report`} author="Dynasty Command">
         <PageShell report={report}>
-          <HighPerformersSection report={report} />
+          <Hero report={report} />
+          <RecapSection report={report} />
         </PageShell>
-      )}
 
-      <PageShell report={report}>
-        <PreviewSection input={input} />
-      </PageShell>
+        {report.highPerformers && (
+          <PageShell report={report}>
+            <HighPerformersSection report={report} />
+          </PageShell>
+        )}
 
-      <PageShell report={report}>
-        <PlayoffSection input={input} />
-      </PageShell>
-    </Document>
+        <PageShell report={report}>
+          <PreviewSection input={input} />
+        </PageShell>
+
+        {report.highPerformers && report.highPerformers.trends.length > 0 && (
+          <PageShell report={report}>
+            <FormGuide report={report} />
+          </PageShell>
+        )}
+
+        <PageShell report={report}>
+          <PlayoffSection input={input} />
+        </PageShell>
+      </Document>
+    </StyleContext.Provider>
   );
 }

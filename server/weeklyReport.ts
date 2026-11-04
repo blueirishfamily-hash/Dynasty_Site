@@ -157,7 +157,7 @@ export function buildRecap(
   return { games, callouts };
 }
 
-export function buildTrends(weeklyPoints: Map<number, number[]>): { hot: TeamTrend[]; cold: TeamTrend[] } {
+export function buildTrends(weeklyPoints: Map<number, number[]>): { hot: TeamTrend[]; cold: TeamTrend[]; all: TeamTrend[] } {
   const trends: TeamTrend[] = [];
   weeklyPoints.forEach((points, rosterId) => {
     if (points.length < 3) return;
@@ -176,6 +176,7 @@ export function buildTrends(weeklyPoints: Map<number, number[]>): { hot: TeamTre
   });
   trends.sort((a, b) => b.difference - a.difference);
   return {
+    all: trends,
     hot: trends.filter((t) => t.difference > 0).slice(0, 3),
     cold: trends
       .filter((t) => t.difference < 0)
@@ -189,7 +190,7 @@ export function buildHighPerformers(
   recap: { games: RecapGame[] },
   rosterPositions: string[],
   players: ReportPlayers,
-  trends: { hot: TeamTrend[]; cold: TeamTrend[] },
+  trends: { hot: TeamTrend[]; cold: TeamTrend[]; all: TeamTrend[] },
 ): WeeklyHighPerformers {
   const starters: HighPerformerPlayer[] = [];
   for (const entry of entries) {
@@ -246,6 +247,7 @@ export function buildHighPerformers(
     efficiency,
     hot: trends.hot,
     cold: trends.cold,
+    trends: trends.all,
   };
 }
 

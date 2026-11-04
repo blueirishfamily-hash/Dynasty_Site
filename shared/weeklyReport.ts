@@ -74,6 +74,8 @@ export interface WeeklyHighPerformers {
   efficiency: TeamEfficiency[];
   hot: TeamTrend[];
   cold: TeamTrend[];
+  /** Every team's trend, hottest first. */
+  trends: TeamTrend[];
 }
 
 export interface PreviewGame {
@@ -104,6 +106,8 @@ export interface WeeklyReportData {
   previewFinal: boolean;
   /** The league's current week; standings and playoff odds always reflect this point in time. */
   currentWeek: number;
+  /** First playoff week; regular-season weeks are 1 through playoffWeekStart - 1. */
+  playoffWeekStart: number;
   /** Standard deviation of a single team's weekly score, used for win probability. */
   scoreStdDev: number;
   teams: Record<number, WeeklyReportTeam>;
