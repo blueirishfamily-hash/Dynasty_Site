@@ -173,21 +173,35 @@ function FlameIcon({ size = 10, color }: { size?: number; color: string }) {
   );
 }
 
+const SNOW_SEGMENTS: Array<[number, number, number, number, number]> = (() => {
+  const segs: Array<[number, number, number, number, number]> = [];
+  const at = (a: number, along: number, across: number): [number, number] => [
+    12 + Math.cos(a) * along - Math.sin(a) * across,
+    12 + Math.sin(a) * along + Math.cos(a) * across,
+  ];
+  for (const deg of [0, 60, 120, 180, 240, 300]) {
+    const a = (deg * Math.PI) / 180;
+    const [sx, sy] = at(a, 0, 0);
+    const [ex, ey] = at(a, 10.5, 0);
+    segs.push([sx, sy, ex, ey, 1.7]);
+    for (const [r, len] of [[6.5, 3.4], [9.2, 2.2]]) {
+      const [bx, by] = at(a, r, 0);
+      for (const side of [1, -1]) {
+        const [tx, ty] = at(a, r + len * 0.8, len * side);
+        segs.push([bx, by, tx, ty, 1.5]);
+      }
+    }
+  }
+  return segs;
+})();
+
 function SnowIcon({ size = 10, color }: { size?: number; color: string }) {
-  const arms = [0, 60, 120].map((deg) => {
-    const rad = (deg * Math.PI) / 180;
-    const dx = Math.cos(rad) * 10;
-    const dy = Math.sin(rad) * 10;
-    return { x1: 12 - dx, y1: 12 - dy, x2: 12 + dx, y2: 12 + dy };
-  });
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24">
-      {arms.map((a, i) => (
-        <Line key={i} x1={a.x1} y1={a.y1} x2={a.x2} y2={a.y2} stroke={color} strokeWidth={2.2} strokeLinecap="round" />
+      {SNOW_SEGMENTS.map(([x1, y1, x2, y2, w], i) => (
+        <Line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke={color} strokeWidth={w} strokeLinecap="round" />
       ))}
-      <Circle cx={12} cy={12} r={2.2} fill={color} />
-      <Path d="M9.5 3.5 L12 6 L14.5 3.5" stroke={color} strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
-      <Path d="M9.5 20.5 L12 18 L14.5 20.5" stroke={color} strokeWidth={1.8} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+      <Circle cx={12} cy={12} r={1.6} fill={color} />
     </Svg>
   );
 }
