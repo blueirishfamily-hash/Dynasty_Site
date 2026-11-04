@@ -5,6 +5,16 @@ import { createHash } from "crypto";
 import { computeStandingsAnalysis } from "./standingsAnalysis";
 import { computePlayoffSeeding } from "../shared/playoffSeeding";
 import { buildProjectedBracket } from "../shared/playoffBracket";
+import {
+  buildHighPerformers,
+  buildPreview,
+  buildRecap,
+  buildTrends,
+  computeScoreStdDev,
+  pairMatchups,
+  type ReportMatchupEntry,
+} from "./weeklyReport";
+import type { WeeklyReportData, WeeklyReportTeam } from "../shared/weeklyReport";
 import type { AnalysisTeam } from "../shared/standingsAnalysis";
 import os from "os";
 import {
@@ -4348,6 +4358,169 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching playoff bracket:", error);
       res.status(500).json({ error: "Failed to fetch playoff bracket" });
+    }
+  });
+
+  const reportAvatarCache = new Map<string, string | null>();
+  const fetchAvatarDataUri = async (avatarId: string | null | undefined): Promise<string | null> => {
+    if (!avatarId) return null;
+    if (reportAvatarCache.has(avatarId)) return reportAvatarCache.get(avatarId) ?? null;
+    try {
+      const response = await fetch(`https://sleepercdn.com/avatars/thumbs/${encodeURIComponent(avatarId)}`);
+      if (!response.ok) {
+        reportAvatarCache.set(avatarId, null);
+        return null;
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      // The CDN's content-type header is unreliable (JPEGs labelled as PNG), so sniff the bytes.
+      const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+      const isJpeg = buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+      if (!isPng && !isJpeg) {
+        reportAvatarCache.set(avatarId, null);
+        return null;
+      }
+      const dataUri = `data:${isPng ? "image/png" : "image/jpeg"};base64,${buffer.toString("base64")}`;
+      reportAvatarCache.set(avatarId, dataUri);
+      return dataUri;
+    } catch {
+      return null;
+    }
+  };
+
+  // Weekly report data: last week's recap, high performers, this week's matchups, playoff seeding
+  app.get("/api/sleeper/league/:leagueId/weekly-report", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const userId = typeof req.query.userId === "string" ? req.query.userId : undefined;
+
+      const [rosters, users, league, nflState, players] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getLeague(leagueId),
+        getNFLState(),
+        getAllPlayers(),
+      ]);
+
+      const playoffWeekStart = Number((league.settings as any)?.playoff_week_start) || 15;
+      const requestedWeek = parseInt(String(req.query.week), 10);
+      const effectiveWeek = getEffectiveWeek(nflState, league);
+      const week = Number.isFinite(requestedWeek) && requestedWeek >= 1 ? Math.min(requestedWeek, 18) : effectiveWeek;
+      const recapWeek = week > 1 ? week - 1 : null;
+
+      const weeksToLoad = Array.from({ length: week }, (_, i) => i + 1);
+      const weekly = await Promise.all(
+        weeksToLoad.map((w) =>
+          getLeagueMatchups(leagueId, w)
+            .then((matchups) => ({ week: w, matchups: matchups as ReportMatchupEntry[] }))
+            .catch(() => ({ week: w, matchups: [] as ReportMatchupEntry[] })),
+        ),
+      );
+      const matchupsFor = (w: number) => weekly.find((x) => x.week === w)?.matchups ?? [];
+
+      const rosterPositions = league.roster_positions || [];
+      const recap = recapWeek ? buildRecap(matchupsFor(recapWeek), rosterPositions, players) : null;
+
+      // Weekly scoring history through the recap week (excludes the in-progress preview week)
+      const weeklyPoints = new Map<number, number[]>();
+      const lastCompleted = recapWeek ?? 0;
+      for (let w = 1; w <= lastCompleted; w++) {
+        pairMatchups(matchupsFor(w)).forEach(({ a, b }) => {
+          if ((a.points || 0) === 0 && (b.points || 0) === 0) return;
+          [a, b].forEach((entry) => {
+            const list = weeklyPoints.get(entry.roster_id) ?? [];
+            list.push(entry.points || 0);
+            weeklyPoints.set(entry.roster_id, list);
+          });
+        });
+      }
+
+      const highPerformers = recap
+        ? buildHighPerformers(matchupsFor(recapWeek as number), recap, rosterPositions, players, buildTrends(weeklyPoints))
+        : null;
+      const preview = buildPreview(matchupsFor(week));
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach((u) => userMap.set(u.user_id, u));
+
+      const divisionCount = Number((league.settings as any)?.divisions) || 0;
+      const seeding = computePlayoffSeeding(
+        rosters.map((roster) => ({
+          rosterId: roster.roster_id,
+          wins: roster.settings.wins || 0,
+          losses: roster.settings.losses || 0,
+          ties: roster.settings.ties || 0,
+          pointsFor: roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100,
+          division: (roster.settings as any).division ?? null,
+        })),
+        divisionCount,
+      );
+
+      const teamEntries = await Promise.all(
+        rosters.map(async (roster): Promise<[number, WeeklyReportTeam]> => {
+          const owner = userMap.get(roster.owner_id);
+          const name = owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`;
+          return [
+            roster.roster_id,
+            {
+              rosterId: roster.roster_id,
+              name,
+              initials: getTeamInitials(name),
+              avatar: await fetchAvatarDataUri(owner?.avatar),
+              isUser: !!userId && roster.owner_id === userId,
+              wins: roster.settings.wins || 0,
+              losses: roster.settings.losses || 0,
+              ties: roster.settings.ties || 0,
+              pointsFor: Math.round((roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100) * 100) / 100,
+              pointsAgainst:
+                Math.round(
+                  ((roster.settings as any).fpts_against + ((roster.settings as any).fpts_against_decimal || 0) / 100 || 0) * 100,
+                ) / 100,
+              division: seeding.hasDivisions ? (roster.settings as any).division : undefined,
+            },
+          ];
+        }),
+      );
+
+      const isPastSeason = parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
+      const phase: WeeklyReportData["phase"] =
+        league.status === "complete" || isPastSeason ? "complete" : week >= playoffWeekStart ? "playoffs" : "regular";
+
+      const report: WeeklyReportData = {
+        league: { name: league.name, season: league.season },
+        generatedAt: new Date().toISOString(),
+        week,
+        recapWeek,
+        previewWeek: week,
+        phase,
+        previewHasScores: preview.hasScores,
+        previewFinal: preview.hasScores && (week < effectiveWeek || phase === "complete"),
+        currentWeek: effectiveWeek,
+        scoreStdDev: Math.round(computeScoreStdDev(weeklyPoints) * 10) / 10,
+        teams: Object.fromEntries(teamEntries),
+        recap,
+        highPerformers,
+        preview: { games: preview.games },
+        seeding: {
+          hasDivisions: seeding.hasDivisions,
+          playoffTeams: Number(league.settings?.playoff_teams) || 6,
+          seeds: seeding.seeds.map((s) => ({
+            rosterId: s.rosterId,
+            seed: s.seed,
+            isDivisionWinner: s.isDivisionWinner,
+            division: seeding.hasDivisions ? s.division ?? undefined : undefined,
+          })),
+          divisions: seeding.divisions.map((d) => ({
+            division: d.division,
+            name: ((league.metadata as any)?.[`division_${d.division}`] as string | undefined) || `Division ${d.division}`,
+            rosterIds: d.rosterIds,
+          })),
+        },
+      };
+
+      res.json(report);
+    } catch (error) {
+      console.error("Error building weekly report:", error);
+      res.status(500).json({ error: "Failed to build weekly report" });
     }
   });
 

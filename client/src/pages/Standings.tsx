@@ -7,6 +7,7 @@ import PointsRaceChart from "@/components/PointsRaceChart";
 import ScheduleSimulator from "@/components/ScheduleSimulator";
 import PlayoffBracketTree, { DivisionBadge, type BracketData, type BracketTeam } from "@/components/PlayoffBracketTree";
 import PlayoffSeedingPanel from "@/components/PlayoffSeedingPanel";
+import WeeklyReportExport from "@/components/WeeklyReportExport";
 import type { StandingsAnalysis } from "@shared/standingsAnalysis";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -177,11 +178,18 @@ export default function Standings() {
 
   return (
     <div className="p-6 space-y-6">
-      <div>
-        <h1 className="font-heading text-3xl font-bold">League Standings</h1>
-        <p className="text-muted-foreground">
-          Full standings and scoring analysis for {league.name}
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="font-heading text-3xl font-bold">League Standings</h1>
+          <p className="text-muted-foreground">
+            Full standings and scoring analysis for {league.name}
+          </p>
+        </div>
+        <WeeklyReportExport
+          leagueId={league.leagueId}
+          userId={user.userId}
+          currentWeek={predictions?.currentWeek}
+        />
       </div>
 
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "standings" | "race" | "simulator" | "predictions" | "bracket")}>
