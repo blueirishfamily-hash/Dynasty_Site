@@ -4,6 +4,18 @@ import { storage } from "./storage";
 import { createHash } from "crypto";
 import { computeStandingsAnalysis } from "./standingsAnalysis";
 import type { AnalysisTeam } from "../shared/standingsAnalysis";
+import type { MatchupPreviewData } from "../shared/matchupPreview";
+import {
+  buildRadarStats,
+  computeForm,
+  computeHeadToHead,
+  computeRadarTotals,
+  lastCompletedRegularSeasonWeek,
+  summarizeHeadToHead,
+  type PreviewWeek,
+  type SeasonMatchups,
+  type WeeklyPlayerStats,
+} from "./matchupPreview";
 import os from "os";
 import {
   getSleeperUser,
@@ -1099,6 +1111,177 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error computing standings analysis:", error);
       res.status(500).json({ error: "Failed to compute standings analysis" });
+    }
+  });
+
+  // Matchup preview: radar strengths, season form, and head-to-head history for two rosters
+  const completedWeekStatsCache = new Map<string, WeeklyPlayerStats>();
+  const completedLeagueWeekCache = new Map<string, SleeperMatchup[]>();
+
+  const getCachedWeekStats = async (season: string, week: number): Promise<WeeklyPlayerStats> => {
+    const key = `${season}-${week}`;
+    const cached = completedWeekStatsCache.get(key);
+    if (cached) return cached;
+    const stats = await getPlayerStats(season, week);
+    completedWeekStatsCache.set(key, stats);
+    return stats;
+  };
+
+  const getLeagueWeekMatchups = async (leagueId: string, week: number, cacheable: boolean): Promise<SleeperMatchup[]> => {
+    const key = `${leagueId}-${week}`;
+    if (cacheable) {
+      const cached = completedLeagueWeekCache.get(key);
+      if (cached) return cached;
+    }
+    const matchups = await getLeagueMatchups(leagueId, week).catch(() => [] as SleeperMatchup[]);
+    if (cacheable) completedLeagueWeekCache.set(key, matchups);
+    return matchups;
+  };
+
+  app.get("/api/sleeper/league/:leagueId/matchup-preview", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const rosterIdA = parseInt(req.query.rosterIdA as string, 10);
+      const rosterIdB = parseInt(req.query.rosterIdB as string, 10);
+      if (!Number.isFinite(rosterIdA) || !Number.isFinite(rosterIdB) || rosterIdA === rosterIdB) {
+        return res.status(400).json({ error: "rosterIdA and rosterIdB must be two different roster ids" });
+      }
+
+      const [rosters, users, nflState, league] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getNFLState(),
+        getLeague(leagueId).catch(() => null),
+      ]);
+
+      const rosterA = rosters.find((r) => r.roster_id === rosterIdA);
+      const rosterB = rosters.find((r) => r.roster_id === rosterIdB);
+      if (!rosterA || !rosterB) {
+        return res.status(404).json({ error: "Roster not found in this league" });
+      }
+
+      const season = String(league?.season ?? nflState.season);
+      const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
+      const isPastSeason = !!league?.season && parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
+      const seasonComplete =
+        isPastSeason ||
+        league?.status === "complete" ||
+        nflState.season_type === "post" ||
+        nflState.season_type === "off";
+      const lastWeek = lastCompletedRegularSeasonWeek({
+        playoffWeekStart,
+        currentWeek: getEffectiveWeek(nflState, league),
+        seasonComplete,
+      });
+      const weekNumbers = Array.from({ length: lastWeek }, (_, i) => i + 1);
+
+      const toPreviewWeeks = (weeks: Array<{ week: number; matchups: SleeperMatchup[] }>): PreviewWeek[] =>
+        weeks.map(({ week, matchups }) => ({
+          week,
+          matchups: matchups.map((m) => ({
+            roster_id: m.roster_id,
+            matchup_id: m.matchup_id,
+            points: m.points,
+            starters: m.starters,
+          })),
+        }));
+
+      const [currentWeeks, statsEntries] = await Promise.all([
+        Promise.all(
+          weekNumbers.map(async (week) => ({
+            week,
+            matchups: await getLeagueWeekMatchups(leagueId, week, seasonComplete),
+          })),
+        ),
+        Promise.all(
+          weekNumbers.map(async (week) => [week, await getCachedWeekStats(season, week).catch(() => ({} as WeeklyPlayerStats))] as const),
+        ),
+      ]);
+      const weekly = toPreviewWeeks(currentWeeks);
+      const statsByWeek = new Map<number, WeeklyPlayerStats>(statsEntries);
+
+      const totalsByRoster = computeRadarTotals(
+        weekly,
+        statsByWeek,
+        rosters.map((r) => r.roster_id),
+      );
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach((u) => userMap.set(u.user_id, u));
+      const toTeam = (roster: (typeof rosters)[number]) => {
+        const owner = userMap.get(roster.owner_id);
+        const name = owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`;
+        return {
+          rosterId: roster.roster_id,
+          name,
+          initials: getTeamInitials(name),
+          avatar: owner?.avatar ? `https://sleepercdn.com/avatars/thumbs/${owner.avatar}` : null,
+        };
+      };
+
+      const seasonsToSearch: SeasonMatchups[] = [{ season, rosterIdA, rosterIdB, weekly }];
+      const seasonsSearched = [season];
+
+      // Walk previous seasons, matching each owner to their roster in that season
+      let previousId: string | null | undefined = (league as any)?.previous_league_id;
+      let guard = 0;
+      while (previousId && previousId !== "0" && guard++ < 10) {
+        const [prevLeague, prevRosters] = await Promise.all([
+          getLeague(previousId).catch(() => null),
+          getLeagueRosters(previousId).catch(() => null),
+        ]);
+        if (!prevLeague || !prevRosters) break;
+
+        const prevA = rosterA.owner_id ? prevRosters.find((r) => r.owner_id === rosterA.owner_id) : undefined;
+        const prevB = rosterB.owner_id ? prevRosters.find((r) => r.owner_id === rosterB.owner_id) : undefined;
+        seasonsSearched.push(prevLeague.season);
+
+        if (prevA && prevB) {
+          const prevLeagueId: string = previousId;
+          const prevPlayoffStart = (prevLeague.settings as any)?.playoff_week_start || 15;
+          const prevWeeks = await Promise.all(
+            Array.from({ length: prevPlayoffStart - 1 }, (_, i) => i + 1).map(async (week) => ({
+              week,
+              matchups: await getLeagueWeekMatchups(prevLeagueId, week, true),
+            })),
+          );
+          seasonsToSearch.push({
+            season: prevLeague.season,
+            rosterIdA: prevA.roster_id,
+            rosterIdB: prevB.roster_id,
+            weekly: toPreviewWeeks(prevWeeks),
+          });
+        }
+        previousId = (prevLeague as any).previous_league_id;
+      }
+
+      const meetings = computeHeadToHead(seasonsToSearch);
+      const formA = computeForm(weekly, rosterIdA);
+      const response: MatchupPreviewData = {
+        teamA: toTeam(rosterA),
+        teamB: toTeam(rosterB),
+        weeks: weekly.filter((w) => w.matchups.length > 0).map((w) => w.week),
+        leagueSize: rosters.length,
+        radar: {
+          teamA: buildRadarStats(totalsByRoster, rosterIdA),
+          teamB: buildRadarStats(totalsByRoster, rosterIdB),
+          gamesPlayed: formA.length,
+        },
+        form: {
+          teamA: formA,
+          teamB: computeForm(weekly, rosterIdB),
+        },
+        headToHead: {
+          meetings,
+          summary: summarizeHeadToHead(meetings),
+          seasonsSearched,
+        },
+      };
+
+      res.json(response);
+    } catch (error) {
+      console.error("Error computing matchup preview:", error);
+      res.status(500).json({ error: "Failed to compute matchup preview" });
     }
   });
 
