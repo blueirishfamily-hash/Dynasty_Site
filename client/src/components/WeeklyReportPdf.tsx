@@ -774,6 +774,40 @@ function FormGuide({ report }: { report: WeeklyReportData }) {
   );
 }
 
+interface StakePill {
+  key: string;
+  label: string;
+  detail: string;
+  tone: "gold" | "accent" | "red";
+}
+
+function stakePillsFor(game: PreviewGame, teams: Record<number, WeeklyReportTeam>): StakePill[] {
+  if (!game.stakes) return [];
+  const pills: StakePill[] = [];
+  const sides = [
+    { id: game.team1, stake: game.stakes.team1 },
+    { id: game.team2, stake: game.stakes.team2 },
+  ];
+  for (const { id, stake } of sides) {
+    const name = teams[id]?.name ?? `Team ${id}`;
+    if (stake.clinchOneSeed) {
+      pills.push({ key: `${id}-seed`, label: "1 SEED CLINCH", detail: `${name} locks up the 1 seed with a win`, tone: "gold" });
+    } else if (stake.clinchDivision) {
+      pills.push({ key: `${id}-div`, label: "DIVISION CLINCH", detail: `${name} wins the division with a win`, tone: "gold" });
+    } else if (stake.clinchPlayoff) {
+      pills.push({ key: `${id}-po`, label: "PLAYOFF CLINCH", detail: `${name} clinches a playoff spot with a win`, tone: "accent" });
+    }
+  }
+  const out = sides.filter((x) => x.stake.eliminated);
+  if (out.length === 2) {
+    pills.push({ key: "elim", label: "ELIMINATION GAME", detail: "The loser is eliminated from playoff contention", tone: "red" });
+  } else if (out.length === 1) {
+    const name = teams[out[0].id]?.name ?? `Team ${out[0].id}`;
+    pills.push({ key: `${out[0].id}-elim`, label: "ELIMINATION GAME", detail: `${name} is eliminated with a loss`, tone: "red" });
+  }
+  return pills;
+}
+
 interface PreviewRow {
   game: PreviewGame;
   p1: number;
@@ -830,10 +864,15 @@ function PreviewSection({ input }: { input: WeeklyReportInput }) {
     : report.previewHasScores
     ? "Scores shown are the current totals for this week's games."
     : "Projections use each team's optimal-lineup projection; win odds assume typical weekly scoring variance.";
+  const hasStakes = rows.some((r) => stakePillsFor(r.game, teams).length > 0);
 
   return (
     <View>
-      <SectionHeader kicker="Look ahead" title={title} sub={sub} />
+      <SectionHeader
+        kicker="Look ahead"
+        title={title}
+        sub={hasStakes ? `${sub} Clinch and elimination tags are certain: they need no help from other games, and points-for tiebreakers are assumed to go against the team.` : sub}
+      />
       {!report.previewHasScores && rows.length > 1 && (
         <View style={[s.row, { marginBottom: 10, alignItems: "stretch" }]}>
           {callout(tossUp, "toss")}
@@ -847,12 +886,30 @@ function PreviewSection({ input }: { input: WeeklyReportInput }) {
         const mine = t1?.isUser || t2?.isUser;
         const live = game.score1 != null && game.score2 != null;
         const favored1 = win1 >= 0.5;
+        const pills = stakePillsFor(game, teams);
+        const toneColor = (tone: StakePill["tone"]) => (tone === "gold" ? C.gold : tone === "accent" ? C.accent : C.red);
+        const toneSoft = (tone: StakePill["tone"]) => (tone === "gold" ? C.goldSoft : tone === "accent" ? C.accentSoft : C.redSoft);
+        const stakeBorder = pills.length > 0 ? toneColor(pills[0].tone) : undefined;
         return (
           <View
             key={game.matchupId}
-            style={[s.card, { marginBottom: 7, padding: 9 }, mine ? { backgroundColor: C.accentSoft, borderColor: C.accent } : {}]}
+            style={[
+              s.card,
+              { marginBottom: 7, padding: 9 },
+              mine ? { backgroundColor: C.accentSoft, borderColor: C.accent } : stakeBorder ? { borderColor: stakeBorder } : {},
+            ]}
             wrap={false}
           >
+            {pills.length > 0 && (
+              <View style={{ flexDirection: "row", flexWrap: "wrap", marginBottom: 6 }}>
+                {pills.map((pill) => (
+                  <View key={pill.key} style={{ flexDirection: "row", alignItems: "center", marginRight: 10 }}>
+                    <Text style={[s.tag, { backgroundColor: toneSoft(pill.tone), color: toneColor(pill.tone), marginRight: 4 }]}>{pill.label}</Text>
+                    <Text style={[s.small, { fontSize: 7 }]}>{pill.detail}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
             <View style={s.row}>
               <View style={{ flex: 1 }}>
                 <View style={{ flexDirection: "row" }}>

@@ -1,3 +1,5 @@
+import type { TeamStake } from "./clinchScenarios";
+
 export interface WeeklyReportTeam {
   rosterId: number;
   name: string;
@@ -85,6 +87,8 @@ export interface PreviewGame {
   /** Present once the week has started producing points. */
   score1: number | null;
   score2: number | null;
+  /** What this game decides for each side; only present when it decides something. */
+  stakes?: { team1: TeamStake; team2: TeamStake };
 }
 
 export interface ReportSeed {

@@ -4,6 +4,7 @@ import { storage } from "./storage";
 import { createHash } from "crypto";
 import { computeStandingsAnalysis } from "./standingsAnalysis";
 import { computePlayoffSeeding } from "../shared/playoffSeeding";
+import { analyzeClinchScenarios, hasAnyStake, type ClinchAnalysis, type ClinchGame } from "../shared/clinchScenarios";
 import { buildProjectedBracket } from "../shared/playoffBracket";
 import {
   buildHighPerformers,
@@ -4367,6 +4368,7 @@ export async function registerRoutes(
   });
 
   const reportAvatarCache = new Map<string, string | null>();
+  const clinchAnalysisCache = new Map<string, ClinchAnalysis>();
   const fetchAvatarDataUri = async (avatarId: string | null | undefined): Promise<string | null> => {
     if (!avatarId) return null;
     if (reportAvatarCache.has(avatarId)) return reportAvatarCache.get(avatarId) ?? null;
@@ -4489,6 +4491,50 @@ export async function registerRoutes(
       const isPastSeason = parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
       const phase: WeeklyReportData["phase"] =
         league.status === "complete" || isPastSeason ? "complete" : week >= playoffWeekStart ? "playoffs" : "regular";
+
+      // Clinch / elimination stakes only make sense for the week standings currently reflect
+      const previewIsLive = phase === "regular" && week === effectiveWeek;
+      if (previewIsLive && preview.games.length > 0) {
+        try {
+          const futureWeeks = Array.from({ length: Math.max(0, playoffWeekStart - 1 - week) }, (_, i) => week + 1 + i);
+          const futureMatchups = await Promise.all(futureWeeks.map((w) => getLeagueMatchups(leagueId, w).catch(() => null)));
+          const schedulesKnown = futureMatchups.every((m) => m && pairMatchups(m as ReportMatchupEntry[]).length > 0);
+          if (schedulesKnown) {
+            const futureGames: ClinchGame[] = futureMatchups.flatMap((m) =>
+              pairMatchups(m as ReportMatchupEntry[]).map(({ a, b }) => ({ team1: a.roster_id, team2: b.roster_id })),
+            );
+            const previewGames: ClinchGame[] = preview.games.map((g) => ({ team1: g.team1, team2: g.team2 }));
+            const clinchTeams = rosters.map((roster) => ({
+              rosterId: roster.roster_id,
+              wins: roster.settings.wins || 0,
+              ties: roster.settings.ties || 0,
+              division: (roster.settings as any).division ?? null,
+            }));
+            const playoffTeamCount = Number(league.settings?.playoff_teams) || 6;
+            const cacheKey = JSON.stringify([leagueId, week, playoffTeamCount, clinchTeams, previewGames, futureGames]);
+            let analysis = clinchAnalysisCache.get(cacheKey);
+            if (!analysis) {
+              analysis =
+                analyzeClinchScenarios({
+                  teams: clinchTeams,
+                  playoffTeams: playoffTeamCount,
+                  hasDivisions: seeding.hasDivisions,
+                  previewGames,
+                  futureGames,
+                }) ?? undefined;
+              if (analysis) {
+                if (clinchAnalysisCache.size > 50) clinchAnalysisCache.clear();
+                clinchAnalysisCache.set(cacheKey, analysis);
+              }
+            }
+            analysis?.games.forEach((stakes, i) => {
+              if (hasAnyStake(stakes.team1) || hasAnyStake(stakes.team2)) preview.games[i].stakes = stakes;
+            });
+          }
+        } catch (error) {
+          console.error("Error computing clinch scenarios for weekly report:", error);
+        }
+      }
 
       const report: WeeklyReportData = {
         league: { name: league.name, season: league.season },
