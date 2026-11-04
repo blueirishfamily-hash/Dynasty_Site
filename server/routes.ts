@@ -3,6 +3,8 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { createHash } from "crypto";
 import { computeStandingsAnalysis } from "./standingsAnalysis";
+import { computePlayoffSeeding } from "../shared/playoffSeeding";
+import { buildProjectedBracket } from "../shared/playoffBracket";
 import type { AnalysisTeam } from "../shared/standingsAnalysis";
 import os from "os";
 import {
@@ -24,6 +26,7 @@ import {
   getDraft,
   getWinnersBracket,
   getLosersBracket,
+  type SleeperBracketMatchup,
   type SleeperRoster,
   type SleeperLeagueUser,
   type SleeperPlayer,
@@ -4063,7 +4066,7 @@ export async function registerRoutes(
   app.get("/api/sleeper/league/:leagueId/bracket", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const [bracket, losersBracket, rosters, users, league, nflState] = await Promise.all([
+      const [winnersBracket, losersBracket, rosters, users, league, nflState] = await Promise.all([
         getWinnersBracket(leagueId),
         getLosersBracket(leagueId).catch(() => null),
         getLeagueRosters(leagueId),
@@ -4087,74 +4090,41 @@ export async function registerRoutes(
         });
       });
 
-      // Calculate standings to determine playoff seeds
+      let bracket: SleeperBracketMatchup[] = winnersBracket;
       const currentWeek = league ? getEffectiveWeek(nflState, league) : nflState.week;
-      const matchupHistory: Map<number, Array<{ week: number; won: boolean | null }>> = new Map();
-      rosters.forEach(r => matchupHistory.set(r.roster_id, []));
-      
-      const weeksToFetch = Math.max(1, currentWeek - 1);
-      const matchupPromises = [];
-      for (let week = 1; week <= weeksToFetch; week++) {
-        matchupPromises.push(getLeagueMatchups(leagueId, week).then(matchups => ({ week, matchups })));
-      }
-      
-      const allMatchups = await Promise.all(matchupPromises);
-      
-      for (const { week, matchups } of allMatchups) {
-        const matchupGroups = new Map<number, typeof matchups>();
-        matchups.forEach(m => {
-          if (!matchupGroups.has(m.matchup_id)) {
-            matchupGroups.set(m.matchup_id, []);
-          }
-          matchupGroups.get(m.matchup_id)!.push(m);
-        });
-        
-        matchupGroups.forEach(group => {
-          if (group.length !== 2) return;
-          const [team1, team2] = group;
-          const score1 = team1.points || 0;
-          const score2 = team2.points || 0;
-          
-          if (score1 === 0 && score2 === 0) return;
-          
-          const history1 = matchupHistory.get(team1.roster_id);
-          const history2 = matchupHistory.get(team2.roster_id);
-          
-          if (score1 > score2) {
-            history1?.push({ week, won: true });
-            history2?.push({ week, won: false });
-          } else if (score2 > score1) {
-            history1?.push({ week, won: false });
-            history2?.push({ week, won: true });
-          }
-        });
-      }
+      const playoffTeams = league?.settings?.playoff_teams || 6;
+      const divisionCount = Number((league?.settings as any)?.divisions) || 0;
 
-      // Calculate standings
-      const standings = rosters
-        .map((roster) => {
-          const wins = roster.settings.wins;
-          const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
-          return {
-            rosterId: roster.roster_id,
-            wins,
-            pointsFor,
-          };
-        })
-        .sort((a, b) => {
-          if (b.wins !== a.wins) return b.wins - a.wins;
-          return b.pointsFor - a.pointsFor;
-        });
-
-      // Create seed map (1-indexed)
-      const seedMap = new Map<number, number>();
-      standings.forEach((team, index) => {
-        seedMap.set(team.rosterId, index + 1);
+      const seeding = computePlayoffSeeding(
+        rosters.map((roster) => ({
+          rosterId: roster.roster_id,
+          wins: roster.settings.wins || 0,
+          losses: roster.settings.losses || 0,
+          ties: roster.settings.ties || 0,
+          pointsFor: roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100,
+          division: (roster.settings as any).division ?? null,
+        })),
+        divisionCount,
+      );
+      const seedInfo = new Map(seeding.seeds.map((s) => [s.rosterId, s]));
+      const seedMap = new Map<number, number>(seeding.seeds.map((s) => [s.rosterId, s.seed]));
+      const withSeedInfo = <T extends { rosterId: number }>(team: T) => ({
+        ...team,
+        seed: seedMap.get(team.rosterId),
+        division: seeding.hasDivisions ? seedInfo.get(team.rosterId)?.division ?? undefined : undefined,
+        isDivisionWinner: seedInfo.get(team.rosterId)?.isDivisionWinner ?? false,
       });
+
+      // Before Sleeper publishes a bracket, show the one the current standings would produce.
+      const isProjected = bracket.length === 0 && league?.status !== "complete";
+      if (isProjected) {
+        bracket = buildProjectedBracket(
+          seeding.seeds.slice(0, playoffTeams).map((s) => s.rosterId),
+        );
+      }
 
       // Determine number of rounds
       const maxRound = Math.max(...bracket.map(m => m.r), 0);
-      const playoffTeams = league?.settings?.playoff_teams || 6;
       const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
 
       // Fetch playoff matchup data for scoring
@@ -4276,8 +4246,6 @@ export async function registerRoutes(
         .map(matchup => {
           const team1Data = matchup.t1 ? teamMap.get(matchup.t1) : null;
           const team2Data = matchup.t2 ? teamMap.get(matchup.t2) : null;
-          const team1Seed = matchup.t1 ? seedMap.get(matchup.t1) : undefined;
-          const team2Seed = matchup.t2 ? seedMap.get(matchup.t2) : undefined;
           
           // Get scores for this matchup
           const scores = getMatchupScores(matchup.t1, matchup.t2, matchup.r);
@@ -4285,20 +4253,18 @@ export async function registerRoutes(
           return {
         round: matchup.r,
         matchupId: matchup.m,
-            team1: matchup.t1 && team1Data ? {
+            team1: matchup.t1 && team1Data ? withSeedInfo({
           rosterId: matchup.t1,
               name: team1Data.name,
               initials: team1Data.initials,
               avatar: team1Data.avatar,
-              seed: team1Seed,
-        } : null,
-            team2: matchup.t2 && team2Data ? {
+        }) : null,
+            team2: matchup.t2 && team2Data ? withSeedInfo({
           rosterId: matchup.t2,
               name: team2Data.name,
               initials: team2Data.initials,
               avatar: team2Data.avatar,
-              seed: team2Seed,
-        } : null,
+        }) : null,
         winner: matchup.w,
         loser: matchup.l,
         team1From: matchup.t1_from,
@@ -4313,15 +4279,13 @@ export async function registerRoutes(
       const placementFromBracket = (m: typeof bracket[0]) => {
         const team1Data = m.t1 ? teamMap.get(m.t1) : null;
         const team2Data = m.t2 ? teamMap.get(m.t2) : null;
-        const team1Seed = m.t1 ? seedMap.get(m.t1) : undefined;
-        const team2Seed = m.t2 ? seedMap.get(m.t2) : undefined;
         const scores = getMatchupScores(m.t1, m.t2, m.r);
         return {
           gameType: String(m.p),
           round: m.r,
           matchupId: m.m,
-          team1: m.t1 && team1Data ? { rosterId: m.t1, name: team1Data.name, initials: team1Data.initials, avatar: team1Data.avatar, seed: team1Seed } : null,
-          team2: m.t2 && team2Data ? { rosterId: m.t2, name: team2Data.name, initials: team2Data.initials, avatar: team2Data.avatar, seed: team2Seed } : null,
+          team1: m.t1 && team1Data ? withSeedInfo({ rosterId: m.t1, name: team1Data.name, initials: team1Data.initials, avatar: team1Data.avatar }) : null,
+          team2: m.t2 && team2Data ? withSeedInfo({ rosterId: m.t2, name: team2Data.name, initials: team2Data.initials, avatar: team2Data.avatar }) : null,
           winner: m.w ?? null,
           loser: m.l ?? null,
           placement: m.p,
@@ -4352,6 +4316,33 @@ export async function registerRoutes(
         matchups: bracketWithNames,
         rounds: maxRound,
         teams: Object.fromEntries(teamMap),
+        projected: isProjected,
+        seeding: {
+          hasDivisions: seeding.hasDivisions,
+          playoffTeams,
+          seeds: seeding.seeds.map((seed) => {
+            const info = teamMap.get(seed.rosterId);
+            return {
+              rosterId: seed.rosterId,
+              seed: seed.seed,
+              name: info?.name ?? `Team ${seed.rosterId}`,
+              initials: info?.initials ?? "",
+              avatar: info?.avatar ?? null,
+              wins: seed.wins,
+              losses: seed.losses,
+              ties: seed.ties,
+              pointsFor: Math.round(seed.pointsFor * 100) / 100,
+              division: seeding.hasDivisions ? seed.division ?? undefined : undefined,
+              isDivisionWinner: seed.isDivisionWinner,
+              inPlayoffs: seed.seed <= playoffTeams,
+            };
+          }),
+          divisions: seeding.divisions.map((d) => ({
+            division: d.division,
+            name: ((league?.metadata as any)?.[`division_${d.division}`] as string | undefined) || `Division ${d.division}`,
+            rosterIds: d.rosterIds,
+          })),
+        },
         consolationMatchups: consolationMatchups.length > 0 ? consolationMatchups : undefined,
       });
     } catch (error) {
