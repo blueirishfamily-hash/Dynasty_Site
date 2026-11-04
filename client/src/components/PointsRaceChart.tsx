@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
-import { Pause, Play, RotateCcw } from "lucide-react";
+import { motion } from "framer-motion";
+import { ArrowDown, ArrowUp, Crown, Pause, Play, RotateCcw } from "lucide-react";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -11,6 +13,7 @@ const MARGIN = { top: 24, right: 36, bottom: 8, left: 4 };
 const X_AXIS_HEIGHT = 28;
 const ICON_SIZE = 28;
 const PLAYBACK_WEEKS_PER_SECOND = 1.1;
+const BAR_ROW_HEIGHT = 40;
 
 const TEAM_COLORS = [
   "#4FD1C5", "#F6AD55", "#63B3ED", "#FC8181", "#B794F4", "#68D391",
@@ -20,6 +23,10 @@ const TEAM_COLORS = [
 
 interface PointsRaceChartProps {
   analysis: StandingsAnalysis;
+}
+
+function prefersReducedMotion(): boolean {
+  return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
 }
 
 type RaceRow = { week: number } & Record<string, number>;
@@ -144,18 +151,20 @@ function TeamHeadIcon({
 }
 
 export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
-  const { teams, weeks } = analysis;
+  const { teams, weeks, cumulative } = analysis;
   const lastIndex = weeks.length - 1;
 
-  const [progress, setProgress] = useState(lastIndex);
-  const [playing, setPlaying] = useState(false);
+  const shouldAutoplay = lastIndex > 0 && !prefersReducedMotion();
+  const [progress, setProgress] = useState(shouldAutoplay ? 0 : lastIndex);
+  const [playing, setPlaying] = useState(shouldAutoplay);
   const [focused, setFocused] = useState<number | null>(null);
   const frameRef = useRef<number | null>(null);
   const lastTickRef = useRef<number>(0);
 
   useEffect(() => {
-    setProgress(lastIndex);
-    setPlaying(false);
+    const autoplay = lastIndex > 0 && !prefersReducedMotion();
+    setProgress(autoplay ? 0 : lastIndex);
+    setPlaying(autoplay);
   }, [lastIndex]);
 
   useEffect(() => {
@@ -237,12 +246,32 @@ export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
     [teams, headRow],
   );
 
+  const finalMax = useMemo(
+    () => Math.max(...teams.map((t) => cumulative[t.rosterId][lastIndex] ?? 0), 1),
+    [teams, cumulative, lastIndex],
+  );
+
+  // Positions gained (+) or lost (-) at the most recently completed week
+  const rankMovement = useMemo(() => {
+    const movement = new Map<number, number>();
+    const base = Math.min(Math.floor(progress), lastIndex);
+    if (base < 1) return movement;
+    const rankAt = (index: number) => {
+      const order = [...teams].sort((a, b) => cumulative[b.rosterId][index] - cumulative[a.rosterId][index]);
+      return new Map(order.map((t, i) => [t.rosterId, i + 1]));
+    };
+    const now = rankAt(base);
+    const before = rankAt(base - 1);
+    teams.forEach((t) => movement.set(t.rosterId, (before.get(t.rosterId) ?? 0) - (now.get(t.rosterId) ?? 0)));
+    return movement;
+  }, [teams, cumulative, progress, lastIndex]);
+
   return (
     <Card data-testid="card-points-race">
       <CardHeader>
         <CardTitle className="font-heading text-xl">Cumulative Points Race</CardTitle>
         <CardDescription>
-          Running total of points scored each week. Press play to watch the season unfold, or drag the slider to jump to a week.
+          Running total of points scored each week. The race plays automatically. Use the controls to pause, replay, or drag the slider to jump to a week.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -273,7 +302,7 @@ export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_220px] gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-[1fr_280px] gap-4">
           <div style={{ height: CHART_HEIGHT }} data-testid="chart-points-race">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={rows} margin={MARGIN}>
@@ -357,26 +386,65 @@ export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
             </ResponsiveContainer>
           </div>
 
-          <div className="space-y-1" data-testid="race-leaderboard">
+          <div data-testid="race-leaderboard">
             <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
               Through week {Math.round(headWeek)}
             </div>
-            {leaderboard.map(({ team, value }, index) => (
-              <button
-                key={team.rosterId}
-                type="button"
-                onClick={() => setFocused((prev) => (prev === team.rosterId ? null : team.rosterId))}
-                className={`w-full flex items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-muted/60 ${
-                  focused === team.rosterId ? "bg-muted" : ""
-                } ${focused !== null && focused !== team.rosterId ? "opacity-50" : ""}`}
-                data-testid={`race-legend-${team.rosterId}`}
-              >
-                <span className="w-4 text-xs text-muted-foreground tabular-nums">{index + 1}</span>
-                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: colorByRoster.get(team.rosterId) }} />
-                <span className={`flex-1 truncate ${team.isUser ? "text-primary font-semibold" : ""}`}>{team.name}</span>
-                <span className="tabular-nums text-xs font-medium">{value.toFixed(1)}</span>
-              </button>
-            ))}
+            <div className="relative" style={{ height: teams.length * BAR_ROW_HEIGHT }}>
+              {leaderboard.map(({ team, value }, index) => {
+                const color = colorByRoster.get(team.rosterId)!;
+                const moved = rankMovement.get(team.rosterId) ?? 0;
+                const dimmed = focused !== null && focused !== team.rosterId;
+                return (
+                  <motion.button
+                    key={team.rosterId}
+                    type="button"
+                    initial={false}
+                    animate={{ y: index * BAR_ROW_HEIGHT, opacity: dimmed ? 0.4 : 1 }}
+                    transition={{ type: "spring", stiffness: 280, damping: 30 }}
+                    onClick={() => setFocused((prev) => (prev === team.rosterId ? null : team.rosterId))}
+                    className={`absolute left-0 right-0 flex items-center gap-2 rounded-md px-1.5 text-left hover:bg-muted/50 ${
+                      focused === team.rosterId ? "bg-muted" : ""
+                    }`}
+                    style={{ height: BAR_ROW_HEIGHT - 4 }}
+                    data-testid={`race-legend-${team.rosterId}`}
+                  >
+                    <span className="w-4 text-xs text-muted-foreground tabular-nums text-center">{index + 1}</span>
+                    <Avatar className="w-7 h-7 shrink-0" style={{ boxShadow: `0 0 0 2px ${color}` }}>
+                      {team.avatar && <AvatarImage src={team.avatar} alt={team.name} />}
+                      <AvatarFallback className="text-[9px] bg-muted">{team.initials}</AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1 text-xs leading-tight">
+                        <span className={`truncate ${team.isUser ? "text-primary font-semibold" : "font-medium"}`}>{team.name}</span>
+                        {index === 0 && progress > 0 && <Crown className="w-3 h-3 shrink-0 text-yellow-400" />}
+                        {moved > 0 && (
+                          <span className="flex items-center text-[10px] text-emerald-400 shrink-0" title={`Up ${moved}`}>
+                            <ArrowUp className="w-2.5 h-2.5" />
+                            {moved}
+                          </span>
+                        )}
+                        {moved < 0 && (
+                          <span className="flex items-center text-[10px] text-red-400 shrink-0" title={`Down ${-moved}`}>
+                            <ArrowDown className="w-2.5 h-2.5" />
+                            {-moved}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <div className="flex-1 h-2 rounded-full bg-muted/60 overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{ width: `${Math.min((value / finalMax) * 100, 100)}%`, backgroundColor: color }}
+                          />
+                        </div>
+                        <span className="tabular-nums text-[11px] font-medium w-12 text-right">{value.toFixed(1)}</span>
+                      </div>
+                    </div>
+                  </motion.button>
+                );
+              })}
+            </div>
             <p className="text-xs text-muted-foreground pt-2">Click a team to highlight its line.</p>
           </div>
         </div>
