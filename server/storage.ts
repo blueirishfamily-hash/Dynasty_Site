@@ -19,6 +19,7 @@ import {
   rosterMappingsTable,
   activeLeaguesTable,
   standingsSnapshotsTable,
+  playoffOddsSnapshotsTable,
   playerStatsSnapshotsTable,
   teamStatsSnapshotsTable,
   draftSnapshotsTable,
@@ -170,6 +171,9 @@ export interface IStorage {
   upsertYearRecapSnapshot(leagueId: string, season: string, data: string): Promise<void>;
   getYearRecapSnapshot(leagueId: string, season: string): Promise<{ data: string } | undefined>;
   upsertMetricsSnapshot(leagueId: string, season: string, teamLuckData: string, heatCheckData: string, powerRankingsData: string): Promise<void>;
+  getPlayoffOddsSnapshot(leagueId: string, season: string, week: number): Promise<string | undefined>;
+  /** Stores the snapshot only if none exists yet; returns whichever copy is now stored. */
+  savePlayoffOddsSnapshot(leagueId: string, season: string, week: number, data: string): Promise<string>;
   getMetricsSnapshot(leagueId: string, season: string): Promise<{ teamLuckData: string; heatCheckData: string; powerRankingsData: string } | undefined>;
 
   // Bidding reset
@@ -2034,6 +2038,54 @@ export class DatabaseStorage implements IStorage {
       ))
       .limit(1);
     return row;
+  }
+
+  private playoffOddsTableReady: Promise<void> | null = null;
+
+  private ensurePlayoffOddsTable(): Promise<void> {
+    if (!this.playoffOddsTableReady) {
+      this.playoffOddsTableReady = db
+        .execute(sql`
+          CREATE TABLE IF NOT EXISTS playoff_odds_snapshots (
+            id varchar(36) PRIMARY KEY,
+            league_id varchar(64) NOT NULL,
+            season varchar(8) NOT NULL,
+            week integer NOT NULL,
+            data text NOT NULL,
+            created_at bigint NOT NULL,
+            CONSTRAINT playoff_odds_snapshots_league_id_season_week_unique UNIQUE (league_id, season, week)
+          )
+        `)
+        .then(() => undefined)
+        .catch((error) => {
+          this.playoffOddsTableReady = null;
+          throw error;
+        });
+    }
+    return this.playoffOddsTableReady;
+  }
+
+  async getPlayoffOddsSnapshot(leagueId: string, season: string, week: number): Promise<string | undefined> {
+    await this.ensurePlayoffOddsTable();
+    const [row] = await db
+      .select({ data: playoffOddsSnapshotsTable.data })
+      .from(playoffOddsSnapshotsTable)
+      .where(and(
+        eq(playoffOddsSnapshotsTable.leagueId, leagueId),
+        eq(playoffOddsSnapshotsTable.season, season),
+        eq(playoffOddsSnapshotsTable.week, week),
+      ))
+      .limit(1);
+    return row?.data;
+  }
+
+  async savePlayoffOddsSnapshot(leagueId: string, season: string, week: number, data: string): Promise<string> {
+    await this.ensurePlayoffOddsTable();
+    await db
+      .insert(playoffOddsSnapshotsTable)
+      .values({ id: randomUUID(), leagueId, season, week, data, createdAt: Date.now() })
+      .onConflictDoNothing();
+    return (await this.getPlayoffOddsSnapshot(leagueId, season, week)) ?? data;
   }
 
   async upsertMetricsSnapshot(leagueId: string, season: string, teamLuckData: string, heatCheckData: string, powerRankingsData: string): Promise<void> {

@@ -3,6 +3,20 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import { createHash } from "crypto";
 import { computeStandingsAnalysis } from "./standingsAnalysis";
+import { computePlayoffSeeding } from "../shared/playoffSeeding";
+import { analyzeClinchScenarios, computeOutcomeBounds, hasAnyStake, type ClinchAnalysis, type ClinchGame } from "../shared/clinchScenarios";
+import { buildProjectedBracket } from "../shared/playoffBracket";
+import {
+  buildHighPerformers,
+  buildPreview,
+  buildRecap,
+  buildTrends,
+  computeScoreStdDev,
+  pairMatchups,
+  type ReportMatchupEntry,
+} from "./weeklyReport";
+import type { ReportOdds, WeeklyReportData, WeeklyReportTeam } from "../shared/weeklyReport";
+import { hashSeed, simulatePlayoffOdds, type OddsResult } from "./playoffOdds";
 import type { AnalysisTeam } from "../shared/standingsAnalysis";
 import os from "os";
 import {
@@ -24,6 +38,7 @@ import {
   getDraft,
   getWinnersBracket,
   getLosersBracket,
+  type SleeperBracketMatchup,
   type SleeperRoster,
   type SleeperLeagueUser,
   type SleeperPlayer,
@@ -3971,18 +3986,35 @@ export async function registerRoutes(
       // Convert to percentages and format response
       // Apply Bayesian smoothing to prevent 0%/100% unless mathematically certain
       // This accounts for upset potential and uncertainty in remaining games
+      const round2 = (value: number) => Math.round(value * 100) / 100;
       const smoothProbability = (successes: number, trials: number): number => {
         // Bayesian smoothing with prior: (successes + 1) / (trials + 2)
         // This ensures even 0/10000 becomes 0.01% and 10000/10000 becomes 99.99%
-        const smoothed = (successes + 1) / (trials + 2);
-        const pct = smoothed * 100;
-        // Round to 1 decimal place
-        return Math.round(pct * 10) / 10;
+        return round2(((successes + 1) / (trials + 2)) * 100);
+      };
+      // Exact 0 and 100 are reserved for outcomes that never/always happened in the simulation;
+      // anything else keeps at least 0.01% of room on either side.
+      const rawProbability = (successes: number, trials: number): number => {
+        if (successes <= 0) return 0;
+        if (successes >= trials) return 100;
+        return Math.min(99.99, Math.max(0.01, round2((successes / trials) * 100)));
       };
 
       // Only apply smoothing if regular season hasn't ended AND we're not in postseason
       // If remainingWeeks === 0 or we're in postseason, use raw percentages (teams are clinched/eliminated)
       const applySmoothing = remainingWeeks > 0 && !isPostseason;
+
+      // Outcomes that are already decided by the standings are pinned to exactly 0% / 100%
+      const outcomeBounds = new Map(
+        applySmoothing
+          ? computeOutcomeBounds(
+              teams.map((t) => ({ rosterId: t.rosterId, wins: t.wins, ties: t.ties, division: hasDivisions ? t.division : null })),
+              playoffTeams,
+              hasDivisions,
+              remainingWeeks,
+            ).map((b) => [b.rosterId, b] as const)
+          : [],
+      );
 
       // Sort by same criteria as dashboard standings: record → points scored → H2H
       const predictions = teams
@@ -3994,10 +4026,10 @@ export async function registerRoutes(
           const projectedPointsFor = Math.round((r.avgFinalPoints / SIMULATIONS) * 10) / 10;
           
           // Calculate raw percentages
-          const rawMakePlayoffsPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
-          const rawOneSeedPct = Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10;
+          const rawMakePlayoffsPct = rawProbability(r.makePlayoffs, SIMULATIONS);
+          const rawOneSeedPct = rawProbability(r.oneSeed, SIMULATIONS);
           const rawDivisionWinnerPct = hasDivisions 
-            ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
+            ? rawProbability(r.divisionWinner, SIMULATIONS) 
             : undefined;
           
           // Apply smoothing for probabilities when season is ongoing
@@ -4010,6 +4042,17 @@ export async function registerRoutes(
             oneSeedPct = smoothProbability(r.oneSeed, SIMULATIONS);
             if (hasDivisions) {
               divisionWinnerPct = smoothProbability(r.divisionWinner, SIMULATIONS);
+            }
+            const bounds = outcomeBounds.get(team.rosterId);
+            if (bounds) {
+              if (!bounds.canMakePlayoffs) makePlayoffsPct = 0;
+              else if (bounds.lockedPlayoffs) makePlayoffsPct = 100;
+              if (!bounds.canGetOneSeed) oneSeedPct = 0;
+              else if (bounds.lockedOneSeed) oneSeedPct = 100;
+              if (hasDivisions) {
+                if (!bounds.canWinDivision) divisionWinnerPct = 0;
+                else if (bounds.lockedDivision) divisionWinnerPct = 100;
+              }
             }
           }
           
@@ -4063,7 +4106,7 @@ export async function registerRoutes(
   app.get("/api/sleeper/league/:leagueId/bracket", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const [bracket, losersBracket, rosters, users, league, nflState] = await Promise.all([
+      const [winnersBracket, losersBracket, rosters, users, league, nflState] = await Promise.all([
         getWinnersBracket(leagueId),
         getLosersBracket(leagueId).catch(() => null),
         getLeagueRosters(leagueId),
@@ -4087,74 +4130,41 @@ export async function registerRoutes(
         });
       });
 
-      // Calculate standings to determine playoff seeds
+      let bracket: SleeperBracketMatchup[] = winnersBracket;
       const currentWeek = league ? getEffectiveWeek(nflState, league) : nflState.week;
-      const matchupHistory: Map<number, Array<{ week: number; won: boolean | null }>> = new Map();
-      rosters.forEach(r => matchupHistory.set(r.roster_id, []));
-      
-      const weeksToFetch = Math.max(1, currentWeek - 1);
-      const matchupPromises = [];
-      for (let week = 1; week <= weeksToFetch; week++) {
-        matchupPromises.push(getLeagueMatchups(leagueId, week).then(matchups => ({ week, matchups })));
-      }
-      
-      const allMatchups = await Promise.all(matchupPromises);
-      
-      for (const { week, matchups } of allMatchups) {
-        const matchupGroups = new Map<number, typeof matchups>();
-        matchups.forEach(m => {
-          if (!matchupGroups.has(m.matchup_id)) {
-            matchupGroups.set(m.matchup_id, []);
-          }
-          matchupGroups.get(m.matchup_id)!.push(m);
-        });
-        
-        matchupGroups.forEach(group => {
-          if (group.length !== 2) return;
-          const [team1, team2] = group;
-          const score1 = team1.points || 0;
-          const score2 = team2.points || 0;
-          
-          if (score1 === 0 && score2 === 0) return;
-          
-          const history1 = matchupHistory.get(team1.roster_id);
-          const history2 = matchupHistory.get(team2.roster_id);
-          
-          if (score1 > score2) {
-            history1?.push({ week, won: true });
-            history2?.push({ week, won: false });
-          } else if (score2 > score1) {
-            history1?.push({ week, won: false });
-            history2?.push({ week, won: true });
-          }
-        });
-      }
+      const playoffTeams = league?.settings?.playoff_teams || 6;
+      const divisionCount = Number((league?.settings as any)?.divisions) || 0;
 
-      // Calculate standings
-      const standings = rosters
-        .map((roster) => {
-          const wins = roster.settings.wins;
-          const pointsFor = roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100;
-          return {
-            rosterId: roster.roster_id,
-            wins,
-            pointsFor,
-          };
-        })
-        .sort((a, b) => {
-          if (b.wins !== a.wins) return b.wins - a.wins;
-          return b.pointsFor - a.pointsFor;
-        });
-
-      // Create seed map (1-indexed)
-      const seedMap = new Map<number, number>();
-      standings.forEach((team, index) => {
-        seedMap.set(team.rosterId, index + 1);
+      const seeding = computePlayoffSeeding(
+        rosters.map((roster) => ({
+          rosterId: roster.roster_id,
+          wins: roster.settings.wins || 0,
+          losses: roster.settings.losses || 0,
+          ties: roster.settings.ties || 0,
+          pointsFor: roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100,
+          division: (roster.settings as any).division ?? null,
+        })),
+        divisionCount,
+      );
+      const seedInfo = new Map(seeding.seeds.map((s) => [s.rosterId, s]));
+      const seedMap = new Map<number, number>(seeding.seeds.map((s) => [s.rosterId, s.seed]));
+      const withSeedInfo = <T extends { rosterId: number }>(team: T) => ({
+        ...team,
+        seed: seedMap.get(team.rosterId),
+        division: seeding.hasDivisions ? seedInfo.get(team.rosterId)?.division ?? undefined : undefined,
+        isDivisionWinner: seedInfo.get(team.rosterId)?.isDivisionWinner ?? false,
       });
+
+      // Before Sleeper publishes a bracket, show the one the current standings would produce.
+      const isProjected = bracket.length === 0 && league?.status !== "complete";
+      if (isProjected) {
+        bracket = buildProjectedBracket(
+          seeding.seeds.slice(0, playoffTeams).map((s) => s.rosterId),
+        );
+      }
 
       // Determine number of rounds
       const maxRound = Math.max(...bracket.map(m => m.r), 0);
-      const playoffTeams = league?.settings?.playoff_teams || 6;
       const playoffWeekStart = (league?.settings as any)?.playoff_week_start || 15;
 
       // Fetch playoff matchup data for scoring
@@ -4276,8 +4286,6 @@ export async function registerRoutes(
         .map(matchup => {
           const team1Data = matchup.t1 ? teamMap.get(matchup.t1) : null;
           const team2Data = matchup.t2 ? teamMap.get(matchup.t2) : null;
-          const team1Seed = matchup.t1 ? seedMap.get(matchup.t1) : undefined;
-          const team2Seed = matchup.t2 ? seedMap.get(matchup.t2) : undefined;
           
           // Get scores for this matchup
           const scores = getMatchupScores(matchup.t1, matchup.t2, matchup.r);
@@ -4285,20 +4293,18 @@ export async function registerRoutes(
           return {
         round: matchup.r,
         matchupId: matchup.m,
-            team1: matchup.t1 && team1Data ? {
+            team1: matchup.t1 && team1Data ? withSeedInfo({
           rosterId: matchup.t1,
               name: team1Data.name,
               initials: team1Data.initials,
               avatar: team1Data.avatar,
-              seed: team1Seed,
-        } : null,
-            team2: matchup.t2 && team2Data ? {
+        }) : null,
+            team2: matchup.t2 && team2Data ? withSeedInfo({
           rosterId: matchup.t2,
               name: team2Data.name,
               initials: team2Data.initials,
               avatar: team2Data.avatar,
-              seed: team2Seed,
-        } : null,
+        }) : null,
         winner: matchup.w,
         loser: matchup.l,
         team1From: matchup.t1_from,
@@ -4313,15 +4319,13 @@ export async function registerRoutes(
       const placementFromBracket = (m: typeof bracket[0]) => {
         const team1Data = m.t1 ? teamMap.get(m.t1) : null;
         const team2Data = m.t2 ? teamMap.get(m.t2) : null;
-        const team1Seed = m.t1 ? seedMap.get(m.t1) : undefined;
-        const team2Seed = m.t2 ? seedMap.get(m.t2) : undefined;
         const scores = getMatchupScores(m.t1, m.t2, m.r);
         return {
           gameType: String(m.p),
           round: m.r,
           matchupId: m.m,
-          team1: m.t1 && team1Data ? { rosterId: m.t1, name: team1Data.name, initials: team1Data.initials, avatar: team1Data.avatar, seed: team1Seed } : null,
-          team2: m.t2 && team2Data ? { rosterId: m.t2, name: team2Data.name, initials: team2Data.initials, avatar: team2Data.avatar, seed: team2Seed } : null,
+          team1: m.t1 && team1Data ? withSeedInfo({ rosterId: m.t1, name: team1Data.name, initials: team1Data.initials, avatar: team1Data.avatar }) : null,
+          team2: m.t2 && team2Data ? withSeedInfo({ rosterId: m.t2, name: team2Data.name, initials: team2Data.initials, avatar: team2Data.avatar }) : null,
           winner: m.w ?? null,
           loser: m.l ?? null,
           placement: m.p,
@@ -4352,11 +4356,357 @@ export async function registerRoutes(
         matchups: bracketWithNames,
         rounds: maxRound,
         teams: Object.fromEntries(teamMap),
+        projected: isProjected,
+        seeding: {
+          hasDivisions: seeding.hasDivisions,
+          playoffTeams,
+          seeds: seeding.seeds.map((seed) => {
+            const info = teamMap.get(seed.rosterId);
+            return {
+              rosterId: seed.rosterId,
+              seed: seed.seed,
+              name: info?.name ?? `Team ${seed.rosterId}`,
+              initials: info?.initials ?? "",
+              avatar: info?.avatar ?? null,
+              wins: seed.wins,
+              losses: seed.losses,
+              ties: seed.ties,
+              pointsFor: Math.round(seed.pointsFor * 100) / 100,
+              division: seeding.hasDivisions ? seed.division ?? undefined : undefined,
+              isDivisionWinner: seed.isDivisionWinner,
+              inPlayoffs: seed.seed <= playoffTeams,
+            };
+          }),
+          divisions: seeding.divisions.map((d) => ({
+            division: d.division,
+            name: ((league?.metadata as any)?.[`division_${d.division}`] as string | undefined) || `Division ${d.division}`,
+            rosterIds: d.rosterIds,
+          })),
+        },
         consolationMatchups: consolationMatchups.length > 0 ? consolationMatchups : undefined,
       });
     } catch (error) {
       console.error("Error fetching playoff bracket:", error);
       res.status(500).json({ error: "Failed to fetch playoff bracket" });
+    }
+  });
+
+  const reportAvatarCache = new Map<string, string | null>();
+  const clinchAnalysisCache = new Map<string, ClinchAnalysis>();
+  const fetchAvatarDataUri = async (avatarId: string | null | undefined): Promise<string | null> => {
+    if (!avatarId) return null;
+    if (reportAvatarCache.has(avatarId)) return reportAvatarCache.get(avatarId) ?? null;
+    try {
+      const response = await fetch(`https://sleepercdn.com/avatars/thumbs/${encodeURIComponent(avatarId)}`);
+      if (!response.ok) {
+        reportAvatarCache.set(avatarId, null);
+        return null;
+      }
+      const buffer = Buffer.from(await response.arrayBuffer());
+      // The CDN's content-type header is unreliable (JPEGs labelled as PNG), so sniff the bytes.
+      const isPng = buffer.length > 4 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47;
+      const isJpeg = buffer.length > 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+      if (!isPng && !isJpeg) {
+        reportAvatarCache.set(avatarId, null);
+        return null;
+      }
+      const dataUri = `data:${isPng ? "image/png" : "image/jpeg"};base64,${buffer.toString("base64")}`;
+      reportAvatarCache.set(avatarId, dataUri);
+      return dataUri;
+    } catch {
+      return null;
+    }
+  };
+
+  // Weekly report data: last week's recap, high performers, this week's matchups, playoff seeding
+  app.get("/api/sleeper/league/:leagueId/weekly-report", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const userId = typeof req.query.userId === "string" ? req.query.userId : undefined;
+
+      const [rosters, users, league, nflState, players] = await Promise.all([
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getLeague(leagueId),
+        getNFLState(),
+        getAllPlayers(),
+      ]);
+
+      const playoffWeekStart = Number((league.settings as any)?.playoff_week_start) || 15;
+      const requestedWeek = parseInt(String(req.query.week), 10);
+      const effectiveWeek = getEffectiveWeek(nflState, league);
+      const week = Number.isFinite(requestedWeek) && requestedWeek >= 1 ? Math.min(requestedWeek, 18) : effectiveWeek;
+      const recapWeek = week > 1 ? week - 1 : null;
+
+      const weeksToLoad = Array.from({ length: week }, (_, i) => i + 1);
+      const weekly = await Promise.all(
+        weeksToLoad.map((w) =>
+          getLeagueMatchups(leagueId, w)
+            .then((matchups) => ({ week: w, matchups: matchups as ReportMatchupEntry[] }))
+            .catch(() => ({ week: w, matchups: [] as ReportMatchupEntry[] })),
+        ),
+      );
+      const matchupsFor = (w: number) => weekly.find((x) => x.week === w)?.matchups ?? [];
+
+      const rosterPositions = league.roster_positions || [];
+      const recap = recapWeek ? buildRecap(matchupsFor(recapWeek), rosterPositions, players) : null;
+
+      // Weekly scoring history through the recap week (excludes the in-progress preview week)
+      const weeklyPoints = new Map<number, number[]>();
+      const lastCompleted = recapWeek ?? 0;
+      for (let w = 1; w <= lastCompleted; w++) {
+        pairMatchups(matchupsFor(w)).forEach(({ a, b }) => {
+          if ((a.points || 0) === 0 && (b.points || 0) === 0) return;
+          [a, b].forEach((entry) => {
+            const list = weeklyPoints.get(entry.roster_id) ?? [];
+            list.push(entry.points || 0);
+            weeklyPoints.set(entry.roster_id, list);
+          });
+        });
+      }
+
+      const highPerformers = recap
+        ? buildHighPerformers(matchupsFor(recapWeek as number), recap, rosterPositions, players, buildTrends(weeklyPoints))
+        : null;
+      const preview = buildPreview(matchupsFor(week));
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach((u) => userMap.set(u.user_id, u));
+
+      const divisionCount = Number((league.settings as any)?.divisions) || 0;
+      const isPastSeason = parseInt(league.season, 10) < parseInt(String(nflState.season), 10);
+      const phase: WeeklyReportData["phase"] =
+        league.status === "complete" || isPastSeason ? "complete" : week >= playoffWeekStart ? "playoffs" : "regular";
+
+      // Past weeks use standings and odds as they stood entering that week, not today's
+      const useAsOf = week < effectiveWeek || phase === "complete";
+      const throughWeek = Math.min(Math.max(0, week - 1), playoffWeekStart - 1);
+      const asOfRecords = new Map<number, { wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }>();
+      const asOfScores = new Map<number, number[]>();
+      if (useAsOf) {
+        rosters.forEach((r) => asOfRecords.set(r.roster_id, { wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0 }));
+        for (let w = 1; w <= throughWeek; w++) {
+          pairMatchups(matchupsFor(w)).forEach(({ a, b }) => {
+            const pa = a.points || 0;
+            const pb = b.points || 0;
+            if (pa === 0 && pb === 0) return;
+            const ra = asOfRecords.get(a.roster_id);
+            const rb = asOfRecords.get(b.roster_id);
+            if (!ra || !rb) return;
+            ra.pointsFor += pa;
+            ra.pointsAgainst += pb;
+            rb.pointsFor += pb;
+            rb.pointsAgainst += pa;
+            if (pa > pb) {
+              ra.wins++;
+              rb.losses++;
+            } else if (pb > pa) {
+              rb.wins++;
+              ra.losses++;
+            } else {
+              ra.ties++;
+              rb.ties++;
+            }
+            asOfScores.set(a.roster_id, [...(asOfScores.get(a.roster_id) ?? []), pa]);
+            asOfScores.set(b.roster_id, [...(asOfScores.get(b.roster_id) ?? []), pb]);
+          });
+        }
+      }
+      const recordOf = (roster: SleeperRoster) => {
+        const asOf = useAsOf ? asOfRecords.get(roster.roster_id) : undefined;
+        if (asOf) return asOf;
+        return {
+          wins: roster.settings.wins || 0,
+          losses: roster.settings.losses || 0,
+          ties: roster.settings.ties || 0,
+          pointsFor: roster.settings.fpts + (roster.settings.fpts_decimal || 0) / 100,
+          pointsAgainst:
+            (roster.settings as any).fpts_against + ((roster.settings as any).fpts_against_decimal || 0) / 100 || 0,
+        };
+      };
+
+      const seeding = computePlayoffSeeding(
+        rosters.map((roster) => ({
+          rosterId: roster.roster_id,
+          ...recordOf(roster),
+          division: (roster.settings as any).division ?? null,
+        })),
+        divisionCount,
+      );
+
+      const teamEntries = await Promise.all(
+        rosters.map(async (roster): Promise<[number, WeeklyReportTeam]> => {
+          const owner = userMap.get(roster.owner_id);
+          const name = owner?.metadata?.team_name || owner?.display_name || `Team ${roster.roster_id}`;
+          const record = recordOf(roster);
+          return [
+            roster.roster_id,
+            {
+              rosterId: roster.roster_id,
+              name,
+              initials: getTeamInitials(name),
+              avatar: await fetchAvatarDataUri(owner?.avatar),
+              isUser: !!userId && roster.owner_id === userId,
+              wins: record.wins,
+              losses: record.losses,
+              ties: record.ties,
+              pointsFor: Math.round(record.pointsFor * 100) / 100,
+              pointsAgainst: Math.round(record.pointsAgainst * 100) / 100,
+              division: seeding.hasDivisions ? (roster.settings as any).division : undefined,
+            },
+          ];
+        }),
+      );
+
+      let asOfOdds: WeeklyReportData["asOf"];
+      if (useAsOf) {
+        try {
+          const season = String(league.season);
+          let result: OddsResult | null = null;
+          const stored = await storage.getPlayoffOddsSnapshot(leagueId, season, week).catch(() => undefined);
+          if (stored) {
+            try {
+              result = JSON.parse(stored) as OddsResult;
+            } catch {
+              result = null;
+            }
+          }
+          if (!result) {
+            const remainingWeekNumbers = Array.from(
+              { length: Math.max(0, playoffWeekStart - 1 - throughWeek) },
+              (_, i) => throughWeek + 1 + i,
+            );
+            const remainingMatchups = await Promise.all(
+              remainingWeekNumbers.map((w) =>
+                w <= week ? Promise.resolve(matchupsFor(w)) : getLeagueMatchups(leagueId, w).then((m) => m as ReportMatchupEntry[]).catch(() => []),
+              ),
+            );
+            const remainingWeeks = remainingMatchups.map((m) =>
+              pairMatchups(m).map(({ a, b }): [number, number] => [a.roster_id, b.roster_id]),
+            );
+            result = simulatePlayoffOdds({
+              teams: rosters.map((roster) => {
+                const record = recordOf(roster);
+                return {
+                  rosterId: roster.roster_id,
+                  wins: record.wins,
+                  ties: record.ties,
+                  pointsFor: record.pointsFor,
+                  division: (roster.settings as any).division ?? null,
+                };
+              }),
+              weeklyScores: asOfScores,
+              remainingWeeks,
+              gamesPlayed: throughWeek,
+              playoffTeams: Number(league.settings?.playoff_teams) || 6,
+              divisionCount,
+              seed: hashSeed(`${leagueId}:${season}:${week}`),
+            });
+            const saved = await storage.savePlayoffOddsSnapshot(leagueId, season, week, JSON.stringify(result)).catch((error) => {
+              console.error("Could not store playoff odds snapshot:", error?.message || error);
+              return null;
+            });
+            if (saved) {
+              try {
+                result = JSON.parse(saved) as OddsResult;
+              } catch {
+                /* keep the freshly computed result */
+              }
+            }
+          }
+          asOfOdds = {
+            throughWeek,
+            odds: result.predictions as ReportOdds[],
+            simulationCount: result.simulationCount,
+          };
+        } catch (error) {
+          console.error("Error generating past-week playoff odds:", error);
+          asOfOdds = { throughWeek, odds: [], simulationCount: 0 };
+        }
+      }
+
+      // Clinch / elimination stakes only make sense for the week standings currently reflect
+      const previewIsLive = phase === "regular" && week === effectiveWeek && !useAsOf;
+      if (previewIsLive && preview.games.length > 0) {
+        try {
+          const futureWeeks = Array.from({ length: Math.max(0, playoffWeekStart - 1 - week) }, (_, i) => week + 1 + i);
+          const futureMatchups = await Promise.all(futureWeeks.map((w) => getLeagueMatchups(leagueId, w).catch(() => null)));
+          const schedulesKnown = futureMatchups.every((m) => m && pairMatchups(m as ReportMatchupEntry[]).length > 0);
+          if (schedulesKnown) {
+            const futureGames: ClinchGame[] = futureMatchups.flatMap((m) =>
+              pairMatchups(m as ReportMatchupEntry[]).map(({ a, b }) => ({ team1: a.roster_id, team2: b.roster_id })),
+            );
+            const previewGames: ClinchGame[] = preview.games.map((g) => ({ team1: g.team1, team2: g.team2 }));
+            const clinchTeams = rosters.map((roster) => ({
+              rosterId: roster.roster_id,
+              wins: roster.settings.wins || 0,
+              ties: roster.settings.ties || 0,
+              division: (roster.settings as any).division ?? null,
+            }));
+            const playoffTeamCount = Number(league.settings?.playoff_teams) || 6;
+            const cacheKey = JSON.stringify([leagueId, week, playoffTeamCount, clinchTeams, previewGames, futureGames]);
+            let analysis = clinchAnalysisCache.get(cacheKey);
+            if (!analysis) {
+              analysis =
+                analyzeClinchScenarios({
+                  teams: clinchTeams,
+                  playoffTeams: playoffTeamCount,
+                  hasDivisions: seeding.hasDivisions,
+                  previewGames,
+                  futureGames,
+                }) ?? undefined;
+              if (analysis) {
+                if (clinchAnalysisCache.size > 50) clinchAnalysisCache.clear();
+                clinchAnalysisCache.set(cacheKey, analysis);
+              }
+            }
+            analysis?.games.forEach((stakes, i) => {
+              if (hasAnyStake(stakes.team1) || hasAnyStake(stakes.team2)) preview.games[i].stakes = stakes;
+            });
+          }
+        } catch (error) {
+          console.error("Error computing clinch scenarios for weekly report:", error);
+        }
+      }
+
+      const report: WeeklyReportData = {
+        league: { name: league.name, season: league.season },
+        generatedAt: new Date().toISOString(),
+        week,
+        recapWeek,
+        previewWeek: week,
+        phase,
+        previewHasScores: preview.hasScores,
+        previewFinal: preview.hasScores && (week < effectiveWeek || phase === "complete"),
+        currentWeek: effectiveWeek,
+        playoffWeekStart,
+        scoreStdDev: Math.round(computeScoreStdDev(weeklyPoints) * 10) / 10,
+        asOf: asOfOdds,
+        teams: Object.fromEntries(teamEntries),
+        recap,
+        highPerformers,
+        preview: { games: preview.games },
+        seeding: {
+          hasDivisions: seeding.hasDivisions,
+          playoffTeams: Number(league.settings?.playoff_teams) || 6,
+          seeds: seeding.seeds.map((s) => ({
+            rosterId: s.rosterId,
+            seed: s.seed,
+            isDivisionWinner: s.isDivisionWinner,
+            division: seeding.hasDivisions ? s.division ?? undefined : undefined,
+          })),
+          divisions: seeding.divisions.map((d) => ({
+            division: d.division,
+            name: ((league.metadata as any)?.[`division_${d.division}`] as string | undefined) || `Division ${d.division}`,
+            rosterIds: d.rosterIds,
+          })),
+        },
+      };
+
+      res.json(report);
+    } catch (error) {
+      console.error("Error building weekly report:", error);
+      res.status(500).json({ error: "Failed to build weekly report" });
     }
   });
 
