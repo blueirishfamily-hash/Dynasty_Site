@@ -4,7 +4,7 @@ import { storage } from "./storage";
 import { createHash } from "crypto";
 import { computeStandingsAnalysis } from "./standingsAnalysis";
 import { computePlayoffSeeding } from "../shared/playoffSeeding";
-import { analyzeClinchScenarios, hasAnyStake, type ClinchAnalysis, type ClinchGame } from "../shared/clinchScenarios";
+import { analyzeClinchScenarios, computeOutcomeBounds, hasAnyStake, type ClinchAnalysis, type ClinchGame } from "../shared/clinchScenarios";
 import { buildProjectedBracket } from "../shared/playoffBracket";
 import {
   buildHighPerformers,
@@ -4003,6 +4003,18 @@ export async function registerRoutes(
       // If remainingWeeks === 0 or we're in postseason, use raw percentages (teams are clinched/eliminated)
       const applySmoothing = remainingWeeks > 0 && !isPostseason;
 
+      // Outcomes that are already decided by the standings are pinned to exactly 0% / 100%
+      const outcomeBounds = new Map(
+        applySmoothing
+          ? computeOutcomeBounds(
+              teams.map((t) => ({ rosterId: t.rosterId, wins: t.wins, ties: t.ties, division: hasDivisions ? t.division : null })),
+              playoffTeams,
+              hasDivisions,
+              remainingWeeks,
+            ).map((b) => [b.rosterId, b] as const)
+          : [],
+      );
+
       // Sort by same criteria as dashboard standings: record → points scored → H2H
       const predictions = teams
         .map(team => {
@@ -4029,6 +4041,17 @@ export async function registerRoutes(
             oneSeedPct = smoothProbability(r.oneSeed, SIMULATIONS);
             if (hasDivisions) {
               divisionWinnerPct = smoothProbability(r.divisionWinner, SIMULATIONS);
+            }
+            const bounds = outcomeBounds.get(team.rosterId);
+            if (bounds) {
+              if (!bounds.canMakePlayoffs) makePlayoffsPct = 0;
+              else if (bounds.lockedPlayoffs) makePlayoffsPct = 100;
+              if (!bounds.canGetOneSeed) oneSeedPct = 0;
+              else if (bounds.lockedOneSeed) oneSeedPct = 100;
+              if (hasDivisions) {
+                if (!bounds.canWinDivision) divisionWinnerPct = 0;
+                else if (bounds.lockedDivision) divisionWinnerPct = 100;
+              }
             }
           }
           

@@ -63,6 +63,8 @@ class SeedEvaluator {
   gd = 0;
   g1 = 0;
   pp = 0;
+  pd = 0;
+  p1 = 0;
 
   private readonly hist: Int32Array;
   private readonly ge: Int32Array;
@@ -118,6 +120,8 @@ class SeedEvaluator {
     let gd = 0;
     let g1 = 0;
     let pp = 0;
+    let pd = 0;
+    let p1 = 0;
     for (let t = 0; t < n; t++) {
       const sT = s[t];
       const bit = 1 << t;
@@ -144,15 +148,20 @@ class SeedEvaluator {
           gp |= bit;
         }
         if (possibleWinner || cntGT - winnersGT < slots) pp |= bit;
+        if (possibleWinner) pd |= bit;
+        if (possibleWinner && sT === maxS) p1 |= bit;
       } else {
         if (cntGE < slots) gp |= bit;
         if (cntGT < slots) pp |= bit;
+        if (sT === maxS) p1 |= bit;
       }
     }
     this.gp = gp;
     this.gd = gd;
     this.g1 = g1;
     this.pp = pp;
+    this.pd = pd;
+    this.p1 = p1;
   }
 }
 
@@ -358,4 +367,69 @@ function mulberry32(seed: number): () => number {
 
 export function hasAnyStake(stake: TeamStake | undefined): boolean {
   return !!stake && (stake.clinchPlayoff || stake.clinchDivision || stake.clinchOneSeed || stake.eliminated);
+}
+
+export interface OutcomeBounds {
+  rosterId: number;
+  /** False when the team cannot make the playoffs even if it wins out and everyone else loses. */
+  canMakePlayoffs: boolean;
+  canWinDivision: boolean;
+  canGetOneSeed: boolean;
+  /** True when the team makes the playoffs even if it loses out and everyone else wins out. */
+  lockedPlayoffs: boolean;
+  lockedDivision: boolean;
+  lockedOneSeed: boolean;
+}
+
+/**
+ * Season-long certainties, ignoring the schedule: a team "cannot" do something only if it fails
+ * even in its best imaginable season, and is "locked" only if it succeeds even in its worst.
+ * Meant for pinning simulation odds to exactly 0% or 100% when the outcome is already decided.
+ */
+export function computeOutcomeBounds(
+  teams: ClinchTeam[],
+  playoffTeams: number,
+  hasDivisions: boolean,
+  remainingGamesPerTeam: number,
+): OutcomeBounds[] {
+  const n = teams.length;
+  if (n < 2 || n > 30) return [];
+
+  let division: Int32Array | null = null;
+  let divisionCount = 0;
+  if (hasDivisions && teams.every((t) => t.division != null)) {
+    const ids = Array.from(new Set(teams.map((t) => t.division as number))).sort((a, b) => a - b);
+    division = Int32Array.from(teams.map((t) => ids.indexOf(t.division as number)));
+    divisionCount = ids.length;
+    if (playoffTeams - divisionCount < 0) return [];
+  }
+
+  const base = Int32Array.from(teams.map((t) => 2 * t.wins + t.ties));
+  const extra = 2 * Math.max(0, remainingGamesPerTeam);
+  const maxScore = Math.max(...Array.from(base)) + extra;
+  const evaluator = new SeedEvaluator(n, division, divisionCount, playoffTeams, maxScore);
+  const scores = new Int32Array(n);
+  const bit = (mask: number, t: number) => ((mask >> t) & 1) === 1;
+
+  return teams.map((team, t) => {
+    for (let i = 0; i < n; i++) scores[i] = base[i];
+    scores[t] = base[t] + extra;
+    evaluator.evaluate(scores);
+    const best = { pp: bit(evaluator.pp, t), pd: bit(evaluator.pd, t), p1: bit(evaluator.p1, t) };
+
+    for (let i = 0; i < n; i++) scores[i] = base[i] + extra;
+    scores[t] = base[t];
+    evaluator.evaluate(scores);
+    const worst = { gp: bit(evaluator.gp, t), gd: bit(evaluator.gd, t), g1: bit(evaluator.g1, t) };
+
+    return {
+      rosterId: team.rosterId,
+      canMakePlayoffs: best.pp,
+      canWinDivision: division ? best.pd : best.p1,
+      canGetOneSeed: best.p1,
+      lockedPlayoffs: worst.gp,
+      lockedDivision: !!division && worst.gd,
+      lockedOneSeed: worst.g1,
+    };
+  });
 }
