@@ -6649,6 +6649,110 @@ export async function registerRoutes(
   });
 
   // Search players (for nomination lookup)
+  // Player career history: multi-season stats + fantasy team ownership
+  app.get("/api/sleeper/league/:leagueId/player/:playerId/career", async (req, res) => {
+    try {
+      const { leagueId, playerId } = req.params;
+
+      const [currentLeague, allPlayers, nflState] = await Promise.all([
+        getLeague(leagueId),
+        getAllPlayers(),
+        getNFLState(),
+      ]);
+
+      const player = allPlayers[playerId] ?? allPlayers[String(playerId)];
+      if (!player) return res.status(404).json({ error: "Player not found" });
+
+      const currentSeason = parseInt(currentLeague.season || nflState?.season || String(new Date().getFullYear()));
+      const lookbackYears = 5;
+
+      // Walk previous_league_id chain to gather per-season league IDs
+      const leagueChain: { season: number; leagueId: string }[] = [];
+      let walkId = leagueId;
+      let walkLeague: any = currentLeague;
+      for (let i = 0; i < lookbackYears; i++) {
+        const season = currentSeason - i;
+        leagueChain.push({ season, leagueId: walkId });
+        const prevId = walkLeague?.previous_league_id;
+        if (!prevId || prevId === "0") break;
+        try {
+          walkLeague = await getLeague(prevId);
+          walkId = prevId;
+        } catch {
+          break;
+        }
+      }
+
+      // Fetch rosters + users + stats for each season in parallel
+      const seasonResults = await Promise.allSettled(
+        leagueChain.map(async ({ season, leagueId: sId }) => {
+          const [rosters, users, stats] = await Promise.all([
+            getLeagueRosters(sId).catch(() => [] as any[]),
+            getLeagueUsers(sId).catch(() => [] as any[]),
+            getPlayerStats(String(season)).catch(() => ({} as Record<string, any>)),
+          ]);
+
+          const userMap = new Map(users.map((u: any) => [u.user_id, u]));
+
+          // Find which roster the player was on (players, taxi, or reserve)
+          const rosterWithPlayer = rosters.find((r: any) =>
+            [...(r.players || []), ...(r.taxi || []), ...(r.reserve || [])].map(String).includes(String(playerId))
+          );
+
+          let teamName: string | null = null;
+          let rosterId: number | null = null;
+          let teamAvatar: string | null = null;
+          if (rosterWithPlayer) {
+            const user = userMap.get(rosterWithPlayer.owner_id);
+            teamName = user?.metadata?.team_name || user?.display_name || `Team ${rosterWithPlayer.roster_id}`;
+            rosterId = rosterWithPlayer.roster_id;
+            teamAvatar = user?.avatar ? `https://sleepercdn.com/avatars/thumbs/${user.avatar}` : null;
+          }
+
+          const playerStats = stats[playerId] ?? stats[String(playerId)] ?? {};
+          const points = playerStats.pts_ppr ?? playerStats.pts_half_ppr ?? playerStats.pts_std ?? 0;
+          const gamesPlayed = playerStats.gp ?? 0;
+
+          return {
+            season,
+            points: Math.round(points * 10) / 10,
+            ppg: gamesPlayed > 0 ? Math.round((points / gamesPlayed) * 10) / 10 : 0,
+            gamesPlayed,
+            teamName,
+            rosterId,
+            teamAvatar,
+          };
+        })
+      );
+
+      const seasons = seasonResults
+        .map((r, i) =>
+          r.status === "fulfilled"
+            ? r.value
+            : { season: leagueChain[i].season, points: 0, ppg: 0, gamesPlayed: 0, teamName: null, rosterId: null, teamAvatar: null }
+        )
+        .filter(s => s.gamesPlayed > 0 || s.teamName !== null)
+        .sort((a, b) => a.season - b.season);
+
+      res.json({
+        player: {
+          id: playerId,
+          name: player.full_name || `${player.first_name || ""} ${player.last_name || ""}`.trim(),
+          position: player.position,
+          team: player.team,
+          age: player.age,
+          yearsExp: player.years_exp,
+          injuryStatus: player.injury_status,
+          college: player.college,
+        },
+        seasons,
+      });
+    } catch (error) {
+      console.error("Error fetching player career:", error);
+      res.status(500).json({ error: "Failed to fetch player career data" });
+    }
+  });
+
   app.get("/api/sleeper/players/search", async (req, res) => {
     try {
       const search = (req.query.q as string || "").toLowerCase().trim();
