@@ -1,8 +1,9 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
+import { PlayerDetailSheet, type PlayerCardTarget } from "@/components/contracts/PlayerDetailSheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -304,6 +305,7 @@ function OverviewTab({
   parsedContracts,
   deadCapEntries,
   currentYear,
+  onOpenPlayer,
 }: {
   selectedRosterId: number | null;
   setSelectedRosterId: (id: number) => void;
@@ -311,6 +313,7 @@ function OverviewTab({
   parsedContracts: ParsedContract[];
   deadCapEntries: DbDeadCapEntry[];
   currentYear: number;
+  onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
   const [productiveMode, setProductiveMode] = useState<"total" | "ppg">("total");
 
@@ -530,8 +533,14 @@ function OverviewTab({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {mostExpensive.map((row, i) => (
-                  <TableRow key={row.playerId} className="text-sm">
+                {mostExpensive.map((row, i) => {
+                  const contract = parsedContracts.find(c => c.playerId === row.playerId && c.rosterId === selectedRosterId) ?? null;
+                  return (
+                  <TableRow
+                    key={row.playerId}
+                    className="text-sm cursor-pointer hover:bg-muted/60 transition-colors"
+                    onClick={() => onOpenPlayer(row.playerId, selectedRosterId ?? 0, contract)}
+                  >
                     <TableCell className="text-muted-foreground font-mono text-xs">{i + 1}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -556,7 +565,8 @@ function OverviewTab({
                       {((row.salary / TOTAL_CAP) * 100).toFixed(1)}%
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
                 {mostExpensive.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-muted-foreground py-6 text-sm">
@@ -607,8 +617,14 @@ function OverviewTab({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {mostProductive.map((row, i) => (
-                  <TableRow key={row.id} className="text-sm">
+                {mostProductive.map((row, i) => {
+                  const contract = parsedContracts.find(c => c.playerId === row.id && c.rosterId === selectedRosterId) ?? null;
+                  return (
+                  <TableRow
+                    key={row.id}
+                    className="text-sm cursor-pointer hover:bg-muted/60 transition-colors"
+                    onClick={() => onOpenPlayer(row.id, selectedRosterId ?? 0, contract)}
+                  >
                     <TableCell className="text-muted-foreground font-mono text-xs">{i + 1}</TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -629,7 +645,8 @@ function OverviewTab({
                       {row.dollarPerPt > 0 ? `$${row.dollarPerPt.toFixed(2)}` : "—"}
                     </TableCell>
                   </TableRow>
-                ))}
+                  );
+                })}
                 {mostProductive.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center text-muted-foreground py-6 text-sm">
@@ -660,7 +677,11 @@ function OverviewTab({
           <CardContent>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
               {upcomingFAs.map(fa => (
-                <div key={fa.playerId} className="rounded-lg border border-border bg-card/50 p-3">
+                <div
+                  key={fa.playerId}
+                  className="rounded-lg border border-border bg-card/50 p-3 cursor-pointer hover:border-primary/50 hover:bg-muted/40 transition-colors"
+                  onClick={() => onOpenPlayer(fa.playerId, selectedRosterId ?? 0, fa)}
+                >
                   <div className="flex items-center gap-2 mb-2">
                     <Avatar className="w-8 h-8">
                       <AvatarImage
@@ -992,11 +1013,13 @@ function FreeAgencyTab({
   parsedContracts,
   playerMap,
   currentYear,
+  onOpenPlayer,
 }: {
   allRosters: AllRosterEntry[];
   parsedContracts: ParsedContract[];
   playerMap: Record<string, SleeperPlayer>;
   currentYear: number;
+  onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
   const [filterPos, setFilterPos] = useState("ALL");
   const [filterSeason, setFilterSeason] = useState(String(currentYear));
@@ -1106,7 +1129,11 @@ function FreeAgencyTab({
             </TableHeader>
             <TableBody>
               {expiringPlayers.map(p => (
-                <TableRow key={`${p.rosterId}-${p.playerId}`} className="text-sm">
+                <TableRow
+                  key={`${p.rosterId}-${p.playerId}`}
+                  className="text-sm cursor-pointer hover:bg-muted/60 transition-colors"
+                  onClick={() => onOpenPlayer(p.playerId, p.rosterId, p as unknown as ParsedContract)}
+                >
                   <TableCell className="pl-4">
                     <div className="flex items-center gap-2">
                       <Avatar className="w-7 h-7">
@@ -1324,6 +1351,7 @@ function RosterManagementTab({
   currentYear,
   leagueId,
   userId,
+  onOpenPlayer,
 }: {
   selectedRosterId: number | null;
   setSelectedRosterId: (id: number) => void;
@@ -1335,6 +1363,7 @@ function RosterManagementTab({
   currentYear: number;
   leagueId: string;
   userId: string;
+  onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
   const { toast } = useToast();
   const [search, setSearch] = useState("");
@@ -1601,7 +1630,11 @@ function RosterManagementTab({
                   const canTag = c && c.hasBeenFranchiseTagged === 0 && !hasTag;
                   const canExtend = c && c.hasBeenExtended === 0 && !hasExt;
                   return (
-                    <TableRow key={row.playerId} className={`text-sm ${!row.hasSalary ? "opacity-60" : ""}`}>
+                    <TableRow
+                      key={row.playerId}
+                      className={`text-sm cursor-pointer hover:bg-muted/60 transition-colors ${!row.hasSalary ? "opacity-60" : ""}`}
+                      onClick={() => onOpenPlayer(row.playerId, selectedRosterId ?? 0, c ?? null)}
+                    >
                       <TableCell className="pl-4">
                         <div className="flex items-center gap-2">
                           <Avatar className="w-7 h-7">
@@ -1638,7 +1671,7 @@ function RosterManagementTab({
                                 size="sm"
                                 variant="outline"
                                 className="h-6 px-2 text-[10px] border-blue-500/50 text-blue-600 hover:bg-blue-500/10"
-                                onClick={() => setExtensionTarget(c)}
+                                onClick={e => { e.stopPropagation(); setExtensionTarget(c); }}
                               >
                                 Extend
                               </Button>
@@ -1648,7 +1681,7 @@ function RosterManagementTab({
                                 size="sm"
                                 variant="outline"
                                 className="h-6 px-2 text-[10px] border-amber-500/50 text-amber-600 hover:bg-amber-500/10"
-                                onClick={() => setTagTarget(c)}
+                                onClick={e => { e.stopPropagation(); setTagTarget(c); }}
                               >
                                 Tag
                               </Button>
@@ -1658,7 +1691,7 @@ function RosterManagementTab({
                                 size="sm"
                                 variant="ghost"
                                 className="h-6 px-2 text-[10px] text-muted-foreground hover:text-destructive"
-                                onClick={() => undoTagMutation.mutate(c)}
+                                onClick={e => { e.stopPropagation(); undoTagMutation.mutate(c); }}
                                 disabled={undoTagMutation.isPending}
                               >
                                 Undo Tag
@@ -1884,6 +1917,7 @@ export default function ContractsHub() {
 
   const [activeTab, setActiveTab] = useState("overview");
   const [selectedRosterId, setSelectedRosterId] = useState<number | null>(null);
+  const [playerTarget, setPlayerTarget] = useState<PlayerCardTarget | null>(null);
 
   // Data fetching
   const { data: allRosters = [], isLoading: rostersLoading } = useQuery<AllRosterEntry[]>({
@@ -1948,6 +1982,16 @@ export default function ContractsHub() {
       setSelectedRosterId(allRosters[0].rosterId);
     }
   }, [allRosters, selectedRosterId]);
+
+  const openPlayer = useCallback((playerId: string, rosterId: number, contract: ParsedContract | null) => {
+    const teamEntry = allRosters.find(r => r.rosterId === rosterId);
+    setPlayerTarget({
+      playerId,
+      rosterId,
+      contract,
+      teamName: teamEntry?.teamName ?? `Team ${rosterId}`,
+    });
+  }, [allRosters]);
 
   if (user && league && !isCommissioner) return null;
 
@@ -2045,6 +2089,7 @@ export default function ContractsHub() {
                 parsedContracts={parsedContracts}
                 deadCapEntries={deadCapEntries}
                 currentYear={currentYear}
+                onOpenPlayer={openPlayer}
               />
             </TabsContent>
 
@@ -2067,6 +2112,7 @@ export default function ContractsHub() {
                 parsedContracts={parsedContracts}
                 playerMap={playerMap}
                 currentYear={currentYear}
+                onOpenPlayer={openPlayer}
               />
             </TabsContent>
 
@@ -2082,6 +2128,7 @@ export default function ContractsHub() {
                 currentYear={currentYear}
                 leagueId={league?.leagueId || ""}
                 userId={user?.userId || ""}
+                onOpenPlayer={openPlayer}
               />
             </TabsContent>
 
@@ -2095,6 +2142,15 @@ export default function ContractsHub() {
           </Tabs>
         )}
       </div>
+
+      {/* Player Detail Sheet */}
+      <PlayerDetailSheet
+        target={playerTarget}
+        onClose={() => setPlayerTarget(null)}
+        allRosters={allRosters.map(r => ({ rosterId: r.rosterId, teamName: r.teamName }))}
+        parsedContracts={parsedContracts}
+        currentYear={currentYear}
+      />
     </div>
   );
 }
