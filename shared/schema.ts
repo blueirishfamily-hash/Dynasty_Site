@@ -237,6 +237,17 @@ export const standingsSnapshotsTable = pgTable("standings_snapshots", {
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
+// Finished seasons of the league history, built once from Sleeper and then served from here
+export const leagueHistorySnapshotsTable = pgTable("league_history_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  data: text("data").notNull(), // JSON (SeasonHistory)
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (t) => ({
+  leagueSeasonUnique: unique().on(t.leagueId, t.season),
+}));
+
 export const playerStatsSnapshotsTable = pgTable("player_stats_snapshots", {
   id: varchar("id", { length: 36 }).primaryKey(),
   leagueId: varchar("league_id", { length: 64 }).notNull(),

@@ -19,6 +19,7 @@ import {
   rosterMappingsTable,
   activeLeaguesTable,
   standingsSnapshotsTable,
+  leagueHistorySnapshotsTable,
   playerStatsSnapshotsTable,
   teamStatsSnapshotsTable,
   draftSnapshotsTable,
@@ -170,6 +171,8 @@ export interface IStorage {
   upsertYearRecapSnapshot(leagueId: string, season: string, data: string): Promise<void>;
   getYearRecapSnapshot(leagueId: string, season: string): Promise<{ data: string } | undefined>;
   upsertMetricsSnapshot(leagueId: string, season: string, teamLuckData: string, heatCheckData: string, powerRankingsData: string): Promise<void>;
+  getLeagueHistorySnapshot(leagueId: string, season: string): Promise<string | undefined>;
+  saveLeagueHistorySnapshot(leagueId: string, season: string, data: string): Promise<void>;
   getMetricsSnapshot(leagueId: string, season: string): Promise<{ teamLuckData: string; heatCheckData: string; powerRankingsData: string } | undefined>;
 
   // Bidding reset
@@ -2034,6 +2037,48 @@ export class DatabaseStorage implements IStorage {
       ))
       .limit(1);
     return row;
+  }
+
+  private leagueHistoryTableReady: Promise<void> | null = null;
+
+  private ensureLeagueHistoryTable(): Promise<void> {
+    if (!this.leagueHistoryTableReady) {
+      this.leagueHistoryTableReady = db
+        .execute(sql`
+          CREATE TABLE IF NOT EXISTS league_history_snapshots (
+            id varchar(36) PRIMARY KEY,
+            league_id varchar(64) NOT NULL,
+            season varchar(8) NOT NULL,
+            data text NOT NULL,
+            created_at bigint NOT NULL,
+            CONSTRAINT league_history_snapshots_league_id_season_unique UNIQUE (league_id, season)
+          )
+        `)
+        .then(() => undefined)
+        .catch((error) => {
+          this.leagueHistoryTableReady = null;
+          throw error;
+        });
+    }
+    return this.leagueHistoryTableReady;
+  }
+
+  async getLeagueHistorySnapshot(leagueId: string, season: string): Promise<string | undefined> {
+    await this.ensureLeagueHistoryTable();
+    const [row] = await db
+      .select({ data: leagueHistorySnapshotsTable.data })
+      .from(leagueHistorySnapshotsTable)
+      .where(and(eq(leagueHistorySnapshotsTable.leagueId, leagueId), eq(leagueHistorySnapshotsTable.season, season)))
+      .limit(1);
+    return row?.data;
+  }
+
+  async saveLeagueHistorySnapshot(leagueId: string, season: string, data: string): Promise<void> {
+    await this.ensureLeagueHistoryTable();
+    await db
+      .insert(leagueHistorySnapshotsTable)
+      .values({ id: randomUUID(), leagueId, season, data, createdAt: Date.now() })
+      .onConflictDoNothing();
   }
 
   async upsertMetricsSnapshot(leagueId: string, season: string, teamLuckData: string, heatCheckData: string, powerRankingsData: string): Promise<void> {
