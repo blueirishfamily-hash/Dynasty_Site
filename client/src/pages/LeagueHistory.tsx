@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Button } from "@/components/ui/button";
@@ -18,6 +18,8 @@ import LeagueView from "@/components/history/LeagueView";
 import TeamsView from "@/components/history/TeamsView";
 import MatchupsView from "@/components/history/MatchupsView";
 import SeasonView from "@/components/history/SeasonView";
+
+const COMMISSIONER_USER_IDS = ["900186363130503168"];
 
 type Tab = "league" | "teams" | "matchups";
 
@@ -120,8 +122,20 @@ function HistoryBody() {
 }
 
 export default function LeagueHistory() {
-  const { league } = useSleeper();
-  const { data, isLoading, error } = useLeagueHistory();
+  const { user, league } = useSleeper();
+  const [, setLocation] = useLocation();
+  const isCommissioner = !!(user?.userId && league && (
+    (league.commissionerId && user.userId === league.commissionerId) ||
+    COMMISSIONER_USER_IDS.includes(user.userId)
+  ));
+
+  useEffect(() => {
+    if (user && league && !isCommissioner) setLocation("/");
+  }, [user, league, isCommissioner, setLocation]);
+
+  const { data, isLoading, error } = useLeagueHistory({ enabled: isCommissioner });
+
+  if (user && league && !isCommissioner) return null;
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto" data-testid="page-league-history">

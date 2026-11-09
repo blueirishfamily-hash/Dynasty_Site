@@ -12,7 +12,7 @@ import {
   type PlayoffResult,
 } from "@shared/leagueHistory";
 
-export function useLeagueHistory() {
+export function useLeagueHistory(options?: { enabled?: boolean }) {
   const { league } = useSleeper();
   return useQuery<LeagueHistory>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "history"],
@@ -21,7 +21,7 @@ export function useLeagueHistory() {
       if (!res.ok) throw new Error("Failed to load league history");
       return res.json();
     },
-    enabled: !!league?.leagueId,
+    enabled: !!league?.leagueId && (options?.enabled ?? true),
     staleTime: 5 * 60 * 1000,
   });
 }

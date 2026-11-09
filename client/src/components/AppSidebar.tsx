@@ -78,7 +78,7 @@ export default function AppSidebar({
 
   const navItems = isCommissioner
     ? baseNavItems
-    : baseNavItems.filter((item) => item.title !== "Settings");
+    : baseNavItems.filter((item) => item.title !== "Settings" && item.title !== "League History");
 
   const getRoundColor = (round: number) => {
     if (round === 1) return "bg-primary text-primary-foreground";
