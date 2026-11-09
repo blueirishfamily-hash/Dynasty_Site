@@ -30,7 +30,6 @@ import {
   ReferenceArea,
   ReferenceLine,
   Legend,
-  BarChart,
   Bar,
   Cell,
 } from "recharts";
@@ -166,12 +165,18 @@ function CareerTooltip({ active, payload, label }: any) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+interface SleeperPlayerMin {
+  position: string;
+  name: string;
+}
+
 interface PlayerDetailSheetProps {
   target: PlayerCardTarget | null;
   onClose: () => void;
   allRosters: { rosterId: number; teamName: string }[];
   parsedContracts: ParsedContract[];
   currentYear: number;
+  playerMap: Record<string, SleeperPlayerMin>;
 }
 
 export function PlayerDetailSheet({
@@ -180,6 +185,7 @@ export function PlayerDetailSheet({
   allRosters,
   parsedContracts,
   currentYear,
+  playerMap,
 }: PlayerDetailSheetProps) {
   const { league, user } = useSleeper();
   const { toast } = useToast();
@@ -236,6 +242,26 @@ export function PlayerDetailSheet({
 
   // ── Contract timeline data for bar chart ──
   const contractTimelineYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
+
+  // Position average salary per year
+  const positionAvgData = useMemo(() => {
+    const position = careerData?.player?.position;
+    if (!position) return {} as Record<string, number>;
+    const result: Record<string, number> = {};
+    for (const year of contractTimelineYears) {
+      const salaries = parsedContracts
+        .filter(c => {
+          const pos = playerMap[c.playerId]?.position;
+          return pos === position && (c.parsedSalaries[year] || 0) > 0;
+        })
+        .map(c => c.parsedSalaries[year]);
+      if (salaries.length > 0) {
+        result[String(year)] = Math.round((salaries.reduce((a, b) => a + b, 0) / salaries.length) * 10) / 10;
+      }
+    }
+    return result;
+  }, [careerData?.player?.position, parsedContracts, playerMap, currentYear]);
+
   const contractTimelineData = useMemo(() => {
     if (!contract) return [];
     return contractTimelineYears.map(year => {
@@ -268,11 +294,24 @@ export function PlayerDetailSheet({
         salary: salary > 0 ? salary : undefined,
         extensionPreview,
         tagPreview,
+        posAvg: positionAvgData[String(year)],
         isPast: year < currentYear,
         isCurrent: year === currentYear,
       };
     });
-  }, [contract, currentYear, previewExtType, previewTag, contractTimelineYears]);
+  }, [contract, currentYear, previewExtType, previewTag, contractTimelineYears, positionAvgData]);
+
+  // ── Dynamic Y domain for contract timeline ──
+  const timelineMax = useMemo(() => {
+    if (!contractTimelineData.length) return 50;
+    const vals = contractTimelineData.flatMap(d => [
+      d.salary ?? 0,
+      d.extensionPreview ?? 0,
+      d.posAvg ?? 0,
+    ]);
+    const max = Math.max(...vals, 1);
+    return Math.ceil(max * 1.35);
+  }, [contractTimelineData]);
 
   // ── Canonical tag/extension eligibility ──
   const canExtend = contract && contract.hasBeenExtended === 0 && contract.extensionApplied === 0;
@@ -441,15 +480,24 @@ export function PlayerDetailSheet({
 
               {chartData.length > 0 ? (
                 <>
+                  <div className="rounded-xl bg-gradient-to-b from-muted/50 via-muted/20 to-transparent border border-border/40 p-1 pb-0">
                   <ResponsiveContainer width="100%" height={200}>
                     <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                      <defs>
+                        <linearGradient id="careerBg" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.08} />
+                          <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.6} />
                       <XAxis
                         dataKey="season"
                         tick={{ fontSize: 11 }}
                         tickFormatter={v => String(v)}
+                        axisLine={false}
+                        tickLine={false}
                       />
-                      <YAxis tick={{ fontSize: 11 }} />
+                      <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
                       <Tooltip content={<CareerTooltip />} />
 
                       {/* Shade contract period */}
@@ -482,6 +530,7 @@ export function PlayerDetailSheet({
                       />
                     </ComposedChart>
                   </ResponsiveContainer>
+                  </div>
 
                   {/* Team legend */}
                   <div className="flex flex-wrap gap-2 mt-2">
@@ -519,14 +568,21 @@ export function PlayerDetailSheet({
 
               {contract ? (
                 <>
-                  {/* Salary bar chart */}
-                  <ResponsiveContainer width="100%" height={160}>
-                    <BarChart data={contractTimelineData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
+                  {/* Salary bar + position avg line chart */}
+                  <ResponsiveContainer width="100%" height={180}>
+                    <ComposedChart data={contractTimelineData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis dataKey="year" tick={{ fontSize: 11 }} />
-                      <YAxis tick={{ fontSize: 11 }} domain={[0, TOTAL_CAP]} />
+                      <XAxis dataKey="year" tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis
+                        tick={{ fontSize: 11 }}
+                        domain={[0, timelineMax]}
+                        tickFormatter={v => `$${v}`}
+                        axisLine={false}
+                        tickLine={false}
+                      />
                       <Tooltip
                         formatter={(v: number, name: string) => {
+                          if (name === "posAvg") return [`${fmt(v)}`, `${careerData?.player?.position ?? "Pos"} avg`];
                           if (name === "extensionPreview") return [`${fmt(v)} (preview)`, "Extension"];
                           if (name === "tagPreview") return ["Top-5 avg (preview)", "Franchise Tag"];
                           return [fmt(v), "Salary"];
@@ -538,10 +594,9 @@ export function PlayerDetailSheet({
                           fontSize: "11px",
                         }}
                       />
-                      <ReferenceLine y={TOTAL_CAP} stroke="#f59e0b" strokeDasharray="4 2" />
 
                       {/* Actual contracted salary */}
-                      <Bar dataKey="salary" radius={[3, 3, 0, 0]} name="salary">
+                      <Bar dataKey="salary" radius={[3, 3, 0, 0]} name="salary" maxBarSize={40}>
                         {contractTimelineData.map((entry, i) => (
                           <Cell
                             key={i}
@@ -557,16 +612,16 @@ export function PlayerDetailSheet({
                         ))}
                       </Bar>
 
-                      {/* Extension preview (amber dashed feel via opacity) */}
+                      {/* Extension preview */}
                       <Bar
                         dataKey="extensionPreview"
                         radius={[3, 3, 0, 0]}
                         fill="#f59e0b"
                         fillOpacity={0.4}
                         name="extensionPreview"
-                        strokeDasharray="4 2"
                         stroke="#f59e0b"
                         strokeWidth={1}
+                        maxBarSize={40}
                       />
 
                       {/* Tag preview */}
@@ -578,9 +633,38 @@ export function PlayerDetailSheet({
                         name="tagPreview"
                         stroke="#8b5cf6"
                         strokeWidth={1}
+                        maxBarSize={40}
                       />
-                    </BarChart>
+
+                      {/* Position average salary line */}
+                      <Line
+                        type="monotone"
+                        dataKey="posAvg"
+                        name="posAvg"
+                        stroke="#14b8a6"
+                        strokeWidth={2}
+                        strokeDasharray="5 3"
+                        dot={{ r: 3, fill: "#14b8a6", strokeWidth: 0 }}
+                        activeDot={{ r: 5 }}
+                        connectNulls
+                      />
+                    </ComposedChart>
                   </ResponsiveContainer>
+
+                  {/* Timeline legend */}
+                  <div className="flex flex-wrap gap-3 mt-1 text-[10px] text-muted-foreground">
+                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-primary" />Salary</span>
+                    <span className="flex items-center gap-1">
+                      <svg width="14" height="8"><line x1="0" y1="4" x2="14" y2="4" stroke="#14b8a6" strokeWidth="2" strokeDasharray="4 2" /></svg>
+                      {careerData?.player?.position ?? "Pos"} Avg
+                    </span>
+                    {previewExtType !== null && (
+                      <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-amber-500 opacity-50" />Extension Preview</span>
+                    )}
+                    {previewTag && (
+                      <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-purple-500 opacity-50" />Tag Preview</span>
+                    )}
+                  </div>
 
                   {/* Year-by-year salary table */}
                   <div className="mt-3 rounded-lg border border-border overflow-hidden">

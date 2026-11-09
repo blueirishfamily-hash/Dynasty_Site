@@ -2153,6 +2153,7 @@ export default function ContractsHub() {
         allRosters={allRosters.map(r => ({ rosterId: r.rosterId, teamName: r.teamName }))}
         parsedContracts={parsedContracts}
         currentYear={currentYear}
+        playerMap={playerMap}
       />
     </div>
   );
