@@ -28,6 +28,7 @@ import {
   Database,
   CalendarCheck,
   MessageSquare,
+  History,
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -41,6 +42,7 @@ const baseNavItems = [
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "Trophy Room", url: "/trophies", icon: Medal },
+  { title: "League History", url: "/history", icon: History },
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Contracts", url: "/contracts", icon: FileText },
@@ -105,7 +107,8 @@ export default function AppSidebar({
           <SidebarGroupContent>
             <SidebarMenu>
               {navItems.map((item) => {
-                const isActive = location === item.url;
+                const isActive =
+                  item.url === "/" ? location === "/" : location === item.url || location.startsWith(`${item.url}/`);
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton

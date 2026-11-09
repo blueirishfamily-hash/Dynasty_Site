@@ -21,6 +21,7 @@ import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
 import RuleChanges from "@/pages/RuleChanges";
 import Historical from "@/pages/Historical";
+import LeagueHistory from "@/pages/LeagueHistory";
 import YearRecap from "@/pages/YearRecap";
 import Suggestions from "@/pages/Suggestions";
 import NotFound from "@/pages/not-found";
@@ -55,6 +56,8 @@ function Router() {
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
       <Route path="/historical" component={Historical} />
+      <Route path="/history/*" component={LeagueHistory} />
+      <Route path="/history" component={LeagueHistory} />
       <Route path="/year-recap" component={YearRecap} />
       <Route path="/suggestions" component={Suggestions} />
       <Route component={NotFound} />
