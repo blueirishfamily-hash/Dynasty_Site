@@ -19,6 +19,7 @@ import Metrics from "@/pages/Metrics";
 import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import Contracts from "@/pages/Contracts";
+import ContractsHub from "@/pages/ContractsHub";
 import RuleChanges from "@/pages/RuleChanges";
 import Historical from "@/pages/Historical";
 import LeagueHistory from "@/pages/LeagueHistory";
@@ -55,6 +56,7 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/contracts" component={Contracts} />
+      <Route path="/contracts-hub" component={ContractsHub} />
       <Route path="/historical" component={Historical} />
       <Route path="/history/*" component={LeagueHistory} />
       <Route path="/history" component={LeagueHistory} />

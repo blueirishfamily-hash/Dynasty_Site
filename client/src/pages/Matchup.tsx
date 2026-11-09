@@ -11,8 +11,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ChevronLeft, ChevronRight, Trophy } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ChevronLeft, ChevronRight, Radar, Swords, Trophy } from "lucide-react";
 import { PlayerDetailModal } from "@/components/PlayerDetailModal";
+import MatchupScoutingReport from "@/components/MatchupScoutingReport";
 
 interface MatchupPlayer {
   id: string;
@@ -115,6 +117,7 @@ export default function Matchup() {
   const { user, league, currentWeek } = useSleeper();
   const [selectedWeek, setSelectedWeek] = useState(currentWeek);
   const [selectedPlayer, setSelectedPlayer] = useState<{ id: string; name: string } | null>(null);
+  const [activeTab, setActiveTab] = useState<"live" | "preview">("live");
 
   const { data: matchup, isLoading } = useQuery<MatchupData>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "matchup-detail", user?.userId, selectedWeek],
@@ -255,6 +258,19 @@ export default function Matchup() {
         </div>
       </div>
 
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "live" | "preview")}>
+        <TabsList className="mb-4">
+          <TabsTrigger value="live" className="gap-2" data-testid="tab-live-matchup">
+            <Swords className="w-4 h-4" />
+            Live Matchup
+          </TabsTrigger>
+          <TabsTrigger value="preview" className="gap-2" data-testid="tab-matchup-preview">
+            <Radar className="w-4 h-4" />
+            Matchup Preview
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="live" className="mt-0">
       {isLoading ? (
         <Card>
           <CardHeader>
@@ -730,6 +746,32 @@ export default function Matchup() {
           </CardContent>
         </Card>
       )}
+        </TabsContent>
+
+        <TabsContent value="preview" className="mt-0">
+          {isLoading ? (
+            <Skeleton className="h-64 w-full" />
+          ) : userTeam && opponentTeam ? (
+            <MatchupScoutingReport
+              leagueId={league.leagueId}
+              userId={user.userId}
+              userRosterId={userTeam.rosterId}
+              opponentRosterId={opponentTeam.rosterId}
+              week={selectedWeek}
+            />
+          ) : (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <Trophy className="w-12 h-12 mx-auto text-muted-foreground mb-4" />
+                <h3 className="font-heading text-lg font-bold mb-2">No Opponent This Week</h3>
+                <p className="text-muted-foreground">
+                  There's no opponent to preview for week {selectedWeek}. Try another week.
+                </p>
+              </CardContent>
+            </Card>
+          )}
+        </TabsContent>
+      </Tabs>
 
       <PlayerDetailModal
         playerId={selectedPlayer?.id || null}

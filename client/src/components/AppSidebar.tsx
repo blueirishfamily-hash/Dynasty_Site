@@ -29,6 +29,7 @@ import {
   CalendarCheck,
   MessageSquare,
   History,
+  Building2,
 } from "lucide-react";
 
 const COMMISSIONER_USER_IDS = [
@@ -51,6 +52,10 @@ const baseNavItems = [
   { title: "Suggestions", url: "/suggestions", icon: MessageSquare },
   { title: "Historical", url: "/historical", icon: Database },
   { title: "Settings", url: "/settings", icon: Settings },
+];
+
+const commissionerNavItems = [
+  { title: "Contracts Hub", url: "/contracts-hub", icon: Building2 },
 ];
 
 interface DraftPick {
@@ -77,7 +82,7 @@ export default function AppSidebar({
   ));
 
   const navItems = isCommissioner
-    ? baseNavItems
+    ? [...baseNavItems, ...commissionerNavItems]
     : baseNavItems.filter((item) => item.title !== "Settings" && item.title !== "League History");
 
   const getRoundColor = (round: number) => {
