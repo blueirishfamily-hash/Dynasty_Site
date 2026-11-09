@@ -305,6 +305,7 @@ function OverviewTab({
   parsedContracts,
   deadCapEntries,
   currentYear,
+  playerMap,
   onOpenPlayer,
 }: {
   selectedRosterId: number | null;
@@ -313,6 +314,7 @@ function OverviewTab({
   parsedContracts: ParsedContract[];
   deadCapEntries: DbDeadCapEntry[];
   currentYear: number;
+  playerMap: Record<string, SleeperPlayer>;
   onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
   const [productiveMode, setProductiveMode] = useState<"total" | "ppg">("total");
@@ -371,9 +373,9 @@ function OverviewTab({
         playerId: c.playerId,
         salary: c.parsedSalaries[currentYear] || 0,
         contractThrough: c.contractThrough,
-        player: perfMap[c.playerId],
+        player: perfMap[c.playerId] ?? (playerMap[c.playerId] as unknown as RosterPlayer | undefined),
       }));
-  }, [teamContracts, currentYear, perfMap]);
+  }, [teamContracts, currentYear, perfMap, playerMap]);
 
   // Most productive: by season points (or ppg)
   const mostProductive = useMemo(() => {
@@ -394,7 +396,7 @@ function OverviewTab({
   // Upcoming free agents
   const upcomingFAs = useMemo(() => {
     return expiringContracts.map(c => {
-      const player = perfMap[c.playerId];
+      const player = perfMap[c.playerId] ?? (playerMap[c.playerId] as unknown as RosterPlayer | undefined);
       return {
         ...c,
         player,
@@ -402,7 +404,7 @@ function OverviewTab({
         isExtensionEligible: c.hasBeenExtended === 0,
       };
     });
-  }, [expiringContracts, perfMap]);
+  }, [expiringContracts, perfMap, playerMap]);
 
   // Salary commitments chart
   const commitmentYears = [currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
@@ -422,14 +424,14 @@ function OverviewTab({
   const teamSpendByPos = useMemo(() => {
     const spend: Record<string, number> = {};
     for (const c of teamContracts) {
-      const player = perfMap[c.playerId];
+      const player = perfMap[c.playerId] ?? playerMap[c.playerId];
       if (!player) continue;
       const pos = player.position;
       if (!positions.includes(pos)) continue;
       spend[pos] = (spend[pos] || 0) + (c.parsedSalaries[currentYear] || 0);
     }
     return spend;
-  }, [teamContracts, perfMap, currentYear]);
+  }, [teamContracts, perfMap, playerMap, currentYear]);
 
   // League avg by position
   const leagueAvgByPos = useMemo(() => {
@@ -2089,6 +2091,7 @@ export default function ContractsHub() {
                 parsedContracts={parsedContracts}
                 deadCapEntries={deadCapEntries}
                 currentYear={currentYear}
+                playerMap={playerMap}
                 onOpenPlayer={openPlayer}
               />
             </TabsContent>
