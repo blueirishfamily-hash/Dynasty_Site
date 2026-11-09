@@ -115,6 +115,9 @@ export interface IStorage {
   getPlayerContracts(leagueId: string): Promise<PlayerContract[]>;
   upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract>;
   deletePlayerContract(leagueId: string, rosterId: number, playerId: string): Promise<void>;
+  deleteAllPlayerContracts(leagueId: string): Promise<number>;
+  deleteAllDeadCapEntries(leagueId: string): Promise<number>;
+  deleteAllTeamExtensions(leagueId: string): Promise<number>;
   
   getPlayerBidsByRoster(leagueId: string, rosterId: number): Promise<PlayerBid[]>;
   getAllPlayerBids(leagueId: string): Promise<PlayerBid[]>;
@@ -178,9 +181,10 @@ export interface IStorage {
   // Bidding reset
   deleteAllPlayerBids(leagueId: string): Promise<void>;
 
-  // League migration - dead cap and team extensions
-  migrateDeadCapEntries(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void>;
-  migrateTeamExtensions(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void>;
+  // League migration - contracts, dead cap, and team extensions
+  migratePlayerContracts(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<{ cleared: number; copied: number }>;
+  migrateDeadCapEntries(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<{ cleared: number; copied: number }>;
+  migrateTeamExtensions(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<{ cleared: number; copied: number }>;
   
   // Favorite expiring players
   getFavoriteExpiringPlayers(leagueId: string, rosterId: number): Promise<FavoriteExpiringPlayer[]>;
@@ -1332,6 +1336,30 @@ export class DatabaseStorage implements IStorage {
       ));
   }
 
+  async deleteAllPlayerContracts(leagueId: string): Promise<number> {
+    const deleted = await db
+      .delete(playerContractsTable)
+      .where(eq(playerContractsTable.leagueId, leagueId))
+      .returning({ id: playerContractsTable.id });
+    return deleted.length;
+  }
+
+  async deleteAllDeadCapEntries(leagueId: string): Promise<number> {
+    const deleted = await db
+      .delete(deadCapEntriesTable)
+      .where(eq(deadCapEntriesTable.leagueId, leagueId))
+      .returning({ id: deadCapEntriesTable.id });
+    return deleted.length;
+  }
+
+  async deleteAllTeamExtensions(leagueId: string): Promise<number> {
+    const deleted = await db
+      .delete(teamExtensionsTable)
+      .where(eq(teamExtensionsTable.leagueId, leagueId))
+      .returning({ id: teamExtensionsTable.id });
+    return deleted.length;
+  }
+
   async getPlayerBidsByRoster(leagueId: string, rosterId: number): Promise<PlayerBid[]> {
     const rows = await db
       .select()
@@ -1454,8 +1482,40 @@ export class DatabaseStorage implements IStorage {
       .where(eq(deadCapEntriesTable.id, id));
   }
 
-  async migrateDeadCapEntries(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void> {
+  async migratePlayerContracts(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<{ cleared: number; copied: number }> {
+    const cleared = await this.deleteAllPlayerContracts(newLeagueId);
+    const contracts = await this.getPlayerContracts(oldLeagueId);
+    let copied = 0;
+    for (const contract of contracts) {
+      const mapping = mappingByOldRoster.get(contract.rosterId);
+      if (!mapping) continue;
+      await this.upsertPlayerContract({
+        leagueId: newLeagueId,
+        rosterId: mapping.newRosterId,
+        playerId: contract.playerId,
+        salaries: (contract as any).salaries ?? "{}",
+        fifthYearOption: contract.fifthYearOption ?? null,
+        isOnIr: contract.isOnIr ?? 0,
+        franchiseTagUsed: contract.franchiseTagUsed ?? 0,
+        franchiseTagYear: contract.franchiseTagYear ?? null,
+        originalContractYears: contract.originalContractYears ?? 1,
+        isRookieContract: contract.isRookieContract ?? 0,
+        extensionApplied: contract.extensionApplied ?? 0,
+        extensionYear: contract.extensionYear ?? null,
+        extensionSalary: contract.extensionSalary ?? null,
+        extensionType: contract.extensionType ?? null,
+        hasBeenExtended: (contract as any).hasBeenExtended ?? 0,
+        hasBeenFranchiseTagged: (contract as any).hasBeenFranchiseTagged ?? 0,
+      });
+      copied++;
+    }
+    return { cleared, copied };
+  }
+
+  async migrateDeadCapEntries(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<{ cleared: number; copied: number }> {
+    const cleared = await this.deleteAllDeadCapEntries(newLeagueId);
     const entries = await this.getDeadCapEntriesByLeague(oldLeagueId);
+    let copied = 0;
     for (const entry of entries) {
       const mapping = mappingByOldRoster.get(entry.rosterId);
       if (!mapping) continue;
@@ -1468,14 +1528,18 @@ export class DatabaseStorage implements IStorage {
         reason: entry.reason,
         deadCapSalaries: (entry as any).deadCapSalaries ?? "{}",
       });
+      copied++;
     }
+    return { cleared, copied };
   }
 
-  async migrateTeamExtensions(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<void> {
+  async migrateTeamExtensions(oldLeagueId: string, newLeagueId: string, mappingByOldRoster: Map<number, { newRosterId: number }>): Promise<{ cleared: number; copied: number }> {
+    const cleared = await this.deleteAllTeamExtensions(newLeagueId);
     const allExtensions = await db
       .select()
       .from(teamExtensionsTable)
       .where(eq(teamExtensionsTable.leagueId, oldLeagueId));
+    let copied = 0;
     for (const ext of allExtensions) {
       const mapping = mappingByOldRoster.get(ext.rosterId);
       if (!mapping) continue;
@@ -1492,7 +1556,9 @@ export class DatabaseStorage implements IStorage {
         isRookieExtension: ext.isRookieExtension ?? 0,
         status: ext.status ?? "confirmed",
       });
+      copied++;
     }
+    return { cleared, copied };
   }
 
   async getSavedContractDrafts(leagueId: string, rosterId: number): Promise<SavedContractDraft[]> {

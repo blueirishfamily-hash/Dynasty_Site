@@ -196,6 +196,19 @@ export async function getPlayerStats(season: string, week?: number): Promise<Rec
   return fetchFromSleeper<Record<string, Record<string, number>>>(`/stats/nfl/regular/${season}${weekPart}`);
 }
 
+// In-memory cache for weekly player stats (keyed by "season/week").
+// Past weeks are immutable so we cache indefinitely; current-season current-week is excluded.
+const weeklyStatsCache = new Map<string, Record<string, Record<string, number>>>();
+
+export async function getPlayerStatsWeekCached(season: string, week: number): Promise<Record<string, Record<string, number>>> {
+  const key = `${season}/${week}`;
+  const cached = weeklyStatsCache.get(key);
+  if (cached) return cached;
+  const data = await fetchFromSleeper<Record<string, Record<string, number>>>(`/stats/nfl/regular/${season}/${week}`);
+  weeklyStatsCache.set(key, data);
+  return data;
+}
+
 export async function getPlayerProjections(season: string, week: number): Promise<Record<string, Record<string, number>>> {
   return fetchFromSleeper<Record<string, Record<string, number>>>(`/projections/nfl/regular/${season}/${week}`);
 }

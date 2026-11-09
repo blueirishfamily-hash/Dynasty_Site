@@ -32,6 +32,7 @@ import {
   getNFLState,
   getAllPlayers,
   getPlayerStats,
+  getPlayerStatsWeekCached,
   getPlayerProjections,
   getLeagueDrafts,
   getDraftPicks,
@@ -6753,6 +6754,100 @@ export async function registerRoutes(
     }
   });
 
+  // Per-game career data: one entry per week the player scored > 0 pts.
+  // Fetches all 17 regular-season weeks for each season in parallel using cached weekly stats.
+  app.get("/api/sleeper/league/:leagueId/player/:playerId/career-games", async (req, res) => {
+    try {
+      const { leagueId, playerId } = req.params;
+
+      const [currentLeague, nflState] = await Promise.all([
+        getLeague(leagueId),
+        getNFLState(),
+      ]);
+
+      const currentSeason = parseInt(currentLeague.season || nflState?.season || String(new Date().getFullYear()));
+      const lookbackYears = 5;
+
+      // Walk previous_league_id chain (same as career endpoint)
+      const leagueChain: { season: number; leagueId: string }[] = [];
+      let walkId = leagueId;
+      let walkLeague: any = currentLeague;
+      for (let i = 0; i < lookbackYears; i++) {
+        const season = currentSeason - i;
+        leagueChain.push({ season, leagueId: walkId });
+        const prevId = walkLeague?.previous_league_id;
+        if (!prevId || prevId === "0") break;
+        try {
+          walkLeague = await getLeague(prevId);
+          walkId = prevId;
+        } catch {
+          break;
+        }
+      }
+
+      // For each season, get the roster that had the player (for team color)
+      const seasonTeamInfo = await Promise.allSettled(
+        leagueChain.map(async ({ season, leagueId: sId }) => {
+          const [rosters, users] = await Promise.all([
+            getLeagueRosters(sId).catch(() => [] as any[]),
+            getLeagueUsers(sId).catch(() => [] as any[]),
+          ]);
+          const userMap = new Map(users.map((u: any) => [u.user_id, u]));
+          const rosterWithPlayer = rosters.find((r: any) =>
+            [...(r.players || []), ...(r.taxi || []), ...(r.reserve || [])].map(String).includes(String(playerId))
+          );
+          let teamName: string | null = null;
+          let rosterId: number | null = null;
+          if (rosterWithPlayer) {
+            const user = userMap.get(rosterWithPlayer.owner_id);
+            teamName = user?.metadata?.team_name || user?.display_name || `Team ${rosterWithPlayer.roster_id}`;
+            rosterId = rosterWithPlayer.roster_id;
+          }
+          return { season, teamName, rosterId };
+        })
+      );
+
+      const teamInfoBySeason = new Map<number, { teamName: string | null; rosterId: number | null }>();
+      seasonTeamInfo.forEach(r => {
+        if (r.status === "fulfilled") teamInfoBySeason.set(r.value.season, r.value);
+      });
+
+      // Fetch per-week stats for all seasons/weeks in parallel
+      const WEEKS = Array.from({ length: 17 }, (_, i) => i + 1);
+      const allGames: { season: number; week: number; points: number; rosterId: number | null; teamName: string | null }[] = [];
+
+      await Promise.allSettled(
+        leagueChain.map(async ({ season }) => {
+          const weekResults = await Promise.allSettled(
+            WEEKS.map(w => getPlayerStatsWeekCached(String(season), w).catch(() => ({} as Record<string, Record<string, number>>)))
+          );
+          const teamInfo = teamInfoBySeason.get(season) ?? { teamName: null, rosterId: null };
+          weekResults.forEach((r, idx) => {
+            if (r.status !== "fulfilled") return;
+            const pStats = r.value[playerId] ?? r.value[String(playerId)];
+            if (!pStats) return;
+            const pts = pStats.pts_ppr ?? pStats.pts_half_ppr ?? pStats.pts_std ?? 0;
+            const gp = pStats.gp ?? pStats.gms_active ?? (pts > 0 ? 1 : 0);
+            if (pts <= 0 && gp <= 0) return;
+            allGames.push({
+              season,
+              week: WEEKS[idx],
+              points: Math.round(pts * 100) / 100,
+              rosterId: teamInfo.rosterId,
+              teamName: teamInfo.teamName,
+            });
+          });
+        })
+      );
+
+      allGames.sort((a, b) => a.season - b.season || a.week - b.week);
+      res.json({ games: allGames });
+    } catch (error) {
+      console.error("Error fetching player career games:", error);
+      res.status(500).json({ error: "Failed to fetch player career games" });
+    }
+  });
+
   app.get("/api/sleeper/players/search", async (req, res) => {
     try {
       const search = (req.query.q as string || "").toLowerCase().trim();
@@ -10065,34 +10160,15 @@ export async function registerRoutes(
         console.error("Error snapshotting year recap/metrics during advance-year (non-fatal):", snapshotErr);
       }
 
-      // Migrate dead cap entries and team extensions to new league (before contracts)
-      await storage.migrateDeadCapEntries(oldLeagueId, newLeagueId, mappingByOldRoster);
-      await storage.migrateTeamExtensions(oldLeagueId, newLeagueId, mappingByOldRoster);
-
-      // Migrate contracts
-      const contracts = await storage.getPlayerContracts(oldLeagueId);
-      for (const contract of contracts) {
-        const mapping = mappingByOldRoster.get(contract.rosterId);
-        if (!mapping) continue;
-        await storage.upsertPlayerContract({
-          leagueId: newLeagueId,
-          rosterId: mapping.newRosterId,
-          playerId: contract.playerId,
-          salaries: (contract as any).salaries ?? "{}",
-          fifthYearOption: contract.fifthYearOption ?? null,
-          isOnIr: contract.isOnIr ?? 0,
-          franchiseTagUsed: contract.franchiseTagUsed ?? 0,
-          franchiseTagYear: contract.franchiseTagYear ?? null,
-          originalContractYears: contract.originalContractYears ?? 1,
-          isRookieContract: contract.isRookieContract ?? 0,
-          extensionApplied: contract.extensionApplied ?? 0,
-          extensionYear: contract.extensionYear ?? null,
-          extensionSalary: contract.extensionSalary ?? null,
-          extensionType: contract.extensionType ?? null,
-          hasBeenExtended: (contract as any).hasBeenExtended ?? 0,
-          hasBeenFranchiseTagged: (contract as any).hasBeenFranchiseTagged ?? 0,
-        });
-      }
+      // Migrate dead cap, team extensions, and contracts (clean-slate: each clears the new
+      // league's existing rows before copying from the old league, so advance-year is the
+      // single authoritative handoff point).
+      const deadCapResult = await storage.migrateDeadCapEntries(oldLeagueId, newLeagueId, mappingByOldRoster);
+      const extensionsResult = await storage.migrateTeamExtensions(oldLeagueId, newLeagueId, mappingByOldRoster);
+      const contractsResult = await storage.migratePlayerContracts(oldLeagueId, newLeagueId, mappingByOldRoster);
+      console.log(`[Advance Year] Contracts: cleared ${contractsResult.cleared}, copied ${contractsResult.copied}`);
+      console.log(`[Advance Year] Dead cap: cleared ${deadCapResult.cleared}, copied ${deadCapResult.copied}`);
+      console.log(`[Advance Year] Extensions: cleared ${extensionsResult.cleared}, copied ${extensionsResult.copied}`);
 
       // Reset bidding
       await storage.deleteAllPlayerBids(oldLeagueId);
@@ -10108,7 +10184,13 @@ export async function registerRoutes(
       });
 
       await storage.updateLeagueMigration(migration.id, { status: "completed", errorMessage: null });
-      res.json({ success: true, migrationId: migration.id });
+      res.json({
+        success: true,
+        migrationId: migration.id,
+        contracts: contractsResult,
+        deadCap: deadCapResult,
+        extensions: extensionsResult,
+      });
     } catch (error: any) {
       console.error("Error advancing league year:", error);
       res.status(500).json({ error: "Failed to advance league year", details: error?.message || String(error) });

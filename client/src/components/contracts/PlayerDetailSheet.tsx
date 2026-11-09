@@ -55,6 +55,14 @@ interface CareerSeason {
   teamAvatar: string | null;
 }
 
+interface CareerGame {
+  season: number;
+  week: number;
+  points: number;
+  rosterId: number | null;
+  teamName: string | null;
+}
+
 interface CareerData {
   player: {
     id: string;
@@ -131,34 +139,38 @@ function teamColor(rosterId: number | null) {
   return TEAM_PALETTE[(rosterId - 1) % TEAM_PALETTE.length];
 }
 
-// Custom dot rendered per-season colored by fantasy team
-function CareerDot(props: any) {
+// Custom dot for per-game scatter — colored by the fantasy team that owned the player
+function GameDot(props: any) {
   const { cx, cy, payload } = props;
-  if (!cx || !cy) return null;
+  if (cx == null || cy == null) return null;
   const color = teamColor(payload.rosterId);
   return (
     <g>
-      <circle cx={cx} cy={cy} r={6} fill={color} stroke="hsl(var(--background))" strokeWidth={2} />
+      <circle cx={cx} cy={cy} r={4} fill={color} stroke="hsl(var(--background))" strokeWidth={1.5} fillOpacity={0.85} />
     </g>
   );
 }
 
 // Custom tooltip for career chart
-function CareerTooltip({ active, payload, label }: any) {
+function CareerTooltip({ active, payload }: any) {
   if (!active || !payload?.length) return null;
   const d = payload[0]?.payload;
+  if (!d) return null;
+  const isGame = d.week != null;
   return (
     <div className="rounded-lg border border-border bg-card shadow-lg px-3 py-2 text-xs space-y-1">
-      <p className="font-semibold">{label} Season</p>
+      <p className="font-semibold">
+        {isGame ? `${d.season} · Week ${d.week}` : `${d.season} Season`}
+      </p>
       {d?.teamName && (
         <p className="text-muted-foreground">
           <span className="inline-block w-2 h-2 rounded-full mr-1" style={{ backgroundColor: teamColor(d.rosterId) }} />
           {d.teamName}
         </p>
       )}
-      <p>Total: <span className="font-medium">{d?.points?.toFixed(1)} pts</span></p>
-      <p>PPG: <span className="font-medium">{d?.ppg?.toFixed(1)}</span></p>
-      <p>Games: <span className="font-medium">{d?.gamesPlayed}</span></p>
+      <p>{isGame ? "Pts" : "Total"}: <span className="font-medium">{d?.points?.toFixed(1)} pts</span></p>
+      {!isGame && <p>PPG: <span className="font-medium">{d?.ppg?.toFixed(1)}</span></p>}
+      {!isGame && <p>Games: <span className="font-medium">{d?.gamesPlayed}</span></p>}
     </div>
   );
 }
@@ -219,6 +231,18 @@ export function PlayerDetailSheet({
     staleTime: 10 * 60 * 1000,
   });
 
+  // ── Per-game career fetch (lazy — loads after season data) ──
+  const { data: careerGamesData, isLoading: gamesLoading } = useQuery<{ games: CareerGame[] }>({
+    queryKey: ["/api/sleeper/league", leagueId, "player", playerId, "career-games"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${leagueId}/player/${playerId}/career-games`);
+      if (!res.ok) throw new Error("Failed to load game data");
+      return res.json();
+    },
+    enabled: !!playerId && !!leagueId,
+    staleTime: 30 * 60 * 1000,
+  });
+
   // ── Team color legend ──
   const teamColorMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -239,6 +263,20 @@ export function PlayerDetailSheet({
       return { ...s, salary };
     });
   }, [seasons, parsedContracts, playerId]);
+
+  // ── Per-game scatter data: x = season + (week-1)/17, y = points ──
+  // X axis will be numeric; season integers are tick marks.
+  const gameScatterData = useMemo(() => {
+    const games = careerGamesData?.games ?? [];
+    return games.map(g => ({
+      ...g,
+      x: g.season + (g.week - 1) / 17,
+      y: g.points,
+    }));
+  }, [careerGamesData]);
+
+  // X-axis tick values: unique season integers from chart data
+  const seasonTicks = useMemo(() => chartData.map(d => d.season), [chartData]);
 
   // ── Contract timeline data for bar chart ──
   const contractTimelineYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
@@ -481,30 +519,35 @@ export function PlayerDetailSheet({
               {chartData.length > 0 ? (
                 <>
                   <div className="rounded-xl bg-gradient-to-b from-muted/50 via-muted/20 to-transparent border border-border/40 p-1 pb-0">
-                  <ResponsiveContainer width="100%" height={200}>
-                    <ComposedChart data={chartData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="careerBg" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.08} />
-                          <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
+                  <ResponsiveContainer width="100%" height={220}>
+                    <ComposedChart margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.6} />
+                      {/* Numeric X axis — integers = seasons, fractional = individual weeks */}
                       <XAxis
-                        dataKey="season"
+                        type="number"
+                        dataKey="x"
+                        domain={seasonTicks.length > 0 ? [seasonTicks[0] - 0.1, seasonTicks[seasonTicks.length - 1] + 1.05] : ["auto", "auto"]}
+                        ticks={seasonTicks}
+                        tickFormatter={v => String(Math.round(v))}
                         tick={{ fontSize: 11 }}
-                        tickFormatter={v => String(v)}
                         axisLine={false}
                         tickLine={false}
                       />
-                      <YAxis tick={{ fontSize: 11 }} axisLine={false} tickLine={false} />
+                      <YAxis
+                        type="number"
+                        dataKey="y"
+                        tick={{ fontSize: 11 }}
+                        axisLine={false}
+                        tickLine={false}
+                        label={{ value: "Pts", angle: -90, position: "insideLeft", offset: 15, fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
+                      />
                       <Tooltip content={<CareerTooltip />} />
 
                       {/* Shade contract period */}
-                      {contract?.contractThrough && (
+                      {contract?.contractThrough && seasonTicks.length > 0 && (
                         <ReferenceArea
-                          x1={Math.max(chartData[0]?.season ?? currentYear, currentYear - 1)}
-                          x2={contract.contractThrough}
+                          x1={Math.max(seasonTicks[0], currentYear - 1)}
+                          x2={contract.contractThrough + 1}
                           fill="hsl(var(--primary))"
                           fillOpacity={0.06}
                           label={{ value: "Contract", position: "insideTopLeft", fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
@@ -519,18 +562,37 @@ export function PlayerDetailSheet({
                         label={{ value: String(currentYear), position: "top", fontSize: 9, fill: "#f59e0b" }}
                       />
 
-                      <Line
-                        type="monotone"
-                        dataKey={chartMode === "total" ? "points" : "ppg"}
-                        stroke="hsl(var(--muted-foreground))"
-                        strokeWidth={2}
-                        dot={<CareerDot />}
-                        activeDot={{ r: 7 }}
-                        connectNulls={false}
-                      />
+                      {/* Per-game scatter dots colored by fantasy team */}
+                      {gamesLoading ? null : (
+                        <Scatter
+                          data={gameScatterData}
+                          shape={<GameDot />}
+                          isAnimationActive={false}
+                        />
+                      )}
+
+                      {/* Season-avg trend line (PPG mode) — connects midpoint of each season */}
+                      {chartMode === "ppg" && (
+                        <Line
+                          data={chartData.map(d => ({ x: d.season + 0.5, y: d.ppg, ...d }))}
+                          type="monotone"
+                          dataKey="y"
+                          stroke="hsl(var(--muted-foreground))"
+                          strokeWidth={1.5}
+                          strokeDasharray="4 2"
+                          dot={false}
+                          isAnimationActive={false}
+                          connectNulls={false}
+                        />
+                      )}
                     </ComposedChart>
                   </ResponsiveContainer>
                   </div>
+                  {gamesLoading && (
+                    <p className="text-[10px] text-muted-foreground text-center mt-1 flex items-center justify-center gap-1">
+                      <Loader2 className="w-3 h-3 animate-spin" /> Loading game dots…
+                    </p>
+                  )}
 
                   {/* Team legend */}
                   <div className="flex flex-wrap gap-2 mt-2">
