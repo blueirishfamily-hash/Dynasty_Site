@@ -8578,7 +8578,10 @@ export async function registerRoutes(
         return res.status(404).json({ error: "Roster not found" });
       }
       if (String(roster.owner_id) !== String(userId)) {
-        return res.status(403).json({ error: "Only the roster owner can apply a franchise tag" });
+        const commish = await isCommissioner(userId, leagueId);
+        if (!commish) {
+          return res.status(403).json({ error: "Only the roster owner or commissioner can apply a franchise tag" });
+        }
       }
 
       const currentYear = parseInt(league.season || String(new Date().getFullYear()), 10) || new Date().getFullYear();
