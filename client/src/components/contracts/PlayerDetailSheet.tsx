@@ -20,6 +20,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
   ComposedChart,
+  Area,
   Line,
   Scatter,
   XAxis,
@@ -278,6 +279,21 @@ export function PlayerDetailSheet({
   // X-axis tick values: unique season integers from chart data
   const seasonTicks = useMemo(() => chartData.map(d => d.season), [chartData]);
 
+  // Area fill data — one point per season at midpoint for a smooth gradient envelope
+  const areaData = useMemo(() => {
+    return chartData.map(d => ({
+      x: d.season + 0.5,
+      y: chartMode === "ppg" ? d.ppg : d.points,
+    }));
+  }, [chartData, chartMode]);
+
+  // Career average across all loaded games
+  const avgGamePts = useMemo(() => {
+    if (!gameScatterData.length) return null;
+    const sum = gameScatterData.reduce((acc, g) => acc + g.y, 0);
+    return Math.round((sum / gameScatterData.length) * 10) / 10;
+  }, [gameScatterData]);
+
   // ── Contract timeline data for bar chart ──
   const contractTimelineYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
 
@@ -521,7 +537,15 @@ export function PlayerDetailSheet({
                   <div className="rounded-xl bg-gradient-to-b from-muted/50 via-muted/20 to-transparent border border-border/40 p-1 pb-0">
                   <ResponsiveContainer width="100%" height={220}>
                     <ComposedChart margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="careerAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.22} />
+                          <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.6} />
+
                       {/* Numeric X axis — integers = seasons, fractional = individual weeks */}
                       <XAxis
                         type="number"
@@ -562,27 +586,41 @@ export function PlayerDetailSheet({
                         label={{ value: String(currentYear), position: "top", fontSize: 9, fill: "#f59e0b" }}
                       />
 
-                      {/* Per-game scatter dots colored by fantasy team */}
-                      {gamesLoading ? null : (
+                      {/* Career average horizontal line */}
+                      {avgGamePts !== null && (
+                        <ReferenceLine
+                          y={avgGamePts}
+                          stroke="hsl(var(--primary))"
+                          strokeDasharray="5 3"
+                          strokeWidth={1.5}
+                          label={{
+                            value: `Avg ${avgGamePts.toFixed(1)}`,
+                            position: "insideTopRight",
+                            fontSize: 9,
+                            fill: "hsl(var(--primary))",
+                          }}
+                        />
+                      )}
+
+                      {/* Gradient area envelope behind scatter dots */}
+                      <Area
+                        data={areaData}
+                        type="monotone"
+                        dataKey="y"
+                        fill="url(#careerAreaGrad)"
+                        stroke="hsl(var(--primary))"
+                        strokeWidth={1.5}
+                        dot={false}
+                        isAnimationActive={false}
+                        connectNulls={false}
+                      />
+
+                      {/* Per-game scatter dots colored by fantasy team — rendered on top of area */}
+                      {!gamesLoading && (
                         <Scatter
                           data={gameScatterData}
                           shape={<GameDot />}
                           isAnimationActive={false}
-                        />
-                      )}
-
-                      {/* Season-avg trend line (PPG mode) — connects midpoint of each season */}
-                      {chartMode === "ppg" && (
-                        <Line
-                          data={chartData.map(d => ({ x: d.season + 0.5, y: d.ppg, ...d }))}
-                          type="monotone"
-                          dataKey="y"
-                          stroke="hsl(var(--muted-foreground))"
-                          strokeWidth={1.5}
-                          strokeDasharray="4 2"
-                          dot={false}
-                          isAnimationActive={false}
-                          connectNulls={false}
                         />
                       )}
                     </ComposedChart>
