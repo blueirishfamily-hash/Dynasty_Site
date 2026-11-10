@@ -8,6 +8,7 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
+    "test": "vitest run",
     "db:push": "node -r dotenv/config node_modules/drizzle-kit/bin.cjs push"
   },
   "dependencies": {
@@ -103,7 +104,8 @@
     "postcss": "^8.4.47",
     "tailwindcss": "^3.4.17",
     "typescript": "5.6.3",
-    "vite": "^5.4.20"
+    "vite": "^5.4.20",
+    "vitest": "^3.2.7"
   },
   "optionalDependencies": {
     "bufferutil": "^4.0.8"

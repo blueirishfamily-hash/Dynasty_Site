@@ -11,6 +11,10 @@ import {
   leagueSettingsTable,
   playerContractsTable,
   playerBidsTable,
+  rfaDesignationsTable,
+  rfaOffersTable,
+  tradeOffersTable,
+  contractTransactionsTable,
   deadCapEntriesTable,
   savedContractDraftsTable,
   contractApprovalRequestsTable,
@@ -40,6 +44,10 @@ import type {
   DraftProspect, InsertDraftProspect,
   PlayerContract, InsertPlayerContract,
   PlayerBid, InsertPlayerBid,
+  RfaDesignation, InsertRfaDesignation,
+  RfaOffer, InsertRfaOffer,
+  TradeOffer, InsertTradeOffer,
+  ContractTransaction, InsertContractTransaction,
   DeadCapEntry, InsertDeadCapEntry,
   SavedContractDraft, InsertSavedContractDraft,
   ContractApprovalRequest, InsertContractApprovalRequest,
@@ -124,6 +132,24 @@ export interface IStorage {
   createPlayerBid(data: InsertPlayerBid): Promise<PlayerBid>;
   updatePlayerBid(id: string, rosterId: number, updates: Partial<InsertPlayerBid>): Promise<PlayerBid | undefined>;
   deletePlayerBid(id: string, rosterId: number): Promise<void>;
+  getBidsByLeagueRound(leagueId: string, round: number, season: number): Promise<PlayerBid[]>;
+  getBidsWithResult(leagueId: string, rosterId: number, result: string): Promise<PlayerBid[]>;
+
+  getRfaDesignations(leagueId: string, season: number): Promise<RfaDesignation[]>;
+  getRfaDesignationByRoster(leagueId: string, season: number, rosterId: number): Promise<RfaDesignation | undefined>;
+  createRfaDesignation(data: InsertRfaDesignation): Promise<RfaDesignation>;
+
+  getRfaOffers(leagueId: string, season: number, window?: number): Promise<RfaOffer[]>;
+  getRfaOffersForOriginalRoster(leagueId: string, season: number, originalRosterId: number): Promise<RfaOffer[]>;
+  getRfaOffersForBiddingRoster(leagueId: string, season: number, biddingRosterId: number): Promise<RfaOffer[]>;
+  createRfaOffer(data: InsertRfaOffer): Promise<RfaOffer>;
+  updateRfaOfferStatus(id: string, status: string): Promise<RfaOffer | undefined>;
+
+  createTradeOffer(data: InsertTradeOffer): Promise<TradeOffer>;
+  getTradeOffers(leagueId: string, season: number): Promise<TradeOffer[]>;
+
+  logContractTransaction(data: InsertContractTransaction): Promise<ContractTransaction>;
+  getContractTransactions(leagueId: string, limit?: number): Promise<ContractTransaction[]>;
   
   getSavedContractDrafts(leagueId: string, rosterId: number): Promise<SavedContractDraft[]>;
   upsertSavedContractDraft(data: InsertSavedContractDraft): Promise<SavedContractDraft>;
@@ -1403,6 +1429,11 @@ export class DatabaseStorage implements IStorage {
       contractYears: data.contractYears,
       isRookieContract: (data as any).isRookieContract ?? 0,
       notes: data.notes,
+      round: (data as any).round ?? null,
+      season: (data as any).season ?? null,
+      isRfa: (data as any).isRfa ?? 0,
+      originalRosterId: (data as any).originalRosterId ?? null,
+      result: (data as any).result ?? null,
       status: "active",
       createdAt: now,
       updatedAt: now,
@@ -1445,6 +1476,149 @@ export class DatabaseStorage implements IStorage {
         eq(playerBidsTable.id, id),
         eq(playerBidsTable.rosterId, rosterId)
       ));
+  }
+
+  async getBidsByLeagueRound(leagueId: string, round: number, season: number): Promise<PlayerBid[]> {
+    return db
+      .select()
+      .from(playerBidsTable)
+      .where(and(
+        eq(playerBidsTable.leagueId, leagueId),
+        eq(playerBidsTable.round, round),
+        eq(playerBidsTable.season, season),
+      ))
+      .orderBy(desc(playerBidsTable.createdAt));
+  }
+
+  async getBidsWithResult(leagueId: string, rosterId: number, result: string): Promise<PlayerBid[]> {
+    return db
+      .select()
+      .from(playerBidsTable)
+      .where(and(
+        eq(playerBidsTable.leagueId, leagueId),
+        eq(playerBidsTable.rosterId, rosterId),
+        eq(playerBidsTable.result, result),
+      ));
+  }
+
+  async getRfaDesignations(leagueId: string, season: number): Promise<RfaDesignation[]> {
+    return db
+      .select()
+      .from(rfaDesignationsTable)
+      .where(and(
+        eq(rfaDesignationsTable.leagueId, leagueId),
+        eq(rfaDesignationsTable.season, season),
+      ));
+  }
+
+  async getRfaDesignationByRoster(leagueId: string, season: number, rosterId: number): Promise<RfaDesignation | undefined> {
+    const [row] = await db
+      .select()
+      .from(rfaDesignationsTable)
+      .where(and(
+        eq(rfaDesignationsTable.leagueId, leagueId),
+        eq(rfaDesignationsTable.season, season),
+        eq(rfaDesignationsTable.rosterId, rosterId),
+      ));
+    return row;
+  }
+
+  async createRfaDesignation(data: InsertRfaDesignation): Promise<RfaDesignation> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(rfaDesignationsTable).values({
+      ...data,
+      id,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async getRfaOffers(leagueId: string, season: number, window?: number): Promise<RfaOffer[]> {
+    const conditions = [
+      eq(rfaOffersTable.leagueId, leagueId),
+      eq(rfaOffersTable.season, season),
+    ];
+    if (window != null) {
+      conditions.push(eq(rfaOffersTable.window, window));
+    }
+    return db.select().from(rfaOffersTable).where(and(...conditions));
+  }
+
+  async getRfaOffersForOriginalRoster(leagueId: string, season: number, originalRosterId: number): Promise<RfaOffer[]> {
+    return db.select().from(rfaOffersTable).where(and(
+      eq(rfaOffersTable.leagueId, leagueId),
+      eq(rfaOffersTable.season, season),
+      eq(rfaOffersTable.originalRosterId, originalRosterId),
+    ));
+  }
+
+  async getRfaOffersForBiddingRoster(leagueId: string, season: number, biddingRosterId: number): Promise<RfaOffer[]> {
+    return db.select().from(rfaOffersTable).where(and(
+      eq(rfaOffersTable.leagueId, leagueId),
+      eq(rfaOffersTable.season, season),
+      eq(rfaOffersTable.biddingRosterId, biddingRosterId),
+    ));
+  }
+
+  async createRfaOffer(data: InsertRfaOffer): Promise<RfaOffer> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(rfaOffersTable).values({
+      ...data,
+      id,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async updateRfaOfferStatus(id: string, status: string): Promise<RfaOffer | undefined> {
+    const [updated] = await db.update(rfaOffersTable).set({
+      status,
+      updatedAt: Date.now(),
+    }).where(eq(rfaOffersTable.id, id)).returning();
+    return updated;
+  }
+
+  async createTradeOffer(data: InsertTradeOffer): Promise<TradeOffer> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(tradeOffersTable).values({
+      ...data,
+      id,
+      status: "pending",
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async getTradeOffers(leagueId: string, season: number): Promise<TradeOffer[]> {
+    return db.select().from(tradeOffersTable).where(and(
+      eq(tradeOffersTable.leagueId, leagueId),
+      eq(tradeOffersTable.season, season),
+    )).orderBy(desc(tradeOffersTable.createdAt));
+  }
+
+  async logContractTransaction(data: InsertContractTransaction): Promise<ContractTransaction> {
+    const id = randomUUID();
+    const now = Date.now();
+    const [inserted] = await db.insert(contractTransactionsTable).values({
+      ...data,
+      id,
+      createdAt: now,
+    }).returning();
+    return inserted;
+  }
+
+  async getContractTransactions(leagueId: string, limit = 100): Promise<ContractTransaction[]> {
+    return db
+      .select()
+      .from(contractTransactionsTable)
+      .where(eq(contractTransactionsTable.leagueId, leagueId))
+      .orderBy(desc(contractTransactionsTable.createdAt))
+      .limit(limit);
   }
 
   async getDeadCapEntriesByLeague(leagueId: string): Promise<DeadCapEntry[]> {

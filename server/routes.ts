@@ -32,7 +32,6 @@ import {
   getNFLState,
   getAllPlayers,
   getPlayerStats,
-  getPlayerStatsWeekCached,
   getPlayerProjections,
   getLeagueDrafts,
   getDraftPicks,
@@ -6754,8 +6753,8 @@ export async function registerRoutes(
     }
   });
 
-  // Per-game career data: one entry per week the player scored > 0 pts.
-  // Fetches all 17 regular-season weeks for each season in parallel using cached weekly stats.
+  // Per-game career data: one entry for each completed fantasy matchup in
+  // which the player appeared in a roster's starting lineup.
   app.get("/api/sleeper/league/:leagueId/player/:playerId/career-games", async (req, res) => {
     try {
       const { leagueId, playerId } = req.params;
@@ -6785,7 +6784,8 @@ export async function registerRoutes(
         }
       }
 
-      // For each season, get the roster that had the player (for team color)
+      // Build each season's roster-to-team-name mapping. The weekly matchup
+      // identifies the exact roster that started the player, including trades.
       const seasonTeamInfo = await Promise.allSettled(
         leagueChain.map(async ({ season, leagueId: sId }) => {
           const [rosters, users] = await Promise.all([
@@ -6793,48 +6793,89 @@ export async function registerRoutes(
             getLeagueUsers(sId).catch(() => [] as any[]),
           ]);
           const userMap = new Map(users.map((u: any) => [u.user_id, u]));
-          const rosterWithPlayer = rosters.find((r: any) =>
-            [...(r.players || []), ...(r.taxi || []), ...(r.reserve || [])].map(String).includes(String(playerId))
-          );
-          let teamName: string | null = null;
-          let rosterId: number | null = null;
-          if (rosterWithPlayer) {
-            const user = userMap.get(rosterWithPlayer.owner_id);
-            teamName = user?.metadata?.team_name || user?.display_name || `Team ${rosterWithPlayer.roster_id}`;
-            rosterId = rosterWithPlayer.roster_id;
-          }
-          return { season, teamName, rosterId };
+          const teamNames = new Map<number, string>();
+          rosters.forEach((roster: any) => {
+            const user: any = userMap.get(roster.owner_id);
+            teamNames.set(
+              roster.roster_id,
+              user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`,
+            );
+          });
+          return { season, teamNames };
         })
       );
 
-      const teamInfoBySeason = new Map<number, { teamName: string | null; rosterId: number | null }>();
+      const teamNamesBySeason = new Map<number, Map<number, string>>();
       seasonTeamInfo.forEach(r => {
-        if (r.status === "fulfilled") teamInfoBySeason.set(r.value.season, r.value);
+        if (r.status === "fulfilled") teamNamesBySeason.set(r.value.season, r.value.teamNames);
       });
 
-      // Fetch per-week stats for all seasons/weeks in parallel
-      const WEEKS = Array.from({ length: 17 }, (_, i) => i + 1);
+      // Sleeper matchup data is the source of truth for fantasy starts and
+      // league-scoring points. Empty/future matchups are ignored.
+      const WEEKS = Array.from({ length: 18 }, (_, i) => i + 1);
       const allGames: { season: number; week: number; points: number; rosterId: number | null; teamName: string | null }[] = [];
 
+      const nflSeasonYear = parseInt(String(nflState.season), 10);
+
       await Promise.allSettled(
-        leagueChain.map(async ({ season }) => {
+        leagueChain.map(async ({ season, leagueId: seasonLeagueId }) => {
+          const seasonLeague = await getLeague(seasonLeagueId).catch(() => currentLeague);
+          const effectiveWeek =
+            season < nflSeasonYear
+              ? WEEKS[WEEKS.length - 1]
+              : season > nflSeasonYear
+                ? 0
+                : getEffectiveWeek(nflState, seasonLeague);
+
           const weekResults = await Promise.allSettled(
-            WEEKS.map(w => getPlayerStatsWeekCached(String(season), w).catch(() => ({} as Record<string, Record<string, number>>)))
+            WEEKS.map(week => getLeagueMatchups(seasonLeagueId, week))
           );
-          const teamInfo = teamInfoBySeason.get(season) ?? { teamName: null, rosterId: null };
+          const teamNames = teamNamesBySeason.get(season);
+
           weekResults.forEach((r, idx) => {
             if (r.status !== "fulfilled") return;
-            const pStats = r.value[playerId] ?? r.value[String(playerId)];
-            if (!pStats) return;
-            const pts = pStats.pts_ppr ?? pStats.pts_half_ppr ?? pStats.pts_std ?? 0;
-            const gp = pStats.gp ?? pStats.gms_active ?? (pts > 0 ? 1 : 0);
-            if (pts <= 0 && gp <= 0) return;
+
+            const week = WEEKS[idx];
+            if (season === nflSeasonYear && week > effectiveWeek) return;
+            if (season > nflSeasonYear) return;
+
+            const matchup = r.value.find(entry =>
+              (entry.starters || []).some(starterId => String(starterId) === String(playerId))
+            );
+            if (!matchup) return;
+
+            const starters = matchup.starters || [];
+            const starterIndex = starters.findIndex(starterId => String(starterId) === String(playerId));
+            const hasPlayerPoints = Boolean(
+              matchup.players_points &&
+              Object.prototype.hasOwnProperty.call(matchup.players_points, String(playerId))
+            );
+            const hasStarterPoints = Boolean(
+              matchup.starters_points &&
+              starterIndex >= 0 &&
+              starterIndex < matchup.starters_points.length
+            );
+
+            // Future weeks: excluded above. Current week: require Sleeper players_points (not lineup placeholders).
+            if (season === nflSeasonYear && week === effectiveWeek) {
+              if (!hasPlayerPoints) return;
+            } else if (!hasPlayerPoints && !hasStarterPoints) {
+              return;
+            }
+
+            const points = Number(
+              matchup.players_points?.[String(playerId)] ??
+              matchup.starters_points?.[starterIndex] ??
+              0
+            );
+            const rosterId = matchup.roster_id;
+
             allGames.push({
               season,
               week: WEEKS[idx],
-              points: Math.round(pts * 100) / 100,
-              rosterId: teamInfo.rosterId,
-              teamName: teamInfo.teamName,
+              points: Math.round(points * 100) / 100,
+              rosterId,
+              teamName: teamNames?.get(rosterId) ?? `Team ${rosterId}`,
             });
           });
         })
@@ -12069,6 +12110,9 @@ export async function registerRoutes(
       res.status(500).json({ error: error.message || "Failed to get row count" });
     }
   });
+
+  const { registerContractHubRoutes } = await import("./contractHubRoutes");
+  registerContractHubRoutes(app);
 
   return httpServer;
 }

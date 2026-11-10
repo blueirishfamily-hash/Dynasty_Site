@@ -20,7 +20,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
 import {
   ComposedChart,
-  Area,
   Line,
   Scatter,
   XAxis,
@@ -28,7 +27,6 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  ReferenceArea,
   ReferenceLine,
   Legend,
   Bar,
@@ -279,19 +277,13 @@ export function PlayerDetailSheet({
   // X-axis tick values: unique season integers from chart data
   const seasonTicks = useMemo(() => chartData.map(d => d.season), [chartData]);
 
-  // Area fill data — one point per season at midpoint for a smooth gradient envelope
-  const areaData = useMemo(() => {
-    return chartData.map(d => ({
-      x: d.season + 0.5,
-      y: chartMode === "ppg" ? d.ppg : d.points,
-    }));
-  }, [chartData, chartMode]);
-
-  // Career average across all loaded games
-  const avgGamePts = useMemo(() => {
-    if (!gameScatterData.length) return null;
-    const sum = gameScatterData.reduce((acc, g) => acc + g.y, 0);
-    return Math.round((sum / gameScatterData.length) * 10) / 10;
+  // Trailing three-game rolling average across the player's chronological games.
+  const rollingAverageData = useMemo(() => {
+    return gameScatterData.map((game, index) => {
+      const window = gameScatterData.slice(Math.max(0, index - 2), index + 1);
+      const average = window.reduce((sum, item) => sum + item.y, 0) / window.length;
+      return { ...game, average: Math.round(average * 10) / 10 };
+    });
   }, [gameScatterData]);
 
   // ── Contract timeline data for bar chart ──
@@ -534,16 +526,9 @@ export function PlayerDetailSheet({
 
               {chartData.length > 0 ? (
                 <>
-                  <div className="rounded-xl bg-gradient-to-b from-muted/50 via-muted/20 to-transparent border border-border/40 p-1 pb-0">
+                  <div className="rounded-xl border border-border/40 p-1 pb-0">
                   <ResponsiveContainer width="100%" height={220}>
                     <ComposedChart margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                      <defs>
-                        <linearGradient id="careerAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="hsl(var(--primary))" stopOpacity={0.22} />
-                          <stop offset="100%" stopColor="hsl(var(--primary))" stopOpacity={0} />
-                        </linearGradient>
-                      </defs>
-
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.6} />
 
                       {/* Numeric X axis — integers = seasons, fractional = individual weeks */}
@@ -567,17 +552,6 @@ export function PlayerDetailSheet({
                       />
                       <Tooltip content={<CareerTooltip />} />
 
-                      {/* Shade contract period */}
-                      {contract?.contractThrough && seasonTicks.length > 0 && (
-                        <ReferenceArea
-                          x1={Math.max(seasonTicks[0], currentYear - 1)}
-                          x2={contract.contractThrough + 1}
-                          fill="hsl(var(--primary))"
-                          fillOpacity={0.06}
-                          label={{ value: "Contract", position: "insideTopLeft", fontSize: 9, fill: "hsl(var(--muted-foreground))" }}
-                        />
-                      )}
-
                       {/* Current year marker */}
                       <ReferenceLine
                         x={currentYear}
@@ -586,36 +560,32 @@ export function PlayerDetailSheet({
                         label={{ value: String(currentYear), position: "top", fontSize: 9, fill: "#f59e0b" }}
                       />
 
-                      {/* Career average horizontal line */}
-                      {avgGamePts !== null && (
-                        <ReferenceLine
-                          y={avgGamePts}
-                          stroke="hsl(var(--primary))"
-                          strokeDasharray="5 3"
-                          strokeWidth={1.5}
-                          label={{
-                            value: `Avg ${avgGamePts.toFixed(1)}`,
-                            position: "insideTopRight",
-                            fontSize: 9,
-                            fill: "hsl(var(--primary))",
-                          }}
-                        />
-                      )}
+                      {/* Three-game rolling average, colored by team at each game */}
+                      {rollingAverageData.slice(1).map((point, index) => {
+                        const previous = rollingAverageData[index];
+                        const color = teamColor(point.rosterId);
+                        const isLastPoint = index === rollingAverageData.length - 2;
+                        return (
+                          <ReferenceLine
+                            key={`rolling-avg-${point.season}-${point.week}`}
+                            segment={[
+                              { x: previous.x, y: previous.average },
+                              { x: point.x, y: point.average },
+                            ]}
+                            stroke={color}
+                            strokeDasharray="5 3"
+                            strokeWidth={1.5}
+                            label={isLastPoint ? {
+                              value: `3-game avg ${point.average.toFixed(1)}`,
+                              position: "insideTopRight",
+                              fontSize: 9,
+                              fill: color,
+                            } : undefined}
+                          />
+                        );
+                      })}
 
-                      {/* Gradient area envelope behind scatter dots */}
-                      <Area
-                        data={areaData}
-                        type="monotone"
-                        dataKey="y"
-                        fill="url(#careerAreaGrad)"
-                        stroke="hsl(var(--primary))"
-                        strokeWidth={1.5}
-                        dot={false}
-                        isAnimationActive={false}
-                        connectNulls={false}
-                      />
-
-                      {/* Per-game scatter dots colored by fantasy team — rendered on top of area */}
+                      {/* Per-game scatter dots colored by fantasy team */}
                       {!gamesLoading && (
                         <Scatter
                           data={gameScatterData}

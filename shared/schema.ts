@@ -161,8 +161,63 @@ export const playerBidsTable = pgTable("player_bids", {
   isRookieContract: integer("is_rookie_contract").notNull().default(0),
   notes: text("notes"),
   status: varchar("status", { length: 16 }).notNull().default("active"),
+  round: integer("round"),
+  season: integer("season"),
+  isRfa: integer("is_rfa").notNull().default(0),
+  originalRosterId: integer("original_roster_id"),
+  result: varchar("result", { length: 16 }),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+export const rfaDesignationsTable = pgTable("rfa_designations", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: integer("season").notNull(),
+  rosterId: integer("roster_id").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (t) => ({
+  leagueSeasonRosterUnique: unique().on(t.leagueId, t.season, t.rosterId),
+}));
+
+export const rfaOffersTable = pgTable("rfa_offers", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: integer("season").notNull(),
+  window: integer("window").notNull(),
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  originalRosterId: integer("original_roster_id").notNull(),
+  biddingRosterId: integer("bidding_roster_id").notNull(),
+  contractYears: integer("contract_years").notNull(),
+  yearlySalary: integer("yearly_salary").notNull(),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  bidId: varchar("bid_id", { length: 36 }),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+});
+
+export const tradeOffersTable = pgTable("trade_offers", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: integer("season").notNull(),
+  teamARosterId: integer("team_a_roster_id").notNull(),
+  teamBRosterId: integer("team_b_roster_id").notNull(),
+  teamASendsJson: text("team_a_sends_json").notNull().default("[]"),
+  teamBSendsJson: text("team_b_sends_json").notNull().default("[]"),
+  status: varchar("status", { length: 16 }).notNull().default("pending"),
+  validationJson: text("validation_json"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+});
+
+export const contractTransactionsTable = pgTable("contract_transactions", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  rosterId: integer("roster_id"),
+  type: varchar("type", { length: 32 }).notNull(),
+  payloadJson: text("payload_json").notNull().default("{}"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
 
 export const deadCapEntriesTable = pgTable("dead_cap_entries", {
@@ -350,6 +405,10 @@ export const insertLeagueSettingDbSchema = createInsertSchema(leagueSettingsTabl
 export const insertDraftProspectDbSchema = createInsertSchema(draftProspectsTable).omit({ id: true, createdAt: true, updatedAt: true });
 export const insertPlayerContractDbSchema = createInsertSchema(playerContractsTable).omit({ id: true, updatedAt: true });
 export const insertPlayerBidDbSchema = createInsertSchema(playerBidsTable).omit({ id: true, createdAt: true, updatedAt: true, status: true });
+export const insertRfaDesignationDbSchema = createInsertSchema(rfaDesignationsTable).omit({ id: true, createdAt: true });
+export const insertRfaOfferDbSchema = createInsertSchema(rfaOffersTable).omit({ id: true, createdAt: true, updatedAt: true, status: true });
+export const insertTradeOfferDbSchema = createInsertSchema(tradeOffersTable).omit({ id: true, createdAt: true, status: true });
+export const insertContractTransactionDbSchema = createInsertSchema(contractTransactionsTable).omit({ id: true, createdAt: true });
 export const insertDeadCapEntryDbSchema = createInsertSchema(deadCapEntriesTable).omit({ id: true, createdAt: true });
 export const insertSavedContractDraftDbSchema = createInsertSchema(savedContractDraftsTable).omit({ id: true, updatedAt: true });
 export const insertContractApprovalRequestDbSchema = createInsertSchema(contractApprovalRequestsTable).omit({ id: true, submittedAt: true, status: true, reviewedAt: true, reviewerNotes: true });
@@ -374,6 +433,15 @@ export type InsertPlayerContract = z.infer<typeof insertPlayerContractDbSchema>;
 // Player Bid types
 export type PlayerBid = typeof playerBidsTable.$inferSelect;
 export type InsertPlayerBid = z.infer<typeof insertPlayerBidDbSchema>;
+
+export type RfaDesignation = typeof rfaDesignationsTable.$inferSelect;
+export type InsertRfaDesignation = z.infer<typeof insertRfaDesignationDbSchema>;
+export type RfaOffer = typeof rfaOffersTable.$inferSelect;
+export type InsertRfaOffer = z.infer<typeof insertRfaOfferDbSchema>;
+export type TradeOffer = typeof tradeOffersTable.$inferSelect;
+export type InsertTradeOffer = z.infer<typeof insertTradeOfferDbSchema>;
+export type ContractTransaction = typeof contractTransactionsTable.$inferSelect;
+export type InsertContractTransaction = z.infer<typeof insertContractTransactionDbSchema>;
 
 // Dead Cap Entry types
 export type DeadCapEntry = typeof deadCapEntriesTable.$inferSelect;

@@ -4,6 +4,14 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { PlayerDetailSheet, type PlayerCardTarget } from "@/components/contracts/PlayerDetailSheet";
+import { useContractPhase, phaseAllowsTab } from "@/hooks/useContractPhase";
+import { SeasonCalendarTab } from "@/components/contracts-hub/SeasonCalendarTab";
+import { FreeAgencyBiddingTab } from "@/components/contracts-hub/FreeAgencyBiddingTab";
+import { RoundWinsTab } from "@/components/contracts-hub/RoundWinsTab";
+import { RfaMatchTab } from "@/components/contracts-hub/RfaMatchTab";
+import { TradesHubTab } from "@/components/contracts-hub/TradesHubTab";
+import { NotOpenYet } from "@/components/contracts-hub/NotOpenYet";
+import { PHASE_LABELS, type LeaguePhaseId } from "@shared/contractRules";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,6 +79,11 @@ import {
   Filter,
   RefreshCw,
   BarChart2,
+  CalendarDays,
+  Gavel,
+  Handshake,
+  ArrowLeftRight,
+  Trophy,
 } from "lucide-react";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -307,6 +320,10 @@ function OverviewTab({
   currentYear,
   playerMap,
   onOpenPlayer,
+  currentPhase,
+  ppgMinGames,
+  rfaPlayerIds,
+  onGoRosterSalaries,
 }: {
   selectedRosterId: number | null;
   setSelectedRosterId: (id: number) => void;
@@ -316,6 +333,10 @@ function OverviewTab({
   currentYear: number;
   playerMap: Record<string, SleeperPlayer>;
   onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
+  currentPhase: LeaguePhaseId;
+  ppgMinGames: number;
+  rfaPlayerIds: Set<string>;
+  onGoRosterSalaries: () => void;
 }) {
   const [productiveMode, setProductiveMode] = useState<"total" | "ppg">("total");
 
@@ -387,11 +408,15 @@ function OverviewTab({
         const pts = productiveMode === "ppg" ? p.weeklyAvg : p.seasonPoints;
         return { ...p, salary, pts, dollarPerPt: salary > 0 && p.seasonPoints > 0 ? salary / p.seasonPoints : 0 };
       })
-      .filter(p => p.pts > 0)
+      .filter(p => {
+        if (p.pts <= 0) return false;
+        if (productiveMode === "ppg" && (p.gamesStarted || 0) < ppgMinGames) return false;
+        return true;
+      })
       .sort((a, b) => b.pts - a.pts)
       .slice(0, 5);
     return withSalary;
-  }, [teamEntry, teamContracts, currentYear, productiveMode]);
+  }, [teamEntry, teamContracts, currentYear, productiveMode, ppgMinGames]);
 
   // Upcoming free agents
   const upcomingFAs = useMemo(() => {
@@ -420,7 +445,7 @@ function OverviewTab({
   });
 
   // Spend by position
-  const positions = ["QB", "RB", "WR", "TE", "K"];
+  const positions = ["QB", "RB", "WR", "TE", "K", "DEF"];
   const teamSpendByPos = useMemo(() => {
     const spend: Record<string, number> = {};
     for (const c of teamContracts) {
@@ -475,8 +500,17 @@ function OverviewTab({
     );
   }
 
+  const ownerLine = teamEntry?.ownerId ? `Owner ${teamEntry.ownerId.slice(0, 8)}…` : "";
+
   return (
     <div className="space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+        <div>
+          <p className="font-semibold">{teamEntry?.teamName}</p>
+          <p className="text-xs text-muted-foreground">{ownerLine} · Phase: {PHASE_LABELS[currentPhase]}</p>
+        </div>
+        <Badge variant="outline">{currentYear} Season</Badge>
+      </div>
       {/* Stat Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard
@@ -519,7 +553,7 @@ function OverviewTab({
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-sm font-heading uppercase tracking-wide">Most Expensive</CardTitle>
-              <span className="text-xs text-muted-foreground">{currentYear} Salary</span>
+              <Button variant="link" className="h-auto p-0 text-xs" onClick={onGoRosterSalaries}>Full roster salaries</Button>
             </div>
           </CardHeader>
           <CardContent className="p-0">
@@ -614,7 +648,7 @@ function OverviewTab({
                   <TableHead>Player</TableHead>
                   <TableHead className="w-10">Pos</TableHead>
                   <TableHead className="text-right w-14">GP</TableHead>
-                  <TableHead className="text-right w-20">Pts</TableHead>
+                  <TableHead className="text-right w-20">{productiveMode === "ppg" ? "PPG" : "Pts"}</TableHead>
                   <TableHead className="text-right w-16">$/pt</TableHead>
                 </TableRow>
               </TableHeader>
@@ -659,7 +693,9 @@ function OverviewTab({
               </TableBody>
             </Table>
             <p className="text-[10px] text-muted-foreground px-4 py-2 border-t">
-              Season-to-date fantasy points (PPR). $/pt = {currentYear} salary ÷ total points.
+              {productiveMode === "ppg"
+                ? `PPG requires ≥${ppgMinGames} games started (configurable). $/pt uses season total points.`
+                : `Season-to-date fantasy points (PPR). $/pt = ${currentYear} salary ÷ total points.`}
             </p>
           </CardContent>
         </Card>
@@ -726,6 +762,16 @@ function OverviewTab({
                         Ext. Window
                       </Badge>
                     )}
+                    {fa.isRookieContract === 1 && (
+                      <span className="text-[9px] text-muted-foreground block mt-1">
+                        {rfaPlayerIds.has(fa.playerId)
+                          ? "Designated RFA"
+                          : "Rookie deal ending · can be your 1 RFA"}
+                      </span>
+                    )}
+                    {fa.isFranchiseTagEligible && !fa.isRookieContract && (
+                      <span className="text-[9px] text-muted-foreground block mt-1">Tag eligible</span>
+                    )}
                   </div>
                 </div>
               ))}
@@ -774,10 +820,19 @@ function OverviewTab({
             <div className="grid grid-cols-4 gap-1 text-center text-[10px] text-muted-foreground mt-1">
               {salaryCommitmentsData.map(d => (
                 <div key={d.year}>
-                  <span className="text-foreground font-medium">${d.space.toFixed(0)}</span> space
+                  <span className="text-foreground font-medium">${d.space.toFixed(0)}</span> cap space
                 </div>
               ))}
             </div>
+            <table className="sr-only">
+              <caption>Salary commitments by season</caption>
+              <thead><tr><th>Year</th><th>Committed</th><th>Dead cap</th><th>Space</th></tr></thead>
+              <tbody>
+                {salaryCommitmentsData.map(d => (
+                  <tr key={d.year}><td>{d.year}</td><td>{d.committed}</td><td>{d.deadCap}</td><td>{d.space}</td></tr>
+                ))}
+              </tbody>
+            </table>
           </CardContent>
         </Card>
 
@@ -816,9 +871,17 @@ function OverviewTab({
                 <Bar dataKey="leagueAvg" fill="rgba(96,165,250,0.5)" radius={[0, 3, 3, 0]} name="leagueAvg" />
               </BarChart>
             </ResponsiveContainer>
-            <p className="text-[10px] text-muted-foreground text-center mt-1">
-              {currentYear} salary by position. Bars scaled to $100.
-            </p>
+            <div className="mt-3 space-y-1 text-[10px]">
+              {positionChartData.map(row => {
+                const diff = row.team - row.leagueAvg;
+                return (
+                  <div key={row.pos} className="flex justify-between text-muted-foreground">
+                    <span>{row.pos}</span>
+                    <span>Team ${row.team.toFixed(1)} · Avg ${row.leagueAvg.toFixed(1)} · <span className={diff >= 0 ? "text-amber-600" : "text-emerald-600"}>{diff >= 0 ? "+" : ""}{diff.toFixed(1)}</span></span>
+                  </div>
+                );
+              })}
+            </div>
           </CardContent>
         </Card>
       </div>
@@ -1995,10 +2058,71 @@ export default function ContractsHub() {
     });
   }, [allRosters]);
 
+  const { data: phaseState } = useContractPhase(league?.leagueId);
+  const currentPhase: LeaguePhaseId = phaseState?.current ?? "tag_extension";
+  const phaseConfig = phaseState?.phases ?? [];
+  const ppgMinGames = phaseState?.ppgMinGames ?? 3;
+
+  const { data: rfaData } = useQuery({
+    queryKey: ["/api/league", league?.leagueId, "rfa", currentYear],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/rfa?season=${currentYear}`);
+      if (!res.ok) throw new Error("RFA");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && isCommissioner,
+  });
+
+  const rfaPlayerIds = useMemo(
+    () => new Set<string>((rfaData?.designations || []).map((d: { playerId: string }) => d.playerId)),
+    [rfaData],
+  );
+
+  const perfByPlayer = useMemo(() => {
+    const m: Record<string, RosterPlayer> = {};
+    for (const r of allRosters) for (const p of r.players) m[p.id] = p;
+    return m;
+  }, [allRosters]);
+
+  const deadCapByRoster = useMemo(() => {
+    const m: Record<number, number> = {};
+    for (const dc of deadCapEntries) {
+      try {
+        const sal = JSON.parse(dc.deadCapSalaries || "{}");
+        m[dc.rosterId] = (m[dc.rosterId] || 0) + (Number(sal[String(currentYear)]) || 0) / 10;
+      } catch { /* */ }
+    }
+    return m;
+  }, [deadCapEntries, currentYear]);
+
+  const teamDeadCapCurrent = selectedRosterId != null ? (deadCapByRoster[selectedRosterId] || 0) : 0;
+
+  const { data: roundWinsBadge } = useQuery({
+    queryKey: ["/api/league", league?.leagueId, "round-wins-badge", selectedRosterId, currentYear],
+    queryFn: async () => {
+      const round = currentPhase === "round_2_results" ? 2 : 1;
+      const res = await fetch(
+        `/api/league/${league?.leagueId}/roster/${selectedRosterId}/round-wins?round=${round}&season=${currentYear}`,
+      );
+      return res.json();
+    },
+    enabled: !!league?.leagueId && !!selectedRosterId && (currentPhase === "round_1_results" || currentPhase === "round_2_results"),
+  });
+
+  const needsRoundDecision =
+    !roundWinsBadge?.confirmed && (roundWinsBadge?.wins?.length ?? 0) > 0;
+
+  const rfaPendingOffer = (rfaData?.offers || []).some(
+    (o: { originalRosterId: number; status: string }) =>
+      o.originalRosterId === selectedRosterId && o.status === "pending",
+  );
+
   if (user && league && !isCommissioner) return null;
 
   const selectedTeamEntry = allRosters.find(r => r.rosterId === selectedRosterId);
   const pendingApprovalsCount = approvals.filter(a => a.status === "pending").length;
+  const faRound = currentPhase === "fa_round_2" ? 2 : 1;
+  const rfaWindow = currentPhase === "rfa_match_2" ? 2 : 1;
 
   const isLoading = rostersLoading;
 
@@ -2058,15 +2182,41 @@ export default function ContractsHub() {
             <TabsList className="mb-6 h-auto flex-wrap gap-1 bg-muted/50 p-1">
               <TabsTrigger value="overview" className="text-xs sm:text-sm">
                 <Building2 className="w-3.5 h-3.5 mr-1.5" />
-                Overview
+                Team Overview
+              </TabsTrigger>
+              <TabsTrigger value="calendar" className="text-xs sm:text-sm">
+                <CalendarDays className="w-3.5 h-3.5 mr-1.5" />
+                Season Calendar
+              </TabsTrigger>
+              <TabsTrigger value="free-agency-bid" className="text-xs sm:text-sm">
+                <Gavel className="w-3.5 h-3.5 mr-1.5" />
+                Free Agency
+              </TabsTrigger>
+              <TabsTrigger value="my-wins" className="relative text-xs sm:text-sm">
+                <Trophy className="w-3.5 h-3.5 mr-1.5" />
+                My Wins
+                {needsRoundDecision && (
+                  <span className="ml-1 w-2 h-2 rounded-full bg-amber-500 inline-block" />
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="rfa-match" className="relative text-xs sm:text-sm">
+                <Handshake className="w-3.5 h-3.5 mr-1.5" />
+                RFA Match
+                {rfaPendingOffer && (
+                  <span className="ml-1 w-2 h-2 rounded-full bg-amber-500 inline-block" />
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="trades-hub" className="text-xs sm:text-sm">
+                <ArrowLeftRight className="w-3.5 h-3.5 mr-1.5" />
+                Trades
               </TabsTrigger>
               <TabsTrigger value="league-cap" className="text-xs sm:text-sm">
                 <BarChart2 className="w-3.5 h-3.5 mr-1.5" />
                 League Cap
               </TabsTrigger>
-              <TabsTrigger value="free-agency" className="text-xs sm:text-sm">
+              <TabsTrigger value="expiring-contracts" className="text-xs sm:text-sm">
                 <Users className="w-3.5 h-3.5 mr-1.5" />
-                Free Agency
+                Expiring Contracts
               </TabsTrigger>
               <TabsTrigger value="roster-management" className="text-xs sm:text-sm">
                 <FileText className="w-3.5 h-3.5 mr-1.5" />
@@ -2093,7 +2243,77 @@ export default function ContractsHub() {
                 currentYear={currentYear}
                 playerMap={playerMap}
                 onOpenPlayer={openPlayer}
+                currentPhase={currentPhase}
+                ppgMinGames={ppgMinGames}
+                rfaPlayerIds={rfaPlayerIds}
+                onGoRosterSalaries={() => setActiveTab("roster-management")}
               />
+            </TabsContent>
+
+            <TabsContent value="calendar">
+              <SeasonCalendarTab currentYear={currentYear} currentPhase={currentPhase} phases={phaseConfig} />
+            </TabsContent>
+
+            <TabsContent value="free-agency-bid">
+              {phaseAllowsTab(currentPhase, "free-agency-bid") && selectedRosterId != null && league?.leagueId ? (
+                <FreeAgencyBiddingTab
+                  leagueId={league.leagueId}
+                  rosterId={selectedRosterId}
+                  currentYear={currentYear}
+                  currentPhase={currentPhase}
+                  parsedContracts={parsedContracts}
+                  allRosters={allRosters}
+                  playerMap={playerMap}
+                  perfByPlayer={perfByPlayer}
+                  rfaDesignations={rfaData?.designations || []}
+                />
+              ) : (
+                <NotOpenYet label="Free Agency bidding" />
+              )}
+            </TabsContent>
+
+            <TabsContent value="my-wins">
+              {phaseAllowsTab(currentPhase, "my-wins") && selectedRosterId != null && league?.leagueId ? (
+                <RoundWinsTab
+                  leagueId={league.leagueId}
+                  rosterId={selectedRosterId}
+                  teamName={selectedTeamEntry?.teamName || `Team ${selectedRosterId}`}
+                  currentYear={currentYear}
+                  round={faRound === 2 ? 2 : 1}
+                  parsedContracts={parsedContracts}
+                  deadCapCurrentYear={teamDeadCapCurrent}
+                />
+              ) : (
+                <NotOpenYet label="Round results" />
+              )}
+            </TabsContent>
+
+            <TabsContent value="rfa-match">
+              {phaseAllowsTab(currentPhase, "rfa-match") && selectedRosterId != null && league?.leagueId ? (
+                <RfaMatchTab
+                  leagueId={league.leagueId}
+                  rosterId={selectedRosterId}
+                  currentYear={currentYear}
+                  window={rfaWindow}
+                  parsedContracts={parsedContracts}
+                  deadCapCurrentYear={teamDeadCapCurrent}
+                  playerMap={playerMap}
+                />
+              ) : (
+                <NotOpenYet label="RFA Match" />
+              )}
+            </TabsContent>
+
+            <TabsContent value="trades-hub">
+              {league?.leagueId ? (
+                <TradesHubTab
+                  leagueId={league.leagueId}
+                  currentYear={currentYear}
+                  allRosters={allRosters}
+                  parsedContracts={parsedContracts}
+                  deadCapByRoster={deadCapByRoster}
+                />
+              ) : null}
             </TabsContent>
 
             <TabsContent value="league-cap">
@@ -2109,7 +2329,7 @@ export default function ContractsHub() {
               />
             </TabsContent>
 
-            <TabsContent value="free-agency">
+            <TabsContent value="expiring-contracts">
               <FreeAgencyTab
                 allRosters={allRosters}
                 parsedContracts={parsedContracts}
