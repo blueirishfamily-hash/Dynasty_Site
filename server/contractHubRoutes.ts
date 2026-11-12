@@ -1,10 +1,13 @@
 import type { Express } from "express";
 import { storage } from "./storage";
+import { registerSandboxRoutes } from "./testSandbox";
 import {
+  RFA_ENABLED,
   canMatchRFA,
   createInSeasonSigning,
   designateRFA,
   getCurrentPhase,
+  LEAGUE_PHASES,
   parseContractSalaries,
   parsePhaseConfig,
   resolveBids,
@@ -78,7 +81,57 @@ async function logTx(leagueId: string, type: string, rosterId: number | null, pa
   });
 }
 
+/**
+ * Picks the winning bid on every player for a round: highest total value, ties to the higher yearly salary.
+ * Winning bids get result "won", the rest "lost". Safe to run again; it decides the same bids the same way.
+ */
+async function resolveRoundBids(leagueId: string, round: number, season: number) {
+  const bids = await storage.getBidsByLeagueRound(leagueId, round, season);
+  const byPlayer = new Map<string, BidInput[]>();
+  for (const b of bids.filter(x => x.status === "active" && !x.result)) {
+    const list = byPlayer.get(b.playerId) || [];
+    list.push({
+      id: b.id,
+      rosterId: b.rosterId,
+      playerId: b.playerId,
+      bidAmount: b.bidAmount,
+      contractYears: b.contractYears,
+      createdAt: b.createdAt,
+      isRfa: b.isRfa === 1,
+      originalRosterId: b.originalRosterId,
+    });
+    byPlayer.set(b.playerId, list);
+  }
+  const winners: Array<{ playerId: string; bidId: string; rosterId: number; isRfa: boolean; originalRosterId: number | null }> = [];
+  for (const [playerId, playerBids] of byPlayer) {
+    const { winner } = resolveBids(playerId, playerBids);
+    if (!winner) continue;
+    for (const b of playerBids) {
+      const result = b.id === winner.id ? "won" : "lost";
+      await storage.updatePlayerBid(b.id, b.rosterId, { result } as any);
+    }
+    const winBid = bids.find(x => x.id === winner.id)!;
+    winners.push({
+      playerId,
+      bidId: winner.id,
+      rosterId: winner.rosterId,
+      isRfa: winBid.isRfa === 1,
+      originalRosterId: winBid.originalRosterId,
+    });
+  }
+  await logTx(leagueId, "fa_round_resolve", null, { round, season, winnerCount: winners.length });
+  return winners;
+}
+
+/** True once the league has reached the results phase for this round (or moved past it). */
+async function roundResultsAreOpen(leagueId: string, round: number) {
+  const { current } = await getPhaseState(leagueId);
+  const resultsPhase = round === 2 ? "round_2_results" : "round_1_results";
+  return LEAGUE_PHASES.indexOf(current) >= LEAGUE_PHASES.indexOf(resultsPhase);
+}
+
 export function registerContractHubRoutes(app: Express) {
+  registerSandboxRoutes(app);
   app.get("/api/league/:leagueId/contract-phase", async (req, res) => {
     try {
       const { leagueId } = req.params;
@@ -119,6 +172,58 @@ export function registerContractHubRoutes(app: Express) {
     }
   });
 
+  /** Players already signed (bid won and kept) in an earlier round of this season's free agency. */
+  async function signedEarlierPlayerIds(leagueId: string, round: number, season: number): Promise<Set<string>> {
+    const ids = new Set<string>();
+    for (let r = 1; r < round; r++) {
+      const bids = await storage.getBidsByLeagueRound(leagueId, r, season);
+      for (const b of bids) if (b.result === "kept") ids.add(b.playerId);
+    }
+    return ids;
+  }
+
+  app.get("/api/league/:leagueId/fa-signed", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const season = parseInt(String(req.query.season), 10) || new Date().getFullYear();
+      const round = parseInt(String(req.query.round), 10) || 1;
+      res.json({ playerIds: Array.from(await signedEarlierPlayerIds(leagueId, round, season)) });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Failed to load signed players" });
+    }
+  });
+
+  /** Every bid that was won and kept this season, across both rounds, for the free agency recap. */
+  app.get("/api/league/:leagueId/fa-recap", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const season = parseInt(String(req.query.season), 10) || new Date().getFullYear();
+      const signings: Array<Record<string, unknown>> = [];
+      for (const round of [1, 2]) {
+        const bids = await storage.getBidsByLeagueRound(leagueId, round, season);
+        for (const b of bids) {
+          if (b.result !== "kept") continue;
+          signings.push({
+            id: b.id,
+            rosterId: b.rosterId,
+            playerId: b.playerId,
+            playerName: b.playerName,
+            playerPosition: b.playerPosition,
+            playerTeam: b.playerTeam,
+            bidAmount: b.bidAmount,
+            contractYears: b.contractYears,
+            round,
+          });
+        }
+      }
+      res.json({ signings });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Failed to load recap" });
+    }
+  });
+
   app.post("/api/league/:leagueId/fa-bids", async (req, res) => {
     try {
       const { leagueId } = req.params;
@@ -127,8 +232,28 @@ export function registerContractHubRoutes(app: Express) {
       if (phase !== "fa_round_1" && phase !== "fa_round_2") {
         return res.status(400).json({ error: "Bidding not open in current phase", reason: `Phase is ${phase}` });
       }
-      if (isRfa && originalRosterId === rosterId) {
+      // RFA is paused: every bid is a plain free agent bid.
+      const bidIsRfa = RFA_ENABLED && !!isRfa;
+      if (bidIsRfa && originalRosterId === rosterId) {
         return res.status(400).json({ error: "Cannot bid on your own designated RFA" });
+      }
+      const bidRound = round ?? (phase === "fa_round_2" ? 2 : 1);
+      const bidSeason = season ?? new Date().getFullYear();
+      if ((await signedEarlierPlayerIds(leagueId, bidRound, bidSeason)).has(playerId)) {
+        return res.status(400).json({ error: "Player already signed", reason: "This player was signed in an earlier round and is no longer a free agent." });
+      }
+      // One open bid per team per player per round: bidding again changes the existing bid.
+      const existingBids = await storage.getBidsByLeagueRound(leagueId, bidRound, bidSeason);
+      const existing = existingBids.find(b => b.rosterId === rosterId && b.playerId === playerId && b.status === "active");
+      if (existing) {
+        const updated = await storage.updatePlayerBid(existing.id, rosterId, {
+          bidAmount,
+          contractYears: contractYears || 1,
+          isRfa: bidIsRfa ? 1 : 0,
+          originalRosterId: bidIsRfa ? originalRosterId ?? null : null,
+        } as any);
+        await logTx(leagueId, "fa_bid_update", rosterId, { bidId: existing.id, playerId, bidAmount, contractYears });
+        return res.json(updated ?? existing);
       }
       const bid = await storage.createPlayerBid({
         leagueId,
@@ -141,8 +266,8 @@ export function registerContractHubRoutes(app: Express) {
         contractYears: contractYears || 1,
         round: round ?? (phase === "fa_round_2" ? 2 : 1),
         season: season ?? new Date().getFullYear(),
-        isRfa: isRfa ? 1 : 0,
-        originalRosterId: originalRosterId ?? null,
+        isRfa: bidIsRfa ? 1 : 0,
+        originalRosterId: bidIsRfa ? originalRosterId ?? null : null,
       } as any);
       await logTx(leagueId, "fa_bid", rosterId, { bidId: bid.id, playerId, bidAmount, contractYears });
       res.json(bid);
@@ -156,40 +281,7 @@ export function registerContractHubRoutes(app: Express) {
     try {
       const { leagueId } = req.params;
       const { round, season } = req.body;
-      const bids = await storage.getBidsByLeagueRound(leagueId, round, season);
-      const byPlayer = new Map<string, BidInput[]>();
-      for (const b of bids.filter(x => x.status === "active")) {
-        const list = byPlayer.get(b.playerId) || [];
-        list.push({
-          id: b.id,
-          rosterId: b.rosterId,
-          playerId: b.playerId,
-          bidAmount: b.bidAmount,
-          contractYears: b.contractYears,
-          createdAt: b.createdAt,
-          isRfa: b.isRfa === 1,
-          originalRosterId: b.originalRosterId,
-        });
-        byPlayer.set(b.playerId, list);
-      }
-      const winners: Array<{ playerId: string; bidId: string; rosterId: number; isRfa: boolean; originalRosterId: number | null }> = [];
-      for (const [playerId, playerBids] of byPlayer) {
-        const { winner } = resolveBids(playerId, playerBids);
-        if (!winner) continue;
-        for (const b of playerBids) {
-          const result = b.id === winner.id ? "won" : "lost";
-          await storage.updatePlayerBid(b.id, b.rosterId, { result } as any);
-        }
-        const winBid = bids.find(x => x.id === winner.id)!;
-        winners.push({
-          playerId,
-          bidId: winner.id,
-          rosterId: winner.rosterId,
-          isRfa: winBid.isRfa === 1,
-          originalRosterId: winBid.originalRosterId,
-        });
-      }
-      await logTx(leagueId, "fa_round_resolve", null, { round, season, winnerCount: winners.length });
+      const winners = await resolveRoundBids(leagueId, round, season);
       res.json({ winners });
     } catch (e) {
       console.error(e);
@@ -200,9 +292,21 @@ export function registerContractHubRoutes(app: Express) {
   app.get("/api/league/:leagueId/roster/:rosterId/round-wins", async (req, res) => {
     try {
       const { leagueId, rosterId } = req.params;
-      const wins = await storage.getBidsWithResult(leagueId, parseInt(rosterId, 10), "won");
       const round = String(req.query.round || "1");
       const season = String(req.query.season || "");
+      // Winners are picked automatically the first time anyone looks once the round's results phase is open.
+      const roundNum = parseInt(round, 10);
+      const seasonNum = parseInt(season, 10);
+      if (!Number.isNaN(seasonNum) && (await roundResultsAreOpen(leagueId, roundNum))) {
+        const roundBids = await storage.getBidsByLeagueRound(leagueId, roundNum, seasonNum);
+        if (roundBids.some(b => b.status === "active") && roundBids.every(b => !b.result)) {
+          await resolveRoundBids(leagueId, roundNum, seasonNum);
+        }
+      }
+      // Undecided wins plus the ones already confirmed, so a team can still see what it kept after confirming.
+      const rid = parseInt(rosterId, 10);
+      const decided = await Promise.all(["won", "kept", "rejected"].map(r => storage.getBidsWithResult(leagueId, rid, r)));
+      const wins = decided.flat().filter(b => b.round === roundNum && b.season === seasonNum);
       const confirmKey = `${ROUND_CONFIRM_PREFIX}${round}_${season}_${rosterId}`;
       const confirmed = await storage.getLeagueSetting(leagueId, confirmKey);
       res.json({ wins, confirmed: confirmed === "true" });
@@ -233,7 +337,7 @@ export function registerContractHubRoutes(app: Express) {
       for (const w of wins) {
         const result = rejectSet.has(w.id) ? "rejected" : "kept";
         await storage.updatePlayerBid(w.id, rosterId, { result } as any);
-        if (result === "kept" && w.isRfa === 1 && w.originalRosterId != null) {
+        if (RFA_ENABLED && result === "kept" && w.isRfa === 1 && w.originalRosterId != null) {
           const window = round === 1 ? 1 : 2;
           await storage.createRfaOffer({
             leagueId,
@@ -260,6 +364,7 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/rfa/designate", async (req, res) => {
     try {
+      if (!RFA_ENABLED) return res.status(400).json({ error: "RFA is turned off for now" });
       const { leagueId } = req.params;
       const { rosterId, playerId, playerName, season, isExpiringRookie } = req.body;
       const { current } = await getPhaseState(leagueId);
@@ -283,6 +388,7 @@ export function registerContractHubRoutes(app: Express) {
 
   app.get("/api/league/:leagueId/rfa", async (req, res) => {
     try {
+      if (!RFA_ENABLED) return res.json({ designations: [], offers: [], enabled: false });
       const { leagueId } = req.params;
       const season = parseInt(String(req.query.season), 10);
       const designations = await storage.getRfaDesignations(leagueId, season);
@@ -295,6 +401,7 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/rfa/:offerId/match", async (req, res) => {
     try {
+      if (!RFA_ENABLED) return res.status(400).json({ error: "RFA is turned off for now" });
       const { leagueId, offerId } = req.params;
       const offers = await storage.getRfaOffers(leagueId, parseInt(String(req.body.season), 10));
       const offer = offers.find(o => o.id === offerId);
@@ -316,6 +423,7 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/rfa/:offerId/walk", async (req, res) => {
     try {
+      if (!RFA_ENABLED) return res.status(400).json({ error: "RFA is turned off for now" });
       const { leagueId, offerId } = req.params;
       // Window closed with no decision — treat as walk (configurable later).
       await storage.updateRfaOfferStatus(offerId, "walked");

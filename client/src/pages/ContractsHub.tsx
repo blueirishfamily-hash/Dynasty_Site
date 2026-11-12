@@ -4,14 +4,26 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { PlayerDetailSheet, type PlayerCardTarget } from "@/components/contracts/PlayerDetailSheet";
+import { TeamAllowancePanel } from "@/components/contracts-hub/TeamAllowances";
+import { PendingContractActionsPanel } from "@/components/contracts-hub/PendingContractActions";
+import { usePendingTags, pendingSalaryEffects, type PendingTag } from "@/components/contracts-hub/pendingContracts";
 import { useContractPhase, phaseAllowsTab } from "@/hooks/useContractPhase";
+import { TestModeBar } from "@/components/contracts-hub/TestModeBar";
 import { SeasonCalendarTab } from "@/components/contracts-hub/SeasonCalendarTab";
 import { FreeAgencyBiddingTab } from "@/components/contracts-hub/FreeAgencyBiddingTab";
 import { RoundWinsTab } from "@/components/contracts-hub/RoundWinsTab";
+import { FreeAgencyRecapTab } from "@/components/contracts-hub/FreeAgencyRecapTab";
 import { RfaMatchTab } from "@/components/contracts-hub/RfaMatchTab";
 import { TradesHubTab } from "@/components/contracts-hub/TradesHubTab";
 import { NotOpenYet } from "@/components/contracts-hub/NotOpenYet";
-import { PHASE_LABELS, type LeaguePhaseId } from "@shared/contractRules";
+import {
+  ACTIVE_PHASES,
+  RFA_ENABLED,
+  PHASE_LABELS,
+  formatPhaseDate,
+  type LeaguePhaseId,
+  type PhaseConfigEntry,
+} from "@shared/contractRules";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -190,8 +202,10 @@ interface TeamExtension {
   playerId: string;
   playerName: string;
   extensionSalary: number;
+  extensionSalary2?: number | null;
   extensionYear: number;
   extensionType: number;
+  isRookieExtension?: number;
   status: string;
 }
 
@@ -324,6 +338,8 @@ function OverviewTab({
   ppgMinGames,
   rfaPlayerIds,
   onGoRosterSalaries,
+  pendingExtensions,
+  pendingTags,
 }: {
   selectedRosterId: number | null;
   setSelectedRosterId: (id: number) => void;
@@ -337,6 +353,8 @@ function OverviewTab({
   ppgMinGames: number;
   rfaPlayerIds: Set<string>;
   onGoRosterSalaries: () => void;
+  pendingExtensions: TeamExtension[];
+  pendingTags: PendingTag[];
 }) {
   const [productiveMode, setProductiveMode] = useState<"total" | "ppg">("total");
 
@@ -431,18 +449,38 @@ function OverviewTab({
     });
   }, [expiringContracts, perfMap, playerMap]);
 
-  // Salary commitments chart
+  // Salary commitments chart. Contracts that are applied but not yet approved are stacked in blue.
   const commitmentYears = [currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
+  const pendingEffects = useMemo(
+    () =>
+      selectedRosterId == null
+        ? { added: {} as Record<number, number>, replaced: {} as Record<number, number> }
+        : pendingSalaryEffects(
+            selectedRosterId,
+            pendingExtensions,
+            pendingTags,
+            parsedContracts,
+            currentYear,
+            id => playerMap[id]?.position,
+          ),
+    [selectedRosterId, pendingExtensions, pendingTags, parsedContracts, currentYear, playerMap],
+  );
   const salaryCommitmentsData = commitmentYears.map(year => {
-    const committed = teamContracts.reduce((sum, c) => sum + (c.parsedSalaries[year] || 0), 0);
+    const pending = pendingEffects.added[year] || 0;
+    const committed = Math.max(
+      0,
+      teamContracts.reduce((sum, c) => sum + (c.parsedSalaries[year] || 0), 0) - (pendingEffects.replaced[year] || 0),
+    );
     const dead = year === currentYear ? deadCapCurrentYear : 0;
     return {
       year: String(year),
       committed: Math.round(committed * 10) / 10,
+      pending: Math.round(pending * 10) / 10,
       deadCap: Math.round(dead * 10) / 10,
-      space: Math.round(Math.max(0, TOTAL_CAP - committed - dead) * 10) / 10,
+      space: Math.round(Math.max(0, TOTAL_CAP - committed - pending - dead) * 10) / 10,
     };
   });
+  const hasPendingContracts = salaryCommitmentsData.some(d => d.pending > 0);
 
   // Spend by position
   const positions = ["QB", "RB", "WR", "TE", "K", "DEF"];
@@ -764,9 +802,11 @@ function OverviewTab({
                     )}
                     {fa.isRookieContract === 1 && (
                       <span className="text-[9px] text-muted-foreground block mt-1">
-                        {rfaPlayerIds.has(fa.playerId)
-                          ? "Designated RFA"
-                          : "Rookie deal ending · can be your 1 RFA"}
+                        {!RFA_ENABLED
+                          ? "Rookie deal ending"
+                          : rfaPlayerIds.has(fa.playerId)
+                            ? "Designated RFA"
+                            : "Rookie deal ending · can be your 1 RFA"}
                       </span>
                     )}
                     {fa.isFranchiseTagEligible && !fa.isRookieContract && (
@@ -799,7 +839,7 @@ function OverviewTab({
                 <Tooltip
                   formatter={(value: number, name: string) => [
                     `$${value.toFixed(1)}`,
-                    name === "committed" ? "Committed" : name === "deadCap" ? "Dead Cap" : "Cap Space",
+                    name === "committed" ? "Committed" : name === "pending" ? "Pending approval" : name === "deadCap" ? "Dead Cap" : "Cap Space",
                   ]}
                   contentStyle={{
                     backgroundColor: "hsl(var(--card))",
@@ -809,11 +849,12 @@ function OverviewTab({
                   }}
                 />
                 <ReferenceLine y={TOTAL_CAP} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: `Cap $${TOTAL_CAP}`, position: "right", fontSize: 10, fill: "#f59e0b" }} />
-                <Bar dataKey="committed" fill="#f59e0b" radius={[3, 3, 0, 0]} name="committed">
+                <Bar dataKey="committed" fill="#f59e0b" name="committed" stackId="a">
                   {salaryCommitmentsData.map((entry, i) => (
-                    <Cell key={i} fill={entry.committed / TOTAL_CAP > 0.9 ? "#ef4444" : entry.committed / TOTAL_CAP > 0.75 ? "#f59e0b" : "#f59e0b"} />
+                    <Cell key={i} fill={(entry.committed + entry.pending) / TOTAL_CAP > 0.9 ? "#ef4444" : "#f59e0b"} />
                   ))}
                 </Bar>
+                <Bar dataKey="pending" fill="#3b82f6" name="pending" stackId="a" />
                 <Bar dataKey="deadCap" fill="#ef4444" radius={[3, 3, 0, 0]} name="deadCap" stackId="a" />
               </BarChart>
             </ResponsiveContainer>
@@ -821,15 +862,22 @@ function OverviewTab({
               {salaryCommitmentsData.map(d => (
                 <div key={d.year}>
                   <span className="text-foreground font-medium">${d.space.toFixed(0)}</span> cap space
+                  {d.pending > 0 && <div className="text-blue-500">incl. ${d.pending.toFixed(1)} pending</div>}
                 </div>
               ))}
             </div>
+            {hasPendingContracts && (
+              <div className="flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground mt-2">
+                <span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-500" />
+                Applied, not yet approved
+              </div>
+            )}
             <table className="sr-only">
               <caption>Salary commitments by season</caption>
-              <thead><tr><th>Year</th><th>Committed</th><th>Dead cap</th><th>Space</th></tr></thead>
+              <thead><tr><th>Year</th><th>Committed</th><th>Pending approval</th><th>Dead cap</th><th>Space</th></tr></thead>
               <tbody>
                 {salaryCommitmentsData.map(d => (
-                  <tr key={d.year}><td>{d.year}</td><td>{d.committed}</td><td>{d.deadCap}</td><td>{d.space}</td></tr>
+                  <tr key={d.year}><td>{d.year}</td><td>{d.committed}</td><td>{d.pending}</td><td>{d.deadCap}</td><td>{d.space}</td></tr>
                 ))}
               </tbody>
             </table>
@@ -897,18 +945,22 @@ function LeagueCapTab({
   deadCapEntries,
   currentYear,
   onSelectTeam,
+  ownRosterId = null,
 }: {
   allRosters: AllRosterEntry[];
   parsedContracts: ParsedContract[];
   deadCapEntries: DbDeadCapEntry[];
   currentYear: number;
   onSelectTeam: (rosterId: number) => void;
+  /** When set, only this team is shown (used during Tag & Extension). */
+  ownRosterId?: number | null;
 }) {
   const [sortKey, setSortKey] = useState<"capUsed" | "available" | "expiring" | "future">("capUsed");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
   const teamSummaries: TeamCapSummary[] = useMemo(() => {
-    return allRosters.map(roster => {
+    const visibleRosters = ownRosterId == null ? allRosters : allRosters.filter(r => r.rosterId === ownRosterId);
+    return visibleRosters.map(roster => {
       const contracts = parsedContracts.filter(c => c.rosterId === roster.rosterId);
       const deadCap = deadCapEntries.filter(dc => dc.rosterId === roster.rosterId);
       const deadCapTotal = deadCap.reduce((sum, dc) => {
@@ -944,7 +996,7 @@ function LeagueCapTab({
         franchiseTagsUsed: contracts.filter(c => c.franchiseTagUsed === 1).length,
       };
     });
-  }, [allRosters, parsedContracts, deadCapEntries, currentYear]);
+  }, [allRosters, parsedContracts, deadCapEntries, currentYear, ownRosterId]);
 
   const sorted = useMemo(() => {
     return [...teamSummaries].sort((a, b) => {
@@ -1079,12 +1131,20 @@ function FreeAgencyTab({
   playerMap,
   currentYear,
   onOpenPlayer,
+  ownRosterId = null,
+  pendingExtensionKeys,
+  pendingTagKeys,
 }: {
   allRosters: AllRosterEntry[];
   parsedContracts: ParsedContract[];
   playerMap: Record<string, SleeperPlayer>;
   currentYear: number;
   onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
+  /** When set, only this team's contracts are listed (used during Tag & Extension). */
+  ownRosterId?: number | null;
+  /** "rosterId-playerId" keys for extensions / tags that are applied but not saved yet. */
+  pendingExtensionKeys?: Set<string>;
+  pendingTagKeys?: Set<string>;
 }) {
   const [filterPos, setFilterPos] = useState("ALL");
   const [filterSeason, setFilterSeason] = useState(String(currentYear));
@@ -1110,6 +1170,7 @@ function FreeAgencyTab({
 
   const expiringPlayers = useMemo(() => {
     return parsedContracts
+      .filter(c => ownRosterId == null || c.rosterId === ownRosterId)
       .filter(c => c.contractThrough === filterYear && (c.parsedSalaries[filterYear] || 0) > 0)
       .map(c => {
         const player = playerMap[c.playerId] || perfByPlayerId[c.playerId];
@@ -1134,7 +1195,7 @@ function FreeAgencyTab({
         return true;
       })
       .sort((a, b) => b.currentSalary - a.currentSalary);
-  }, [parsedContracts, filterYear, filterPos, searchTerm, playerMap, perfByPlayerId, teamByRosterId]);
+  }, [parsedContracts, filterYear, filterPos, searchTerm, playerMap, perfByPlayerId, teamByRosterId, ownRosterId]);
 
   return (
     <div className="space-y-5">
@@ -1193,7 +1254,11 @@ function FreeAgencyTab({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {expiringPlayers.map(p => (
+              {expiringPlayers.map(p => {
+                const pendingKey = `${p.rosterId}-${p.playerId}`;
+                const extPending = pendingExtensionKeys?.has(pendingKey) ?? false;
+                const tagPending = pendingTagKeys?.has(pendingKey) ?? false;
+                return (
                 <TableRow
                   key={`${p.rosterId}-${p.playerId}`}
                   className="text-sm cursor-pointer hover:bg-muted/60 transition-colors"
@@ -1216,11 +1281,29 @@ function FreeAgencyTab({
                   <TableCell className="text-right">{p.weeklyAvg > 0 ? p.weeklyAvg.toFixed(1) : "—"}</TableCell>
                   <TableCell>
                     <div className="flex flex-wrap gap-1">
-                      {p.isFranchiseTagEligible && (
+                      {!extPending && !tagPending && p.isFranchiseTagEligible && (
                         <Badge variant="outline" className="text-[9px] px-1 py-0 border-amber-500/50 text-amber-600">Tag Eligible</Badge>
                       )}
-                      {p.isExtensionEligible && (
+                      {!extPending && !tagPending && p.isExtensionEligible && (
                         <Badge variant="outline" className="text-[9px] px-1 py-0 border-blue-500/50 text-blue-600">Ext. Window</Badge>
+                      )}
+                      {extPending && (
+                        <Badge
+                          variant="outline"
+                          title="Not saved yet. Approve it in Contract Actions."
+                          className="text-[9px] px-1 py-0 border-amber-500/50 text-amber-600"
+                        >
+                          Extension Applied
+                        </Badge>
+                      )}
+                      {tagPending && (
+                        <Badge
+                          variant="outline"
+                          title="Not saved yet. Approve it in Contract Actions."
+                          className="text-[9px] px-1 py-0 border-rose-500/50 text-rose-600"
+                        >
+                          Tag Applied
+                        </Badge>
                       )}
                       {p.franchiseTagUsed === 1 && (
                         <Badge variant="outline" className="text-[9px] px-1 py-0 border-rose-500/50 text-rose-600">Tagged</Badge>
@@ -1228,7 +1311,8 @@ function FreeAgencyTab({
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
               {expiringPlayers.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={8} className="text-center text-muted-foreground py-10 text-sm">
@@ -1270,8 +1354,8 @@ function ExtensionModal({
   const [extensionType, setExtensionType] = useState<string>("1");
   if (!contract) return null;
 
-  const contractThrough = contract.contractThrough || currentYear;
-  const extensionYear = contractThrough + 1;
+  // An extension always starts the season after it is made.
+  const extensionYear = currentYear + 1;
   const multipliers = [0, 1.2, 1.5, 1.8, 2.0];
   const extType = Number(extensionType);
   const projectedSalary = currentSalary * (multipliers[extType] || 1.2);
@@ -1962,12 +2046,102 @@ function ApprovalsTab({
   );
 }
 
+// ─── Contract Actions (phase-driven) ──────────────────────────────────────────
+
+const PHASE_ACTION_COPY: Record<LeaguePhaseId, { title: string; detail: string }> = {
+  league_year_rollover: {
+    title: "Review your expiring contracts",
+    detail: RFA_ENABLED
+      ? "Contracts have rolled over. Tags, extensions and your RFA designation open in the Tag & Extension phase."
+      : "Contracts have rolled over. Tags and extensions open in the Tag & Extension phase.",
+  },
+  tag_extension: {
+    title: "Decide on your expiring contracts",
+    detail: RFA_ENABLED
+      ? "Tag or extend players, and designate up to 1 RFA from players finishing rookie deals. This is the last window before free agency."
+      : "Tag or extend players. This is the last window before free agency.",
+  },
+  fa_round_1: {
+    title: "Place your Round 1 bids",
+    detail: "Blind bids, no minimum. Highest total value wins; a tie goes to the higher yearly salary. You may bid past your cap.",
+  },
+  round_1_results: {
+    title: "Review your Round 1 wins",
+    detail: "If your wins put you over the cap in any season, reject the ones you choose until every season fits.",
+  },
+  rfa_match_1: {
+    title: "Match or release your RFA",
+    detail: "Match the exact years and salary, or let him walk. Your own RFA offers count against your cap until the window closes.",
+  },
+  fa_round_2: {
+    title: "Place your Round 2 bids",
+    detail: "Bid on any player still unsigned. Same rules as Round 1.",
+  },
+  round_2_results: {
+    title: "Review your Round 2 wins",
+    detail: "Same rules as Round 1. Players still unsigned become in-season free agents.",
+  },
+  rfa_match_2: {
+    title: "Match or release your RFA",
+    detail: "Match the exact years and salary, or let him walk. Your own RFA offers count against your cap until the window closes.",
+  },
+  fa_recap: {
+    title: "Free agency recap",
+    detail: "Every player signed in free agency. Nothing to decide here. Players still unsigned become in-season free agents.",
+  },
+  regular_season: {
+    title: "No offseason actions open",
+    detail: "Trades are in the Trades tab. Here's who is expiring after this season.",
+  },
+};
+
+function ContractActionsBanner({
+  currentPhase,
+  phases,
+}: {
+  currentPhase: LeaguePhaseId;
+  phases: PhaseConfigEntry[];
+}) {
+  const copy = PHASE_ACTION_COPY[currentPhase];
+  const entry = phases.find(p => p.id === currentPhase);
+  const idx = ACTIVE_PHASES.indexOf(currentPhase);
+  const next = idx >= 0 && idx < ACTIVE_PHASES.length - 1 ? ACTIVE_PHASES[idx + 1] : null;
+  const nextEntry = next ? phases.find(p => p.id === next) : undefined;
+
+  return (
+    <Card className="mb-6 border-amber-500/40 bg-amber-500/5">
+      <CardContent className="py-4 flex flex-wrap items-start justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2 mb-1">
+            <Badge variant="outline" className="border-amber-500/50 text-amber-600">
+              {PHASE_LABELS[currentPhase]}
+            </Badge>
+            <span className="text-xs text-muted-foreground">
+              Closes {formatPhaseDate(entry?.endAt ?? null)}
+            </span>
+          </div>
+          <h2 className="text-lg font-semibold font-heading">{copy.title}</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">{copy.detail}</p>
+        </div>
+        {next && (
+          <div className="text-xs text-muted-foreground sm:text-right">
+            <div className="uppercase tracking-wide">Up next</div>
+            <div className="font-medium text-foreground">{PHASE_LABELS[next]}</div>
+            <div>{formatPhaseDate(nextEntry?.startAt ?? null)}</div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ContractsHub() {
   const { user, league, season } = useSleeper();
   const [, setLocation] = useLocation();
   const currentYear = parseInt(season) || new Date().getFullYear();
+  const { tags: pendingTags, addTag: addPendingTag, removeTag: removePendingTag } = usePendingTags(league?.leagueId, currentYear);
 
   const isCommissioner = !!(
     user?.userId &&
@@ -2015,6 +2189,12 @@ export default function ContractsHub() {
     enabled: !!league?.leagueId && isCommissioner,
   });
 
+  const pendingExtensionKeys = useMemo(
+    () => new Set(extensions.filter(e => e.status === "pending").map(e => `${e.rosterId}-${e.playerId}`)),
+    [extensions],
+  );
+  const pendingTagKeys = useMemo(() => new Set(pendingTags.map(t => `${t.rosterId}-${t.playerId}`)), [pendingTags]);
+
   const { data: approvals = [] } = useQuery<ApprovalRequest[]>({
     queryKey: ["/api/league", league?.leagueId, "contract-approvals"],
     enabled: !!league?.leagueId && isCommissioner,
@@ -2032,6 +2212,8 @@ export default function ContractsHub() {
     }
     return map;
   }, [playersArray]);
+
+  const positionOf = useCallback((id: string) => (playerMap[id] as any)?.position as string | undefined, [playerMap]);
 
   const parsedContracts: ParsedContract[] = useMemo(() => {
     return dbContracts.map(c => {
@@ -2070,7 +2252,7 @@ export default function ContractsHub() {
       if (!res.ok) throw new Error("RFA");
       return res.json();
     },
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId && isCommissioner && RFA_ENABLED,
   });
 
   const rfaPlayerIds = useMemo(
@@ -2121,7 +2303,6 @@ export default function ContractsHub() {
 
   const selectedTeamEntry = allRosters.find(r => r.rosterId === selectedRosterId);
   const pendingApprovalsCount = approvals.filter(a => a.status === "pending").length;
-  const faRound = currentPhase === "fa_round_2" ? 2 : 1;
   const rfaWindow = currentPhase === "rfa_match_2" ? 2 : 1;
 
   const isLoading = rostersLoading;
@@ -2171,6 +2352,8 @@ export default function ContractsHub() {
         </div>
       </div>
 
+      <TestModeBar leagueId={league?.leagueId} currentYear={currentYear} currentPhase={currentPhase} />
+
       {/* Tabs */}
       <div className="max-w-7xl mx-auto px-4 py-6">
         {isLoading ? (
@@ -2188,21 +2371,10 @@ export default function ContractsHub() {
                 <CalendarDays className="w-3.5 h-3.5 mr-1.5" />
                 Season Calendar
               </TabsTrigger>
-              <TabsTrigger value="free-agency-bid" className="text-xs sm:text-sm">
+              <TabsTrigger value="contract-actions" className="relative text-xs sm:text-sm">
                 <Gavel className="w-3.5 h-3.5 mr-1.5" />
-                Free Agency
-              </TabsTrigger>
-              <TabsTrigger value="my-wins" className="relative text-xs sm:text-sm">
-                <Trophy className="w-3.5 h-3.5 mr-1.5" />
-                My Wins
-                {needsRoundDecision && (
-                  <span className="ml-1 w-2 h-2 rounded-full bg-amber-500 inline-block" />
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="rfa-match" className="relative text-xs sm:text-sm">
-                <Handshake className="w-3.5 h-3.5 mr-1.5" />
-                RFA Match
-                {rfaPendingOffer && (
+                Contract Actions
+                {(needsRoundDecision || rfaPendingOffer) && (
                   <span className="ml-1 w-2 h-2 rounded-full bg-amber-500 inline-block" />
                 )}
               </TabsTrigger>
@@ -2213,10 +2385,6 @@ export default function ContractsHub() {
               <TabsTrigger value="league-cap" className="text-xs sm:text-sm">
                 <BarChart2 className="w-3.5 h-3.5 mr-1.5" />
                 League Cap
-              </TabsTrigger>
-              <TabsTrigger value="expiring-contracts" className="text-xs sm:text-sm">
-                <Users className="w-3.5 h-3.5 mr-1.5" />
-                Expiring Contracts
               </TabsTrigger>
               <TabsTrigger value="roster-management" className="text-xs sm:text-sm">
                 <FileText className="w-3.5 h-3.5 mr-1.5" />
@@ -2247,6 +2415,8 @@ export default function ContractsHub() {
                 ppgMinGames={ppgMinGames}
                 rfaPlayerIds={rfaPlayerIds}
                 onGoRosterSalaries={() => setActiveTab("roster-management")}
+                pendingExtensions={extensions}
+                pendingTags={pendingTags}
               />
             </TabsContent>
 
@@ -2254,8 +2424,38 @@ export default function ContractsHub() {
               <SeasonCalendarTab currentYear={currentYear} currentPhase={currentPhase} phases={phaseConfig} />
             </TabsContent>
 
-            <TabsContent value="free-agency-bid">
-              {phaseAllowsTab(currentPhase, "free-agency-bid") && selectedRosterId != null && league?.leagueId ? (
+            <TabsContent value="contract-actions">
+              <ContractActionsBanner currentPhase={currentPhase} phases={phaseConfig} />
+              {currentPhase === "tag_extension" && selectedRosterId != null && league?.leagueId && (
+                <>
+                  <PendingContractActionsPanel
+                    leagueId={league.leagueId}
+                    userId={user?.userId || ""}
+                    rosterId={selectedRosterId}
+                    currentYear={currentYear}
+                    cap={TOTAL_CAP}
+                    extensions={extensions}
+                    pendingTags={pendingTags}
+                    onRemoveTag={removePendingTag}
+                    parsedContracts={parsedContracts}
+                    positionOf={positionOf}
+                    deadCapEntries={deadCapEntries}
+                    className="mb-6"
+                  />
+                  <TeamAllowancePanel
+                    rosterId={selectedRosterId}
+                    currentYear={currentYear}
+                    extensions={extensions}
+                    parsedContracts={parsedContracts}
+                    pendingTagCount={pendingTags.filter(t => t.rosterId === selectedRosterId).length}
+                    pendingTagPlayerIds={pendingTags.filter(t => t.rosterId === selectedRosterId).map(t => t.playerId)}
+                    className="mb-6"
+                  />
+                </>
+              )}
+              {selectedRosterId == null || !league?.leagueId ? (
+                <p className="text-sm text-muted-foreground">Select a team to see its contract actions.</p>
+              ) : phaseAllowsTab(currentPhase, "free-agency-bid") ? (
                 <FreeAgencyBiddingTab
                   leagueId={league.leagueId}
                   rosterId={selectedRosterId}
@@ -2266,30 +2466,27 @@ export default function ContractsHub() {
                   playerMap={playerMap}
                   perfByPlayer={perfByPlayer}
                   rfaDesignations={rfaData?.designations || []}
+                  onOpenPlayer={openPlayer}
                 />
-              ) : (
-                <NotOpenYet label="Free Agency bidding" />
-              )}
-            </TabsContent>
-
-            <TabsContent value="my-wins">
-              {phaseAllowsTab(currentPhase, "my-wins") && selectedRosterId != null && league?.leagueId ? (
+              ) : phaseAllowsTab(currentPhase, "fa-recap") ? (
+                <FreeAgencyRecapTab
+                  leagueId={league.leagueId}
+                  rosterId={selectedRosterId}
+                  teamName={selectedTeamEntry?.teamName || `Team ${selectedRosterId}`}
+                  currentYear={currentYear}
+                  allRosters={allRosters}
+                />
+              ) : phaseAllowsTab(currentPhase, "my-wins") ? (
                 <RoundWinsTab
                   leagueId={league.leagueId}
                   rosterId={selectedRosterId}
                   teamName={selectedTeamEntry?.teamName || `Team ${selectedRosterId}`}
                   currentYear={currentYear}
-                  round={faRound === 2 ? 2 : 1}
+                  round={currentPhase === "round_2_results" ? 2 : 1}
                   parsedContracts={parsedContracts}
                   deadCapCurrentYear={teamDeadCapCurrent}
                 />
-              ) : (
-                <NotOpenYet label="Round results" />
-              )}
-            </TabsContent>
-
-            <TabsContent value="rfa-match">
-              {phaseAllowsTab(currentPhase, "rfa-match") && selectedRosterId != null && league?.leagueId ? (
+              ) : phaseAllowsTab(currentPhase, "rfa-match") ? (
                 <RfaMatchTab
                   leagueId={league.leagueId}
                   rosterId={selectedRosterId}
@@ -2300,7 +2497,16 @@ export default function ContractsHub() {
                   playerMap={playerMap}
                 />
               ) : (
-                <NotOpenYet label="RFA Match" />
+                <FreeAgencyTab
+                  allRosters={allRosters}
+                  parsedContracts={parsedContracts}
+                  playerMap={playerMap}
+                  currentYear={currentYear}
+                  onOpenPlayer={openPlayer}
+                  ownRosterId={currentPhase === "tag_extension" ? selectedRosterId : null}
+                  pendingExtensionKeys={pendingExtensionKeys}
+                  pendingTagKeys={pendingTagKeys}
+                />
               )}
             </TabsContent>
 
@@ -2322,20 +2528,11 @@ export default function ContractsHub() {
                 parsedContracts={parsedContracts}
                 deadCapEntries={deadCapEntries}
                 currentYear={currentYear}
+                ownRosterId={currentPhase === "tag_extension" ? selectedRosterId : null}
                 onSelectTeam={id => {
                   setSelectedRosterId(id);
                   setActiveTab("overview");
                 }}
-              />
-            </TabsContent>
-
-            <TabsContent value="expiring-contracts">
-              <FreeAgencyTab
-                allRosters={allRosters}
-                parsedContracts={parsedContracts}
-                playerMap={playerMap}
-                currentYear={currentYear}
-                onOpenPlayer={openPlayer}
               />
             </TabsContent>
 
@@ -2374,6 +2571,9 @@ export default function ContractsHub() {
         parsedContracts={parsedContracts}
         currentYear={currentYear}
         playerMap={playerMap}
+        extensions={extensions}
+        pendingTags={pendingTags}
+        onQueueTag={addPendingTag}
       />
     </div>
   );

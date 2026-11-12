@@ -16,10 +16,20 @@ export const LEAGUE_PHASES = [
   "fa_round_2",
   "round_2_results",
   "rfa_match_2",
+  "fa_recap",
   "regular_season",
 ] as const;
 
 export type LeaguePhaseId = (typeof LEAGUE_PHASES)[number];
+
+// RFA (restricted free agency) is paused. All of its rules, routes and screens are still in the code; this
+// switch hides it from the offseason. With it off, the RFA match windows are skipped, nobody can be designated
+// an RFA, and every free agent is a plain free agent. See docs/RFA_PROCESS.md for the paused process.
+export const RFA_ENABLED = false;
+
+export const ACTIVE_PHASES: readonly LeaguePhaseId[] = RFA_ENABLED
+  ? LEAGUE_PHASES
+  : LEAGUE_PHASES.filter(p => p !== "rfa_match_1" && p !== "rfa_match_2");
 
 export const PHASE_LABELS: Record<LeaguePhaseId, string> = {
   league_year_rollover: "League Year Rollover",
@@ -30,6 +40,7 @@ export const PHASE_LABELS: Record<LeaguePhaseId, string> = {
   fa_round_2: "Free Agency Round 2",
   round_2_results: "Round 2 Results",
   rfa_match_2: "RFA Match Window 2",
+  fa_recap: "Free Agency Recap",
   regular_season: "Regular Season",
 };
 
@@ -359,7 +370,7 @@ export function createInSeasonSigning(
 // ─── Phase resolution ────────────────────────────────────────────────────────
 
 export function parsePhaseConfig(json: string | null | undefined): PhaseConfigEntry[] {
-  const defaults: PhaseConfigEntry[] = LEAGUE_PHASES.map(id => ({
+  const defaults: PhaseConfigEntry[] = ACTIVE_PHASES.map(id => ({
     id,
     startAt: null,
     endAt: null,
@@ -369,7 +380,7 @@ export function parsePhaseConfig(json: string | null | undefined): PhaseConfigEn
     const parsed = JSON.parse(json) as PhaseConfigEntry[];
     if (!Array.isArray(parsed)) return defaults;
     const byId = new Map(parsed.map(p => [p.id, p]));
-    return LEAGUE_PHASES.map(id => byId.get(id) ?? { id, startAt: null, endAt: null });
+    return ACTIVE_PHASES.map(id => byId.get(id) ?? { id, startAt: null, endAt: null });
   } catch {
     return defaults;
   }
@@ -389,12 +400,12 @@ export function getCurrentPhase(
     }
     const future = phases.find(p => p.startAt != null && p.startAt > now);
     if (future) {
-      const idx = LEAGUE_PHASES.indexOf(future.id);
-      return idx > 0 ? LEAGUE_PHASES[idx - 1] : LEAGUE_PHASES[0];
+      const idx = ACTIVE_PHASES.indexOf(future.id);
+      return idx > 0 ? ACTIVE_PHASES[idx - 1] : ACTIVE_PHASES[0];
     }
     return "regular_season";
   }
-  if (manualOverride && LEAGUE_PHASES.includes(manualOverride)) {
+  if (manualOverride && ACTIVE_PHASES.includes(manualOverride)) {
     return manualOverride;
   }
   return "tag_extension";

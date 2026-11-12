@@ -8,6 +8,8 @@ export default defineConfig({
   out: "./migrations",
   schema: "./shared/schema.ts",
   dialect: "postgresql",
+  // Tables that exist in the DB but are not defined in schema.ts; keep drizzle-kit from dropping them.
+  tablesFilter: ["!playoff_odds_snapshots"],
   dbCredentials: {
     url: process.env.DATABASE_URL,
     ssl: { rejectUnauthorized: false },

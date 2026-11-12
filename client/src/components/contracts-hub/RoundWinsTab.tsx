@@ -27,16 +27,17 @@ export function RoundWinsTab({
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const qc = useQueryClient();
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error: winsError } = useQuery({
     queryKey: ["/api/league", leagueId, "round-wins", rosterId, round, currentYear],
     queryFn: async () => {
       const res = await fetch(`/api/league/${leagueId}/roster/${rosterId}/round-wins?round=${round}&season=${currentYear}`);
+      if (!res.ok) throw new Error("Could not load winning bids");
       return res.json();
     },
     enabled: !!leagueId,
   });
 
-  const wins: any[] = data?.wins || [];
+  const wins: any[] = Array.isArray(data?.wins) ? data.wins : [];
   const confirmed = data?.confirmed;
 
   const team = useMemo(() => ({
@@ -48,7 +49,9 @@ export function RoundWinsTab({
     deadCapByYear: { [currentYear]: deadCapCurrentYear } as Record<number, number>,
   }), [parsedContracts, rosterId, currentYear, deadCapCurrentYear]);
 
-  const kept = wins.filter(w => !rejected.has(w.id));
+  // Once decisions are confirmed, show what was actually decided; before that, what the team has ticked.
+  const isRejected = (w: any) => (confirmed ? w.result === "rejected" : rejected.has(w.id));
+  const kept = wins.filter(w => !isRejected(w));
   const validation = useMemo(
     () => validateRoundResolution(team, kept.map(w => ({
       yearlySalary: w.bidAmount,
@@ -74,6 +77,23 @@ export function RoundWinsTab({
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading…</p>;
 
+  if (wins.length === 0) {
+    return (
+      <div className="space-y-2">
+        <h2 className="text-lg font-bold">Round {round} results — {teamName}</h2>
+        <Card>
+          <CardContent className="pt-4 text-sm text-muted-foreground">
+            {winsError ? (
+              <span className="text-red-500">{(winsError as Error).message}</span>
+            ) : (
+              <>{teamName} did not win any bids in Round {round}.</>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const banner = confirmed
     ? "confirmed"
     : validation.canConfirm
@@ -98,15 +118,15 @@ export function RoundWinsTab({
           <CardHeader><CardTitle className="text-sm">Winning bids</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             {wins.map(w => (
-              <div key={w.id} className={`flex items-center gap-2 text-sm ${rejected.has(w.id) ? "opacity-50" : ""}`}>
-                <Checkbox checked={rejected.has(w.id)} onCheckedChange={() => {
+              <div key={w.id} className={`flex items-center gap-2 text-sm ${isRejected(w) ? "opacity-50" : ""}`}>
+                <Checkbox checked={isRejected(w)} disabled={!!confirmed} onCheckedChange={() => {
                   const next = new Set(rejected);
                   if (next.has(w.id)) next.delete(w.id); else next.add(w.id);
                   setRejected(next);
                 }} />
                 <span className="flex-1">{w.playerName} ({w.playerPosition})</span>
                 <span>{w.contractYears}×${w.bidAmount} = ${w.bidAmount * w.contractYears}</span>
-                <span className="text-xs">{rejected.has(w.id) ? "Rejected" : "Keep"}</span>
+                <span className="text-xs">{isRejected(w) ? "Rejected" : confirmed ? "Kept" : "Keep"}</span>
               </div>
             ))}
           </CardContent>

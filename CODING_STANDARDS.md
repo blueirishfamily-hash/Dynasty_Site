@@ -2,6 +2,12 @@
 
 This document outlines the coding structure, patterns, and conventions used in this project to ensure consistency across all future changes.
 
+## Change Workflow
+
+- Code changes are written directly to the project folder without asking first, unless there is a specific question about the change. Report what changed when the write is done.
+- Commits and pushes to git still require explicit approval from the project owner.
+- Database changes still require explicit approval (see Database Change Policy).
+
 ## Project Architecture
 
 ### Tech Stack

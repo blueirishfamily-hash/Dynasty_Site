@@ -11,6 +11,7 @@ console.log("[startup] dotenv loaded, importing express...");
 
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
+import { sandboxMiddleware } from "./testSandbox";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 
@@ -57,6 +58,9 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false }));
+
+// Contracts test mode: requests with the x-contracts-test header run against an in-memory copy of the contract data.
+app.use(sandboxMiddleware);
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {

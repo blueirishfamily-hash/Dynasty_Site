@@ -15,6 +15,8 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { TeamAllowancePanel, getTeamAllowances, CONTRACT_LENGTH_LIMITS, type AllowanceExtension } from "@/components/contracts-hub/TeamAllowances";
+import type { PendingTag } from "@/components/contracts-hub/pendingContracts";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
@@ -82,6 +84,7 @@ interface ParsedContract {
   parsedSalaries: Record<number, number>;
   contractThrough: number | null;
   franchiseTagUsed: number;
+  franchiseTagYear?: number | null;
   hasBeenFranchiseTagged: number;
   extensionApplied: number;
   hasBeenExtended: number;
@@ -117,11 +120,24 @@ const POSITION_COLORS: Record<string, string> = {
 };
 
 const EXTENSION_TYPES = [
-  { value: 1, label: "1-Year", multiplier: 1.2 },
-  { value: 2, label: "2-Year", multiplier: 1.5 },
-  { value: 3, label: "3-Year", multiplier: 1.8 },
-  { value: 4, label: "4-Year", multiplier: 2.0 },
+  { value: 1, label: "1-Year", pct: 80 },
+  { value: 2, label: "2-Year", pct: 90 },
+  { value: 3, label: "3-Year", pct: 100 },
+  { value: 4, label: "4-Year", pct: 110 },
 ];
+
+/** What the server returns when it prices an extension from the player's PPG rank (salaries in tenths of $M). */
+interface ExtensionPricing {
+  extensionSalary: number;
+  extensionSalaryMillions: number;
+  salary1YearMillions?: number;
+  salary2YearMillions?: number;
+  salary3YearMillions?: number;
+  salary4YearMillions?: number;
+  rank?: number;
+  totalPlayersAtPosition?: number;
+  adjustedPPG?: number;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -188,6 +204,10 @@ interface PlayerDetailSheetProps {
   parsedContracts: ParsedContract[];
   currentYear: number;
   playerMap: Record<string, SleeperPlayerMin>;
+  extensions?: AllowanceExtension[];
+  /** Tags applied but not saved yet, and how to add one. */
+  pendingTags?: PendingTag[];
+  onQueueTag?: (tag: PendingTag) => void;
 }
 
 export function PlayerDetailSheet({
@@ -197,6 +217,9 @@ export function PlayerDetailSheet({
   parsedContracts,
   currentYear,
   playerMap,
+  extensions = [],
+  pendingTags = [],
+  onQueueTag,
 }: PlayerDetailSheetProps) {
   const { league, user } = useSleeper();
   const { toast } = useToast();
@@ -286,6 +309,73 @@ export function PlayerDetailSheet({
     });
   }, [gameScatterData]);
 
+  // Team limits, counting extensions and tags that are applied but not yet approved.
+  const allowances = contract
+    ? getTeamAllowances(
+        contract.rosterId,
+        currentYear,
+        extensions,
+        parsedContracts,
+        pendingTags.filter(t => t.rosterId === contract.rosterId).length,
+      )
+    : null;
+
+  // ── Extension pricing from the server (same PPG rules used when the extension is saved) ──
+  const isRookieExt = contract?.isRookieContract === 1;
+  const pricingEligible = !!contract && contract.hasBeenExtended === 0 && contract.extensionApplied === 0;
+  const { data: extPricing, isLoading: pricingLoading, error: pricingError } = useQuery<ExtensionPricing>({
+    queryKey: ["/api/league", leagueId, "extension-pricing", playerId, contract?.rosterId, isRookieExt ? "rookie" : "non-rookie"],
+    queryFn: async () => {
+      const endpoint = isRookieExt ? "rookie-extension-salary" : "non-rookie-extension-salary";
+      const res = await fetch(`/api/league/${leagueId}/${endpoint}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ playerId, rosterId: contract?.rosterId }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not price extension");
+      return body;
+    },
+    enabled: !!leagueId && !!playerId && pricingEligible,
+    staleTime: 5 * 60 * 1000,
+    retry: false,
+  });
+
+  /** The new contract starts next season, so next season's count for that length must have room. */
+  const lengthLimitReason = (type: number): string | null => {
+    if (!allowances || !contract) return null;
+    const limit = CONTRACT_LENGTH_LIMITS[Math.min(type, 4)];
+    if (limit === undefined) return null;
+    const bucket = Math.min(type, 4);
+    // A non-rookie player's own contract is replaced by the extension, so it does not count against it.
+    const ownYears = Object.entries(contract.parsedSalaries).filter(([y, v]) => Number(y) > currentYear && v > 0).length;
+    const ownCounted = contract.isRookieContract !== 1 && ownYears > 0 && Math.min(ownYears, 4) === bucket ? 1 : 0;
+    return allowances.nextYear[bucket] - ownCounted >= limit
+      ? `${bucket === 4 ? "4+" : bucket}-year contracts full in ${currentYear + 1}`
+      : null;
+  };
+
+  /** Why this extension length cannot be used by the team right now, if it cannot. */
+  const extensionBlockReason = (type: number): string | null => {
+    if (!allowances) return null;
+    if (isRookieExt) {
+      if (allowances.rookieLeft === 0) return "No rookie extensions left";
+      if (type === 4 && allowances.rookie4YearUsed) return "4-year already used";
+      return lengthLimitReason(type);
+    }
+    if (allowances.nonRookieLeft === 0) return "No extensions left";
+    return lengthLimitReason(type);
+  };
+
+  /** Per-year salary ($M) for an extension of this length, or null when it is not available. */
+  const extensionPrice = (type: number): number | null => {
+    if (!extPricing) return null;
+    if (extensionBlockReason(type)) return null;
+    if (isRookieExt) return type === 3 || type === 4 ? extPricing.extensionSalaryMillions : null;
+    const v = (extPricing as any)[`salary${type}YearMillions`];
+    return typeof v === "number" ? v : null;
+  };
+
   // ── Contract timeline data for bar chart ──
   const contractTimelineYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
 
@@ -315,13 +405,11 @@ export function PlayerDetailSheet({
 
       // Extension preview: add projected salary for extension year
       let extensionPreview: number | undefined;
-      if (previewExtType !== null && salary === 0) {
-        const baseSalary = contract.parsedSalaries[currentYear] ?? 0;
-        const mult = EXTENSION_TYPES.find(t => t.value === previewExtType)?.multiplier ?? 1;
-        const contractThrough = contract.contractThrough ?? currentYear;
-        // Show extension only for the first N years past contractThrough
-        if (year > contractThrough && year <= contractThrough + previewExtType) {
-          extensionPreview = Math.round(baseSalary * mult * 10) / 10;
+      if (previewExtType !== null) {
+        const projected = extensionPrice(previewExtType);
+        // The new contract starts next season and runs for the extension length.
+        if (year > currentYear && year <= currentYear + previewExtType) {
+          extensionPreview = projected ?? undefined;
         }
       }
 
@@ -345,7 +433,7 @@ export function PlayerDetailSheet({
         isCurrent: year === currentYear,
       };
     });
-  }, [contract, currentYear, previewExtType, previewTag, contractTimelineYears, positionAvgData]);
+  }, [contract, currentYear, previewExtType, previewTag, contractTimelineYears, positionAvgData, extPricing, isRookieExt]);
 
   // ── Dynamic Y domain for contract timeline ──
   const timelineMax = useMemo(() => {
@@ -360,16 +448,30 @@ export function PlayerDetailSheet({
   }, [contractTimelineData]);
 
   // ── Canonical tag/extension eligibility ──
-  const canExtend = contract && contract.hasBeenExtended === 0 && contract.extensionApplied === 0;
-  const canTag = contract && contract.hasBeenFranchiseTagged === 0 && contract.franchiseTagUsed === 0;
+  const pendingExt = contract
+    ? extensions.find(e => e.playerId === playerId && e.rosterId === contract.rosterId && e.status === "pending")
+    : undefined;
+  const pendingTag = contract
+    ? pendingTags.find(t => t.playerId === playerId && t.rosterId === contract.rosterId)
+    : undefined;
+  const tagsLeft = allowances?.tagsLeft ?? 0;
+  const canExtend = contract && contract.hasBeenExtended === 0 && contract.extensionApplied === 0 && !pendingExt && !pendingTag;
+  const canTag =
+    contract &&
+    contract.hasBeenFranchiseTagged === 0 &&
+    contract.franchiseTagUsed === 0 &&
+    !pendingExt &&
+    !pendingTag &&
+    tagsLeft > 0;
 
   // ── Extension mutation ──
   const extensionMutation = useMutation({
     mutationFn: async (extensionType: number) => {
       if (!contract) throw new Error("No contract");
       const baseSalary = contract.parsedSalaries[currentYear] ?? 0;
-      const contractThrough = contract.contractThrough ?? currentYear;
-      const extensionYear = contractThrough + 1;
+      if (!extPricing) throw new Error("Extension price is not available yet");
+      // An extension always starts the season after it is made.
+      const extensionYear = currentYear + 1;
       const res = await fetch(`/api/league/${leagueId}/extensions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -381,6 +483,8 @@ export function PlayerDetailSheet({
           extensionType,
           extensionYear,
           season: currentYear,
+          isPPGBased: true,
+          ppgSalary: extPricing.extensionSalary,
         }),
       });
       if (!res.ok) { const e = await res.json(); throw new Error(e.error || "Failed"); }
@@ -391,7 +495,7 @@ export function PlayerDetailSheet({
       queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "extensions", String(currentYear)] });
       setPreviewExtType(null);
       setApplyingExt(false);
-      toast({ title: "Extension Applied" });
+      toast({ title: "Extension applied", description: "Saved as pending. Approve it in Contract Actions to make it official." });
       onClose();
     },
     onError: (e: Error) => {
@@ -751,7 +855,7 @@ export function PlayerDetailSheet({
                         {contractTimelineData.map(row => {
                           const extSal = row.extensionPreview;
                           const isPreviewRow = extSal !== undefined || row.tagPreview !== undefined;
-                          const displaySal = row.salary ?? extSal;
+                          const displaySal = extSal ?? row.salary;
                           return (
                             <tr
                               key={row.year}
@@ -787,7 +891,7 @@ export function PlayerDetailSheet({
                                 )}
                                 {isPreviewRow && extSal !== undefined && (
                                   <span className="text-amber-500/70 text-[10px]">
-                                    {EXTENSION_TYPES.find(t => t.value === previewExtType)?.label} ext · {EXTENSION_TYPES.find(t => t.value === previewExtType)?.multiplier}×
+                                    {EXTENSION_TYPES.find(t => t.value === previewExtType)?.label} ext · PPG price
                                   </span>
                                 )}
                                 {isPreviewRow && row.tagPreview !== undefined && (
@@ -828,13 +932,34 @@ export function PlayerDetailSheet({
             </section>
 
             {/* Extension & Tag Actions */}
-            {(canExtend || canTag) && (
+            {(canExtend || canTag || pendingExt || pendingTag) && (
               <>
                 <Separator />
                 <section className="space-y-4">
                   <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
                     Contract Actions
                   </h3>
+                  {(pendingExt || pendingTag) && (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
+                      <span className="font-semibold text-amber-600">
+                        {pendingExt ? "Extension applied" : "Franchise tag applied"}
+                      </span>
+                      {" "}but not saved yet. Approve or remove it in Contract Actions.
+                    </div>
+                  )}
+                  {!pendingExt && !pendingTag && tagsLeft === 0 && (
+                    <p className="text-xs text-muted-foreground">This team has no franchise tag left this season.</p>
+                  )}
+                  {contract && (
+                    <TeamAllowancePanel
+                      rosterId={contract.rosterId}
+                      currentYear={currentYear}
+                      extensions={extensions}
+                      parsedContracts={parsedContracts}
+                      pendingTagCount={pendingTags.filter(t => t.rosterId === contract.rosterId).length}
+                      pendingTagPlayerIds={pendingTags.filter(t => t.rosterId === contract.rosterId).map(t => t.playerId)}
+                    />
+                  )}
 
                   {/* Extension soft-select */}
                   {canExtend && (
@@ -849,16 +974,30 @@ export function PlayerDetailSheet({
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Select an extension type to preview its effect, then apply when ready.
+                        {isRookieExt
+                          ? "Rookie extensions are 3 or 4 years at one flat salary set by this player's PPG rank at his position."
+                          : "Salary is set by this player's PPG rank at his position: 80% of the base for 1 year, 90% for 2, 100% for 3 and 110% for 4."}
+                        {extPricing?.rank != null && (
+                          <> Ranked {extPricing.rank} of {extPricing.totalPlayersAtPosition}.</>
+                        )}
                       </p>
+                      {pricingLoading && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" /> Calculating price from PPG...
+                        </div>
+                      )}
+                      {pricingError && (
+                        <p className="text-xs text-red-500">{(pricingError as Error).message}</p>
+                      )}
                       <div className="grid grid-cols-2 gap-2">
                         {EXTENSION_TYPES.map(et => {
-                          const baseSal = contract?.parsedSalaries[currentYear] ?? 0;
-                          const projSal = Math.round(baseSal * et.multiplier * 10) / 10;
+                          const projSal = extensionPrice(et.value);
+                          const unavailable = projSal === null;
                           const isSelected = previewExtType === et.value;
                           return (
                             <button
                               key={et.value}
+                              disabled={unavailable}
                               onClick={() => {
                                 setPreviewExtType(isSelected ? null : et.value);
                                 setPreviewTag(false);
@@ -867,10 +1006,12 @@ export function PlayerDetailSheet({
                                 isSelected
                                   ? "border-blue-500 bg-blue-500/15"
                                   : "border-border hover:border-blue-500/50 hover:bg-blue-500/5"
-                              }`}
+                              } ${unavailable ? "opacity-50 cursor-not-allowed" : ""}`}
                             >
                               <div className="font-semibold mb-0.5">{et.label}</div>
-                              <div className="text-muted-foreground">{et.multiplier}× · {fmt(projSal)}/yr</div>
+                              <div className="text-muted-foreground">
+                                {unavailable ? (pricingLoading ? "..." : extensionBlockReason(et.value) ?? "Not available") : `${isRookieExt ? "Flat" : `${et.pct}%`} · ${fmt(projSal)}/yr`}
+                              </div>
                               {isSelected && (
                                 <div className="text-blue-500 mt-1 text-[10px] flex items-center gap-1">
                                   <Eye className="w-3 h-3" /> Previewing
@@ -887,7 +1028,7 @@ export function PlayerDetailSheet({
                             setApplyingExt(true);
                             extensionMutation.mutate(previewExtType);
                           }}
-                          disabled={extensionMutation.isPending || applyingExt}
+                          disabled={extensionMutation.isPending || applyingExt || !extPricing}
                         >
                           {extensionMutation.isPending ? (
                             <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -936,6 +1077,18 @@ export function PlayerDetailSheet({
                         <Button
                           className="w-full h-8 text-sm"
                           onClick={() => {
+                            if (onQueueTag && contract) {
+                              onQueueTag({
+                                rosterId: contract.rosterId,
+                                playerId,
+                                playerName: careerData?.player.name ?? "Player",
+                                position: careerData?.player.position ?? (playerMap[playerId] as any)?.position ?? "FLEX",
+                              });
+                              setPreviewTag(false);
+                              toast({ title: "Franchise tag applied", description: "Saved as pending. Approve it in Contract Actions to make it official." });
+                              onClose();
+                              return;
+                            }
                             setApplyingTag(true);
                             tagMutation.mutate();
                           }}

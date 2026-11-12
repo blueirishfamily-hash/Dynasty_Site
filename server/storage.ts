@@ -1,3 +1,4 @@
+import { createSandboxAwareStorage } from "./testSandbox";
 import { randomUUID } from "crypto";
 import { eq, and, or, ne, desc, asc, sql, isNull } from "drizzle-orm";
 import { db } from "./db";
@@ -2644,4 +2645,4 @@ export class DatabaseStorage implements IStorage {
   }
 }
 
-export const storage = new DatabaseStorage();
+export const storage = createSandboxAwareStorage(new DatabaseStorage());

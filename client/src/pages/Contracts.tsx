@@ -2472,8 +2472,8 @@ function ManageTeamContractsTab({
     // Use the salary from the year we're extending from
     const salaryToUse = (!isRookieContract && isInSecondToLastYear) ? secondToLastYearSalary : lastYearSalary;
 
-    // Calculate extension year (starts after the last year with salary)
-    const extensionYear = lastYearWithSalary + 1;
+    // An extension always starts the season after it is made
+    const extensionYear = CURRENT_YEAR + 1;
     
     // All extensions now use PPG-based pricing from server endpoints
     // Salary values will come from ppgSalaryData when the popover opens
@@ -2618,9 +2618,7 @@ function ManageTeamContractsTab({
       if (pendingExt) {
         for (let i = 0; i < pendingExt.extensionType; i++) {
           const extYear = pendingExt.extensionYear + i;
-          if ((hypotheticalSalaries[extYear] || 0) === 0) {
-            hypotheticalSalaries[extYear] = pendingExt.extensionSalary / 10;
-          }
+          hypotheticalSalaries[extYear] = pendingExt.extensionSalary / 10;
         }
       }
 

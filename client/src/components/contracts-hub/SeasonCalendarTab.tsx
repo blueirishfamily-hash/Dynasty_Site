@@ -1,16 +1,25 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { PHASE_LABELS, formatPhaseDate, type LeaguePhaseId, type PhaseConfigEntry } from "@shared/contractRules";
+import { PHASE_LABELS, RFA_ENABLED, formatPhaseDate, type LeaguePhaseId, type PhaseConfigEntry } from "@shared/contractRules";
 
 const PHASE_BULLETS: Record<LeaguePhaseId, string[]> = {
-  league_year_rollover: ["One year off every contract", "Expired deals → free agents", "Rookie deals ending → RFA eligible"],
-  tag_extension: ["Tag or extend (existing logic)", "Designate up to 1 RFA", "No bidding yet"],
-  fa_round_1: ["Blind bids on FAs and RFAs", "No minimum bid", "Bids may exceed cap until results"],
-  round_1_results: ["Reject wins until every season fits", "Rejected players → Round 2", "Resolve before RFA window 1"],
+  league_year_rollover: RFA_ENABLED
+    ? ["One year off every contract", "Expired deals → free agents", "Rookie deals ending → RFA eligible"]
+    : ["One year off every contract", "Expired deals → free agents"],
+  tag_extension: RFA_ENABLED
+    ? ["Tag or extend (existing logic)", "Designate up to 1 RFA", "No bidding yet"]
+    : ["Tag or extend (existing logic)", "No bidding yet"],
+  fa_round_1: RFA_ENABLED
+    ? ["Blind bids on FAs and RFAs", "No minimum bid", "Bids may exceed cap until results"]
+    : ["Blind bids on free agents", "No minimum bid", "Bids may exceed cap until results"],
+  round_1_results: RFA_ENABLED
+    ? ["Reject wins until every season fits", "Rejected players → Round 2", "Resolve before RFA window 1"]
+    : ["Reject wins until every season fits", "Rejected players → Round 2"],
   rfa_match_1: ["Match exact years & salary or walk", "Cap hold on bidding team", "Window closes → walk if undecided"],
   fa_round_2: ["Second blind bid round", "Unsigned after Round 2 → in-season FA"],
-  round_2_results: ["Same cap rejection flow as Round 1", "Before RFA window 2"],
+  round_2_results: RFA_ENABLED ? ["Same cap rejection flow as Round 1", "Before RFA window 2"] : ["Same cap rejection flow as Round 1"],
   rfa_match_2: ["Final RFA match window", "Same match / walk rules"],
+  fa_recap: ["Every player each team signed", "Nothing to decide, review only"],
   regular_season: ["1-year STANDARD in-season signings", "Trades until Week 14 deadline"],
 };
 

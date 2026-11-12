@@ -7,6 +7,7 @@ import { assembleLeagueHistory, buildSeasonHistory } from "./leagueHistory";
 import type { SeasonHistory } from "../shared/leagueHistory";
 import type { AnalysisTeam } from "../shared/standingsAnalysis";
 import type { MatchupPreviewData } from "../shared/matchupPreview";
+import { buildWeeklyReport, BYE_WEEKS, type ReportInput, type ReportPlayer, type ReportTeam } from "./weeklyReport";
 import {
   buildRadarStats,
   computeForm,
@@ -2703,6 +2704,49 @@ export async function registerRoutes(
     return computeAdjustedPPGFromGames(currentGames, previousGames);
   }
 
+  // Total fantasy points per player over the current and previous season (PPR), used to rank free agents.
+  app.get("/api/league/:leagueId/fa-production", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const [nflState, league] = await Promise.all([getNFLState(), getLeague(leagueId)]);
+      const currentSeason = String(league?.season || nflState.season);
+      const previousSeason = String(parseInt(currentSeason) - 1);
+      const [currentWeekly, previousWeekly] = await Promise.all([
+        fetchAllWeeklyStats(currentSeason),
+        fetchAllWeeklyStats(previousSeason),
+      ]);
+      const totalsFor = (weekly: WeeklyStatsCache) => {
+        const out: Record<string, { pts: number; games: number }> = {};
+        for (const week of weekly) {
+          for (const [playerId, stats] of Object.entries(week)) {
+            const pts = (stats as any).pts_ppr || (stats as any).pts_half_ppr || (stats as any).pts_std || 0;
+            if (pts <= 0) continue;
+            const entry = out[playerId] || (out[playerId] = { pts: 0, games: 0 });
+            entry.pts += pts;
+            entry.games += 1;
+          }
+        }
+        return out;
+      };
+      const cur = totalsFor(currentWeekly);
+      const prev = totalsFor(previousWeekly);
+      const round1 = (n: number) => Math.round(n * 10) / 10;
+      const players: Record<string, { current: number; previous: number; currentGames: number; previousGames: number }> = {};
+      for (const id of new Set([...Object.keys(cur), ...Object.keys(prev)])) {
+        players[id] = {
+          current: round1(cur[id]?.pts ?? 0),
+          previous: round1(prev[id]?.pts ?? 0),
+          currentGames: cur[id]?.games ?? 0,
+          previousGames: prev[id]?.games ?? 0,
+        };
+      }
+      res.json({ season: currentSeason, previousSeason, players });
+    } catch (error) {
+      console.error("Error computing FA production:", error);
+      res.status(500).json({ error: "Failed to compute production" });
+    }
+  });
+
   // Get player rankings with box plot data by position (uses adjusted PPG: 30 games across 2 seasons)
   app.get("/api/sleeper/league/:leagueId/player-rankings", async (req, res) => {
     try {
@@ -3680,6 +3724,75 @@ export async function registerRoutes(
   });
 
   // Playoff predictor - simulate remaining season
+  // Commissioner-only weekly report data (results for week-1, matchups and projections for week).
+  app.get("/api/sleeper/league/:leagueId/weekly-report", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const userId = req.query.userId as string | undefined;
+      if (!userId || !(await isCommissioner(userId, leagueId))) {
+        return res.status(403).json({ error: "Only the commissioner can export the weekly report." });
+      }
+      const [league, rosters, users, players, nflState] = await Promise.all([
+        getLeague(leagueId).catch(() => null),
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getAllPlayers(),
+        getNFLState(),
+      ]);
+      const week = parseInt(req.query.week as string, 10) || getEffectiveWeek(nflState, league);
+      if (week < 2) {
+        return res.status(400).json({ error: "No completed week to report on yet." });
+      }
+
+      const matchupsByWeek: Record<number, SleeperMatchup[]> = {};
+      await Promise.all(
+        Array.from({ length: week }, (_, i) => i + 1).map(async w => {
+          matchupsByWeek[w] = await getLeagueMatchups(leagueId, w).catch(() => []);
+        }),
+      );
+
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+      const teams: ReportTeam[] = rosters.map(r => {
+        const u = userMap.get(r.owner_id);
+        const name = u?.metadata?.team_name || u?.display_name || `Team ${r.roster_id}`;
+        return {
+          rosterId: r.roster_id,
+          name,
+          initials: getTeamInitials(name),
+          avatar: u?.avatar ? `https://sleepercdn.com/avatars/thumbs/${u.avatar}` : null,
+          playerIds: r.players || [],
+        };
+      });
+
+      const playerRecord: Record<string, ReportPlayer> = {};
+      for (const [id, p] of Object.entries(players)) {
+        playerRecord[id] = {
+          id,
+          name: `${p.first_name} ${p.last_name}`,
+          position: p.position,
+          team: p.team || "",
+          injuryStatus: p.injury_status || null,
+        };
+      }
+
+      const input: ReportInput = {
+        week,
+        season: league?.season || nflState.season,
+        leagueName: league?.name || "League",
+        rosterPositions: league?.roster_positions || [],
+        teams,
+        matchupsByWeek,
+        players: playerRecord,
+        byeTeams: BYE_WEEKS[week] || [],
+      };
+      res.json(buildWeeklyReport(input));
+    } catch (error) {
+      console.error("[Weekly Report] Failed to build report:", error);
+      res.status(500).json({ error: "Failed to build the weekly report" });
+    }
+  });
+
   app.get("/api/sleeper/league/:leagueId/playoff-predictions", async (req, res) => {
     try {
       const [rosters, users, league, nflState, players] = await Promise.all([
@@ -8602,8 +8715,11 @@ export async function registerRoutes(
         const limit = CONTRACT_LIMITS[bucket];
 
         if (limit !== undefined) {
-          // Count existing non-rookie contracts for this roster whose contract length matches the bucket
-          const rosterContracts = playerContracts.filter(c => c.rosterId === rosterId && c.isRookieContract !== 1);
+          // The extension starts next season, so count the contracts the roster will have then: seasons from
+          // the extension year on. The player being extended is left out because the extension replaces his deal.
+          const rosterContracts = playerContracts.filter(
+            c => c.rosterId === rosterId && c.isRookieContract !== 1 && c.playerId !== playerId,
+          );
           let bucketCount = 0;
           for (const c of rosterContracts) {
             const salaries: Record<string, number> = (() => {
@@ -8612,7 +8728,7 @@ export async function registerRoutes(
                 return (c as any).salaries || {};
               } catch { return {}; }
             })();
-            const yearsWithSalary = Object.keys(salaries).map(Number).filter(y => (salaries[y] ?? 0) > 0);
+            const yearsWithSalary = Object.keys(salaries).map(Number).filter(y => y >= season + 1 && (salaries[y] ?? 0) > 0);
             const contractLength = yearsWithSalary.length;
             const cBucket = Math.min(Math.max(contractLength, 0), 4);
             if (cBucket === bucket) bucketCount++;
@@ -8833,6 +8949,10 @@ export async function registerRoutes(
         salaryUpdates.salaries = JSON.stringify(updatedSalaries);
       };
 
+      // The new contract replaces whatever was left of the old one from its first year on.
+      for (const key of Object.keys(updatedSalaries)) {
+        if (Number(key) >= extension.extensionYear) delete updatedSalaries[key];
+      }
       setYearSalary(extension.extensionYear, extensionSalary1);
       if (extension.extensionType >= 2 && extensionSalary2 !== null) {
         setYearSalary(extension.extensionYear + 1, extensionSalary2);

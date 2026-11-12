@@ -25,7 +25,8 @@ export function phaseAllowsTab(current: LeaguePhaseId, tab: string): boolean {
     "free-agency-bid": ["fa_round_1", "fa_round_2"],
     "my-wins": ["round_1_results", "round_2_results"],
     "rfa-match": ["rfa_match_1", "rfa_match_2"],
-    trades: ["league_year_rollover", "tag_extension", "fa_round_1", "round_1_results", "rfa_match_1", "fa_round_2", "round_2_results", "rfa_match_2", "regular_season"],
+    "fa-recap": ["fa_recap"],
+    trades: ["league_year_rollover", "tag_extension", "fa_round_1", "round_1_results", "rfa_match_1", "fa_round_2", "round_2_results", "rfa_match_2", "fa_recap", "regular_season"],
   };
   return (map[tab] || []).includes(current);
 }

@@ -18,7 +18,9 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
-import { RefreshCw, Check, Bell, User, Database } from "lucide-react";
+import { RefreshCw, Check, Bell, User, Database, FileDown } from "lucide-react";
+import { buildWeeklyReportPdf, collectAvatarUrls, loadAvatars, reportFileName, type PlayoffData } from "@/lib/weeklyReportPdf";
+import type { ReportData } from "@shared/weeklyReport";
 
 const COMMISSIONER_USER_IDS = ["900186363130503168"];
 
@@ -38,6 +40,37 @@ export default function Settings() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [advanceLeagueId, setAdvanceLeagueId] = useState("");
+  const [reportWeek, setReportWeek] = useState("");
+  const [isExportingReport, setIsExportingReport] = useState(false);
+
+  const exportWeeklyReport = async () => {
+    if (!user?.userId || !league?.leagueId) return;
+    setIsExportingReport(true);
+    try {
+      const weekParam = reportWeek.trim() ? `&week=${encodeURIComponent(reportWeek.trim())}` : "";
+      const res = await fetch(
+        `/api/sleeper/league/${league.leagueId}/weekly-report?userId=${encodeURIComponent(user.userId)}${weekParam}`,
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error(body.error || "Could not build the report");
+      }
+      const report: ReportData = await res.json();
+      const playoffRes = await fetch(`/api/sleeper/league/${league.leagueId}/playoff-predictions`);
+      const playoff: PlayoffData | null = playoffRes.ok ? await playoffRes.json() : null;
+      const avatars = await loadAvatars(collectAvatarUrls(report, playoff));
+      buildWeeklyReportPdf(report, playoff, avatars).save(reportFileName(report));
+      toast({ title: "Report downloaded", description: `Week ${report.week} report saved as PDF.` });
+    } catch (err) {
+      toast({
+        title: "Export failed",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsExportingReport(false);
+    }
+  };
   const [manualLeagueId, setManualLeagueId] = useState("");
   const [unmatchedRosters, setUnmatchedRosters] = useState<Array<{ oldRosterId: number; ownerId: string | null }>>([]);
   const [manualMappings, setManualMappings] = useState<Record<number, number>>({});
@@ -411,6 +444,38 @@ export default function Settings() {
               <Button onClick={handleAdvanceLeagueYear} disabled={isAdvancing} data-testid="button-advance-league-year">
                 <RefreshCw className={`w-4 h-4 mr-2 ${isAdvancing ? "animate-spin" : "hidden"}`} />
                 {isAdvancing ? "Advancing..." : "Advance League Year"}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {isCommissioner && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <FileDown className="w-5 h-5 text-muted-foreground" />
+                <CardTitle className="font-heading text-lg">Weekly Report</CardTitle>
+              </div>
+              <CardDescription>
+                Download the league report as a PDF. Results cover the previous week; matchups and projections cover the current week.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="report-week">Report week (optional)</Label>
+                <Input
+                  id="report-week"
+                  type="number"
+                  min={2}
+                  max={18}
+                  placeholder="Current week"
+                  value={reportWeek}
+                  onChange={e => setReportWeek(e.target.value)}
+                  className="max-w-[180px]"
+                />
+              </div>
+              <Button onClick={exportWeeklyReport} disabled={isExportingReport}>
+                {isExportingReport ? "Building report..." : "Download PDF"}
               </Button>
             </CardContent>
           </Card>
