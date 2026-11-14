@@ -4795,10 +4795,71 @@ export async function registerRoutes(
         rounds: maxRound,
         teams: Object.fromEntries(teamMap),
         consolationMatchups: consolationMatchups.length > 0 ? consolationMatchups : undefined,
+        playoffWeekStart,
+        currentWeek,
       });
     } catch (error) {
       console.error("Error fetching playoff bracket:", error);
       res.status(500).json({ error: "Failed to fetch playoff bracket" });
+    }
+  });
+
+  // One playoff game in detail: both teams' starters with points, slot by slot. Read-only (Sleeper data).
+  app.get("/api/sleeper/league/:leagueId/playoff-game", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const rosterA = parseInt(String(req.query.rosterA), 10);
+      const rosterB = parseInt(String(req.query.rosterB), 10);
+      const weekParam = parseInt(String(req.query.week), 10);
+      if (!Number.isInteger(rosterA) || !Number.isInteger(rosterB)) {
+        return res.status(400).json({ error: "rosterA and rosterB are required" });
+      }
+      const [league, users, rosters, players] = await Promise.all([
+        getLeague(leagueId).catch(() => null),
+        getLeagueUsers(leagueId),
+        getLeagueRosters(leagueId),
+        getAllPlayers(),
+      ]);
+      const start = (league?.settings as any)?.playoff_week_start || 15;
+      const weeks = Array.from(new Set([...(Number.isInteger(weekParam) ? [weekParam] : []), start, start + 1, start + 2]));
+
+      let found: { week: number; a: SleeperMatchup; b: SleeperMatchup } | null = null;
+      for (const week of weeks) {
+        const matchups = await getLeagueMatchups(leagueId, week).catch(() => [] as SleeperMatchup[]);
+        const a = matchups.find(m => m.roster_id === rosterA);
+        const b = matchups.find(m => m.roster_id === rosterB);
+        if (a && b && a.matchup_id === b.matchup_id) {
+          found = { week, a, b };
+          break;
+        }
+      }
+      if (!found) return res.status(404).json({ error: "No game found for these two teams" });
+
+      const slots = (league?.roster_positions ?? []).filter(pos => pos !== "BN" && pos !== "IR" && pos !== "TAXI");
+      const userMap = new Map<string, SleeperLeagueUser>();
+      users.forEach(u => userMap.set(u.user_id, u));
+      const side = (m: SleeperMatchup) => {
+        const roster = rosters.find(r => r.roster_id === m.roster_id);
+        const user = roster ? userMap.get(roster.owner_id) : undefined;
+        const name = user?.metadata?.team_name || user?.display_name || `Team ${m.roster_id}`;
+        const starters = (m.starters ?? []).map((id, i) => {
+          const pl = players[id];
+          const label = pl ? (pl.full_name || `${pl.first_name} ${pl.last_name}`.trim()) : id === "0" ? "Empty slot" : id;
+          return {
+            slot: slots[i] ?? "FLEX",
+            playerId: id,
+            name: label,
+            position: pl?.position ?? null,
+            team: pl?.team ?? null,
+            points: m.starters_points?.[i] ?? 0,
+          };
+        });
+        return { rosterId: m.roster_id, name, total: m.points || 0, starters };
+      };
+      res.json({ week: found.week, slots, teams: [side(found.a), side(found.b)] });
+    } catch (error) {
+      console.error("Error fetching playoff game detail:", error);
+      res.status(500).json({ error: "Failed to fetch playoff game detail" });
     }
   });
 

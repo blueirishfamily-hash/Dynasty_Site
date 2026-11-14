@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { Fragment, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
 import StandingsTable from "@/components/StandingsTable";
 import PlayoffPredictor from "@/components/PlayoffPredictor";
 import PointsRaceChart from "@/components/PointsRaceChart";
+import PlayoffGameDialog, { type PlayoffGameRef } from "@/components/PlayoffGameDialog";
 import ScheduleSimulator from "@/components/ScheduleSimulator";
 import type { StandingsAnalysis } from "@shared/standingsAnalysis";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -62,11 +63,14 @@ interface BracketData {
   rounds: number;
   teams: Record<number, { name: string; initials: string; avatar: string | null }>;
   consolationMatchups?: ConsolationMatchup[];
+  playoffWeekStart?: number;
+  currentWeek?: number;
 }
 
 export default function Standings() {
   const { user, league } = useSleeper();
   const [activeTab, setActiveTab] = useState<"standings" | "race" | "simulator" | "predictions" | "bracket">("standings");
+  const [openGame, setOpenGame] = useState<PlayoffGameRef | null>(null);
 
   const { data: standings, isLoading: standingsLoading } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "standings", user?.userId],
@@ -163,6 +167,32 @@ export default function Standings() {
     .sort((a: any, b: any) => b.pf - a.pf);
 
   const playoffTeams = league.playoffTeams || 6;
+  const myRosterId: number | undefined = formattedStandings.find((t: any) => t.isUser)?.rosterId;
+
+  // A game is "done" once it has a winner and both teams are set. Done games open the detail popup.
+  const gameDone = (m: { team1: { rosterId: number } | null; team2: { rosterId: number } | null; winner: number | null }) =>
+    !!m.team1 && !!m.team2 && m.winner != null;
+  const gameProps = (
+    m: { team1: { rosterId: number; seed?: number } | null; team2: { rosterId: number; seed?: number } | null; winner: number | null },
+    label: string,
+    week?: number,
+  ) => {
+    if (!gameDone(m)) return {};
+    const open = () =>
+      setOpenGame({ rosterA: m.team1!.rosterId, rosterB: m.team2!.rosterId, seedA: m.team1!.seed, seedB: m.team2!.seed, label, week });
+    return {
+      role: "button" as const,
+      tabIndex: 0,
+      "aria-label": `Open game detail: ${label}`,
+      onClick: open,
+      onKeyDown: (e: ReactKeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          open();
+        }
+      },
+    };
+  };
 
   const renderAnalysis = (render: (data: StandingsAnalysis) => JSX.Element) => {
     if (analysisLoading) {
@@ -425,170 +455,186 @@ export default function Standings() {
                     Winners Bracket
                   </CardTitle>
                   <p className="text-sm text-muted-foreground">Championship tournament - Reseeding format</p>
+                  {(() => {
+                    const winnersGames = bracketData.matchups.filter((m) => !m.placement || m.placement === 1);
+                    const final = winnersGames.find((m) => m.round === bracketData.rounds);
+                    const roundLabel = (r: number) =>
+                      r === bracketData.rounds ? "Championship" : r === bracketData.rounds - 1 ? "Semifinals" : `Round ${r}`;
+                    const scored = winnersGames.filter((m) => (m.team1Score ?? 0) > 0 || (m.team2Score ?? 0) > 0);
+                    const liveRound = scored.filter((m) => m.winner == null).map((m) => m.round).sort((a, b) => a - b)[0];
+                    const status = final?.winner != null
+                      ? { text: "Champion crowned", tone: "bg-green-600 text-white" }
+                      : liveRound != null
+                        ? { text: `${roundLabel(liveRound)} in progress`, tone: "bg-red-600 text-white" }
+                        : scored.length > 0
+                          ? { text: "Between rounds", tone: "bg-secondary text-secondary-foreground" }
+                          : { text: "Not started", tone: "bg-secondary text-secondary-foreground" };
+
+                    // Your path: what your team's last bracket game says about where you stand.
+                    const mine = myRosterId == null ? [] : winnersGames
+                      .filter((m) => m.team1?.rosterId === myRosterId || m.team2?.rosterId === myRosterId)
+                      .sort((a, b) => b.round - a.round);
+                    const last = mine[0];
+                    let path: string | null = null;
+                    if (myRosterId != null) {
+                      if (!last) path = "Your team isn't in the playoff bracket.";
+                      else if (last.winner === myRosterId && last.round === bracketData.rounds) path = "You won the championship.";
+                      else if (last.loser === myRosterId) path = `You were eliminated in the ${roundLabel(last.round)}.`;
+                      else if (last.winner === myRosterId) path = `You won ${roundLabel(last.round)} and advance.`;
+                      else {
+                        const opp = last.team1?.rosterId === myRosterId ? last.team2 : last.team1;
+                        path = `You are playing in the ${roundLabel(last.round)}${opp ? ` against ${opp.name}` : ""}.`;
+                      }
+                    }
+                    return (
+                      <div className="flex flex-wrap items-center gap-3 pt-2" data-testid="bracket-status">
+                        <Badge className={status.tone}>{status.text}</Badge>
+                        {path && <span className="text-sm text-muted-foreground" data-testid="bracket-your-path">{path}</span>}
+                      </div>
+                    );
+                  })()}
                 </CardHeader>
                 <CardContent>
-                  <div className="overflow-x-auto pb-4">
-                    <div className="flex items-start min-w-max gap-4">
-                      {Array.from({ length: bracketData.rounds }, (_, i) => i + 1).map((round) => {
-                        const roundMatchups = bracketData.matchups
-                          .filter((m) => m.round === round)
-                          .filter((m) => !m.placement || m.placement === 1) // Only show championship (placement 1) or no placement
-                          .sort((a, b) => a.matchupId - b.matchupId);
-                        
-                        const roundName = round === bracketData.rounds 
-                          ? "Championship" 
-                          : round === bracketData.rounds - 1 
-                            ? "Semifinals" 
-                            : `Round ${round}`;
-                        
-                        const isLastRound = round === bracketData.rounds;
-                        const matchupHeight = 88;
-                        const matchupSpacing = 16;
-                        
-                        // Calculate total height needed for this round
-                        const totalMatchups = roundMatchups.length;
-                        const totalHeight = totalMatchups * (matchupHeight * 2 + matchupSpacing) - matchupSpacing;
+                  {(() => {
+                    // Winners bracket: compact cards in columns, byes called out, connectors into the final.
+                    const roundNums = Array.from({ length: bracketData.rounds }, (_, i) => i + 1);
+                    const isLosersOnly = (m: BracketMatchup) => !!m.team1From?.l && !!m.team2From?.l;
+                    const gamesIn = (r: number) =>
+                      bracketData.matchups
+                        .filter((m) => m.round === r && (!m.placement || m.placement === 1) && !isLosersOnly(m))
+                        .sort((a, b) => a.matchupId - b.matchupId);
+                    const roundName = (r: number) =>
+                      r === bracketData.rounds ? "Championship" : r === bracketData.rounds - 1 ? "Semifinals" : `Round ${r}`;
+                    const roundState = (r: number) => {
+                      const gs = gamesIn(r);
+                      if (gs.length > 0 && gs.every((g) => g.winner != null)) return "done";
+                      if (gs.some((g) => (g.team1Score ?? 0) > 0 || (g.team2Score ?? 0) > 0)) return "live";
+                      return "upcoming";
+                    };
+                    const CARD_H = 92;
+                    const GAP = 28;
+                    const HEADER = 36;
+                    const tallest = Math.max(1, ...roundNums.map((r) => gamesIn(r).length));
+                    const H = tallest * (CARD_H + GAP) - GAP;
 
-                        return (
-                          <div key={round} className="flex items-start">
-                            {/* Round Column */}
-                            <div className="flex flex-col" style={{ minWidth: 200 }}>
-                              <div className="text-center mb-4 px-2">
-                                <span className="font-heading text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                                  {roundName}
-                                </span>
-                              </div>
-                              <div 
-                                className="flex flex-col"
-                                style={{ gap: matchupSpacing }}
-                              >
-                                {roundMatchups.map((matchup, matchupIndex) => {
-                                  const isChampionship = matchup.placement === 1;
-                                  const champion = matchup.winner ? bracketData.teams[matchup.winner] : null;
-                                  
-                                  return (
-                                    <div
-                                      key={matchup.matchupId}
-                                      className="relative"
-                                      style={{ height: matchupHeight * 2 }}
-                                      data-testid={`bracket-matchup-${round}-${matchup.matchupId}`}
-                                    >
-                                      {isChampionship && champion && (
-                                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary z-10">
-                                          <Crown className="w-4 h-4" />
-                                          <span className="font-heading font-bold text-xs whitespace-nowrap">Champion</span>
+                    // Teams that skipped round 1 (they first appear in round 2).
+                    const round1Ids = new Set<number>();
+                    gamesIn(1).forEach((m) => {
+                      if (m.team1) round1Ids.add(m.team1.rosterId);
+                      if (m.team2) round1Ids.add(m.team2.rosterId);
+                    });
+                    const byeTeams: Array<{ rosterId: number; seed?: number; name: string }> = [];
+                    if (bracketData.rounds >= 3) {
+                      gamesIn(2).forEach((m) => {
+                        [m.team1, m.team2].forEach((t) => {
+                          if (t && !round1Ids.has(t.rosterId) && !byeTeams.some((b) => b.rosterId === t.rosterId)) byeTeams.push(t);
+                        });
+                      });
+                    }
+                    const semis = bracketData.rounds >= 2 ? gamesIn(bracketData.rounds - 1) : [];
+                    const finals = gamesIn(bracketData.rounds);
+                    const connectLast = semis.length === 2 && finals.length === 1;
+
+                    return (
+                      <div className="overflow-x-auto pb-4">
+                        <div className="flex min-w-max items-stretch">
+                          {roundNums.map((r) => {
+                            const state = roundState(r);
+                            const isFinalRound = r === bracketData.rounds;
+                            return (
+                              <Fragment key={r}>
+                                <div className="flex flex-col" style={{ width: 240 }} data-testid={`bracket-round-${r}`}>
+                                  <div className="flex items-center justify-between px-1 mb-3" style={{ height: HEADER - 12 }}>
+                                    <span className="font-heading text-xs font-semibold text-muted-foreground uppercase tracking-wider">{roundName(r)}</span>
+                                    <span className={`text-[10px] font-semibold uppercase ${state === "live" ? "text-red-500" : state === "done" ? "text-emerald-500" : "text-muted-foreground"}`}>
+                                      {state === "live" ? "● Live" : state === "done" ? "Done" : "Upcoming"}
+                                    </span>
+                                  </div>
+                                  <div className="flex flex-col justify-around" style={{ height: H }}>
+                                    {gamesIn(r).map((m) => {
+                                      const champion = isFinalRound && m.winner ? bracketData.teams[m.winner] : null;
+                                      const mine = myRosterId != null && (m.team1?.rosterId === myRosterId || m.team2?.rosterId === myRosterId);
+                                      const done = gameDone(m);
+                                      const live = !done && ((m.team1Score ?? 0) > 0 || (m.team2Score ?? 0) > 0);
+                                      return (
+                                        <div key={m.matchupId} className="relative" style={{ height: CARD_H }} data-testid={`bracket-matchup-${r}-${m.matchupId}`}>
+                                          {champion && (
+                                            <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary z-10">
+                                              <Crown className="w-4 h-4" />
+                                              <span className="font-heading font-bold text-xs whitespace-nowrap">Champion</span>
+                                            </div>
+                                          )}
+                                          <div
+                                            className={`flex flex-col border rounded-lg overflow-hidden h-full ${isFinalRound ? "border-amber-500/70 border-2" : "border-border"} ${mine && !isFinalRound ? "ring-2 ring-primary" : ""} ${done ? "cursor-pointer hover:border-primary/60 transition-colors" : ""}`}
+                                            {...gameProps(m, roundName(r), bracketData.playoffWeekStart != null ? bracketData.playoffWeekStart + r - 1 : undefined)}
+                                          >
+                                            <BracketTeamRow
+                                              team={m.team1}
+                                              seed={m.team1?.seed}
+                                              isUser={m.team1?.rosterId === myRosterId}
+                                              isWinner={m.winner === m.team1?.rosterId}
+                                              isLoser={m.loser === m.team1?.rosterId}
+                                              fromMatchup={m.team1From}
+                                              isTop
+                                              score={m.team1Score}
+                                            />
+                                            <div className="border-t border-border" />
+                                            <BracketTeamRow
+                                              team={m.team2}
+                                              seed={m.team2?.seed}
+                                              isUser={m.team2?.rosterId === myRosterId}
+                                              isWinner={m.winner === m.team2?.rosterId}
+                                              isLoser={m.loser === m.team2?.rosterId}
+                                              fromMatchup={m.team2From}
+                                              score={m.team2Score}
+                                            />
+                                          </div>
+                                          {live && <span className="absolute -bottom-5 left-1 text-[10px] font-semibold text-red-500">● Live</span>}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  {r === 1 && byeTeams.length > 0 && (
+                                    <div className="mt-5 rounded-lg border border-dashed border-border p-3 space-y-1" data-testid="bracket-byes">
+                                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                                        First-round bye{byeTeams.length > 1 ? "s" : ""}
+                                      </p>
+                                      {byeTeams.map((t) => (
+                                        <p key={t.rosterId} className="text-sm font-medium">
+                                          <span className="text-muted-foreground font-semibold mr-1.5">#{t.seed}</span>
+                                          {t.name}
+                                          {t.rosterId === myRosterId && <span className="ml-1.5 text-[10px] font-bold text-primary">· YOU</span>}
+                                        </p>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+
+                                {r < bracketData.rounds && (
+                                  <div style={{ width: 64, paddingTop: HEADER }} aria-hidden="true">
+                                    <div className="relative" style={{ height: H }}>
+                                      {r === bracketData.rounds - 1 && connectLast ? (
+                                        <>
+                                          <div className="absolute bg-border" style={{ left: 0, top: "25%", width: "50%", height: 2 }} />
+                                          <div className="absolute bg-border" style={{ left: 0, top: "75%", width: "50%", height: 2 }} />
+                                          <div className="absolute bg-border" style={{ left: "50%", top: "25%", width: 2, height: "50%" }} />
+                                          <div className="absolute bg-border" style={{ left: "50%", top: "50%", width: "50%", height: 2 }} />
+                                        </>
+                                      ) : (
+                                        <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 text-center text-[10px] font-semibold uppercase leading-tight tracking-wide text-muted-foreground">
+                                          Reseed
                                         </div>
                                       )}
-                                      <div className={`flex flex-col border rounded-lg overflow-hidden h-full ${isChampionship ? "border-primary border-2 ring-2 ring-primary/20" : "border-border"}`}>
-                                        <BracketTeamRow
-                                          team={matchup.team1}
-                                          seed={matchup.team1?.seed}
-                                          isWinner={matchup.winner === matchup.team1?.rosterId}
-                                          isLoser={matchup.loser === matchup.team1?.rosterId}
-                                          fromMatchup={matchup.team1From}
-                                          isTop
-                                          score={matchup.team1Score}
-                                        />
-                                        <div className="border-t border-border" />
-                                        <BracketTeamRow
-                                          team={matchup.team2}
-                                          seed={matchup.team2?.seed}
-                                          isWinner={matchup.winner === matchup.team2?.rosterId}
-                                          isLoser={matchup.loser === matchup.team2?.rosterId}
-                                          fromMatchup={matchup.team2From}
-                                          score={matchup.team2Score}
-                                        />
-                                      </div>
                                     </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                            
-                            {/* Connecting Lines */}
-                            {!isLastRound && (
-                              <div 
-                                className="relative"
-                                style={{ 
-                                  width: 80,
-                                  height: totalHeight,
-                                }}
-                              >
-                                {roundMatchups.map((matchup, matchupIndex) => {
-                                  const isEven = matchupIndex % 2 === 0;
-                                  
-                                  if (!isEven) return null;
-                                  
-                                  // Calculate position for this pair of matchups
-                                  const matchupPairHeight = (matchupHeight * 2 + matchupSpacing) * 2;
-                                  const lineTop = matchupIndex * (matchupHeight * 2 + matchupSpacing);
-                                  const centerY = matchupHeight * 2 + matchupSpacing;
-                                  
-                                  return (
-                                    <div
-                                      key={`connector-${matchup.matchupId}`}
-                                      className="absolute left-0"
-                                      style={{
-                                        top: `${lineTop}px`,
-                                        height: `${matchupPairHeight}px`,
-                                        width: '80px',
-                                      }}
-                                    >
-                                      {/* Vertical line from top matchup center going down */}
-                                      <div 
-                                        className="absolute bg-border"
-                                        style={{
-                                          left: '0px',
-                                          top: `${matchupHeight}px`,
-                                          width: '2px',
-                                          height: `${centerY}px`,
-                                        }}
-                                      />
-                                      
-                                      {/* Vertical line from bottom matchup center going up */}
-                                      <div 
-                                        className="absolute bg-border"
-                                        style={{
-                                          left: '0px',
-                                          bottom: `${matchupHeight}px`,
-                                          width: '2px',
-                                          height: `${centerY}px`,
-                                        }}
-                                      />
-                                      
-                                      {/* Horizontal connector line in the middle */}
-                                      <div 
-                                        className="absolute bg-border"
-                                        style={{
-                                          left: '0px',
-                                          top: '50%',
-                                          width: '100%',
-                                          height: '2px',
-                                          transform: 'translateY(-50%)',
-                                        }}
-                                      />
-                                      
-                                      {/* Right edge arrow pointing to next round */}
-                                      <div 
-                                        className="absolute bg-border"
-                                        style={{
-                                          right: '0px',
-                                          top: '50%',
-                                          width: '20px',
-                                          height: '2px',
-                                          transform: 'translateY(-50%)',
-                                        }}
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
+                                  </div>
+                                )}
+                              </Fragment>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </CardContent>
               </Card>
 
@@ -634,9 +680,13 @@ export default function Standings() {
                                   {matchup.placement ? `${matchup.placement}${getOrdinalSuffix(matchup.placement)} Place Game` : "Consolation Game"}
                                 </span>
                               </div>
-                              <div className="flex flex-col border rounded-lg overflow-hidden border-border">
+                              <div
+                                className={`flex flex-col border rounded-lg overflow-hidden border-border ${gameDone(matchup) ? "cursor-pointer hover:border-primary/60 transition-colors" : ""}`}
+                                {...gameProps(matchup, matchup.placement ? `${matchup.placement}${getOrdinalSuffix(matchup.placement)} Place Game` : "Consolation Game")}
+                              >
                                 <BracketTeamRow
                                   team={matchup.team1}
+                                          isUser={matchup.team1?.rosterId === myRosterId}
                                   seed={matchup.team1?.seed}
                                   isWinner={matchup.winner === matchup.team1?.rosterId}
                                   isLoser={matchup.loser === matchup.team1?.rosterId}
@@ -646,6 +696,7 @@ export default function Standings() {
                                 <div className="border-t border-border" />
                                 <BracketTeamRow
                                   team={matchup.team2}
+                                          isUser={matchup.team2?.rosterId === myRosterId}
                                   seed={matchup.team2?.seed}
                                   isWinner={matchup.winner === matchup.team2?.rosterId}
                                   isLoser={matchup.loser === matchup.team2?.rosterId}
@@ -682,6 +733,9 @@ export default function Standings() {
                       <Crown className="w-4 h-4 text-primary" />
                       <span className="text-muted-foreground">Champion</span>
                     </div>
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">Click a completed game for details</span>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -689,6 +743,7 @@ export default function Standings() {
           )}
         </TabsContent>
       </Tabs>
+      <PlayoffGameDialog leagueId={league.leagueId} game={openGame} onClose={() => setOpenGame(null)} />
     </div>
   );
 }
@@ -702,6 +757,7 @@ function BracketTeamRow({
   isTop,
   draftPick,
   score,
+  isUser,
 }: {
   team: { rosterId: number; seed?: number; name: string; initials: string; avatar: string | null } | null;
   seed?: number;
@@ -711,6 +767,7 @@ function BracketTeamRow({
   isTop?: boolean;
   draftPick?: number;
   score?: number;
+  isUser?: boolean;
 }) {
   // Use seed from team object if available, otherwise use prop
   const displaySeed = team?.seed ?? seed;
@@ -755,6 +812,7 @@ function BracketTeamRow({
           <>
             <span className="text-muted-foreground font-semibold mr-1.5">#{displaySeed}</span>
             {team.name}
+            {isUser && <span className="ml-1.5 text-[10px] font-bold text-primary">· YOU</span>}
           </>
         ) : (
           team.name

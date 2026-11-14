@@ -149,6 +149,13 @@ export default function RuleChanges() {
   const effectiveVotingOpen =
     votingMasterEnabled && (votingClosesAt == null || now < votingClosesAt);
 
+  // Where the league is in the cycle: suggestions open -> voting open -> voting closed (results shown)
+  const votingPhase: "suggest" | "open" | "closed" = effectiveVotingOpen
+    ? "open"
+    : votingMasterEnabled && votingClosesAt != null && now >= votingClosesAt
+      ? "closed"
+      : "suggest";
+
   function formatCountdown(ms: number): string {
     if (ms <= 0) return "0w 0d 0h 0m 0s";
     const s = Math.floor(ms / 1000) % 60;
@@ -755,6 +762,36 @@ export default function RuleChanges() {
         </div>
         </div>
 
+        {/* Phase strip */}
+        <Card data-testid="rule-phase-strip">
+          <CardContent className="py-3 flex flex-wrap items-center gap-3">
+            {votingPhase === "suggest" && (
+              <>
+                <Badge className="bg-emerald-600 text-white">Step 1 · Suggestions open</Badge>
+                <span className="text-sm text-muted-foreground">
+                  Anyone with a team can propose a rule. Voting starts when the commissioner turns it on.
+                </span>
+              </>
+            )}
+            {votingPhase === "open" && (
+              <>
+                <Badge className="bg-blue-600 text-white">Step 2 · Voting open</Badge>
+                <span className="text-sm text-muted-foreground">
+                  Suggestions are closed. Results stay hidden for everyone until voting closes, even after you vote.
+                </span>
+              </>
+            )}
+            {votingPhase === "closed" && (
+              <>
+                <Badge variant="secondary">Step 3 · Voting closed</Badge>
+                <span className="text-sm text-muted-foreground">
+                  {votingClosesAt != null ? `Voting closed ${new Date(votingClosesAt).toLocaleString()}. ` : ""}Results are now visible to everyone.
+                </span>
+              </>
+            )}
+          </CardContent>
+        </Card>
+
         {/* Countdown / voting ended banner */}
         {votingClosesAt != null && votingMasterEnabled && (
           <Card className="bg-muted/50">
@@ -1113,6 +1150,13 @@ function RuleCard({
   const pointsByOption = votesData?.ranked ? (votesData.pointsByOption ?? []) : [];
   const firstPlaceVotesByOption = votesData?.ranked ? (votesData.firstPlaceVotesByOption ?? []) : [];
   const voterCount = votesData?.voterCount ?? 0;
+  // The server only returns tallies once voting has closed, so any data here is safe to show.
+  const resultsVisible = !votingEnabled && (isMultiChoice ? pointsByOption.length > 0 && voterCount > 0 : approveCount + rejectCount > 0);
+  const rankedOrder = options
+    .map((opt, i) => ({ opt, points: pointsByOption[i] ?? 0, firstPlaceVotes: firstPlaceVotesByOption[i] ?? 0 }))
+    .sort((a, b) => (b.points !== a.points ? b.points - a.points : b.firstPlaceVotes - a.firstPlaceVotes));
+  const maxPoints = rankedOrder[0]?.points ?? 0;
+  const approvePct = approveCount + rejectCount > 0 ? Math.round((approveCount / (approveCount + rejectCount)) * 100) : 0;
 
   useEffect(() => {
     if (isMultiChoice && currentUserRankedVote && currentUserRankedVote.length === options.length) {
@@ -1174,6 +1218,14 @@ function RuleCard({
   };
 
   const getStatusBadge = () => {
+    if (rule.status === "pending" && resultsVisible) {
+      if (isMultiChoice) {
+        return <Badge className="bg-green-500 text-white">✓ Approved: {rankedOrder[0]?.opt}</Badge>;
+      }
+      if (approveCount > rejectCount) return <Badge className="bg-green-500 text-white">✓ Approved</Badge>;
+      if (rejectCount > approveCount) return <Badge className="bg-red-500 text-white">✕ Rejected</Badge>;
+      return <Badge variant="secondary">Tied</Badge>;
+    }
     switch (rule.status) {
       case "approved":
         return <Badge className="bg-green-500 text-white">Approved</Badge>;
@@ -1248,8 +1300,8 @@ function RuleCard({
           </div>
         )}
 
-        {!votingEnabled && (
-          <p className="text-sm text-muted-foreground pt-4 border-t">Voting is closed.</p>
+        {!votingEnabled && !resultsVisible && (
+          <p className="text-sm text-muted-foreground pt-4 border-t">Voting hasn't started. The commissioner will open it.</p>
         )}
         {votingEnabled && !isMultiChoice && (
           <div className="flex items-center gap-4 pt-4 border-t">
@@ -1280,8 +1332,26 @@ function RuleCard({
             )}
           </div>
         )}
-        {!votingEnabled && !isMultiChoice && (approveCount > 0 || rejectCount > 0) && (
-          <p className="text-sm text-muted-foreground pt-2">Approve: {approveCount} · Reject: {rejectCount}</p>
+        {votingEnabled && (currentUserVote || currentUserRankedVote) && (
+          <p className="text-xs text-muted-foreground" data-testid="results-hidden-note">
+            Your vote is in. Results stay hidden for everyone until voting closes. You can change your vote until then.
+          </p>
+        )}
+        {!votingEnabled && !isMultiChoice && resultsVisible && (
+          <div className="pt-4 border-t space-y-2" data-testid="rule-results">
+            {[
+              { label: "Approve", count: approveCount, pct: approvePct, bar: "bg-emerald-500" },
+              { label: "Reject", count: rejectCount, pct: 100 - approvePct, bar: "bg-red-500" },
+            ].map(r => (
+              <div key={r.label} className="flex items-center gap-3 text-sm">
+                <span className="w-16 font-medium">{r.label}</span>
+                <div className="flex-1 h-3 rounded-full bg-muted overflow-hidden">
+                  <div className={`h-full ${r.bar}`} style={{ width: `${r.pct}%` }} />
+                </div>
+                <span className="w-16 text-right tabular-nums">{r.count} · {r.pct}%</span>
+              </div>
+            ))}
+          </div>
         )}
 
         {votingEnabled && isMultiChoice && (
@@ -1325,8 +1395,8 @@ function RuleCard({
             </div>
           </div>
         )}
-        {!votingEnabled && isMultiChoice && pointsByOption.length > 0 && (
-          <div className="pt-2 space-y-1 border-t">
+        {!votingEnabled && isMultiChoice && resultsVisible && (
+          <div className="pt-2 space-y-1 border-t" data-testid="rule-results">
             <p className="text-sm font-medium text-muted-foreground">Results ({voterCount} voter{voterCount !== 1 ? "s" : ""})</p>
             {options
               .map((opt, i) => ({
@@ -1341,7 +1411,10 @@ function RuleCard({
               })
               .map(({ opt, points, firstPlaceVotes }, idx) => (
                 <div key={idx} className="flex justify-between items-center gap-2 text-sm">
-                  <span>{idx + 1}. {opt}</span>
+                  <span className={idx === 0 ? "font-semibold text-emerald-500" : ""}>{idx + 1}. {opt}{idx === 0 ? " (winner)" : ""}</span>
+                  <div className="flex-1 h-2 rounded-full bg-muted overflow-hidden hidden sm:block">
+                    <div className={`h-full ${idx === 0 ? "bg-emerald-500" : "bg-slate-500"}`} style={{ width: `${maxPoints > 0 ? Math.round((points / maxPoints) * 100) : 0}%` }} />
+                  </div>
                   <span className="font-medium shrink-0">
                     {points} pts
                     {firstPlaceVotes != null && firstPlaceVotes > 0 && (
@@ -1353,14 +1426,6 @@ function RuleCard({
           </div>
         )}
 
-        {!votingEnabled && (
-          <div className="pt-4 border-t">
-            <Badge variant="outline" className="flex items-center gap-1 w-fit">
-              <X className="w-3 h-3" />
-              Voting disabled
-            </Badge>
-          </div>
-        )}
       </CardContent>
     </Card>
   );
