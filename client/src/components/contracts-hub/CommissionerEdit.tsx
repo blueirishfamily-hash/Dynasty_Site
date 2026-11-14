@@ -23,6 +23,8 @@ export interface EditableContract {
   franchiseTagUsed: number;
   extensionApplied: number;
   isOnIr?: number;
+  hasBeenExtended?: number;
+  hasBeenFranchiseTagged?: number;
 }
 
 interface DeadCapRow {
@@ -123,7 +125,7 @@ export function CommissionerContractEditor({
   const original = useMemo(() => Object.fromEntries(years.map(y => [y, contract?.parsedSalaries[y] ?? 0])) as Record<number, number>, [contract, years]);
   const [open, setOpen] = useState(false);
   const [sal, setSal] = useState<Record<number, string>>({});
-  const [flags, setFlags] = useState({ rookie: false, tagged: false, extended: false, ir: false });
+  const [flags, setFlags] = useState({ rookie: false, tagged: false, extended: false, everTagged: false, everExtended: false, ir: false });
   const [reason, setReason] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
@@ -135,6 +137,8 @@ export function CommissionerContractEditor({
       rookie: contract?.isRookieContract === 1,
       tagged: contract?.franchiseTagUsed === 1,
       extended: contract?.extensionApplied === 1,
+      everTagged: contract?.hasBeenFranchiseTagged === 1,
+      everExtended: contract?.hasBeenExtended === 1,
       ir: contract?.isOnIr === 1,
     });
     setReason("");
@@ -194,6 +198,8 @@ export function CommissionerContractEditor({
     ["rookie", "Rookie contract"],
     ["tagged", "Franchise tagged"],
     ["extended", "Extended"],
+    ["everTagged", "Has been tagged"],
+    ["everExtended", "Has been extended"],
     ["ir", "On IR"],
   ];
 

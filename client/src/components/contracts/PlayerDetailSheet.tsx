@@ -1042,6 +1042,32 @@ export function PlayerDetailSheet({
               </>
             )}
 
+            {/* Final-year contract that can't be extended or tagged: say why instead of showing nothing */}
+            {canManage && contract && inFinalYear && !(canExtend || canTag || pendingExt || pendingTag) && (
+              <>
+                <Separator />
+                <section className="space-y-2" data-testid="contract-actions-unavailable">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Contract Actions</h3>
+                  <ul className="text-xs text-muted-foreground list-disc pl-4 space-y-1">
+                    <li>
+                      {contract.extensionApplied === 1
+                        ? "Not extendable: an extension is already applied."
+                        : contract.hasBeenExtended === 1
+                          ? "Not extendable: marked as already extended on this team."
+                          : "Not extendable right now."}
+                    </li>
+                    <li>
+                      {contract.franchiseTagUsed === 1 || contract.hasBeenFranchiseTagged === 1
+                        ? "Not taggable: already franchise tagged."
+                        : tagsLeft === 0
+                          ? "Not taggable: this team has no franchise tag left."
+                          : "Not taggable right now."}
+                    </li>
+                  </ul>
+                </section>
+              </>
+            )}
+
             {/* Extension & Tag Actions */}
             {canManage && (canExtend || canTag || pendingExt || pendingTag) && (
               <>

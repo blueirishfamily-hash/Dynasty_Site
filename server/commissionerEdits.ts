@@ -9,7 +9,6 @@ import { randomUUID } from "crypto";
 import { storage } from "./storage";
 import { getAllPlayers } from "./sleeper";
 
-const LOG_KEY = "commissioner_change_log";
 const LOG_LIMIT = 300;
 const REASONS = ["Fix wrong salary", "Missed pickup", "Trade adjustment", "League decision", "Other"];
 
@@ -26,20 +25,59 @@ export interface ChangeLogEntry {
   note: string;
 }
 
+// league_settings.setting_value is varchar(256), so the log is a ring of small rows (one entry per row) instead of
+// one long JSON value: slots ccl_0 .. ccl_49 plus a counter, ccl_n. Oldest entries are overwritten.
+const SLOT_COUNT = 50;
+const COUNTER_KEY = "ccl_n";
+const MAX_VALUE = 250;
+
+const clip = (v: unknown, n: number) => String(v ?? "").slice(0, n);
+
+function packEntry(e: ChangeLogEntry): string {
+  const limits = { s: 60, d: 70, o: 40, p: 24 };
+  const build = () =>
+    JSON.stringify({ i: e.id.slice(0, 8), t: e.at, a: e.action, r: e.rosterId, k: e.playerId, p: clip(e.playerName, limits.p), s: clip(e.summary, limits.s), d: clip(e.detail, limits.d), w: clip(e.reason, 20), o: clip(e.note, limits.o) });
+  let out = build();
+  for (const key of ["o", "d", "s", "p"] as const) {
+    while (out.length > MAX_VALUE && limits[key] > 0) {
+      limits[key] = Math.max(0, limits[key] - 10);
+      out = build();
+    }
+  }
+  return out.slice(0, 256);
+}
+
+function unpackEntry(raw: string): ChangeLogEntry | null {
+  try {
+    const o = JSON.parse(raw);
+    return { id: o.i, at: o.t, action: o.a, rosterId: o.r, playerId: o.k, playerName: o.p ?? "", summary: o.s ?? "", detail: o.d ?? "", reason: o.w ?? "", note: o.o ?? "" };
+  } catch {
+    return null;
+  }
+}
+
 async function readLog(leagueId: string): Promise<ChangeLogEntry[]> {
   try {
-    const raw = await storage.getLeagueSetting(leagueId, LOG_KEY);
-    const list = raw ? JSON.parse(raw) : [];
-    return Array.isArray(list) ? list : [];
+    const n = parseInt((await storage.getLeagueSetting(leagueId, COUNTER_KEY)) ?? "0", 10) || 0;
+    const keys: string[] = [];
+    for (let k = n - 1; k >= Math.max(0, n - SLOT_COUNT); k--) keys.push(`ccl_${k % SLOT_COUNT}`);
+    const raws = await Promise.all(keys.map(key => storage.getLeagueSetting(leagueId, key)));
+    return raws.map(r => (r ? unpackEntry(r) : null)).filter((e): e is ChangeLogEntry => !!e).slice(0, LOG_LIMIT);
   } catch {
     return [];
   }
 }
 
+/** The edit itself is already saved by the time this runs, so a log failure is reported but never fails the request. */
 async function appendLog(leagueId: string, entry: Omit<ChangeLogEntry, "id" | "at">) {
-  const list = await readLog(leagueId);
-  list.unshift({ id: randomUUID(), at: Date.now(), ...entry });
-  await storage.setLeagueSetting(leagueId, LOG_KEY, JSON.stringify(list.slice(0, LOG_LIMIT)));
+  try {
+    const full: ChangeLogEntry = { id: randomUUID(), at: Date.now(), ...entry };
+    const n = parseInt((await storage.getLeagueSetting(leagueId, COUNTER_KEY)) ?? "0", 10) || 0;
+    await storage.setLeagueSetting(leagueId, `ccl_${n % SLOT_COUNT}`, packEntry(full));
+    await storage.setLeagueSetting(leagueId, COUNTER_KEY, String(n + 1));
+  } catch (error) {
+    console.error("Could not write the commissioner change log:", error);
+  }
 }
 
 /** $M by season (from the client) to tenths of $M as stored. Drops zero and invalid seasons. */
@@ -132,8 +170,10 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
         extensionApplied: extended,
         extensionYear: extended ? (existing?.extensionYear ?? years[0]) : null,
         extensionSalary: existing?.extensionSalary ?? null,
-        hasBeenExtended: extended ? 1 : (existing?.hasBeenExtended ?? 0),
-        hasBeenFranchiseTagged: tagged ? 1 : (existing?.hasBeenFranchiseTagged ?? 0),
+        // Tag and extension history are separate indicators. Each is set only by its own flag
+        // (an active tag/extension implies its own history, never the other's).
+        hasBeenExtended: typeof f.everExtended === "boolean" ? (f.everExtended || extended ? 1 : 0) : (extended ? 1 : (existing?.hasBeenExtended ?? 0)),
+        hasBeenFranchiseTagged: typeof f.everTagged === "boolean" ? (f.everTagged || tagged ? 1 : 0) : (tagged ? 1 : (existing?.hasBeenFranchiseTagged ?? 0)),
       } as any);
 
       const name = await playerName(playerId);
