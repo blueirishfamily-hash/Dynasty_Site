@@ -1,7 +1,10 @@
 import type { Express } from "express";
 import { storage } from "./storage";
 import { registerSandboxRoutes } from "./testSandbox";
+import { getLeague, getNFLState, getLeagueRosters, getLeagueUsers } from "./sleeper";
 import {
+  CONTRACT_DEADLINE_WEEK,
+  isOffseasonPhase,
   RFA_ENABLED,
   canMatchRFA,
   createInSeasonSigning,
@@ -33,8 +36,15 @@ async function buildTeamCapInput(
 ): Promise<TeamCapInput> {
   const contracts = await storage.getPlayerContracts(leagueId);
   const deadCap = await storage.getDeadCapEntriesByLeague(leagueId);
+  // Same rule as the Contracts Hub and Contracts page: a contract counts when the player is on this team's Sleeper
+  // roster. In the offseason a player on no roster also counts (a just-signed free agent not yet moved in Sleeper).
+  const rosters = await getLeagueRosters(leagueId).catch(() => [] as any[]);
+  const ownIds = new Set<string>((rosters.find((r: any) => r.roster_id === rosterId)?.players || []).map(String));
+  const anyIds = new Set<string>(rosters.flatMap((r: any) => (r.players || []).map(String)));
+  const offseason = isOffseasonPhase((await getPhaseState(leagueId)).current);
   const teamContracts = contracts
     .filter(c => c.rosterId === rosterId)
+    .filter(c => rosters.length === 0 || ownIds.has(c.playerId) || (offseason && !anyIds.has(c.playerId)))
     .map(c => ({
       playerId: c.playerId,
       salaries: parseContractSalaries(c.salaries),
@@ -60,16 +70,111 @@ async function buildTeamCapInput(
   return { rosterId, contracts: teamContracts, deadCapByYear, capHolds };
 }
 
-async function getPhaseState(leagueId: string) {
+// Sleeper lookups used on every phase check are cached briefly.
+const CLOCK_CACHE_MS = 60_000;
+let nflStateCache: { at: number; value: any } | null = null;
+const leagueSeasonCache = new Map<string, { at: number; season: number }>();
+
+async function cachedNflState(): Promise<any | null> {
+  if (nflStateCache && Date.now() - nflStateCache.at < CLOCK_CACHE_MS) return nflStateCache.value;
+  try {
+    const value = await getNFLState();
+    nflStateCache = { at: Date.now(), value };
+    return value;
+  } catch {
+    return nflStateCache?.value ?? null;
+  }
+}
+
+async function cachedLeagueSeason(leagueId: string): Promise<number> {
+  const hit = leagueSeasonCache.get(leagueId);
+  if (hit && Date.now() - hit.at < CLOCK_CACHE_MS) return hit.season;
+  try {
+    const league = await getLeague(leagueId);
+    const season = parseInt(league?.season || "", 10) || new Date().getFullYear();
+    leagueSeasonCache.set(leagueId, { at: Date.now(), season });
+    return season;
+  } catch {
+    return hit?.season ?? new Date().getFullYear();
+  }
+}
+
+/**
+ * Where the contract year stands against the real NFL calendar.
+ * - contractYear: the season of the attached Sleeper league. It moves when the commissioner rolls the league over.
+ * - projectionYear: the next season with no games played yet. A season counts as played once Week 1 has kicked off.
+ * - deadlinePassed: Week 14 of the contract year is complete (or the season is over).
+ */
+export async function getSeasonClock(leagueId: string) {
+  const [contractYear, nfl] = await Promise.all([cachedLeagueSeason(leagueId), cachedNflState()]);
+  const nflSeason = parseInt(String(nfl?.season ?? ""), 10);
+  const type = String(nfl?.season_type || "");
+  const week = Number(nfl?.week || 0);
+  const start = Date.parse(String(nfl?.season_start_date || ""));
+  const kickedOff = !Number.isNaN(start) && Date.now() >= start;
+
+  let seasonPlayed = false;
+  let deadlinePassed = false;
+  if (!Number.isNaN(nflSeason)) {
+    if (nflSeason > contractYear) {
+      seasonPlayed = true;
+      deadlinePassed = true;
+    } else if (nflSeason === contractYear) {
+      const seasonOver = type === "post" || (type === "off" && kickedOff);
+      seasonPlayed = seasonOver || (type === "regular" && (week >= 2 || kickedOff));
+      deadlinePassed = seasonOver || (type === "regular" && week > CONTRACT_DEADLINE_WEEK);
+    }
+  }
+  return {
+    contractYear,
+    projectionYear: seasonPlayed ? contractYear + 1 : contractYear,
+    deadlinePassed,
+  };
+}
+
+export async function getPhaseState(leagueId: string) {
   const json = await storage.getLeagueSetting(leagueId, PHASE_SETTINGS_KEY);
   const override = await storage.getLeagueSetting(leagueId, PHASE_OVERRIDE_KEY);
   const phases = parsePhaseConfig(json);
-  const current = getCurrentPhase(
+  const clock = await getSeasonClock(leagueId);
+  let current = getCurrentPhase(
     phases,
     Date.now(),
     (override as LeaguePhaseId) || null,
   );
-  return { phases, current };
+  // The tag / extension / trade window closes on its own once Week 14 is complete.
+  if (current === "regular_season" && clock.deadlinePassed) current = "deadline_passed";
+  return { phases, current, ...clock };
+}
+
+/**
+ * Called when the commissioner rolls the league over to a new Sleeper league ID. Carries the Contracts Hub settings
+ * to the new league and starts its league year in the rollover phase. Contracts that end before the new season are
+ * left as they are: with no salary from the new season on, their players are free agents for bidding.
+ */
+export async function startNewLeagueYear(oldLeagueId: string, newLeagueId: string) {
+  const ppgMin = await storage.getLeagueSetting(oldLeagueId, PPG_MIN_GAMES_KEY);
+  if (ppgMin) await storage.setLeagueSetting(newLeagueId, PPG_MIN_GAMES_KEY, ppgMin);
+  // Dead cap stays on or off, and keeps the date it was turned on.
+  const { DEAD_CAP_ENABLED_KEY, DEAD_CAP_ENABLED_AT_KEY } = await import("./deadCap");
+  for (const key of [DEAD_CAP_ENABLED_KEY, DEAD_CAP_ENABLED_AT_KEY]) {
+    const value = await storage.getLeagueSetting(oldLeagueId, key);
+    if (value) await storage.setLeagueSetting(newLeagueId, key, value);
+  }
+  // Phase dates belong to the old league year; the new one is advanced by the commissioner.
+  await storage.setLeagueSetting(newLeagueId, PHASE_SETTINGS_KEY, "[]");
+  await storage.setLeagueSetting(newLeagueId, PHASE_OVERRIDE_KEY, "league_year_rollover");
+  leagueSeasonCache.delete(newLeagueId);
+}
+
+/** Teams that won bids in a round but have not confirmed which to keep. Resolves the round first if needed. */
+async function unconfirmedRosters(leagueId: string, round: number, season: number): Promise<number[]> {
+  let bids = await storage.getBidsByLeagueRound(leagueId, round, season);
+  if (bids.some(b => b.status === "active" && !b.result)) {
+    await resolveRoundBids(leagueId, round, season);
+    bids = await storage.getBidsByLeagueRound(leagueId, round, season);
+  }
+  return Array.from(new Set(bids.filter(b => b.result === "won").map(b => b.rosterId)));
 }
 
 async function logTx(leagueId: string, type: string, rosterId: number | null, payload: Record<string, unknown>) {
@@ -159,7 +264,47 @@ export function registerContractHubRoutes(app: Express) {
         await storage.setLeagueSetting(leagueId, PHASE_SETTINGS_KEY, JSON.stringify(phases));
       }
       if (currentPhase) {
+        if (!LEAGUE_PHASES.includes(currentPhase)) {
+          return res.status(400).json({ error: `Unknown phase ${currentPhase}` });
+        }
+        const before = await getPhaseState(leagueId);
+        const movingForward = LEAGUE_PHASES.indexOf(currentPhase) > LEAGUE_PHASES.indexOf(before.current);
+        // A results phase cannot be left until every team that won bids has confirmed what it keeps.
+        if (movingForward && (before.current === "round_1_results" || before.current === "round_2_results")) {
+          const round = before.current === "round_2_results" ? 2 : 1;
+          const waiting = await unconfirmedRosters(leagueId, round, before.contractYear);
+          if (waiting.length > 0) {
+            const [rosters, users] = await Promise.all([
+              getLeagueRosters(leagueId).catch(() => [] as any[]),
+              getLeagueUsers(leagueId).catch(() => [] as any[]),
+            ]);
+            const names = waiting.map(rid => {
+              const owner = rosters.find((r: any) => r.roster_id === rid)?.owner_id;
+              const u: any = users.find((x: any) => x.user_id === owner);
+              return u?.metadata?.team_name || u?.display_name || `Team ${rid}`;
+            });
+            return res.status(400).json({
+              error: `Waiting on ${names.length} team${names.length === 1 ? "" : "s"} to confirm Round ${round} results: ${names.join(", ")}`,
+              unconfirmedRosterIds: waiting,
+              unconfirmedTeams: names,
+            });
+          }
+        }
         await storage.setLeagueSetting(leagueId, PHASE_OVERRIDE_KEY, currentPhase);
+        // Drops from here on are in-season drops for dead cap.
+        if (currentPhase === "regular_season" && isOffseasonPhase(before.current)) {
+          const { REGULAR_SEASON_STARTED_AT_KEY } = await import("./deadCap");
+          await storage.setLeagueSetting(leagueId, REGULAR_SEASON_STARTED_AT_KEY, String(Date.now()));
+        }
+        // Starting the regular season: the rookie draft is done, so make sure every drafted rookie has a rookie contract.
+        if (currentPhase === "regular_season" && isOffseasonPhase(before.current)) {
+          try {
+            const { syncRookieContracts } = await import("./rookieContracts");
+            await syncRookieContracts(leagueId);
+          } catch (err) {
+            console.warn("[rookie-contracts] sync skipped:", (err as Error).message);
+          }
+        }
       }
       if (ppgMinGames != null) {
         await storage.setLeagueSetting(leagueId, PPG_MIN_GAMES_KEY, String(ppgMinGames));
@@ -315,6 +460,63 @@ export function registerContractHubRoutes(app: Express) {
     }
   });
 
+  // League-wide picture of a round once its results are open (never while bidding, so bids stay blind):
+  // every winning bid and how many bids it beat, this team's lost bids and who won them, and how many teams
+  // have confirmed. The commissioner cannot move on until every team with wins has confirmed.
+  app.get("/api/league/:leagueId/fa-round-summary", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const round = parseInt(String(req.query.round || "1"), 10) || 1;
+      const season = parseInt(String(req.query.season || ""), 10);
+      const rosterId = parseInt(String(req.query.rosterId || ""), 10);
+      if (Number.isNaN(season)) return res.status(400).json({ error: "season is required" });
+      if (!(await roundResultsAreOpen(leagueId, round))) {
+        return res.status(403).json({ error: "Results for this round are not open yet" });
+      }
+      const bids = await storage.getBidsByLeagueRound(leagueId, round, season);
+      const decided = new Set(["won", "kept", "rejected"]);
+      const bidsOn = (playerId: string) => bids.filter(b => b.playerId === playerId).length;
+      const results = bids
+        .filter(b => b.result && decided.has(b.result))
+        .map(b => ({
+          playerId: b.playerId,
+          playerName: b.playerName,
+          playerPosition: b.playerPosition,
+          rosterId: b.rosterId,
+          bidAmount: b.bidAmount,
+          contractYears: b.contractYears,
+          result: b.result,
+          otherBids: Math.max(0, bidsOn(b.playerId) - 1),
+        }))
+        .sort((a, b) => b.bidAmount * b.contractYears - a.bidAmount * a.contractYears);
+      const lost = Number.isNaN(rosterId)
+        ? []
+        : bids
+            .filter(b => b.rosterId === rosterId && b.result === "lost")
+            .map(b => {
+              const winner = results.find(r => r.playerId === b.playerId) ?? null;
+              return {
+                playerId: b.playerId,
+                playerName: b.playerName,
+                playerPosition: b.playerPosition,
+                bidAmount: b.bidAmount,
+                contractYears: b.contractYears,
+                winner: winner ? { rosterId: winner.rosterId, bidAmount: winner.bidAmount, contractYears: winner.contractYears } : null,
+              };
+            });
+      const teamsWithWins = new Set(results.map(r => r.rosterId));
+      const waiting = new Set(results.filter(r => r.result === "won").map(r => r.rosterId));
+      res.json({
+        results,
+        lost,
+        confirmations: { confirmed: teamsWithWins.size - waiting.size, total: teamsWithWins.size, waitingRosterIds: [...waiting] },
+      });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: "Failed to load round summary" });
+    }
+  });
+
   app.post("/api/league/:leagueId/roster/:rosterId/round-confirm", async (req, res) => {
     try {
       const { leagueId, rosterId: rid } = req.params;
@@ -334,9 +536,38 @@ export function registerContractHubRoutes(app: Express) {
       if (!validation.canConfirm) {
         return res.status(400).json({ error: "Cannot confirm", reason: validation.reason, bySeason: validation.bySeason });
       }
+      const allContracts = await storage.getPlayerContracts(leagueId);
       for (const w of wins) {
         const result = rejectSet.has(w.id) ? "rejected" : "kept";
         await storage.updatePlayerBid(w.id, rosterId, { result } as any);
+        // A kept win is a signed contract right away: years from this season at the winning yearly salary.
+        if (result === "kept" && !(RFA_ENABLED && w.isRfa === 1)) {
+          const years = Math.max(1, w.contractYears || 1);
+          const tenths = Math.round(Number(w.bidAmount) * 10);
+          const salaries: Record<string, number> = {};
+          for (let y = season; y < season + years; y++) salaries[String(y)] = tenths;
+          await storage.upsertPlayerContract({
+            leagueId,
+            rosterId,
+            playerId: w.playerId,
+            salaries: JSON.stringify(salaries),
+            fifthYearOption: null,
+            isOnIr: 0,
+            franchiseTagUsed: 0,
+            franchiseTagYear: null,
+            originalContractYears: years,
+            isRookieContract: 0,
+            extensionApplied: 0,
+            hasBeenExtended: 0,
+            hasBeenFranchiseTagged: 0,
+          } as any);
+          // His old, expired contract with another team is no longer his contract.
+          for (const old of allContracts.filter(x => x.playerId === w.playerId && x.rosterId !== rosterId)) {
+            const oldSal = parseContractSalaries(old.salaries);
+            const stillPaid = Object.entries(oldSal).some(([y, v]) => Number(y) >= season && Number(v) > 0);
+            if (!stillPaid) await storage.deletePlayerContract(leagueId, old.rosterId, old.playerId);
+          }
+        }
         if (RFA_ENABLED && result === "kept" && w.isRfa === 1 && w.originalRosterId != null) {
           const window = round === 1 ? 1 : 2;
           await storage.createRfaOffer({
@@ -444,6 +675,10 @@ export function registerContractHubRoutes(app: Express) {
         teamASends: TradePlayerSide[];
         teamBSends: TradePlayerSide[];
       };
+      const { current: tradePhase } = await getPhaseState(leagueId);
+      if (tradePhase !== "regular_season") {
+        return res.status(400).json({ error: "Trades are only open during the regular season, through Week 14" });
+      }
       const teamA = await buildTeamCapInput(leagueId, teamARosterId, season);
       const teamB = await buildTeamCapInput(leagueId, teamBRosterId, season);
       const salaryABefore = teamA.contracts.reduce((s, c) => s + (c.salaries[season] || 0), 0) + (teamA.deadCapByYear[season] || 0);

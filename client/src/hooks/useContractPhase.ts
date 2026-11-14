@@ -5,6 +5,12 @@ export interface ContractPhaseState {
   phases: PhaseConfigEntry[];
   current: LeaguePhaseId;
   ppgMinGames: number;
+  /** Season of the attached Sleeper league; moves when the league is rolled over. */
+  contractYear?: number;
+  /** Next season with no games played yet. */
+  projectionYear?: number;
+  /** Week 14 of the contract year is complete. */
+  deadlinePassed?: boolean;
 }
 
 export function useContractPhase(leagueId: string | undefined) {
@@ -26,7 +32,7 @@ export function phaseAllowsTab(current: LeaguePhaseId, tab: string): boolean {
     "my-wins": ["round_1_results", "round_2_results"],
     "rfa-match": ["rfa_match_1", "rfa_match_2"],
     "fa-recap": ["fa_recap"],
-    trades: ["league_year_rollover", "tag_extension", "fa_round_1", "round_1_results", "rfa_match_1", "fa_round_2", "round_2_results", "rfa_match_2", "fa_recap", "regular_season"],
+    trades: ["regular_season"],
   };
   return (map[tab] || []).includes(current);
 }

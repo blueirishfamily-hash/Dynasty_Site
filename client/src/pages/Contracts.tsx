@@ -5,7 +5,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Send, Loader2, PieChart as PieChartIcon, BarChart, Check, X, Undo2 } from "lucide-react";
+import { FileText, Shield, ChevronRight, Save, UserPlus, Calculator, Trash2, Search, AlertTriangle, UserMinus, ArrowRightLeft, DollarSign, Star, Clock, CheckCircle, XCircle, ChevronDown, ChevronUp, Loader2, PieChart as PieChartIcon, BarChart, Check, X, Undo2 } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip as RechartsTooltip, BarChart as RechartsBarChart, Bar, XAxis, YAxis, CartesianGrid, ReferenceLine } from "recharts";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -723,7 +723,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         if (!hasExistingSalaries) {
           const salary = getRookieSalary(data.round, data.draftSlot);
           
-          // Set 3-year contract
+          // Set 3-year rookie contract
+          onContractChange(selectedRosterId, playerId, "isRookieContract", true);
           onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
           
           // Apply salary to all 3 years
@@ -924,7 +925,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
   const handleApplyRookiePayScale = (playerId: string, round: number, draftSlot: number) => {
     const salary = getRookieSalary(round, draftSlot);
     
-    // Set 3-year contract
+    // Set 3-year rookie contract
+    onContractChange(selectedRosterId, playerId, "isRookieContract", true);
     onContractChange(selectedRosterId, playerId, "originalContractYears", 3);
     
     // Apply salary to all 3 years
@@ -1878,12 +1880,6 @@ function ManageTeamContractsTab({
   // Track previous drafts state to detect actual changes
   const previousDraftsRef = useRef<string | null>(null);
 
-  // Query for pending approval requests
-  const { data: pendingApprovalData } = useQuery<{ hasPending: boolean; request: { id: string; status: string; submittedAt: number } | null }>({
-    queryKey: ['/api/league', leagueId, 'contract-approvals', 'pending', userTeam?.rosterId],
-    enabled: !!leagueId && !!userTeam?.rosterId,
-  });
-
   // Query for saved contract drafts
   interface SavedDraft {
     id: string;
@@ -2187,38 +2183,6 @@ function ManageTeamContractsTab({
     },
   });
 
-  // Submit for approval mutation
-  const submitForApprovalMutation = useMutation({
-    mutationFn: async (contracts: Array<{
-      playerId: string;
-      playerName: string;
-      playerPosition: string;
-      salaries: string;
-      franchiseTagApplied: boolean;
-    }>) => {
-      return apiRequest("POST", `/api/league/${leagueId}/contract-approvals`, {
-        rosterId: userTeam?.rosterId,
-        teamName: userTeam?.teamName,
-        ownerName: userTeam?.ownerName,
-        contracts,
-      });
-    },
-    onSuccess: () => {
-      toast({
-        title: "Contracts Submitted",
-        description: "Your contracts have been submitted for commissioner approval.",
-      });
-      queryClient.invalidateQueries({ queryKey: ['/api/league', leagueId, 'contract-approvals'] });
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Submission Failed",
-        description: error.message || "Failed to submit contracts for approval.",
-        variant: "destructive",
-      });
-    },
-  });
-
   const allRosterPlayerIdsSet = useMemo(() => {
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
@@ -2463,14 +2427,14 @@ function ManageTeamContractsTab({
         return { ...defaultResult, isRookieContract: true, requiresPPGPricing: true, reason: "Player is not in the final year of their rookie contract" };
       }
     } else {
-      // Non-rookie: must be in last year OR second-to-last year of contract
-      if (!isInLastYear && !isInSecondToLastYear) {
-        return { ...defaultResult, reason: "Player is not in the final or second-to-last year of their contract" };
+      // Non-rookie: extensions are only available in the final year of the contract
+      if (!isInLastYear) {
+        return { ...defaultResult, reason: "Extensions are only available in the final year of a contract" };
       }
     }
 
-    // Use the salary from the year we're extending from
-    const salaryToUse = (!isRookieContract && isInSecondToLastYear) ? secondToLastYearSalary : lastYearSalary;
+    // Use the salary from the final year
+    const salaryToUse = lastYearSalary;
 
     // An extension always starts the season after it is made
     const extensionYear = CURRENT_YEAR + 1;
@@ -2490,7 +2454,7 @@ function ManageTeamContractsTab({
     // Rookie: 4-year only when it fits within option year. Non-rookie: show 4-year whenever eligible
     const canDo4Year = isRookieContract
       ? extensionYear + 3 <= maxYear
-      : (isInLastYear || isInSecondToLastYear);
+      : isInLastYear;
     const wouldExceedMaxYearFor4Year = !isRookieContract && canDo4Year && extensionYear + 3 > maxYear;
 
     return {
@@ -2995,77 +2959,6 @@ function ManageTeamContractsTab({
   const hasHypotheticalChanges = Object.keys(hypotheticalData.salaryOverrides).length > 0 || 
     hypotheticalData.addedFreeAgents.length > 0;
 
-  // Build contracts array for submission
-  const buildContractsForSubmission = () => {
-    const contracts: Array<{
-      playerId: string;
-      playerName: string;
-      playerPosition: string;
-      salaries: string;
-      franchiseTagApplied: boolean;
-    }> = [];
-
-    // Add roster players with their salaries
-    for (const player of rosterPlayers) {
-      const salaryByYear: Record<string, number> = {};
-      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
-      yearKeys.forEach((year) => {
-        const value = player.hypotheticalSalaries[year] || 0;
-        if (value > 0) {
-          salaryByYear[String(year)] = Math.round(value * 10);
-        }
-      });
-
-      // Only include players with at least one salary value
-      if (Object.keys(salaryByYear).length > 0) {
-        contracts.push({
-          playerId: player.playerId,
-          playerName: player.name,
-          playerPosition: player.position,
-          salaries: JSON.stringify(salaryByYear),
-          franchiseTagApplied: franchiseTaggedPlayers.has(player.playerId),
-        });
-      }
-    }
-
-    // Add free agents with their salaries
-    for (const player of hypotheticalData.addedFreeAgents) {
-      const salaryByYear: Record<string, number> = {};
-      const yearKeys = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
-      yearKeys.forEach((year) => {
-        const value = player.hypotheticalSalaries[year] || 0;
-        if (value > 0) {
-          salaryByYear[String(year)] = Math.round(value * 10);
-        }
-      });
-
-      if (Object.keys(salaryByYear).length > 0) {
-        contracts.push({
-          playerId: player.playerId,
-          playerName: player.name,
-          playerPosition: player.position,
-          salaries: JSON.stringify(salaryByYear),
-          franchiseTagApplied: false,
-        });
-      }
-    }
-
-    return contracts;
-  };
-
-  const handleSubmitForApproval = () => {
-    const contracts = buildContractsForSubmission();
-    if (contracts.length === 0) {
-      toast({
-        title: "No Contracts",
-        description: "Please add salary values to at least one player before submitting.",
-        variant: "destructive",
-      });
-      return;
-    }
-    submitForApprovalMutation.mutate(contracts);
-  };
-
   const handleSaveDraft = () => {
     const drafts = buildDraftsArray();
 
@@ -3080,8 +2973,6 @@ function ManageTeamContractsTab({
 
     saveDraftMutation.mutate({ drafts, silent: false });
   };
-
-  const hasPendingApproval = pendingApprovalData?.hasPending;
 
   return (
     <div className="space-y-6">
@@ -3136,26 +3027,6 @@ function ManageTeamContractsTab({
                 )}
                 Save Draft
               </Button>
-              {hasPendingApproval ? (
-                <Badge variant="secondary" className="flex items-center gap-1.5 px-3 py-1.5">
-                  <Clock className="w-3.5 h-3.5" />
-                  Pending Approval
-                </Badge>
-              ) : (
-                <Button
-                  size="sm"
-                  onClick={handleSubmitForApproval}
-                  disabled={submitForApprovalMutation.isPending}
-                  data-testid="button-submit-for-approval"
-                >
-                  {submitForApprovalMutation.isPending ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <Send className="w-4 h-4 mr-2" />
-                  )}
-                  Submit for Approval
-                </Button>
-              )}
               {lastSavedAt && (
                 <span className="text-xs text-muted-foreground ml-2">
                   Last saved: {new Date(lastSavedAt).toLocaleString()}
@@ -3350,7 +3221,7 @@ function ManageTeamContractsTab({
                                 })}
                               </Pie>
                               <RechartsTooltip 
-                                formatter={(value: number, name: string) => [`$${value.toFixed(1)}M`, name.includes('Pending') ? 'Pending Approval' : 'Approved']}
+                                formatter={(value: number, name: string) => [`$${value.toFixed(1)}M`, name.includes('Pending') ? 'Pending' : 'Saved']}
                               />
                               <Legend />
                             </PieChart>
@@ -4467,10 +4338,6 @@ function ManageTeamContractsTab({
             <p className="flex items-center gap-2">
               <Save className="w-4 h-4" />
               <span>Click "Save Draft" to save your contract changes for later. Saved drafts are automatically loaded when you return to this page.</span>
-            </p>
-            <p className="flex items-center gap-2">
-              <Send className="w-4 h-4" />
-              <span>Click "Submit for Approval" to send your contracts to the commissioner for review. Once approved, they become official league contracts.</span>
             </p>
             <p className="flex items-center gap-2">
               <Star className="w-4 h-4" />
@@ -6249,500 +6116,6 @@ interface OrphanedContract {
   teamName: string;
 }
 
-interface ContractApprovalRequest {
-  id: string;
-  leagueId: string;
-  rosterId: number;
-  teamName: string;
-  ownerName: string;
-  contractsJson: string;
-  status: string;
-  submittedAt: number;
-  reviewedAt: number | null;
-  reviewerNotes: string | null;
-}
-
-interface ApprovalContractData {
-  playerId: string;
-  playerName: string;
-  playerPosition: string;
-  salaries: string;
-  salariesByYear: Record<number, number>;
-  franchiseTagApplied?: number;
-}
-
-interface ContractApprovalsTabProps {
-  leagueId: string;
-}
-
-function ContractApprovalsTab({ leagueId }: ContractApprovalsTabProps) {
-  const { toast } = useToast();
-  const { season } = useSleeper();
-  const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
-  const OPTION_YEAR = CURRENT_YEAR + 4;
-  const [expandedRequests, setExpandedRequests] = useState<Set<string>>(new Set());
-  const [reviewDialog, setReviewDialog] = useState<{ request: ContractApprovalRequest; action: "approve" | "reject" } | null>(null);
-  const [reviewNotes, setReviewNotes] = useState("");
-
-  const { data: approvalRequests, isLoading: isLoadingRequests } = useQuery<ContractApprovalRequest[]>({
-    queryKey: ["/api/league", leagueId, "contract-approvals"],
-    enabled: !!leagueId,
-  });
-
-  const reviewMutation = useMutation({
-    mutationFn: async ({ requestId, status, notes }: { requestId: string; status: "approved" | "rejected"; notes?: string }) => {
-      return apiRequest("PATCH", `/api/league/${leagueId}/contract-approvals/${requestId}`, {
-        status,
-        reviewerNotes: notes,
-      });
-    },
-    onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contract-approvals"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contracts"] });
-      toast({
-        title: variables.status === "approved" ? "Contracts Approved" : "Contracts Rejected",
-        description: variables.status === "approved" 
-          ? "The contracts have been approved and are now official."
-          : "The contract request has been rejected.",
-      });
-      setReviewDialog(null);
-      setReviewNotes("");
-    },
-    onError: () => {
-      toast({
-        title: "Error",
-        description: "Failed to process the request. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  const toggleExpanded = (requestId: string) => {
-    setExpandedRequests(prev => {
-      const newSet = new Set(prev);
-      if (newSet.has(requestId)) {
-        newSet.delete(requestId);
-      } else {
-        newSet.add(requestId);
-      }
-      return newSet;
-    });
-  };
-
-  const pendingRequests = approvalRequests?.filter(r => r.status === "pending") || [];
-  const reviewedRequests = approvalRequests?.filter(r => r.status !== "pending") || [];
-
-  const formatDate = (timestamp: number) => {
-    return new Date(timestamp).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  };
-
-  const parseContracts = (json: string): ApprovalContractData[] => {
-    try {
-      const parsed = JSON.parse(json) as Array<ApprovalContractData>;
-      return parsed.map(contract => {
-        let salariesByYear: Record<number, number> = {};
-        try {
-          const salaryObj = JSON.parse(contract.salaries || "{}");
-          Object.entries(salaryObj).forEach(([year, value]) => {
-            const yearNum = Number(year);
-            if (!isNaN(yearNum)) {
-              salariesByYear[yearNum] = (Number(value) || 0) / 10;
-            }
-          });
-        } catch {
-          salariesByYear = {};
-        }
-        return { ...contract, salariesByYear };
-      });
-    } catch {
-      return [];
-    }
-  };
-
-  const calculateTotalSalary = (contracts: ApprovalContractData[], year: number) => {
-    return contracts.reduce((sum, c) => sum + (c.salariesByYear?.[year] || 0), 0);
-  };
-
-  if (isLoadingRequests) {
-    return (
-      <div className="flex items-center justify-center h-32">
-        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-      </div>
-    );
-  }
-
-  if (pendingRequests.length === 0 && reviewedRequests.length === 0) {
-    return (
-      <Card>
-        <CardContent className="py-12">
-          <div className="text-center">
-            <CheckCircle className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <h2 className="text-lg font-medium mb-2">No Approval Requests</h2>
-            <p className="text-muted-foreground">
-              Teams haven't submitted any contracts for approval yet.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Clock className="w-5 h-5 text-primary" />
-          <h2 className="text-lg font-semibold">Contract Approval Requests</h2>
-        </div>
-        <Badge variant="outline" className="gap-1">
-          <Clock className="w-3 h-3" />
-          {pendingRequests.length} Pending
-        </Badge>
-      </div>
-
-      {pendingRequests.length > 0 && (
-        <div className="space-y-4">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
-            <Clock className="w-4 h-4 text-yellow-500" />
-            Pending Requests ({pendingRequests.length})
-          </h3>
-          
-          {pendingRequests.map(request => {
-            const contracts = parseContracts(request.contractsJson);
-            const isExpanded = expandedRequests.has(request.id);
-            
-            return (
-              <Card key={request.id} data-testid={`card-approval-${request.id}`}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between flex-wrap gap-4">
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-10 w-10">
-                        <AvatarFallback>
-                          {request.teamName.substring(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <CardTitle className="text-base">{request.teamName}</CardTitle>
-                        <p className="text-sm text-muted-foreground">{request.ownerName}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">{contracts.length} players</Badge>
-                      <span className="text-xs text-muted-foreground">
-                        Submitted {formatDate(request.submittedAt)}
-                      </span>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-4 gap-3 mb-4">
-                    {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3].map(year => (
-                      <Card key={year} className="p-2">
-                        <div className="text-center">
-                          <div className="text-xs text-muted-foreground">{year}</div>
-                          <div className="font-bold text-sm text-primary">
-                            ${calculateTotalSalary(contracts, year).toFixed(1)}M
-                          </div>
-                        </div>
-                      </Card>
-                    ))}
-                  </div>
-
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full mb-3"
-                    onClick={() => toggleExpanded(request.id)}
-                    data-testid={`button-expand-${request.id}`}
-                  >
-                    {isExpanded ? (
-                      <>
-                        <ChevronUp className="w-4 h-4 mr-2" />
-                        Hide Contract Details
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown className="w-4 h-4 mr-2" />
-                        Show Contract Details ({contracts.length} players)
-                      </>
-                    )}
-                  </Button>
-
-                  {isExpanded && (
-                    <ScrollArea className="h-[300px] mb-4">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Player</TableHead>
-                            <TableHead className="text-center">Pos</TableHead>
-                            {[CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR].map((year) => (
-                              <TableHead key={year} className="text-center">{year}</TableHead>
-                            ))}
-                            <TableHead className="text-center">Total</TableHead>
-                            <TableHead className="text-center">Remaining</TableHead>
-                            <TableHead className="text-center">Tag</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {contracts.map(contract => {
-                            const yearColumns = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
-                            const totalValue = yearColumns.reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
-                            const remainingValue = yearColumns.slice(1).reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
-                            
-                            return (
-                              <TableRow key={contract.playerId}>
-                                <TableCell className="font-medium">{contract.playerName}</TableCell>
-                                <TableCell className="text-center">
-                                  <Badge className={`${positionColors[contract.playerPosition] || "bg-gray-500 text-white"} text-[10px]`}>
-                                    {contract.playerPosition}
-                                  </Badge>
-                                </TableCell>
-                                {yearColumns.map(year => {
-                                  const salary = contract.salariesByYear?.[year] || 0;
-                                  return (
-                                    <TableCell key={year} className="text-center">
-                                      {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
-                                    </TableCell>
-                                  );
-                                })}
-                                <TableCell className="text-center font-medium text-primary">
-                                  {totalValue > 0 ? `$${totalValue.toFixed(1)}M` : "-"}
-                                </TableCell>
-                                <TableCell className="text-center font-medium text-emerald-600">
-                                  {remainingValue > 0 ? `$${remainingValue.toFixed(1)}M` : "-"}
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  {contract.franchiseTagApplied ? (
-                                    <Badge variant="default" className="text-[10px]">FT</Badge>
-                                  ) : "-"}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </ScrollArea>
-                  )}
-
-                  <Separator className="my-3" />
-
-                  <div className="flex justify-end gap-2">
-                    <Button
-                      variant="outline"
-                      onClick={() => setReviewDialog({ request, action: "reject" })}
-                      data-testid={`button-reject-${request.id}`}
-                    >
-                      <XCircle className="w-4 h-4 mr-2" />
-                      Reject
-                    </Button>
-                    <Button
-                      onClick={() => setReviewDialog({ request, action: "approve" })}
-                      data-testid={`button-approve-${request.id}`}
-                    >
-                      <CheckCircle className="w-4 h-4 mr-2" />
-                      Approve
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      {reviewedRequests.length > 0 && (
-        <div className="space-y-4">
-          <h3 className="text-sm font-semibold flex items-center gap-2 text-muted-foreground">
-            <CheckCircle className="w-4 h-4" />
-            Previously Reviewed ({reviewedRequests.length})
-          </h3>
-          
-          {reviewedRequests.map(request => {
-            const contracts = parseContracts(request.contractsJson);
-            const isExpanded = expandedRequests.has(request.id);
-            
-            return (
-              <Card key={request.id} className="opacity-90" data-testid={`card-reviewed-${request.id}`}>
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between flex-wrap gap-4">
-                    <div className="flex items-center gap-3">
-                      <Avatar className="h-10 w-10">
-                        <AvatarFallback>
-                          {request.teamName.substring(0, 2).toUpperCase()}
-                        </AvatarFallback>
-                      </Avatar>
-                      <div>
-                        <CardTitle className="text-base">{request.teamName}</CardTitle>
-                        <p className="text-sm text-muted-foreground">{request.ownerName}</p>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="secondary">{contracts.length} players</Badge>
-                      <Badge 
-                        variant={request.status === "approved" ? "default" : "destructive"}
-                      >
-                        {request.status === "approved" ? (
-                          <><CheckCircle className="w-3 h-3 mr-1" /> Approved</>
-                        ) : (
-                          <><XCircle className="w-3 h-3 mr-1" /> Rejected</>
-                        )}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        {request.reviewedAt && formatDate(request.reviewedAt)}
-                      </span>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  {request.reviewerNotes && (
-                    <p className="text-sm text-muted-foreground italic mb-3">
-                      "{request.reviewerNotes}"
-                    </p>
-                  )}
-                  
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => toggleExpanded(request.id)}
-                    data-testid={`button-expand-reviewed-${request.id}`}
-                  >
-                    {isExpanded ? (
-                      <>
-                        <ChevronUp className="w-4 h-4 mr-2" />
-                        Hide Contract Details
-                      </>
-                    ) : (
-                      <>
-                        <ChevronDown className="w-4 h-4 mr-2" />
-                        Show Contract Details ({contracts.length} players)
-                      </>
-                    )}
-                  </Button>
-
-                  {isExpanded && (
-                    <ScrollArea className="h-[300px] mt-3">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Player</TableHead>
-                            <TableHead className="text-center">Pos</TableHead>
-                            {[2025, 2026, 2027, 2028, 2029].map((year) => (
-                              <TableHead key={year} className="text-center">{year}</TableHead>
-                            ))}
-                            <TableHead className="text-center">Total</TableHead>
-                            <TableHead className="text-center">Remaining</TableHead>
-                            <TableHead className="text-center">Tag</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {contracts.map(contract => {
-                            const yearColumns = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3, OPTION_YEAR];
-                            const totalValue = yearColumns.reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
-                            const remainingValue = yearColumns.slice(1).reduce((sum, year) => sum + (contract.salariesByYear?.[year] || 0), 0);
-                            
-                            return (
-                              <TableRow key={contract.playerId}>
-                                <TableCell className="font-medium">{contract.playerName}</TableCell>
-                                <TableCell className="text-center">
-                                  <Badge className={`${positionColors[contract.playerPosition] || "bg-gray-500 text-white"} text-[10px]`}>
-                                    {contract.playerPosition}
-                                  </Badge>
-                                </TableCell>
-                                {yearColumns.map(year => {
-                                  const salary = contract.salariesByYear?.[year] || 0;
-                                  return (
-                                    <TableCell key={year} className="text-center">
-                                      {salary > 0 ? `$${salary.toFixed(1)}M` : "-"}
-                                    </TableCell>
-                                  );
-                                })}
-                                <TableCell className="text-center font-medium text-primary">
-                                  {totalValue > 0 ? `$${totalValue.toFixed(1)}M` : "-"}
-                                </TableCell>
-                                <TableCell className="text-center font-medium text-emerald-600">
-                                  {remainingValue > 0 ? `$${remainingValue.toFixed(1)}M` : "-"}
-                                </TableCell>
-                                <TableCell className="text-center">
-                                  {contract.franchiseTagApplied ? (
-                                    <Badge variant="default" className="text-[10px]">FT</Badge>
-                                  ) : "-"}
-                                </TableCell>
-                              </TableRow>
-                            );
-                          })}
-                        </TableBody>
-                      </Table>
-                    </ScrollArea>
-                  )}
-                </CardContent>
-              </Card>
-            );
-          })}
-        </div>
-      )}
-
-      <Dialog open={!!reviewDialog} onOpenChange={() => setReviewDialog(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {reviewDialog?.action === "approve" ? "Approve Contracts" : "Reject Contracts"}
-            </DialogTitle>
-          </DialogHeader>
-          
-          <div className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              {reviewDialog?.action === "approve" 
-                ? `Are you sure you want to approve the contracts for ${reviewDialog?.request.teamName}? This will make these contracts official.`
-                : `Are you sure you want to reject the contracts for ${reviewDialog?.request.teamName}?`
-              }
-            </p>
-            
-            <div>
-              <Label className="text-sm font-medium">Notes (optional)</Label>
-              <Textarea
-                placeholder="Add any notes for the team owner..."
-                value={reviewNotes}
-                onChange={(e) => setReviewNotes(e.target.value)}
-                className="mt-1"
-                data-testid="input-review-notes"
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setReviewDialog(null)}>
-              Cancel
-            </Button>
-            <Button
-              variant={reviewDialog?.action === "approve" ? "default" : "destructive"}
-              onClick={() => {
-                if (reviewDialog) {
-                  reviewMutation.mutate({
-                    requestId: reviewDialog.request.id,
-                    status: reviewDialog.action === "approve" ? "approved" : "rejected",
-                    notes: reviewNotes || undefined,
-                  });
-                }
-              }}
-              disabled={reviewMutation.isPending}
-              data-testid="button-confirm-review"
-            >
-              {reviewMutation.isPending ? "Processing..." : reviewDialog?.action === "approve" ? "Approve" : "Reject"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
 export default function Contracts() {
   const { toast } = useToast();
   const { user, league, isLoading, season } = useSleeper();
@@ -7418,7 +6791,6 @@ export default function Contracts() {
           {isCommissioner && (
             <>
               <TabsTrigger value="manage-league" data-testid="tab-manage-league">Manage League Contracts</TabsTrigger>
-              <TabsTrigger value="approvals" data-testid="tab-approvals">Approvals</TabsTrigger>
             </>
           )}
         </TabsList>
@@ -7799,11 +7171,6 @@ export default function Contracts() {
             )}
           </TabsContent>
 
-          <TabsContent value="approvals" className="mt-6">
-            {league?.leagueId && (
-              <ContractApprovalsTab leagueId={league.leagueId} />
-            )}
-          </TabsContent>
           </>
         )}
       </Tabs>

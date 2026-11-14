@@ -18,7 +18,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
-import { RefreshCw, Check, Bell, User, Database, FileDown } from "lucide-react";
+import { RefreshCw, Check, Bell, User, Database, FileDown, Scissors } from "lucide-react";
 import { buildWeeklyReportPdf, collectAvatarUrls, loadAvatars, reportFileName, type PlayoffData } from "@/lib/weeklyReportPdf";
 import type { ReportData } from "@shared/weeklyReport";
 
@@ -41,6 +41,44 @@ export default function Settings() {
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [advanceLeagueId, setAdvanceLeagueId] = useState("");
   const [reportWeek, setReportWeek] = useState("");
+
+  // Dead cap: off until the commissioner turns it on; only drops after that count.
+  const deadCapKey = ["/api/league", league?.leagueId, "settings", "dead-cap-enabled"];
+  const { data: deadCapSetting } = useQuery<{ enabled: boolean; enabledAt: number | null }>({
+    queryKey: deadCapKey,
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/settings/dead-cap-enabled`);
+      if (!res.ok) throw new Error("Could not load the dead cap setting");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && isCommissioner,
+  });
+  const [isSavingDeadCap, setIsSavingDeadCap] = useState(false);
+  const setDeadCap = async (enabled: boolean) => {
+    if (!user?.userId || !league?.leagueId) return;
+    setIsSavingDeadCap(true);
+    try {
+      const res = await fetch(
+        `/api/league/${league.leagueId}/settings/dead-cap-enabled?userId=${encodeURIComponent(user.userId)}`,
+        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) },
+      );
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not change the setting");
+      queryClient.setQueryData(deadCapKey, body);
+      queryClient.invalidateQueries({ queryKey: ["/api/leagues", league.leagueId, "dead-cap"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league.leagueId, "contracts"] });
+      toast({
+        title: enabled ? "Dead cap is on" : "Dead cap is off",
+        description: enabled
+          ? "Players dropped in Sleeper from now on leave dead cap on the team that dropped them."
+          : "Drops no longer create dead cap. Dead cap already charged stays.",
+      });
+    } catch (err) {
+      toast({ title: "Not saved", description: err instanceof Error ? err.message : "Please try again.", variant: "destructive" });
+    } finally {
+      setIsSavingDeadCap(false);
+    }
+  };
   const [isExportingReport, setIsExportingReport] = useState(false);
 
   const exportWeeklyReport = async () => {
@@ -445,6 +483,44 @@ export default function Settings() {
                 <RefreshCw className={`w-4 h-4 mr-2 ${isAdvancing ? "animate-spin" : "hidden"}`} />
                 {isAdvancing ? "Advancing..." : "Advance League Year"}
               </Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {isCommissioner && (
+          <Card>
+            <CardHeader>
+              <div className="flex items-center gap-2">
+                <Scissors className="w-5 h-5 text-muted-foreground" />
+                <CardTitle className="font-heading text-lg">Dead Cap</CardTitle>
+              </div>
+              <CardDescription>
+                When a player under contract is dropped in Sleeper, part of his salary stays on the team's cap.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="flex items-center justify-between gap-4">
+                <div className="space-y-0.5">
+                  <Label htmlFor="dead-cap-enabled">Charge dead cap for dropped players</Label>
+                  <p className="text-sm text-muted-foreground">
+                    {deadCapSetting?.enabled
+                      ? `On since ${deadCapSetting.enabledAt ? new Date(deadCapSetting.enabledAt).toLocaleString() : "now"}. Only drops after that count.`
+                      : "Off. Turning it on is not retroactive: only players dropped after that moment count."}
+                  </p>
+                </div>
+                <Switch
+                  id="dead-cap-enabled"
+                  checked={!!deadCapSetting?.enabled}
+                  disabled={!deadCapSetting || isSavingDeadCap}
+                  onCheckedChange={setDeadCap}
+                  data-testid="switch-dead-cap"
+                />
+              </div>
+              <div className="rounded-md bg-muted/50 p-3 text-sm text-muted-foreground space-y-1">
+                <p>Dropped during the regular season: the contract ends. This season's salary is 100% dead cap; each later season is dead by the contract years left from that season on (2 left 25%, 3 left 50%, 4 left 75%, 5 left 100%, the final year 0%).</p>
+                <p>Dropped in the offseason: the contract ends with no dead cap. Trades never create dead cap.</p>
+                <p>Dead cap shows in red on the Contracts Hub cap bars.</p>
+              </div>
             </CardContent>
           </Card>
         )}

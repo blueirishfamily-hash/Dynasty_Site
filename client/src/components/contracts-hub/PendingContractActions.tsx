@@ -40,6 +40,14 @@ type Row = {
 
 const money = (v: number) => `$${v.toFixed(1)}`;
 
+/** Expected rookie contracts for a team's picks in the upcoming rookie draft. Shown for awareness, not counted. */
+export interface DraftCapitalEstimate {
+  total: number;
+  picks: Array<{ round: number; slot: number; salary: number }>;
+  /** "sleeper" when the commissioner has set the draft order, "projected" when it comes from the draft odds. */
+  source: "sleeper" | "projected";
+}
+
 function salaryText(salaries: Record<number, number>) {
   const values = Object.values(salaries);
   if (values.length === 0) return "—";
@@ -60,6 +68,9 @@ export function PendingContractActionsPanel({
   parsedContracts,
   positionOf,
   deadCapEntries,
+  projectionYear,
+  windowOpen,
+  draftCapital = null,
   className = "",
 }: {
   leagueId: string;
@@ -73,11 +84,17 @@ export function PendingContractActionsPanel({
   parsedContracts: PanelContract[];
   positionOf: (playerId: string) => string | undefined;
   deadCapEntries: PanelDeadCap[];
+  /** The next season with no games played; the projection is for this season. */
+  projectionYear: number;
+  /** True while tags and extensions can be submitted (regular season, through Week 14). */
+  windowOpen: boolean;
+  /** From the rollover until the rookie draft: the team's expected rookie contracts (purple, outside the cap). */
+  draftCapital?: DraftCapitalEstimate | null;
   className?: string;
 }) {
   const { toast } = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const nextYear = currentYear + 1;
+  const nextYear = projectionYear;
 
   const rows: Row[] = useMemo(() => {
     const extRows: Row[] = extensions
@@ -113,7 +130,7 @@ export function PendingContractActionsPanel({
 
   // Next-season salary with the pending contracts added to what is already on the books.
   const projection = useMemo(() => {
-    // An approved extension replaces the rest of that player's current contract, so that salary comes off.
+    // A submitted extension replaces the rest of that player's current contract, so that salary comes off.
     const effects = pendingSalaryEffects(
       rosterId,
       extensions,
@@ -180,7 +197,7 @@ export function PendingContractActionsPanel({
       setSelected(new Set());
       refresh();
       if (done.length > 0) {
-        toast({ title: `${done.length} contract${done.length === 1 ? "" : "s"} saved`, description: "Approved and saved to the database." });
+        toast({ title: `${done.length} contract${done.length === 1 ? "" : "s"} saved`, description: "Submitted and saved as official." });
       }
       if (failed.length > 0) {
         toast({
@@ -225,8 +242,11 @@ export function PendingContractActionsPanel({
     { label: "Pending tag", value: projection.pendingTag, pending: true },
   ];
   const pendingTotal = projection.pendingExt + projection.pendingTag;
-  const bookedPct = Math.min(100, ((projection.total - pendingTotal) / cap) * 100);
-  const pendingPct = Math.min(100 - bookedPct, (pendingTotal / cap) * 100);
+  const deadPct = Math.min(100, (projection.dead / cap) * 100);
+  const bookedPct = Math.max(0, Math.min(100 - deadPct, ((projection.total - pendingTotal - projection.dead) / cap) * 100));
+  const pendingPct = Math.max(0, Math.min(100 - bookedPct - deadPct, (pendingTotal / cap) * 100));
+  const draftTotal = draftCapital?.total ?? 0;
+  const draftPct = Math.max(0, Math.min(100 - bookedPct - deadPct - pendingPct, (draftTotal / cap) * 100));
 
   return (
     <Card className={className}>
@@ -240,10 +260,10 @@ export function PendingContractActionsPanel({
               )}
             </div>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Extensions and tags stay here until you approve them. Approving saves them to the database.
+              Extensions and tags stay here until you submit them. Submitting makes them official. No commissioner approval is needed.
             </p>
           </div>
-          {rows.length > 0 && (
+          {rows.length > 0 && windowOpen && (
             <div className="flex gap-2">
               <Button
                 variant="outline"
@@ -251,20 +271,27 @@ export function PendingContractActionsPanel({
                 disabled={selectedRows.length === 0 || approve.isPending}
                 onClick={() => approve.mutate(selectedRows)}
               >
-                Approve selected ({selectedRows.length})
+                Submit selected ({selectedRows.length})
               </Button>
               <Button size="sm" disabled={approve.isPending} onClick={() => approve.mutate(rows)}>
                 {approve.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <CheckCircle className="w-4 h-4 mr-2" />}
-                Approve all ({rows.length})
+                Submit all ({rows.length})
               </Button>
             </div>
           )}
         </div>
 
-        {rows.length === 0 ? (
+        {!windowOpen && (
           <p className="text-sm text-muted-foreground">
-            Nothing pending. Open a player card and apply an extension or tag to add one here.
+            Tags and extensions open during the regular season and close after Week 14.
           </p>
+        )}
+        {rows.length === 0 ? (
+          windowOpen && (
+            <p className="text-sm text-muted-foreground">
+              Nothing pending. Open a player card and apply an extension or tag to add one here.
+            </p>
+          )
         ) : (
           <div className="space-y-2">
             {rows.map(row => (
@@ -302,25 +329,50 @@ export function PendingContractActionsPanel({
             <span className="text-xs uppercase tracking-wide text-muted-foreground">{nextYear} salary projection</span>
             <span className="text-xs text-muted-foreground">Cap {money(cap)}</span>
           </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className={`grid grid-cols-2 gap-3 ${draftCapital ? "sm:grid-cols-5" : "sm:grid-cols-4"}`}>
             {lines.map(line => (
               <div key={line.label}>
                 <div className={`text-xs ${line.pending ? "text-blue-500" : "text-muted-foreground"}`}>{line.label}</div>
                 <div className={`text-sm font-semibold ${line.pending && line.value > 0 ? "text-blue-500" : ""}`}>{money(line.value)}</div>
               </div>
             ))}
+            {draftCapital && (
+              <div>
+                <div className="text-xs text-purple-500">Draft picks (est.)</div>
+                <div className={`text-sm font-semibold ${draftTotal > 0 ? "text-purple-500" : ""}`}>{money(draftTotal)}</div>
+              </div>
+            )}
           </div>
           <div className="mt-3 h-2.5 rounded-full bg-muted overflow-hidden flex">
             <div
-              className={`h-full ${over ? "bg-red-500" : "bg-emerald-500"}`}
+              className={`h-full ${over ? "bg-orange-600" : "bg-emerald-500"}`}
               style={{ width: `${bookedPct}%` }}
             />
+            {projection.dead > 0 && <div className="h-full bg-red-500" style={{ width: `${deadPct}%` }} />}
             <div className="h-full bg-blue-500" style={{ width: `${pendingPct}%` }} />
+            {draftCapital && <div className="h-full bg-purple-500/70" style={{ width: `${draftPct}%` }} />}
           </div>
-          <div className="mt-1.5 flex items-center gap-4 text-[10px] text-muted-foreground">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
             <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-emerald-500" />Saved</span>
-            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-blue-500" />Pending approval</span>
+            {projection.dead > 0 && (
+              <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-red-500" />Dead cap</span>
+            )}
+            <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-blue-500" />Pending submission</span>
+            {draftCapital && (
+              <span className="flex items-center gap-1"><span className="inline-block w-2 h-2 rounded-sm bg-purple-500/70" />Rookie draft picks, not counted toward the cap</span>
+            )}
           </div>
+          {draftCapital && (
+            <p className="mt-1.5 text-[11px] text-muted-foreground">
+              {draftCapital.picks.length === 0
+                ? `No picks in the ${nextYear} rookie draft.`
+                : `${draftCapital.picks
+                    .slice()
+                    .sort((a, b) => a.round - b.round || a.slot - b.slot)
+                    .map(p => `${p.round}.${String(p.slot).padStart(2, "0")} ${money(p.salary)}`)
+                    .join(" · ")} — ${draftCapital.source === "sleeper" ? "official draft slots" : "slots projected from the draft odds"}.`}
+            </p>
+          )}
           <div className="mt-2 flex items-baseline justify-between">
             <span className="font-heading text-xl font-semibold">{money(projection.total)}</span>
             <span className={`text-sm ${over ? "text-red-500 font-semibold" : "text-muted-foreground"}`}>

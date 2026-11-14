@@ -547,6 +547,22 @@ export async function registerRoutes(
     }
   });
 
+  // Create (or fix) rookie contracts for everyone drafted in this season's rookie draft. Commissioner only.
+  app.post("/api/league/:leagueId/rookie-contracts/sync", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const { userId } = req.body || {};
+      if (!userId || !(await isCommissioner(userId, leagueId))) {
+        return res.status(403).json({ error: "Only the league commissioner can sync rookie contracts" });
+      }
+      const { syncRookieContracts } = await import("./rookieContracts");
+      res.json(await syncRookieContracts(leagueId));
+    } catch (error) {
+      console.error("Error syncing rookie contracts:", error);
+      res.status(500).json({ error: "Failed to sync rookie contracts" });
+    }
+  });
+
   // Get NFL state (current week, season)
   app.get("/api/sleeper/nfl-state", async (_req, res) => {
     try {
@@ -2709,12 +2725,21 @@ export async function registerRoutes(
     try {
       const { leagueId } = req.params;
       const [nflState, league] = await Promise.all([getNFLState(), getLeague(leagueId)]);
-      const currentSeason = String(league?.season || nflState.season);
-      const previousSeason = String(parseInt(currentSeason) - 1);
-      const [currentWeekly, previousWeekly] = await Promise.all([
+      let currentSeason = String(league?.season || nflState.season);
+      let previousSeason = String(parseInt(currentSeason) - 1);
+      let [currentWeekly, previousWeekly] = await Promise.all([
         fetchAllWeeklyStats(currentSeason),
         fetchAllWeeklyStats(previousSeason),
       ]);
+      // Right after the rollover the new season has no games yet: use the two most recent seasons that do.
+      const hasPoints = (weekly: WeeklyStatsCache) =>
+        weekly.some(week => Object.values(week).some((s: any) => (s?.pts_ppr || s?.pts_half_ppr || s?.pts_std || 0) > 0));
+      if (!hasPoints(currentWeekly)) {
+        currentSeason = previousSeason;
+        previousSeason = String(parseInt(currentSeason) - 1);
+        currentWeekly = previousWeekly;
+        previousWeekly = await fetchAllWeeklyStats(previousSeason);
+      }
       const totalsFor = (weekly: WeeklyStatsCache) => {
         const out: Record<string, { pts: number; games: number }> = {};
         for (const week of weekly) {
@@ -3544,9 +3569,11 @@ export async function registerRoutes(
   });
 
   // Get traded picks / draft capital (draft order from draft-odds logic: standings + max PF, bracket when postseason)
-  app.get("/api/sleeper/league/:leagueId/draft-picks", async (req, res) => {
-    try {
-      const leagueId = req.params.leagueId;
+  /**
+   * Rookie draft order from the Draft Odds rules (standings and max PF, then the playoff bracket once the postseason
+   * starts). Slot 1 first. Used by the Draft Board and by the Contracts Hub until Sleeper assigns official slots.
+   */
+  async function computeDraftOddsOrder(leagueId: string) {
       const [tradedPicks, rosters, users, league, nflState, drafts] = await Promise.all([
         getTradedPicks(leagueId),
         getLeagueRosters(leagueId),
@@ -3616,7 +3643,11 @@ export async function registerRoutes(
 
       // Draft order: 1..12 (roster_id for slot 1, 2, ... 12)
       let draftOrder: number[];
-      const isPostseason = currentWeek >= playoffWeekStart;
+      // A league whose season is already over (an earlier league year) is always ranked on its final results.
+      const leagueSeasonNum = parseInt(String(league?.season ?? ""), 10);
+      const nflSeasonNum = parseInt(String(nflState?.season ?? ""), 10);
+      const seasonIsPast = !Number.isNaN(leagueSeasonNum) && !Number.isNaN(nflSeasonNum) && leagueSeasonNum < nflSeasonNum;
+      const isPostseason = seasonIsPast || currentWeek >= playoffWeekStart;
 
       if (isPostseason) {
         let bracket: Awaited<ReturnType<typeof getWinnersBracket>> | null = null;
@@ -3669,6 +3700,13 @@ export async function registerRoutes(
       if (draftOrder.length !== totalTeams) {
         draftOrder = rosters.map(r => r.roster_id);
       }
+      return { draftOrder, tradedPicks, rosters, users, league, drafts, rosterOwnerMap };
+  }
+
+  app.get("/api/sleeper/league/:leagueId/draft-picks", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { draftOrder, tradedPicks, drafts, rosterOwnerMap } = await computeDraftOddsOrder(leagueId);
 
       const pickGrade = (round: number, slot: number): string => {
         if (round === 1) {
@@ -3720,6 +3758,112 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error fetching draft picks:", error);
       res.status(500).json({ error: "Failed to fetch draft picks" });
+    }
+  });
+
+  // Expected rookie contract value of each team's picks in this league year's rookie draft. The Contracts Hub shows it
+  // (in purple, outside the cap) from the rollover until the draft is complete. Slots come from Sleeper once the
+  // commissioner sets the draft order; until then from the Draft Odds order of the season that just finished.
+  app.get("/api/league/:leagueId/draft-capital", async (req, res) => {
+    try {
+      const { leagueId } = req.params;
+      const league: any = await getLeague(leagueId);
+      const season = parseInt(league?.season || "", 10) || new Date().getFullYear();
+      const drafts = await getLeagueDrafts(leagueId).catch(() => [] as any[]);
+      const draft: any = drafts.find(
+        (d: any) => String(d.season) === String(season) && ["rookie", "linear", "snake"].includes(d.type),
+      );
+
+      if (draft && isDraftComplete(draft.status)) {
+        // The first time the draft is seen complete, make sure every drafted rookie has a rookie contract.
+        const syncKey = `rookie_sync_done_${season}`;
+        if (!(await storage.getLeagueSetting(leagueId, syncKey))) {
+          try {
+            const { syncRookieContracts } = await import("./rookieContracts");
+            await syncRookieContracts(leagueId);
+            await storage.setLeagueSetting(leagueId, syncKey, "true");
+          } catch (syncErr) {
+            console.warn("[rookie-contracts] sync after draft skipped:", (syncErr as Error).message);
+          }
+        }
+        // The board as it was drafted: who picked whom at each slot, and that slot's rookie contract.
+        const { rookiePayScale } = await import("./rookieContracts");
+        const picks = await getDraftPicks(draft.draft_id).catch(() => [] as any[]);
+        const board = picks
+          .map((p: any) => ({
+            round: p.round,
+            slot: p.draft_slot,
+            ownerRosterId: p.roster_id,
+            originalRosterId: p.roster_id,
+            salary: rookiePayScale(p.round, p.draft_slot),
+            playerId: p.player_id ? String(p.player_id) : null,
+            playerName: [p.metadata?.first_name, p.metadata?.last_name].filter(Boolean).join(" ") || null,
+            playerPosition: p.metadata?.position || null,
+          }))
+          .sort((a: any, b: any) => a.round - b.round || a.slot - b.slot);
+        const byRoster: Record<number, { total: number; picks: Array<{ round: number; slot: number; salary: number; fromRosterId: number }> }> = {};
+        for (const b of board) {
+          if (b.salary <= 0) continue;
+          const entry = (byRoster[b.ownerRosterId] ||= { total: 0, picks: [] });
+          entry.total += b.salary;
+          entry.picks.push({ round: b.round, slot: b.slot, salary: b.salary, fromRosterId: b.originalRosterId });
+        }
+        return res.json({ season, draftComplete: true, source: "complete", byRoster, board });
+      }
+
+      const rosters = await getLeagueRosters(leagueId);
+      const rosterByOwner = new Map<string, number>();
+      rosters.forEach(r => { if (r.owner_id) rosterByOwner.set(String(r.owner_id), r.roster_id); });
+
+      let slotByRoster = new Map<number, number>();
+      let source: "sleeper" | "projected" = "projected";
+      const officialOrder = draft?.draft_order as Record<string, number> | null | undefined;
+      if (officialOrder && Object.keys(officialOrder).length > 0) {
+        for (const [ownerId, slot] of Object.entries(officialOrder)) {
+          const rid = rosterByOwner.get(String(ownerId));
+          if (rid != null) slotByRoster.set(rid, Number(slot));
+        }
+        source = "sleeper";
+      }
+      if (slotByRoster.size < rosters.length) {
+        // No official slots yet: order by the season that just finished (the previous league once rolled over).
+        slotByRoster = new Map();
+        source = "projected";
+        const prevId = league?.previous_league_id && league.previous_league_id !== "0" ? String(league.previous_league_id) : null;
+        const { draftOrder, rosters: oddsRosters } = await computeDraftOddsOrder(prevId ?? leagueId);
+        const ownerOfOddsRoster = new Map<number, string>();
+        oddsRosters.forEach(r => ownerOfOddsRoster.set(r.roster_id, String(r.owner_id || "")));
+        draftOrder.forEach((oddsRosterId, i) => {
+          const owner = ownerOfOddsRoster.get(oddsRosterId);
+          const rid = (owner ? rosterByOwner.get(owner) : undefined) ?? oddsRosterId;
+          slotByRoster.set(rid, i + 1);
+        });
+      }
+
+      const { rookiePayScale } = await import("./rookieContracts");
+      const rounds = Math.max(1, Number(draft?.settings?.rounds) || 3);
+      const traded = await getTradedPicks(leagueId).catch(() => [] as any[]);
+      const byRoster: Record<number, { total: number; picks: Array<{ round: number; slot: number; salary: number; fromRosterId: number }> }> = {};
+      const board: Array<{ round: number; slot: number; ownerRosterId: number; originalRosterId: number; salary: number; playerId: null; playerName: null; playerPosition: null }> = [];
+      for (const [originalRosterId, slot] of slotByRoster) {
+        for (let round = 1; round <= rounds; round++) {
+          const trade = traded.find(
+            (tp: any) => String(tp.season) === String(season) && tp.round === round && tp.roster_id === originalRosterId,
+          );
+          const owner = trade ? trade.owner_id : originalRosterId;
+          const salary = rookiePayScale(round, slot);
+          board.push({ round, slot, ownerRosterId: owner, originalRosterId, salary, playerId: null, playerName: null, playerPosition: null });
+          if (salary <= 0) continue;
+          const entry = (byRoster[owner] ||= { total: 0, picks: [] });
+          entry.total += salary;
+          entry.picks.push({ round, slot, salary, fromRosterId: originalRosterId });
+        }
+      }
+      board.sort((a, b) => a.round - b.round || a.slot - b.slot);
+      res.json({ season, draftComplete: false, source, byRoster, board });
+    } catch (error) {
+      console.error("Error computing draft capital:", error);
+      res.status(500).json({ error: "Failed to compute draft capital" });
     }
   });
 
@@ -8011,9 +8155,9 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/settings/dead-cap-enabled", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const value = await storage.getLeagueSetting(leagueId, "dead_cap_enabled");
-      // Default to "true" if setting doesn't exist (backward compatibility)
-      res.json({ enabled: value === "true" || value === undefined || value === null });
+      // Off until the commissioner turns it on. enabledAt: only drops after this time create dead cap.
+      const { getDeadCapSetting } = await import("./deadCap");
+      res.json(await getDeadCapSetting(leagueId));
     } catch (error) {
       console.error("Error fetching dead cap enabled setting:", error);
       res.status(500).json({ error: "Failed to fetch dead cap enabled setting", message: dbErrorMessage(error) });
@@ -8042,8 +8186,8 @@ export async function registerRoutes(
         return res.status(403).json({ error: "Unauthorized: Only commissioners can change this setting" });
       }
       
-      const setting = await storage.setLeagueSetting(leagueId, "dead_cap_enabled", enabled ? "true" : "false");
-      res.json({ enabled: setting.settingValue === "true" });
+      const { setDeadCapEnabled } = await import("./deadCap");
+      res.json(await setDeadCapEnabled(leagueId, enabled));
     } catch (error) {
       console.error("Error setting dead cap enabled setting:", error);
       res.status(500).json({ error: "Failed to set dead cap enabled setting" });
@@ -8084,6 +8228,9 @@ export async function registerRoutes(
   app.get("/api/league/:leagueId/contracts", async (req, res) => {
     try {
       const { leagueId } = req.params;
+      // Apply Sleeper moves first: drops since dead cap was turned on end contracts, in-season pickups get $1 deals.
+      const { syncSleeperContractMoves } = await import("./deadCap");
+      await syncSleeperContractMoves(leagueId);
       const contracts = await storage.getPlayerContracts(leagueId);
       res.json(contracts);
     } catch (error) {
@@ -8262,6 +8409,19 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to check extension status" });
     }
   });
+
+  // The last season a contract pays anything. Extensions are only allowed when this is the current season.
+  function lastPaidYearOfContract(contract: any): number {
+    try {
+      const raw = typeof contract?.salaries === "string" ? JSON.parse(contract.salaries || "{}") : contract?.salaries || {};
+      const years = Object.entries(raw)
+        .filter(([y, v]) => !isNaN(Number(y)) && Number(v) > 0)
+        .map(([y]) => Number(y));
+      return years.length > 0 ? Math.max(...years) : 0;
+    } catch {
+      return 0;
+    }
+  }
 
   // ==================== ROOKIE EXTENSION SALARY CALCULATION ====================
   // Calculate the PPG-based extension salary for a rookie contract player
@@ -8491,6 +8651,10 @@ export async function registerRoutes(
       const currentSeasonNum = parseInt(currentSeason);
       const previousSeason = String(currentSeasonNum - 1);
 
+      if (lastPaidYearOfContract(playerContract) !== currentSeasonNum) {
+        return res.status(400).json({ error: "Extensions are only available in the final year of a contract" });
+      }
+
       const [currentWeeklyStats, previousWeeklyStats] = await Promise.all([
         fetchAllWeeklyStats(currentSeason),
         fetchAllWeeklyStats(previousSeason),
@@ -8633,6 +8797,15 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      // Extensions are only made while the regular-season window is open (it closes after Week 14).
+      {
+        const { getPhaseState } = await import("./contractHubRoutes");
+        const { current: extPhase } = await getPhaseState(leagueId);
+        if (extPhase !== "regular_season") {
+          return res.status(400).json({ error: "Extensions can only be made during the regular season, through Week 14" });
+        }
+      }
+
       // Validate and normalize season to a number
       season = parseInt(season);
       if (isNaN(season) || season < 2020 || season > 2100) {
@@ -8739,6 +8912,11 @@ export async function registerRoutes(
             });
           }
         }
+      }
+
+      // Extensions are only available in the final year of a contract (rookie or not).
+      if (lastPaidYearOfContract(playerContract) !== season) {
+        return res.status(400).json({ error: "Extensions are only available in the final year of a contract" });
       }
 
       // Rookie contracts: must be in final year; use PPG-based pricing
@@ -8880,6 +9058,14 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing rosterId" });
       }
 
+      {
+        const { getPhaseState } = await import("./contractHubRoutes");
+        const { current: extPhase } = await getPhaseState(leagueId);
+        if (extPhase !== "regular_season") {
+          return res.status(400).json({ error: "Extensions can only be submitted during the regular season, through Week 14" });
+        }
+      }
+
       // Look up the extension
       const extension = await storage.getTeamExtensionById(extensionId);
       if (!extension) {
@@ -9017,6 +9203,21 @@ export async function registerRoutes(
         });
       }
 
+      // Tags are only made while the regular-season window is open (it closes after Week 14).
+      const { getPhaseState } = await import("./contractHubRoutes");
+      const { current: tagPhase } = await getPhaseState(leagueId);
+      if (tagPhase !== "regular_season") {
+        return res.status(400).json({ error: "Franchise tags can only be applied during the regular season, through Week 14" });
+      }
+
+      // One tag per team for the coming season.
+      const teamTagCount = allContracts.filter(
+        (c: any) => c.rosterId === Number(rosterId) && c.franchiseTagUsed === 1 && c.franchiseTagYear === currentYear + 1,
+      ).length;
+      if (teamTagCount >= 1) {
+        return res.status(400).json({ error: "This team has no franchise tag left this season" });
+      }
+
       const salaries: Record<string, number> = (() => {
         try {
           const raw = typeof (contract as any).salaries === "string"
@@ -9038,6 +9239,10 @@ export async function registerRoutes(
         .map(([y]) => parseInt(y, 10))
         .filter((y) => !isNaN(y));
       const lastYearWithSalary = yearsWithSalary.length > 0 ? Math.max(...yearsWithSalary) : currentYear - 1;
+      // Only players whose contract ends this season can be tagged.
+      if (lastYearWithSalary !== currentYear) {
+        return res.status(400).json({ error: "Only players whose contract ends this season can be franchise tagged" });
+      }
       const franchiseYear = lastYearWithSalary < optionYear ? lastYearWithSalary + 1 : optionYear;
 
       const players = await getAllPlayers();
@@ -9046,6 +9251,8 @@ export async function registerRoutes(
         const p = players[c.playerId];
         const pos = p?.position || (c as any).position;
         if (!pos) continue;
+        // Rookie deals do not set the tag price.
+        if ((c as any).isRookieContract === 1) continue;
         const raw = typeof (c as any).salaries === "string" ? JSON.parse((c as any).salaries || "{}") : (c as any).salaries || {};
         const currentSalary = raw[String(currentYear)];
         if (currentSalary == null || Number(currentSalary) <= 0) continue;
@@ -9706,6 +9913,8 @@ export async function registerRoutes(
   app.get("/api/leagues/:leagueId/dead-cap", async (req, res) => {
     try {
       const { leagueId } = req.params;
+      const { syncSleeperContractMoves } = await import("./deadCap");
+      await syncSleeperContractMoves(leagueId);
       const entries = await storage.getDeadCapEntriesByLeague(leagueId);
       res.json(entries);
     } catch (error) {
@@ -9858,137 +10067,6 @@ export async function registerRoutes(
     } catch (error) {
       console.error("Error deleting contract drafts:", error);
       res.status(500).json({ error: "Failed to delete contract drafts" });
-    }
-  });
-
-  // ==================== CONTRACT APPROVAL REQUESTS ====================
-  // Get all contract approval requests for a league (commissioner only)
-  app.get("/api/league/:leagueId/contract-approvals", async (req, res) => {
-    try {
-      const { leagueId } = req.params;
-      const requests = await storage.getContractApprovalRequests(leagueId);
-      res.json(requests);
-    } catch (error) {
-      console.error("Error fetching contract approval requests:", error);
-      res.status(500).json({ error: "Failed to fetch contract approval requests" });
-    }
-  });
-
-  // Check if team has pending approval request
-  app.get("/api/league/:leagueId/contract-approvals/pending/:rosterId", async (req, res) => {
-    try {
-      const { leagueId, rosterId } = req.params;
-      const request = await storage.getContractApprovalRequestByRoster(leagueId, parseInt(rosterId));
-      res.json({ hasPending: !!request, request });
-    } catch (error) {
-      console.error("Error checking pending approval:", error);
-      res.status(500).json({ error: "Failed to check pending approval" });
-    }
-  });
-
-  // Submit contracts for approval
-  app.post("/api/league/:leagueId/contract-approvals", async (req, res) => {
-    try {
-      const { leagueId } = req.params;
-      const { rosterId, teamName, ownerName, contracts } = req.body;
-      
-      if (!rosterId || !teamName || !contracts) {
-        return res.status(400).json({ error: "Missing required fields" });
-      }
-
-      // Check for existing pending request
-      const existing = await storage.getContractApprovalRequestByRoster(leagueId, rosterId);
-      if (existing) {
-        return res.status(400).json({ error: "You already have a pending approval request" });
-      }
-
-      const request = await storage.createContractApprovalRequest({
-        leagueId,
-        rosterId,
-        teamName,
-        ownerName,
-        contractsJson: JSON.stringify(contracts),
-      });
-
-      res.json(request);
-    } catch (error) {
-      console.error("Error submitting for approval:", error);
-      res.status(500).json({ error: "Failed to submit for approval", message: dbErrorMessage(error) });
-    }
-  });
-
-  // Approve or reject a contract approval request (commissioner only)
-  app.patch("/api/league/:leagueId/contract-approvals/:requestId", async (req, res) => {
-    try {
-      const { requestId } = req.params;
-      const { status, reviewerNotes } = req.body;
-      
-      if (!["approved", "rejected"].includes(status)) {
-        return res.status(400).json({ error: "Status must be 'approved' or 'rejected'" });
-      }
-
-      const request = await storage.updateContractApprovalRequest(requestId, status, reviewerNotes);
-      
-      if (!request) {
-        return res.status(404).json({ error: "Request not found" });
-      }
-
-      // If approved, update the official contracts in the permanent database
-      if (status === "approved") {
-        const league = await getLeague(request.leagueId).catch(() => null);
-        const leagueSeason = league?.season ? parseInt(league.season) : null;
-        const contracts = JSON.parse(request.contractsJson);
-        for (const contract of contracts) {
-          const salariesPayload = (() => {
-            if (contract.salaries) {
-              return typeof contract.salaries === "string" ? contract.salaries : JSON.stringify(contract.salaries);
-            }
-            const legacy: Record<string, number> = {};
-            if (contract.salary2025) legacy["2025"] = contract.salary2025;
-            if (contract.salary2026) legacy["2026"] = contract.salary2026;
-            if (contract.salary2027) legacy["2027"] = contract.salary2027;
-            if (contract.salary2028) legacy["2028"] = contract.salary2028;
-            if (contract.salary2029) legacy["2029"] = contract.salary2029;
-            return JSON.stringify(legacy);
-          })();
-          
-          let originalContractYears = 0;
-          try {
-            const salariesObj = JSON.parse(salariesPayload || "{}");
-            originalContractYears = Object.values(salariesObj).filter((v: any) => Number(v) > 0).length;
-          } catch {
-            originalContractYears = 0;
-          }
-          
-          await storage.upsertPlayerContract({
-            leagueId: request.leagueId,
-            rosterId: request.rosterId,
-            playerId: contract.playerId,
-            salaries: salariesPayload,
-            fifthYearOption: contract.fifthYearOption || null,
-            franchiseTagUsed: contract.franchiseTagApplied ? 1 : 0,
-            franchiseTagYear: contract.franchiseTagApplied ? (leagueSeason || new Date().getFullYear()) : null,
-            originalContractYears: originalContractYears || 1,
-          });
-        }
-      }
-
-      res.json(request);
-    } catch (error) {
-      console.error("Error updating approval request:", error);
-      res.status(500).json({ error: "Failed to update approval request", message: dbErrorMessage(error) });
-    }
-  });
-
-  // Delete a contract approval request
-  app.delete("/api/league/:leagueId/contract-approvals/:requestId", async (req, res) => {
-    try {
-      const { requestId } = req.params;
-      await storage.deleteContractApprovalRequest(requestId);
-      res.json({ success: true });
-    } catch (error) {
-      console.error("Error deleting approval request:", error);
-      res.status(500).json({ error: "Failed to delete approval request" });
     }
   });
 
@@ -10333,6 +10411,14 @@ export async function registerRoutes(
 
       // Reset bidding
       await storage.deleteAllPlayerBids(oldLeagueId);
+
+      // Contracts Hub: the new league year starts in the rollover phase, ready for free agency.
+      try {
+        const { startNewLeagueYear } = await import("./contractHubRoutes");
+        await startNewLeagueYear(oldLeagueId, newLeagueId);
+      } catch (hubErr) {
+        console.error("[Advance Year] Contracts Hub settings not carried over (non-fatal):", hubErr);
+      }
 
       // Archive rule suggestions for the old league (they stay in DB but no longer show on Rule Changes tab)
       await storage.archiveRuleSuggestions(oldLeagueId);
@@ -12233,6 +12319,10 @@ export async function registerRoutes(
 
   const { registerContractHubRoutes } = await import("./contractHubRoutes");
   registerContractHubRoutes(app);
+  const { registerPositionRadarRoutes } = await import("./positionRadar");
+  registerPositionRadarRoutes(app);
+  const { registerCommissionerEditRoutes } = await import("./commissionerEdits");
+  registerCommissionerEditRoutes(app, isCommissioner);
 
   return httpServer;
 }

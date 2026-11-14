@@ -1,23 +1,24 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 import { useLocation } from "wouter";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient } from "@/lib/queryClient";
 import { useSleeper } from "@/lib/sleeper-context";
 import { PlayerDetailSheet, type PlayerCardTarget } from "@/components/contracts/PlayerDetailSheet";
 import { TeamAllowancePanel } from "@/components/contracts-hub/TeamAllowances";
-import { PendingContractActionsPanel } from "@/components/contracts-hub/PendingContractActions";
+import { PendingContractActionsPanel, type DraftCapitalEstimate } from "@/components/contracts-hub/PendingContractActions";
 import { usePendingTags, pendingSalaryEffects, type PendingTag } from "@/components/contracts-hub/pendingContracts";
 import { useContractPhase, phaseAllowsTab } from "@/hooks/useContractPhase";
+import { CommissionerRosterTools } from "@/components/contracts-hub/CommissionerEdit";
 import { TestModeBar } from "@/components/contracts-hub/TestModeBar";
-import { SeasonCalendarTab } from "@/components/contracts-hub/SeasonCalendarTab";
-import { FreeAgencyBiddingTab } from "@/components/contracts-hub/FreeAgencyBiddingTab";
+import { SeasonCalendarBar } from "@/components/contracts-hub/SeasonCalendarTab";
+import { FreeAgencyBiddingTab, usePositionRanks } from "@/components/contracts-hub/FreeAgencyBiddingTab";
 import { RoundWinsTab } from "@/components/contracts-hub/RoundWinsTab";
-import { FreeAgencyRecapTab } from "@/components/contracts-hub/FreeAgencyRecapTab";
+import { FreeAgencyRecapTab, type DraftCapitalData } from "@/components/contracts-hub/FreeAgencyRecapTab";
 import { RfaMatchTab } from "@/components/contracts-hub/RfaMatchTab";
-import { TradesHubTab } from "@/components/contracts-hub/TradesHubTab";
 import { NotOpenYet } from "@/components/contracts-hub/NotOpenYet";
 import {
   ACTIVE_PHASES,
+  isOffseasonPhase,
   RFA_ENABLED,
   PHASE_LABELS,
   formatPhaseDate,
@@ -91,10 +92,8 @@ import {
   Filter,
   RefreshCw,
   BarChart2,
-  CalendarDays,
   Gavel,
   Handshake,
-  ArrowLeftRight,
   Trophy,
 } from "lucide-react";
 
@@ -209,18 +208,6 @@ interface TeamExtension {
   status: string;
 }
 
-interface ApprovalRequest {
-  id: string;
-  rosterId: number;
-  teamName: string;
-  ownerName: string;
-  contractsJson: string;
-  status: string;
-  submittedAt: number;
-  reviewedAt: number | null;
-  reviewerNotes: string | null;
-}
-
 interface TeamCapSummary {
   rosterId: number;
   teamName: string;
@@ -288,6 +275,7 @@ function StatCard({
   progress,
   progressMax,
   progressColor,
+  progressDead = 0,
 }: {
   label: string;
   value: string;
@@ -297,6 +285,8 @@ function StatCard({
   progress?: number;
   progressMax?: number;
   progressColor?: string;
+  /** Part of `progress` that is dead cap, drawn as a red segment. */
+  progressDead?: number;
 }) {
   return (
     <Card className={`${highlight ? "border-amber-500/50 bg-amber-500/5" : ""}`}>
@@ -308,14 +298,17 @@ function StatCard({
         <div className={`text-2xl font-bold font-heading ${highlight ? "text-amber-500" : ""}`}>{value}</div>
         {sub && <div className="text-xs text-muted-foreground mt-0.5">{sub}</div>}
         {progress !== undefined && progressMax !== undefined && (
-          <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
+          <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden flex">
             <div
-              className="h-full rounded-full transition-all"
+              className="h-full transition-all"
               style={{
-                width: `${Math.min(100, (progress / progressMax) * 100)}%`,
+                width: `${Math.min(100, (Math.max(0, progress - progressDead) / progressMax) * 100)}%`,
                 backgroundColor: progressColor || "hsl(var(--primary))",
               }}
             />
+            {progressDead > 0 && (
+              <div className="h-full bg-red-500" style={{ width: `${Math.min(100, (progressDead / progressMax) * 100)}%` }} />
+            )}
           </div>
         )}
       </CardContent>
@@ -424,7 +417,7 @@ function OverviewTab({
         const contract = teamContracts.find(c => c.playerId === p.id);
         const salary = contract?.parsedSalaries[currentYear] || 0;
         const pts = productiveMode === "ppg" ? p.weeklyAvg : p.seasonPoints;
-        return { ...p, salary, pts, dollarPerPt: salary > 0 && p.seasonPoints > 0 ? salary / p.seasonPoints : 0 };
+        return { ...p, salary, pts, dollarPerPt: salary > 0 && p.seasonPoints > 0 ? p.seasonPoints / salary : 0 };
       })
       .filter(p => {
         if (p.pts <= 0) return false;
@@ -444,12 +437,12 @@ function OverviewTab({
         ...c,
         player,
         isFranchiseTagEligible: c.hasBeenFranchiseTagged === 0,
-        isExtensionEligible: c.hasBeenExtended === 0,
+        isExtensionEligible: c.hasBeenExtended === 0 && c.contractThrough === currentYear,
       };
     });
   }, [expiringContracts, perfMap, playerMap]);
 
-  // Salary commitments chart. Contracts that are applied but not yet approved are stacked in blue.
+  // Salary commitments chart. Contracts that are applied but not yet submitted are stacked in blue.
   const commitmentYears = [currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
   const pendingEffects = useMemo(
     () =>
@@ -471,7 +464,13 @@ function OverviewTab({
       0,
       teamContracts.reduce((sum, c) => sum + (c.parsedSalaries[year] || 0), 0) - (pendingEffects.replaced[year] || 0),
     );
-    const dead = year === currentYear ? deadCapCurrentYear : 0;
+    const dead = teamDeadCap.reduce((sum, dc) => {
+      try {
+        return sum + (Number(JSON.parse(dc.deadCapSalaries || "{}")[String(year)]) || 0) / 10;
+      } catch {
+        return sum;
+      }
+    }, 0);
     return {
       year: String(year),
       committed: Math.round(committed * 10) / 10,
@@ -481,6 +480,7 @@ function OverviewTab({
     };
   });
   const hasPendingContracts = salaryCommitmentsData.some(d => d.pending > 0);
+  const hasDeadCap = salaryCommitmentsData.some(d => d.deadCap > 0);
 
   // Spend by position
   const positions = ["QB", "RB", "WR", "TE", "K", "DEF"];
@@ -558,7 +558,8 @@ function OverviewTab({
           icon={DollarSign}
           progress={capUsed}
           progressMax={TOTAL_CAP}
-          progressColor={capUsed / TOTAL_CAP > 0.9 ? "#ef4444" : capUsed / TOTAL_CAP > 0.75 ? "#f59e0b" : "#22c55e"}
+          progressDead={deadCapCurrentYear}
+          progressColor={capUsed / TOTAL_CAP > 0.9 ? "#ea580c" : capUsed / TOTAL_CAP > 0.75 ? "#f59e0b" : "#22c55e"}
         />
         <StatCard
           label="Cap Space"
@@ -687,7 +688,7 @@ function OverviewTab({
                   <TableHead className="w-10">Pos</TableHead>
                   <TableHead className="text-right w-14">GP</TableHead>
                   <TableHead className="text-right w-20">{productiveMode === "ppg" ? "PPG" : "Pts"}</TableHead>
-                  <TableHead className="text-right w-16">$/pt</TableHead>
+                  <TableHead className="text-right w-16">Pt/$</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -716,7 +717,7 @@ function OverviewTab({
                     <TableCell className="text-right text-muted-foreground text-xs">{row.gamesStarted}</TableCell>
                     <TableCell className="text-right font-semibold">{row.pts.toFixed(1)}</TableCell>
                     <TableCell className="text-right text-muted-foreground text-xs">
-                      {row.dollarPerPt > 0 ? `$${row.dollarPerPt.toFixed(2)}` : "—"}
+                      {row.dollarPerPt > 0 ? row.dollarPerPt.toFixed(2) : "—"}
                     </TableCell>
                   </TableRow>
                   );
@@ -732,8 +733,8 @@ function OverviewTab({
             </Table>
             <p className="text-[10px] text-muted-foreground px-4 py-2 border-t">
               {productiveMode === "ppg"
-                ? `PPG requires ≥${ppgMinGames} games started (configurable). $/pt uses season total points.`
-                : `Season-to-date fantasy points (PPR). $/pt = ${currentYear} salary ÷ total points.`}
+                ? `PPG requires ≥${ppgMinGames} games started (configurable). Pt/$ uses season total points.`
+                : `Season-to-date fantasy points (PPR). Pt/$ = total points ÷ ${currentYear} salary ($M).`}
             </p>
           </CardContent>
         </Card>
@@ -839,7 +840,7 @@ function OverviewTab({
                 <Tooltip
                   formatter={(value: number, name: string) => [
                     `$${value.toFixed(1)}`,
-                    name === "committed" ? "Committed" : name === "pending" ? "Pending approval" : name === "deadCap" ? "Dead Cap" : "Cap Space",
+                    name === "committed" ? "Committed" : name === "pending" ? "Pending submission" : name === "deadCap" ? "Dead Cap" : "Cap Space",
                   ]}
                   contentStyle={{
                     backgroundColor: "hsl(var(--card))",
@@ -851,7 +852,7 @@ function OverviewTab({
                 <ReferenceLine y={TOTAL_CAP} stroke="#f59e0b" strokeDasharray="4 4" label={{ value: `Cap $${TOTAL_CAP}`, position: "right", fontSize: 10, fill: "#f59e0b" }} />
                 <Bar dataKey="committed" fill="#f59e0b" name="committed" stackId="a">
                   {salaryCommitmentsData.map((entry, i) => (
-                    <Cell key={i} fill={(entry.committed + entry.pending) / TOTAL_CAP > 0.9 ? "#ef4444" : "#f59e0b"} />
+                    <Cell key={i} fill={(entry.committed + entry.pending + entry.deadCap) / TOTAL_CAP > 0.9 ? "#ea580c" : "#f59e0b"} />
                   ))}
                 </Bar>
                 <Bar dataKey="pending" fill="#3b82f6" name="pending" stackId="a" />
@@ -866,15 +867,25 @@ function OverviewTab({
                 </div>
               ))}
             </div>
-            {hasPendingContracts && (
-              <div className="flex items-center justify-center gap-1.5 text-[10px] text-muted-foreground mt-2">
-                <span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-500" />
-                Applied, not yet approved
+            {(hasPendingContracts || hasDeadCap) && (
+              <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-[10px] text-muted-foreground mt-2">
+                {hasPendingContracts && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-2.5 h-2.5 rounded-sm bg-blue-500" />
+                    Applied, not yet submitted
+                  </span>
+                )}
+                {hasDeadCap && (
+                  <span className="flex items-center gap-1.5">
+                    <span className="inline-block w-2.5 h-2.5 rounded-sm bg-red-500" />
+                    Dead cap
+                  </span>
+                )}
               </div>
             )}
             <table className="sr-only">
               <caption>Salary commitments by season</caption>
-              <thead><tr><th>Year</th><th>Committed</th><th>Pending approval</th><th>Dead cap</th><th>Space</th></tr></thead>
+              <thead><tr><th>Year</th><th>Committed</th><th>Pending submission</th><th>Dead cap</th><th>Space</th></tr></thead>
               <tbody>
                 {salaryCommitmentsData.map(d => (
                   <tr key={d.year}><td>{d.year}</td><td>{d.committed}</td><td>{d.pending}</td><td>{d.deadCap}</td><td>{d.space}</td></tr>
@@ -937,6 +948,367 @@ function OverviewTab({
   );
 }
 
+// ─── Team contracts pop-up (League Cap) ───────────────────────────────────────
+
+/** A read-only look at one team's contracts, opened from the League Cap page. Anyone can open any team here. */
+function TeamContractsDialog({
+  rosterId,
+  allRosters,
+  parsedContracts,
+  deadCapEntries,
+  currentYear,
+  playerMap,
+  onClose,
+  onOpenPlayer,
+  onOpenOverview,
+}: {
+  rosterId: number | null;
+  allRosters: AllRosterEntry[];
+  parsedContracts: ParsedContract[];
+  deadCapEntries: DbDeadCapEntry[];
+  currentYear: number;
+  playerMap: Record<string, SleeperPlayer>;
+  onClose: () => void;
+  onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
+  /** Commissioner only: jump to this team's Team Overview. */
+  onOpenOverview?: (rosterId: number) => void;
+}) {
+  const roster = allRosters.find(r => r.rosterId === rosterId) ?? null;
+  const years = [currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
+
+  const { rows, dead, totals } = useMemo(() => {
+    if (rosterId == null) return { rows: [] as ParsedContract[], dead: [] as { name: string; pos: string; byYear: Record<number, number> }[], totals: {} as Record<number, number> };
+    const rows = parsedContracts
+      .filter(c => c.rosterId === rosterId && Object.entries(c.parsedSalaries).some(([y, v]) => Number(y) >= currentYear && v > 0))
+      .sort((a, b) => (b.parsedSalaries[currentYear] || 0) - (a.parsedSalaries[currentYear] || 0));
+    const dead = deadCapEntries
+      .filter(d => d.rosterId === rosterId)
+      .map(d => {
+        const byYear: Record<number, number> = {};
+        try {
+          for (const [y, v] of Object.entries(JSON.parse(d.deadCapSalaries || "{}"))) byYear[Number(y)] = (Number(v) || 0) / 10;
+        } catch { /* */ }
+        return { name: d.playerName, pos: d.playerPosition, byYear };
+      })
+      .filter(d => years.some(y => (d.byYear[y] || 0) > 0));
+    const totals: Record<number, number> = {};
+    for (const y of years) {
+      totals[y] = rows.reduce((s, c) => s + (c.parsedSalaries[y] || 0), 0) + dead.reduce((s, d) => s + (d.byYear[y] || 0), 0);
+    }
+    return { rows, dead, totals };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rosterId, parsedContracts, deadCapEntries, currentYear]);
+
+  const cell = (v: number | undefined) =>
+    v && v > 0 ? <span className="font-medium">{formatMoney(v)}</span> : <span className="text-muted-foreground">—</span>;
+
+  return (
+    <Dialog open={rosterId != null} onOpenChange={open => { if (!open) onClose(); }}>
+      <DialogContent className="max-w-2xl max-h-[85vh] flex flex-col gap-3 p-0 overflow-hidden">
+        <DialogHeader className="px-5 pt-5 pb-0">
+          <div className="flex items-center gap-3">
+            <Avatar className="w-10 h-10">
+              {roster?.teamAvatar && <AvatarImage src={roster.teamAvatar} className="object-cover" />}
+              <AvatarFallback className="text-xs">{roster?.teamInitials ?? "?"}</AvatarFallback>
+            </Avatar>
+            <div className="min-w-0 flex-1">
+              <DialogTitle className="truncate">{roster?.teamName ?? "Team"}</DialogTitle>
+              <p className="text-xs text-muted-foreground">Contracts · {rows.length} players</p>
+            </div>
+            {onOpenOverview && rosterId != null && (
+              <Button variant="outline" size="sm" className="mr-6" onClick={() => { onClose(); onOpenOverview(rosterId); }}>
+                Open team overview
+              </Button>
+            )}
+          </div>
+        </DialogHeader>
+
+        <div className="grid grid-cols-4 gap-2 px-5">
+          {years.map(y => (
+            <div key={y} className="rounded-lg border border-border/60 p-2 text-center">
+              <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{y}{y === currentYear ? " (now)" : ""}</div>
+              <div className="text-sm font-semibold tabular-nums">{formatMoney(totals[y] || 0)}</div>
+              <div className="text-[10px] text-muted-foreground">{formatMoney(Math.max(TOTAL_CAP - (totals[y] || 0), 0))} space</div>
+            </div>
+          ))}
+        </div>
+
+        <div className="overflow-y-auto px-2 pb-4">
+          <Table>
+            <TableHeader>
+              <TableRow className="text-xs">
+                <TableHead>Player</TableHead>
+                <TableHead className="w-10">Pos</TableHead>
+                {years.map(y => <TableHead key={y} className="text-right w-16">{y}</TableHead>)}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map(c => {
+                const p = playerMap[c.playerId];
+                const name = p?.name ?? roster?.players.find(rp => rp.id === c.playerId)?.name ?? `Player ${c.playerId.slice(0, 6)}`;
+                return (
+                  <TableRow
+                    key={c.playerId}
+                    className="text-sm cursor-pointer hover:bg-muted/60"
+                    onClick={() => { onClose(); onOpenPlayer(c.playerId, c.rosterId, c); }}
+                  >
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <Avatar className="w-6 h-6">
+                          <AvatarImage src={`https://sleepercdn.com/content/nfl/players/${c.playerId}.jpg`} className="object-cover" />
+                          <AvatarFallback className="text-[9px]">{getInitials(name)}</AvatarFallback>
+                        </Avatar>
+                        <span className="truncate max-w-[150px] font-medium">{name}</span>
+                        {c.isRookieContract === 1 && <Badge variant="outline" className="text-[9px] px-1 py-0">Rookie</Badge>}
+                        {c.hasBeenFranchiseTagged === 1 && <Badge variant="outline" className="text-[9px] px-1 py-0">Tagged</Badge>}
+                        {c.hasBeenExtended === 1 && <Badge variant="outline" className="text-[9px] px-1 py-0">Ext</Badge>}
+                      </div>
+                    </TableCell>
+                    <TableCell><PosBadge pos={p?.position || "?"} /></TableCell>
+                    {years.map(y => <TableCell key={y} className="text-right text-xs tabular-nums">{cell(c.parsedSalaries[y])}</TableCell>)}
+                  </TableRow>
+                );
+              })}
+              {dead.map((d, i) => (
+                <TableRow key={`dead-${i}`} className="text-sm bg-red-500/5">
+                  <TableCell>
+                    <span className="font-medium text-red-600">{d.name}</span>
+                    <span className="ml-2 text-[10px] uppercase tracking-wide text-red-600/80">Dead cap</span>
+                  </TableCell>
+                  <TableCell><PosBadge pos={d.pos || "?"} /></TableCell>
+                  {years.map(y => <TableCell key={y} className="text-right text-xs tabular-nums text-red-600">{d.byYear[y] ? formatMoney(d.byYear[y]) : "—"}</TableCell>)}
+                </TableRow>
+              ))}
+              {rows.length === 0 && dead.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center text-sm text-muted-foreground py-6">No contracts</TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ─── Expiring Contracts Tab ───────────────────────────────────────────────────
+
+/** Every player in the last year of his contract, across the league. Opens the player card on click. */
+function ExpiringContractsTab({
+  allRosters,
+  parsedContracts,
+  playerMap,
+  currentYear,
+  myRosterId,
+  leagueId,
+  onOpenPlayer,
+}: {
+  allRosters: AllRosterEntry[];
+  parsedContracts: ParsedContract[];
+  playerMap: Record<string, SleeperPlayer>;
+  currentYear: number;
+  myRosterId: number | null;
+  leagueId: string;
+  onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
+}) {
+  const [pos, setPos] = useState("ALL");
+  const [team, setTeam] = useState("ALL");
+  const [search, setSearch] = useState("");
+  const [sortBy, setSortBy] = useState<"salary" | "rank">("salary");
+
+  // Same position rank as the Free Agency tab: fantasy points over the last two seasons among every NFL player at the position.
+  const { production, ranks: posRanks } = usePositionRanks(leagueId, playerMap);
+  // Same colors as the Free Agency tab: top 12 green, 13 to 24 normal, the rest muted.
+  const rankTone = (r: number) => (r <= 12 ? "text-emerald-400" : r <= 24 ? "" : "text-muted-foreground");
+  const rankOf = (id: string) => posRanks.combined.get(id) ?? null;
+
+  const rows = useMemo(() => {
+    const teamOf = new Map(allRosters.map(r => [r.rosterId, r]));
+    return parsedContracts
+      .filter(c => c.contractThrough === currentYear && (c.parsedSalaries[currentYear] || 0) > 0)
+      .map(c => {
+        const p = playerMap[c.playerId];
+        const t = teamOf.get(c.rosterId);
+        const fromRoster = t?.players.find(rp => rp.id === c.playerId);
+        return {
+          contract: c,
+          playerId: c.playerId,
+          name: p?.name ?? fromRoster?.name ?? (/^\d+$/.test(c.playerId) ? `Player ${c.playerId}` : c.playerId),
+          position: p?.position ?? fromRoster?.position ?? "?",
+          nflTeam: p?.team ?? null,
+          yearsExp: p?.yearsExp ?? fromRoster?.yearsExp ?? null,
+          salary: c.parsedSalaries[currentYear] || 0,
+          rosterId: c.rosterId,
+          teamName: t?.teamName ?? `Team ${c.rosterId}`,
+          teamAvatar: t?.teamAvatar ?? null,
+          teamInitials: t?.teamInitials ?? "?",
+        };
+      })
+      .sort((a, b) => b.salary - a.salary);
+  }, [allRosters, parsedContracts, playerMap, currentYear]);
+
+  const shown = rows
+    .filter(
+      r =>
+        (pos === "ALL" || r.position === pos) &&
+        (team === "ALL" || String(r.rosterId) === team) &&
+        (!search.trim() || r.name.toLowerCase().includes(search.trim().toLowerCase())),
+    )
+    .sort((a, b) => {
+      if (sortBy === "rank") {
+        // Players without a rank (no games yet) go last.
+        const ra = rankOf(a.playerId) ?? Infinity;
+        const rb = rankOf(b.playerId) ?? Infinity;
+        if (ra !== rb) return ra - rb;
+      }
+      return b.salary - a.salary;
+    });
+  const total = shown.reduce((s, r) => s + r.salary, 0);
+  const counts = shown.reduce<Record<string, number>>((m, r) => ((m[r.position] = (m[r.position] || 0) + 1), m), {});
+  const positions = ["ALL", "QB", "RB", "WR", "TE", "K", "DEF"];
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-6 text-center">
+            <div className="text-3xl font-bold text-orange-500">{shown.length}</div>
+            <p className="text-sm text-muted-foreground">Expiring contracts</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6 text-center">
+            <div className="text-3xl font-bold">{formatMoney(total)}</div>
+            <p className="text-sm text-muted-foreground">{currentYear} salary coming off</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6 text-center">
+            <div className="flex justify-center gap-1.5 flex-wrap min-h-[32px]">
+              {Object.entries(counts).map(([p, n]) => (
+                <span key={p} className={`inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-semibold ${positionColors[p] || "bg-muted"}`}>{p} {n}</span>
+              ))}
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">By position</p>
+          </CardContent>
+        </Card>
+      </div>
+
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <CardTitle className="text-sm font-heading uppercase tracking-wide flex items-center gap-2 mr-auto">
+              <AlertTriangle className="w-4 h-4 text-orange-500" />
+              Final contract year
+            </CardTitle>
+            <div className="flex gap-1 rounded-lg border border-border p-0.5">
+              {positions.map(p => (
+                <button
+                  key={p}
+                  type="button"
+                  aria-pressed={pos === p}
+                  onClick={() => setPos(p)}
+                  className={`px-2 py-1 rounded-md text-[11px] font-semibold transition-colors ${pos === p ? "bg-foreground text-background" : "text-muted-foreground hover:text-foreground"}`}
+                >
+                  {p === "ALL" ? "All" : p}
+                </button>
+              ))}
+            </div>
+            <Select value={sortBy} onValueChange={v => setSortBy(v as "salary" | "rank")}>
+              <SelectTrigger className="h-8 w-[150px] text-xs"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="salary">Sort: salary</SelectItem>
+                <SelectItem value="rank">Sort: position rank</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={team} onValueChange={setTeam}>
+              <SelectTrigger className="h-8 w-[170px] text-xs"><SelectValue placeholder="All teams" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="ALL">All teams</SelectItem>
+                {allRosters.map(r => <SelectItem key={r.rosterId} value={String(r.rosterId)}>{r.teamName}{r.rosterId === myRosterId ? " (you)" : ""}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="Search players" className="h-8 w-[160px] pl-7 text-xs" />
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <Table>
+            <TableHeader>
+              <TableRow className="text-xs">
+                <TableHead>Player</TableHead>
+                <TableHead className="w-12 text-center">Pos</TableHead>
+                <TableHead className="w-12 text-center">NFL</TableHead>
+                <TableHead className="w-10 text-center">Exp</TableHead>
+                <TableHead className="w-24 text-center">Pos rank (2 yr)</TableHead>
+                <TableHead className="w-24 text-right">{currentYear} salary</TableHead>
+                <TableHead>Team</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {shown.map(r => (
+                <TableRow
+                  key={`${r.rosterId}-${r.playerId}`}
+                  className="text-sm cursor-pointer hover:bg-muted/60 transition-colors"
+                  onClick={() => onOpenPlayer(r.playerId, r.rosterId, r.contract)}
+                  data-testid={`row-expiring-${r.playerId}`}
+                >
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <Avatar className="w-7 h-7">
+                        <AvatarImage src={`https://sleepercdn.com/content/nfl/players/${r.playerId}.jpg`} className="object-cover" />
+                        <AvatarFallback className="text-[9px]">{getInitials(r.name)}</AvatarFallback>
+                      </Avatar>
+                      <span className="font-medium truncate max-w-[180px]">{r.name}</span>
+                      {r.contract.isRookieContract === 1 && <Badge variant="outline" className="text-[9px] px-1 py-0">Rookie</Badge>}
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-center"><PosBadge pos={r.position} /></TableCell>
+                  <TableCell className="text-center text-xs">{r.nflTeam || "FA"}</TableCell>
+                  <TableCell className="text-center text-xs tabular-nums">{r.yearsExp == null ? "—" : r.yearsExp === 0 ? "R" : r.yearsExp}</TableCell>
+                  <TableCell className="text-center text-xs tabular-nums">
+                    {rankOf(r.playerId) != null ? (
+                      <span
+                        title={`${production?.players[r.playerId]?.current ?? 0} pts this season · ${production?.players[r.playerId]?.previous ?? 0} pts last season`}
+                        className={`font-bold ${rankTone(rankOf(r.playerId)!)}`}
+                      >
+                        {r.position}{rankOf(r.playerId)}
+                      </span>
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right font-semibold tabular-nums">{formatMoney(r.salary)}</TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <Avatar className="w-5 h-5">
+                        {r.teamAvatar && <AvatarImage src={r.teamAvatar} />}
+                        <AvatarFallback className="text-[8px]">{r.teamInitials}</AvatarFallback>
+                      </Avatar>
+                      <span className={r.rosterId === myRosterId ? "font-semibold" : ""}>{r.teamName}</span>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+              {shown.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={7} className="text-center text-muted-foreground py-8 text-sm">No expiring contracts match</TableCell>
+                </TableRow>
+              )}
+            </TableBody>
+          </Table>
+          <p className="px-4 py-3 text-xs text-muted-foreground border-t border-border/60">
+            Players whose contract ends after {currentYear}. Position rank is fantasy points over the last two seasons among all players at the position, the same as on the Free Agency tab; hover for the points. Tap a player to see his card; you can tag or extend your own players from there while the window is open.
+          </p>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
 // ─── League Cap Tab ───────────────────────────────────────────────────────────
 
 function LeagueCapTab({
@@ -951,8 +1323,9 @@ function LeagueCapTab({
   parsedContracts: ParsedContract[];
   deadCapEntries: DbDeadCapEntry[];
   currentYear: number;
-  onSelectTeam: (rosterId: number) => void;
-  /** When set, only this team is shown (used during Tag & Extension). */
+  /** Called when a team row is clicked (the hub opens that team's contracts pop-up). */
+  onSelectTeam?: (rosterId: number) => void;
+  /** When set, only this team is shown. The League Cap page leaves this unset so every team shows. */
   ownRosterId?: number | null;
 }) {
   const [sortKey, setSortKey] = useState<"capUsed" | "available" | "expiring" | "future">("capUsed");
@@ -1064,8 +1437,8 @@ function LeagueCapTab({
               {sorted.map(team => (
                 <TableRow
                   key={team.rosterId}
-                  className="cursor-pointer hover:bg-muted/50 text-sm"
-                  onClick={() => onSelectTeam(team.rosterId)}
+                  className={`text-sm ${onSelectTeam ? "cursor-pointer hover:bg-muted/50" : ""}`}
+                  onClick={onSelectTeam ? () => onSelectTeam(team.rosterId) : undefined}
                 >
                   <TableCell className="pl-4">
                     <div className="flex items-center gap-2">
@@ -1079,14 +1452,17 @@ function LeagueCapTab({
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <span className="font-semibold">{formatMoney(team.capUsed)}</span>
-                      <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden">
+                      <div className="w-16 h-1.5 bg-muted rounded-full overflow-hidden flex">
                         <div
-                          className="h-full rounded-full"
+                          className="h-full"
                           style={{
-                            width: `${Math.min(100, (team.capUsed / TOTAL_CAP) * 100)}%`,
-                            backgroundColor: team.capUsed / TOTAL_CAP > 0.9 ? "#ef4444" : team.capUsed / TOTAL_CAP > 0.75 ? "#f59e0b" : "#22c55e",
+                            width: `${Math.min(100, ((team.capUsed - team.deadCapTotal) / TOTAL_CAP) * 100)}%`,
+                            backgroundColor: team.capUsed / TOTAL_CAP > 0.9 ? "#ea580c" : team.capUsed / TOTAL_CAP > 0.75 ? "#f59e0b" : "#22c55e",
                           }}
                         />
+                        {team.deadCapTotal > 0 && (
+                          <div className="h-full bg-red-500" style={{ width: `${Math.min(100, (team.deadCapTotal / TOTAL_CAP) * 100)}%` }} />
+                        )}
                       </div>
                     </div>
                   </TableCell>
@@ -1186,7 +1562,7 @@ function FreeAgencyTab({
           seasonPoints: perf?.seasonPoints || 0,
           weeklyAvg: perf?.weeklyAvg || 0,
           isFranchiseTagEligible: c.hasBeenFranchiseTagged === 0,
-          isExtensionEligible: c.hasBeenExtended === 0,
+          isExtensionEligible: c.hasBeenExtended === 0 && c.contractThrough === currentYear,
         };
       })
       .filter(p => {
@@ -1290,7 +1666,7 @@ function FreeAgencyTab({
                       {extPending && (
                         <Badge
                           variant="outline"
-                          title="Not saved yet. Approve it in Contract Actions."
+                          title="Not submitted yet. Submit it in Contract Actions."
                           className="text-[9px] px-1 py-0 border-amber-500/50 text-amber-600"
                         >
                           Extension Applied
@@ -1299,7 +1675,7 @@ function FreeAgencyTab({
                       {tagPending && (
                         <Badge
                           variant="outline"
-                          title="Not saved yet. Approve it in Contract Actions."
+                          title="Not submitted yet. Submit it in Contract Actions."
                           className="text-[9px] px-1 py-0 border-rose-500/50 text-rose-600"
                         >
                           Tag Applied
@@ -1501,7 +1877,9 @@ function RosterManagementTab({
   leagueId,
   userId,
   onOpenPlayer,
+  windowOpen,
 }: {
+  windowOpen: boolean;
   selectedRosterId: number | null;
   setSelectedRosterId: (id: number) => void;
   allRosters: AllRosterEntry[];
@@ -1776,8 +2154,8 @@ function RosterManagementTab({
                   const c = row.contract;
                   const hasTag = c?.franchiseTagUsed === 1;
                   const hasExt = c?.extensionApplied === 1;
-                  const canTag = c && c.hasBeenFranchiseTagged === 0 && !hasTag;
-                  const canExtend = c && c.hasBeenExtended === 0 && !hasExt;
+                  const canTag = windowOpen && c && c.hasBeenFranchiseTagged === 0 && !hasTag && c.contractThrough === currentYear;
+                  const canExtend = windowOpen && c && c.contractThrough === currentYear && c.hasBeenExtended === 0 && !hasExt;
                   return (
                     <TableRow
                       key={row.playerId}
@@ -1892,157 +2270,48 @@ function RosterManagementTab({
   );
 }
 
-// ─── Approvals Tab ────────────────────────────────────────────────────────────
+// ─── Rookie contract sync (commissioner) ──────────────────────────────────────
 
-function ApprovalsTab({
-  approvals,
-  leagueId,
-  userId,
-}: {
-  approvals: ApprovalRequest[];
-  leagueId: string;
-  userId: string;
-}) {
+function SyncRookieContractsCard({ leagueId, userId }: { leagueId: string; userId: string }) {
   const { toast } = useToast();
-  const [reviewingId, setReviewingId] = useState<string | null>(null);
-  const [notes, setNotes] = useState("");
-
-  const approveMutation = useMutation({
-    mutationFn: async ({ id, status }: { id: string; status: "approved" | "rejected" }) => {
-      const res = await fetch(`/api/league/${leagueId}/contract-approvals/${id}`, {
-        method: "PATCH",
+  const sync = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/league/${leagueId}/rookie-contracts/sync`, {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, reviewerNotes: notes || undefined }),
+        body: JSON.stringify({ userId }),
       });
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.error || "Failed to update approval");
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not sync rookie contracts");
+      return body as { season: number; created: string[]; flagged: string[]; skipped: { name: string; reason: string }[]; draftFound: boolean };
+    },
+    onSuccess: r => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contracts"] });
+      if (!r.draftFound) {
+        toast({ title: "No completed rookie draft found", description: `Nothing to sync for ${r.season}.`, variant: "destructive" });
+        return;
       }
-      return res.json();
+      const skipped = r.skipped.length ? ` ${r.skipped.length} skipped: ${r.skipped.slice(0, 4).map(x => `${x.name} (${x.reason})`).join(", ")}${r.skipped.length > 4 ? "…" : ""}.` : "";
+      toast({
+        title: "Rookie contracts synced",
+        description: `${r.created.length} created, ${r.flagged.length} marked as rookie deals.${skipped}`,
+      });
     },
-    onSuccess: (_, { status }) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "contract-approvals"] });
-      setReviewingId(null);
-      setNotes("");
-      toast({ title: `Request ${status === "approved" ? "Approved" : "Rejected"}` });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Action Failed", description: err.message, variant: "destructive" });
-    },
+    onError: (e: Error) => toast({ title: "Sync failed", description: e.message, variant: "destructive" }),
   });
-
-  const pending = approvals.filter(a => a.status === "pending");
-  const resolved = approvals.filter(a => a.status !== "pending");
-
   return (
-    <div className="space-y-5">
-      {pending.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-          <CheckCircle className="w-10 h-10 mb-3 text-emerald-500" />
-          <p className="font-medium">No pending approvals</p>
-          <p className="text-sm">All contract approval requests have been reviewed.</p>
-        </div>
-      )}
-
-      {pending.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-            Pending ({pending.length})
-          </h3>
-          <div className="space-y-3">
-            {pending.map(req => {
-              let contractCount = 0;
-              try {
-                const parsed = JSON.parse(req.contractsJson || "[]");
-                contractCount = Array.isArray(parsed) ? parsed.length : 0;
-              } catch { /* noop */ }
-              return (
-                <Card key={req.id} className="border-amber-500/30">
-                  <CardContent className="pt-4">
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <p className="font-semibold">{req.teamName}</p>
-                        <p className="text-xs text-muted-foreground">{req.ownerName}</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          {contractCount} contract{contractCount !== 1 ? "s" : ""} ·{" "}
-                          Submitted {new Date(req.submittedAt).toLocaleDateString()}
-                        </p>
-                      </div>
-                      {reviewingId === req.id ? (
-                        <div className="flex flex-col gap-2 items-end min-w-[200px]">
-                          <Input
-                            placeholder="Notes (optional)"
-                            className="h-8 text-xs"
-                            value={notes}
-                            onChange={e => setNotes(e.target.value)}
-                          />
-                          <div className="flex gap-2">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              className="h-7 text-xs"
-                              onClick={() => { setReviewingId(null); setNotes(""); }}
-                            >
-                              Cancel
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="h-7 text-xs border-red-500/50 text-red-500 hover:bg-red-500/10"
-                              onClick={() => approveMutation.mutate({ id: req.id, status: "rejected" })}
-                              disabled={approveMutation.isPending}
-                            >
-                              <XCircle className="w-3 h-3 mr-1" /> Reject
-                            </Button>
-                            <Button
-                              size="sm"
-                              className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700"
-                              onClick={() => approveMutation.mutate({ id: req.id, status: "approved" })}
-                              disabled={approveMutation.isPending}
-                            >
-                              <CheckCircle className="w-3 h-3 mr-1" /> Approve
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => { setReviewingId(req.id); setNotes(""); }}>
-                          Review
-                        </Button>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })}
-          </div>
-        </div>
-      )}
-
-      {resolved.length > 0 && (
-        <div>
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground mb-3">
-            Recently Reviewed ({resolved.length})
-          </h3>
-          <div className="space-y-2">
-            {resolved.slice(0, 10).map(req => (
-              <div key={req.id} className="flex items-center justify-between rounded-lg border border-border px-3 py-2 text-sm">
-                <div>
-                  <span className="font-medium">{req.teamName}</span>
-                  <span className="text-muted-foreground text-xs ml-2">
-                    {req.reviewedAt ? new Date(req.reviewedAt).toLocaleDateString() : ""}
-                  </span>
-                </div>
-                {req.status === "approved" ? (
-                  <Badge className="bg-emerald-500/20 text-emerald-600 border-emerald-500/30 border text-xs">Approved</Badge>
-                ) : (
-                  <Badge variant="outline" className="border-red-500/50 text-red-500 text-xs">Rejected</Badge>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-    </div>
+    <Card className="mb-4">
+      <CardContent className="pt-4 flex items-center justify-between gap-3 flex-wrap">
+        <p className="text-sm text-muted-foreground max-w-xl">
+          Gives everyone drafted this season a 3-year rookie contract at the pay scale, and marks existing pay-scale deals as rookie
+          contracts. Runs automatically at the start of a league year. Safe to run again.
+        </p>
+        <Button size="sm" variant="outline" disabled={sync.isPending} onClick={() => sync.mutate()}>
+          {sync.isPending ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}
+          Sync rookie contracts
+        </Button>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -2050,16 +2319,8 @@ function ApprovalsTab({
 
 const PHASE_ACTION_COPY: Record<LeaguePhaseId, { title: string; detail: string }> = {
   league_year_rollover: {
-    title: "Review your expiring contracts",
-    detail: RFA_ENABLED
-      ? "Contracts have rolled over. Tags, extensions and your RFA designation open in the Tag & Extension phase."
-      : "Contracts have rolled over. Tags and extensions open in the Tag & Extension phase.",
-  },
-  tag_extension: {
-    title: "Decide on your expiring contracts",
-    detail: RFA_ENABLED
-      ? "Tag or extend players, and designate up to 1 RFA from players finishing rookie deals. This is the last window before free agency."
-      : "Tag or extend players. This is the last window before free agency.",
+    title: "New league year",
+    detail: "Contracts that ended last season are off the books and those players are free agents. Free agency bidding opens next.",
   },
   fa_round_1: {
     title: "Place your Round 1 bids",
@@ -2067,7 +2328,7 @@ const PHASE_ACTION_COPY: Record<LeaguePhaseId, { title: string; detail: string }
   },
   round_1_results: {
     title: "Review your Round 1 wins",
-    detail: "If your wins put you over the cap in any season, reject the ones you choose until every season fits.",
+    detail: "If your wins put you over the cap in any season, reject the ones you choose until every season fits. Confirming signs the players you keep. Every team must confirm before Round 2 opens.",
   },
   rfa_match_1: {
     title: "Match or release your RFA",
@@ -2075,23 +2336,27 @@ const PHASE_ACTION_COPY: Record<LeaguePhaseId, { title: string; detail: string }
   },
   fa_round_2: {
     title: "Place your Round 2 bids",
-    detail: "Bid on any player still unsigned. Same rules as Round 1.",
+    detail: "Bid on any player still unsigned. Same rules as Round 1, and your Round 1 signings now count against your cap.",
   },
   round_2_results: {
     title: "Review your Round 2 wins",
-    detail: "Same rules as Round 1. Players still unsigned become in-season free agents.",
+    detail: "Same rules as Round 1. Confirming signs the players you keep. Players still unsigned become in-season free agents.",
   },
   rfa_match_2: {
     title: "Match or release your RFA",
     detail: "Match the exact years and salary, or let him walk. Your own RFA offers count against your cap until the window closes.",
   },
   fa_recap: {
-    title: "Free agency recap",
-    detail: "Every player signed in free agency. Nothing to decide here. Players still unsigned become in-season free agents.",
+    title: "Free agency recap and rookie draft",
+    detail: "Every player signed in free agency. The rookie draft is next; drafted players get rookie contracts once it is complete.",
   },
   regular_season: {
-    title: "No offseason actions open",
-    detail: "Trades are in the Trades tab. Here's who is expiring after this season.",
+    title: "Tag and extension window is open",
+    detail: "Tag or extend players whose contracts end this season. Trades are open in the Trade Center. The window closes automatically after Week 14.",
+  },
+  deadline_passed: {
+    title: "The deadline has passed",
+    detail: "Tags, extensions and trades are closed until next season. After the championship the commissioner rolls the league over to the next league year.",
   },
 };
 
@@ -2150,10 +2415,6 @@ export default function ContractsHub() {
       COMMISSIONER_USER_IDS.includes(user.userId))
   );
 
-  useEffect(() => {
-    if (user && league && !isCommissioner) setLocation("/");
-  }, [user, league, isCommissioner, setLocation]);
-
   const [activeTab, setActiveTab] = useState("overview");
   const [selectedRosterId, setSelectedRosterId] = useState<number | null>(null);
   const [playerTarget, setPlayerTarget] = useState<PlayerCardTarget | null>(null);
@@ -2161,22 +2422,22 @@ export default function ContractsHub() {
   // Data fetching
   const { data: allRosters = [], isLoading: rostersLoading } = useQuery<AllRosterEntry[]>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "all-rosters"],
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId,
   });
 
   const { data: rawRosters = [] } = useQuery<any[]>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "rosters"],
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId,
   });
 
   const { data: dbContracts = [] } = useQuery<DbPlayerContract[]>({
     queryKey: ["/api/league", league?.leagueId, "contracts"],
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId,
   });
 
   const { data: deadCapEntries = [] } = useQuery<DbDeadCapEntry[]>({
     queryKey: ["/api/leagues", league?.leagueId, "dead-cap"],
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId,
   });
 
   const { data: extensions = [] } = useQuery<TeamExtension[]>({
@@ -2186,7 +2447,7 @@ export default function ContractsHub() {
       if (!res.ok) throw new Error("Failed");
       return res.json();
     },
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId,
   });
 
   const pendingExtensionKeys = useMemo(
@@ -2195,14 +2456,9 @@ export default function ContractsHub() {
   );
   const pendingTagKeys = useMemo(() => new Set(pendingTags.map(t => `${t.rosterId}-${t.playerId}`)), [pendingTags]);
 
-  const { data: approvals = [] } = useQuery<ApprovalRequest[]>({
-    queryKey: ["/api/league", league?.leagueId, "contract-approvals"],
-    enabled: !!league?.leagueId && isCommissioner,
-  });
-
   const { data: playersArray = [] } = useQuery<SleeperPlayer[]>({
     queryKey: ["/api/sleeper/players"],
-    enabled: !!league?.leagueId && isCommissioner,
+    enabled: !!league?.leagueId,
   });
 
   const playerMap = useMemo(() => {
@@ -2215,21 +2471,60 @@ export default function ContractsHub() {
 
   const positionOf = useCallback((id: string) => (playerMap[id] as any)?.position as string | undefined, [playerMap]);
 
-  const parsedContracts: ParsedContract[] = useMemo(() => {
-    return dbContracts.map(c => {
+  // A contract counts for a team when the player is on that team's Sleeper roster, the same as the Contracts page.
+  // During the offseason a contract for a player on no roster also counts: that is a free agent just signed in a bid
+  // round, before the commissioner moves him in Sleeper. Anything else filed under a team is "orphaned" and left out.
+  const { data: phaseForCap } = useContractPhase(league?.leagueId);
+  const offseasonForCap = phaseForCap ? isOffseasonPhase(phaseForCap.current) : false;
+  const { parsedContracts, orphanedContracts } = useMemo(() => {
+    const all: ParsedContract[] = dbContracts.map(c => {
       const parsedSalaries = parseSalaries(c.salaries);
       const contractThrough = getContractThrough(parsedSalaries);
       return { ...c, parsedSalaries, contractThrough };
     });
-  }, [dbContracts]);
-
-  // Auto-select first team
-  useEffect(() => {
-    if (allRosters.length > 0 && selectedRosterId === null) {
-      setSelectedRosterId(allRosters[0].rosterId);
+    if (rawRosters.length === 0) return { parsedContracts: all, orphanedContracts: [] as ParsedContract[] };
+    const onRoster = new Map<number, Set<string>>();
+    const onAnyRoster = new Map<string, number>();
+    for (const r of rawRosters) {
+      const ids: string[] = (r.players || []).map((id: unknown) => String(id));
+      onRoster.set(r.roster_id, new Set(ids));
+      ids.forEach(id => onAnyRoster.set(id, r.roster_id));
     }
-  }, [allRosters, selectedRosterId]);
+    const counted: ParsedContract[] = [];
+    const orphaned: ParsedContract[] = [];
+    for (const c of all) {
+      const unrostered = !onAnyRoster.has(c.playerId);
+      // Expired contracts of unrostered players stay visible: they make up the free agent pool.
+      const expired = (c.contractThrough ?? 0) < currentYear;
+      if (onRoster.get(c.rosterId)?.has(c.playerId) || (unrostered && (offseasonForCap || expired))) counted.push(c);
+      else if ((c.parsedSalaries[currentYear] || 0) > 0 || Object.entries(c.parsedSalaries).some(([y, v]) => Number(y) > currentYear && v > 0)) orphaned.push(c);
+    }
+    return { parsedContracts: counted, orphanedContracts: orphaned };
+  }, [dbContracts, rawRosters, offseasonForCap, currentYear]);
 
+  // The hub shows the team selected for the whole site. Only the commissioner can switch to look at (and act for)
+  // other teams; every other owner stays on their own team.
+  const myRosterId = allRosters.find(r => user?.userId && r.ownerId === user.userId)?.rosterId ?? null;
+  const canActOnSelected = isCommissioner || (selectedRosterId != null && selectedRosterId === myRosterId);
+
+  // Start on the team selected for the whole app (account menu → Select Your Team), and follow it when it changes.
+  // The View team picker can still be used to look at other teams in the meantime.
+  const lastAppTeamRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (allRosters.length === 0) return;
+    if (myRosterId != null && myRosterId !== lastAppTeamRef.current) {
+      lastAppTeamRef.current = myRosterId;
+      setSelectedRosterId(myRosterId);
+      return;
+    }
+    if (!isCommissioner && myRosterId != null && selectedRosterId !== myRosterId) {
+      setSelectedRosterId(myRosterId);
+      return;
+    }
+    if (selectedRosterId === null) setSelectedRosterId(myRosterId ?? allRosters[0].rosterId);
+  }, [allRosters, selectedRosterId, myRosterId, isCommissioner]);
+
+  const [capCardRosterId, setCapCardRosterId] = useState<number | null>(null);
   const openPlayer = useCallback((playerId: string, rosterId: number, contract: ParsedContract | null) => {
     const teamEntry = allRosters.find(r => r.rosterId === rosterId);
     setPlayerTarget({
@@ -2240,8 +2535,54 @@ export default function ContractsHub() {
     });
   }, [allRosters]);
 
+  const { toast: hubToast } = useToast();
   const { data: phaseState } = useContractPhase(league?.leagueId);
-  const currentPhase: LeaguePhaseId = phaseState?.current ?? "tag_extension";
+  const currentPhase: LeaguePhaseId = phaseState?.current ?? "regular_season";
+  // Tags, extensions and trades are open in the regular season until Week 14 is complete.
+  const windowOpen = currentPhase === "regular_season";
+  // The salary projection is for the next season with no games played yet.
+  const projectionYear = phaseState?.projectionYear ?? currentYear + 1;
+
+  // From the rollover until the rookie draft is complete: expected rookie contracts for each team's picks.
+  const { data: draftCapitalData } = useQuery<DraftCapitalData>({
+    queryKey: ["/api/league", league?.leagueId, "draft-capital"],
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league?.leagueId}/draft-capital`);
+      if (!res.ok) throw new Error("Could not load draft capital");
+      return res.json();
+    },
+    enabled: !!league?.leagueId && isOffseasonPhase(currentPhase),
+    staleTime: 5 * 60 * 1000,
+  });
+  const draftCapitalFor = (rosterId: number | null): DraftCapitalEstimate | null => {
+    if (!draftCapitalData || draftCapitalData.draftComplete || rosterId == null || !isOffseasonPhase(currentPhase)) return null;
+    if (draftCapitalData.season !== projectionYear) return null;
+    const entry = draftCapitalData.byRoster[String(rosterId)];
+    return {
+      total: entry?.total ?? 0,
+      picks: entry?.picks ?? [],
+      source: draftCapitalData.source === "sleeper" ? "sleeper" : "projected",
+    };
+  };
+
+  // Commissioner: move the league to the next phase (the regular-season window closes on its own).
+  const advancePhase = useMutation({
+    mutationFn: async (next: LeaguePhaseId) => {
+      const res = await fetch(`/api/league/${league?.leagueId}/contract-phase`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPhase: next }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.error || "Could not advance the phase");
+      return body;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "contract-phase"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/league", league?.leagueId, "contracts"] });
+    },
+    onError: (e: Error) => hubToast({ title: "Can't advance yet", description: e.message, variant: "destructive" }),
+  });
   const phaseConfig = phaseState?.phases ?? [];
   const ppgMinGames = phaseState?.ppgMinGames ?? 3;
 
@@ -2252,7 +2593,7 @@ export default function ContractsHub() {
       if (!res.ok) throw new Error("RFA");
       return res.json();
     },
-    enabled: !!league?.leagueId && isCommissioner && RFA_ENABLED,
+    enabled: !!league?.leagueId && RFA_ENABLED,
   });
 
   const rfaPlayerIds = useMemo(
@@ -2278,6 +2619,25 @@ export default function ContractsHub() {
   }, [deadCapEntries, currentYear]);
 
   const teamDeadCapCurrent = selectedRosterId != null ? (deadCapByRoster[selectedRosterId] || 0) : 0;
+  // Dead cap by team and season ($M).
+  const deadCapByRosterYear = useMemo(() => {
+    const m: Record<number, Record<number, number>> = {};
+    for (const dc of deadCapEntries) {
+      try {
+        const sal = JSON.parse(dc.deadCapSalaries || "{}");
+        const team = (m[dc.rosterId] ??= {});
+        for (const [y, v] of Object.entries(sal)) {
+          const year = Number(y);
+          if (!Number.isNaN(year)) team[year] = (team[year] || 0) + (Number(v) || 0) / 10;
+        }
+      } catch { /* */ }
+    }
+    return m;
+  }, [deadCapEntries]);
+  const teamDeadCapByYear = useMemo(
+    () => (selectedRosterId != null ? (deadCapByRosterYear[selectedRosterId] ?? {}) : {}),
+    [deadCapByRosterYear, selectedRosterId],
+  );
 
   const { data: roundWinsBadge } = useQuery({
     queryKey: ["/api/league", league?.leagueId, "round-wins-badge", selectedRosterId, currentYear],
@@ -2299,10 +2659,7 @@ export default function ContractsHub() {
       o.originalRosterId === selectedRosterId && o.status === "pending",
   );
 
-  if (user && league && !isCommissioner) return null;
-
   const selectedTeamEntry = allRosters.find(r => r.rosterId === selectedRosterId);
-  const pendingApprovalsCount = approvals.filter(a => a.status === "pending").length;
   const rfaWindow = currentPhase === "rfa_match_2" ? 2 : 1;
 
   const isLoading = rostersLoading;
@@ -2326,10 +2683,11 @@ export default function ContractsHub() {
               </h1>
               {selectedTeamEntry && (
                 <p className="text-sm text-muted-foreground mt-0.5">
-                  Viewing team finances and roster contracts
+                  {isCommissioner ? "Viewing team finances and roster contracts" : "Your team's finances and roster contracts"}
                 </p>
               )}
             </div>
+            {isCommissioner && (
             <div className="flex items-center gap-3">
               <div className="text-xs text-muted-foreground">View team</div>
               <Select
@@ -2348,14 +2706,25 @@ export default function ContractsHub() {
                 </SelectContent>
               </Select>
             </div>
+            )}
           </div>
         </div>
       </div>
 
-      <TestModeBar leagueId={league?.leagueId} currentYear={currentYear} currentPhase={currentPhase} />
+      {isCommissioner && <TestModeBar leagueId={league?.leagueId} currentYear={currentYear} currentPhase={currentPhase} />}
 
       {/* Tabs */}
       <div className="max-w-7xl mx-auto px-4 py-6">
+        <div className="mb-6">
+          <SeasonCalendarBar
+            currentYear={currentYear}
+            currentPhase={currentPhase}
+            phases={phaseConfig}
+            canAdvance={isCommissioner}
+            advancing={advancePhase.isPending}
+            onAdvance={next => advancePhase.mutate(next)}
+          />
+        </div>
         {isLoading ? (
           <div className="flex items-center justify-center h-64">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
@@ -2367,10 +2736,6 @@ export default function ContractsHub() {
                 <Building2 className="w-3.5 h-3.5 mr-1.5" />
                 Team Overview
               </TabsTrigger>
-              <TabsTrigger value="calendar" className="text-xs sm:text-sm">
-                <CalendarDays className="w-3.5 h-3.5 mr-1.5" />
-                Season Calendar
-              </TabsTrigger>
               <TabsTrigger value="contract-actions" className="relative text-xs sm:text-sm">
                 <Gavel className="w-3.5 h-3.5 mr-1.5" />
                 Contract Actions
@@ -2378,26 +2743,17 @@ export default function ContractsHub() {
                   <span className="ml-1 w-2 h-2 rounded-full bg-amber-500 inline-block" />
                 )}
               </TabsTrigger>
-              <TabsTrigger value="trades-hub" className="text-xs sm:text-sm">
-                <ArrowLeftRight className="w-3.5 h-3.5 mr-1.5" />
-                Trades
-              </TabsTrigger>
               <TabsTrigger value="league-cap" className="text-xs sm:text-sm">
                 <BarChart2 className="w-3.5 h-3.5 mr-1.5" />
                 League Cap
               </TabsTrigger>
+              <TabsTrigger value="expiring" className="text-xs sm:text-sm" data-testid="tab-expiring">
+                <Clock className="w-3.5 h-3.5 mr-1.5" />
+                Expiring Contracts
+              </TabsTrigger>
               <TabsTrigger value="roster-management" className="text-xs sm:text-sm">
                 <FileText className="w-3.5 h-3.5 mr-1.5" />
                 Roster Management
-              </TabsTrigger>
-              <TabsTrigger value="approvals" className="relative text-xs sm:text-sm">
-                <Shield className="w-3.5 h-3.5 mr-1.5" />
-                Approvals
-                {pendingApprovalsCount > 0 && (
-                  <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-500 text-black text-[9px] font-bold">
-                    {pendingApprovalsCount}
-                  </span>
-                )}
               </TabsTrigger>
             </TabsList>
 
@@ -2420,13 +2776,9 @@ export default function ContractsHub() {
               />
             </TabsContent>
 
-            <TabsContent value="calendar">
-              <SeasonCalendarTab currentYear={currentYear} currentPhase={currentPhase} phases={phaseConfig} />
-            </TabsContent>
-
             <TabsContent value="contract-actions">
               <ContractActionsBanner currentPhase={currentPhase} phases={phaseConfig} />
-              {currentPhase === "tag_extension" && selectedRosterId != null && league?.leagueId && (
+              {selectedRosterId != null && league?.leagueId && canActOnSelected && (
                 <>
                   <PendingContractActionsPanel
                     leagueId={league.leagueId}
@@ -2440,9 +2792,12 @@ export default function ContractsHub() {
                     parsedContracts={parsedContracts}
                     positionOf={positionOf}
                     deadCapEntries={deadCapEntries}
+                    projectionYear={projectionYear}
+                    windowOpen={windowOpen}
+                    draftCapital={draftCapitalFor(selectedRosterId)}
                     className="mb-6"
                   />
-                  <TeamAllowancePanel
+                  {windowOpen && <TeamAllowancePanel
                     rosterId={selectedRosterId}
                     currentYear={currentYear}
                     extensions={extensions}
@@ -2450,11 +2805,15 @@ export default function ContractsHub() {
                     pendingTagCount={pendingTags.filter(t => t.rosterId === selectedRosterId).length}
                     pendingTagPlayerIds={pendingTags.filter(t => t.rosterId === selectedRosterId).map(t => t.playerId)}
                     className="mb-6"
-                  />
+                  />}
                 </>
               )}
               {selectedRosterId == null || !league?.leagueId ? (
                 <p className="text-sm text-muted-foreground">Select a team to see its contract actions.</p>
+              ) : !canActOnSelected ? (
+                <p className="text-sm text-muted-foreground">
+                  You can only act on your own team's contracts. Switch the team selector back to your team to continue.
+                </p>
               ) : phaseAllowsTab(currentPhase, "free-agency-bid") ? (
                 <FreeAgencyBiddingTab
                   leagueId={league.leagueId}
@@ -2466,6 +2825,8 @@ export default function ContractsHub() {
                   playerMap={playerMap}
                   perfByPlayer={perfByPlayer}
                   rfaDesignations={rfaData?.designations || []}
+                  deadCapByYear={teamDeadCapByYear}
+                  draftCapital={draftCapitalFor(selectedRosterId)}
                   onOpenPlayer={openPlayer}
                 />
               ) : phaseAllowsTab(currentPhase, "fa-recap") ? (
@@ -2475,6 +2836,10 @@ export default function ContractsHub() {
                   teamName={selectedTeamEntry?.teamName || `Team ${selectedRosterId}`}
                   currentYear={currentYear}
                   allRosters={allRosters}
+                  parsedContracts={parsedContracts}
+                  deadCapByRosterYear={deadCapByRosterYear}
+                  draftCapital={draftCapitalData}
+                  onOpenPlayer={openPlayer}
                 />
               ) : phaseAllowsTab(currentPhase, "my-wins") ? (
                 <RoundWinsTab
@@ -2484,7 +2849,9 @@ export default function ContractsHub() {
                   currentYear={currentYear}
                   round={currentPhase === "round_2_results" ? 2 : 1}
                   parsedContracts={parsedContracts}
-                  deadCapCurrentYear={teamDeadCapCurrent}
+                  deadCapByYear={teamDeadCapByYear}
+                  allRosters={allRosters}
+                  playerMap={playerMap}
                 />
               ) : phaseAllowsTab(currentPhase, "rfa-match") ? (
                 <RfaMatchTab
@@ -2503,40 +2870,73 @@ export default function ContractsHub() {
                   playerMap={playerMap}
                   currentYear={currentYear}
                   onOpenPlayer={openPlayer}
-                  ownRosterId={currentPhase === "tag_extension" ? selectedRosterId : null}
+                  ownRosterId={windowOpen ? selectedRosterId : null}
                   pendingExtensionKeys={pendingExtensionKeys}
                   pendingTagKeys={pendingTagKeys}
                 />
               )}
             </TabsContent>
 
-            <TabsContent value="trades-hub">
-              {league?.leagueId ? (
-                <TradesHubTab
-                  leagueId={league.leagueId}
-                  currentYear={currentYear}
-                  allRosters={allRosters}
-                  parsedContracts={parsedContracts}
-                  deadCapByRoster={deadCapByRoster}
-                />
-              ) : null}
-            </TabsContent>
-
             <TabsContent value="league-cap">
+              {isCommissioner && orphanedContracts.length > 0 && (
+                <Card className="mb-4 border-amber-500/40 bg-amber-500/5">
+                  <CardContent className="py-3 text-sm">
+                    <p className="font-semibold">
+                      {orphanedContracts.length} contract{orphanedContracts.length === 1 ? "" : "s"} not counted toward any cap
+                    </p>
+                    <p className="text-xs text-muted-foreground mb-2">
+                      These players have a contract filed under a team they are no longer on in Sleeper (traded or dropped).
+                      Move the contract or turn it into dead cap on the Contracts page (Manage League Contracts).
+                    </p>
+                    <details>
+                    <summary className="text-xs cursor-pointer text-amber-600 select-none">Show the list</summary>
+                    <ul className="text-xs space-y-0.5 mt-2 max-h-64 overflow-y-auto">
+                      {orphanedContracts.map(c => {
+                        const filedUnder = allRosters.find(r => r.rosterId === c.rosterId)?.teamName ?? `Team ${c.rosterId}`;
+                        const nowOn = rawRosters.find(r => (r.players || []).map(String).includes(c.playerId))?.roster_id;
+                        const nowOnName = nowOn == null ? "no roster (dropped)" : allRosters.find(r => r.rosterId === nowOn)?.teamName ?? `Team ${nowOn}`;
+                        const sal = c.parsedSalaries[currentYear] || 0;
+                        return (
+                          <li key={`${c.rosterId}-${c.playerId}`}>
+                            <span className="font-medium">{(playerMap[c.playerId] as any)?.name ?? c.playerId}</span>
+                            {" "}· filed under {filedUnder}, now on {nowOnName}
+                            {sal > 0 ? ` · ${formatMoney(sal)} in ${currentYear}` : ""}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    </details>
+                  </CardContent>
+                </Card>
+              )}
               <LeagueCapTab
                 allRosters={allRosters}
                 parsedContracts={parsedContracts}
                 deadCapEntries={deadCapEntries}
                 currentYear={currentYear}
-                ownRosterId={currentPhase === "tag_extension" ? selectedRosterId : null}
-                onSelectTeam={id => {
-                  setSelectedRosterId(id);
-                  setActiveTab("overview");
-                }}
+                onSelectTeam={setCapCardRosterId}
+              />
+            </TabsContent>
+
+            <TabsContent value="expiring">
+              <ExpiringContractsTab
+                allRosters={allRosters}
+                parsedContracts={parsedContracts}
+                playerMap={playerMap}
+                currentYear={currentYear}
+                myRosterId={myRosterId}
+                leagueId={league?.leagueId || ""}
+                onOpenPlayer={openPlayer}
               />
             </TabsContent>
 
             <TabsContent value="roster-management">
+              {isCommissioner && league?.leagueId && <SyncRookieContractsCard leagueId={league.leagueId} userId={user?.userId || ""} />}
+              {!canActOnSelected && (
+                <p className="mb-4 text-sm text-muted-foreground">
+                  You are viewing another team. Switch the team selector back to your team to make changes.
+                </p>
+              )}
               <RosterManagementTab
                 selectedRosterId={selectedRosterId}
                 setSelectedRosterId={setSelectedRosterId}
@@ -2549,19 +2949,40 @@ export default function ContractsHub() {
                 leagueId={league?.leagueId || ""}
                 userId={user?.userId || ""}
                 onOpenPlayer={openPlayer}
+                windowOpen={windowOpen}
               />
+              {isCommissioner && league?.leagueId && selectedRosterId != null && (
+                <CommissionerRosterTools
+                  leagueId={league.leagueId}
+                  userId={user?.userId || ""}
+                  rosterId={selectedRosterId}
+                  teamName={allRosters.find(r => r.rosterId === selectedRosterId)?.teamName ?? `Team ${selectedRosterId}`}
+                  currentYear={currentYear}
+                  rosterPlayerIds={(rawRosters.find(r => r.roster_id === selectedRosterId)?.players ?? []).map(String)}
+                  contractedPlayerIds={new Set(parsedContracts.filter(c => c.rosterId === selectedRosterId).map(c => c.playerId))}
+                  playerMap={playerMap}
+                  deadCapEntries={deadCapEntries}
+                  contractsByPlayer={Object.fromEntries(parsedContracts.filter(c => c.rosterId === selectedRosterId).map(c => [c.playerId, c.parsedSalaries]))}
+                  rosterNames={Object.fromEntries(allRosters.map(r => [r.rosterId, r.teamName]))}
+                />
+              )}
             </TabsContent>
 
-            <TabsContent value="approvals">
-              <ApprovalsTab
-                approvals={approvals}
-                leagueId={league?.leagueId || ""}
-                userId={user?.userId || ""}
-              />
-            </TabsContent>
-          </Tabs>
+         </Tabs>
         )}
       </div>
+
+      <TeamContractsDialog
+        rosterId={capCardRosterId}
+        allRosters={allRosters}
+        parsedContracts={parsedContracts}
+        deadCapEntries={deadCapEntries}
+        currentYear={currentYear}
+        playerMap={playerMap}
+        onClose={() => setCapCardRosterId(null)}
+        onOpenPlayer={openPlayer}
+        onOpenOverview={isCommissioner ? (id => { setSelectedRosterId(id); setActiveTab("overview"); }) : undefined}
+      />
 
       {/* Player Detail Sheet */}
       <PlayerDetailSheet
@@ -2574,6 +2995,9 @@ export default function ContractsHub() {
         extensions={extensions}
         pendingTags={pendingTags}
         onQueueTag={addPendingTag}
+        canManage={windowOpen && (isCommissioner || (playerTarget?.rosterId != null && playerTarget.rosterId === myRosterId))}
+        isCommissioner={isCommissioner}
+        deadCapByRosterYear={deadCapByRosterYear}
       />
     </div>
   );

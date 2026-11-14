@@ -525,6 +525,11 @@ export function createSandboxAwareStorage<T extends object>(real: T): T {
   });
 }
 
+/** The test session the current request runs in, or null for a normal request. */
+export function currentSandboxId(): string | null {
+  return sandboxContext.getStore()?.id ?? null;
+}
+
 /** Express middleware: runs the rest of the request inside the sandbox session named by the header. */
 export function sandboxMiddleware(req: Request, res: Response, next: NextFunction) {
   const id = req.header(SANDBOX_HEADER);

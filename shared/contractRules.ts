@@ -7,9 +7,11 @@ export const CURRENT_SEASON_CAP = 250;
 
 export type ContractType = "ROOKIE" | "TAGGED" | "STANDARD";
 
+// One league year, in order. It starts when the commissioner rolls the league over (new Sleeper league ID attached),
+// runs through the two free agency rounds and the rookie draft, then the regular season. Tags, extensions and trades
+// are open during the regular season and close automatically once Week 14 is complete.
 export const LEAGUE_PHASES = [
   "league_year_rollover",
-  "tag_extension",
   "fa_round_1",
   "round_1_results",
   "rfa_match_1",
@@ -18,6 +20,7 @@ export const LEAGUE_PHASES = [
   "rfa_match_2",
   "fa_recap",
   "regular_season",
+  "deadline_passed",
 ] as const;
 
 export type LeaguePhaseId = (typeof LEAGUE_PHASES)[number];
@@ -33,16 +36,27 @@ export const ACTIVE_PHASES: readonly LeaguePhaseId[] = RFA_ENABLED
 
 export const PHASE_LABELS: Record<LeaguePhaseId, string> = {
   league_year_rollover: "League Year Rollover",
-  tag_extension: "Tag & Extension Phase",
   fa_round_1: "Free Agency Round 1",
   round_1_results: "Round 1 Results",
   rfa_match_1: "RFA Match Window 1",
   fa_round_2: "Free Agency Round 2",
   round_2_results: "Round 2 Results",
   rfa_match_2: "RFA Match Window 2",
-  fa_recap: "Free Agency Recap",
+  fa_recap: "Free Agency Recap & Rookie Draft",
   regular_season: "Regular Season",
+  deadline_passed: "Deadline Passed",
 };
+
+/** Last NFL week of the tag / extension / trade window. Once it is complete the window closes on its own. */
+export const CONTRACT_DEADLINE_WEEK = 14;
+
+/** The phase in which tags, extensions and trades are open. */
+export const CONTRACT_WINDOW_PHASE: LeaguePhaseId = "regular_season";
+
+/** Offseason phases: from the rollover until the regular season starts. */
+export function isOffseasonPhase(phase: LeaguePhaseId): boolean {
+  return LEAGUE_PHASES.indexOf(phase) < LEAGUE_PHASES.indexOf("regular_season");
+}
 
 export interface PhaseConfigEntry {
   id: LeaguePhaseId;
@@ -259,8 +273,8 @@ export function designateRFA(
     isExpiringRookie: boolean;
   },
 ): { ok: boolean; reason: string } {
-  if (params.currentPhase !== "tag_extension") {
-    return { ok: false, reason: "RFA designation only allowed during Tag & Extension Phase" };
+  if (params.currentPhase !== CONTRACT_WINDOW_PHASE) {
+    return { ok: false, reason: "RFA designation is only allowed while the tag and extension window is open" };
   }
   if (!params.isExpiringRookie) {
     return { ok: false, reason: "Player must be on an expiring rookie contract on your roster" };
@@ -355,16 +369,11 @@ export function validateTrade(
 
 // ─── In-season signing ───────────────────────────────────────────────────────
 
+/** A player picked up from free agency or waivers during the season signs for 1 year at $1, whatever the FAAB bid. */
 export function createInSeasonSigning(
-  faabBid: number | null,
+  _faabBid?: number | null,
 ): { contractType: ContractType; years: number; yearlySalary: number; reason: string } {
-  const yearlySalary = faabBid != null && faabBid > 0 ? faabBid : 1;
-  return {
-    contractType: "STANDARD",
-    years: 1,
-    yearlySalary,
-    reason: yearlySalary === 1 ? "1-year STANDARD at $1 (no FAAB bid)" : `1-year STANDARD at FAAB $${yearlySalary}`,
-  };
+  return { contractType: "STANDARD", years: 1, yearlySalary: 1, reason: "1-year STANDARD at $1 (in-season pickup)" };
 }
 
 // ─── Phase resolution ────────────────────────────────────────────────────────
@@ -408,10 +417,32 @@ export function getCurrentPhase(
   if (manualOverride && ACTIVE_PHASES.includes(manualOverride)) {
     return manualOverride;
   }
-  return "tag_extension";
+  return "regular_season";
 }
 
 export function formatPhaseDate(ts: number | null): string {
   if (ts == null) return "Date TBD";
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+const SHARE_BY_YEARS_LEFT: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75 };
+
+/**
+ * Dead cap by season, in tenths of $M as stored, for a contract ended in `season`.
+ * `salaries` is the stored contract salary JSON (tenths of $M by season).
+ */
+export function deadCapForEndedContract(salaries: Record<string, number>, season: number): Record<string, number> {
+  const years = Object.entries(salaries)
+    .map(([y, v]) => [Number(y), Number(v) || 0] as const)
+    .filter(([y, v]) => !Number.isNaN(y) && y >= season && v > 0)
+    .sort((a, b) => a[0] - b[0]);
+  if (years.length === 0) return {};
+  const lastYear = years[years.length - 1][0];
+  const out: Record<string, number> = {};
+  for (const [year, salary] of years) {
+    const share = year === season ? 1 : SHARE_BY_YEARS_LEFT[lastYear - year + 1] ?? 1;
+    const dead = Math.round(salary * share);
+    if (dead > 0) out[String(year)] = dead;
+  }
+  return out;
 }

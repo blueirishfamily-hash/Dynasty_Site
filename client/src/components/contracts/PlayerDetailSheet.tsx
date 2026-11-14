@@ -12,11 +12,13 @@ import {
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
+import { PositionRadar } from "./PositionRadar";
+import { CommissionerContractEditor } from "@/components/contracts-hub/CommissionerEdit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { TeamAllowancePanel, getTeamAllowances, CONTRACT_LENGTH_LIMITS, type AllowanceExtension } from "@/components/contracts-hub/TeamAllowances";
-import type { PendingTag } from "@/components/contracts-hub/pendingContracts";
+import { tagSalary, type PendingTag } from "@/components/contracts-hub/pendingContracts";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
@@ -184,6 +186,7 @@ function CareerTooltip({ active, payload }: any) {
         </p>
       )}
       <p>{isGame ? "Pts" : "Total"}: <span className="font-medium">{d?.points?.toFixed(1)} pts</span></p>
+      {isGame && d?.average != null && <p>3-game avg: <span className="font-medium">{Number(d.average).toFixed(1)}</span></p>}
       {!isGame && <p>PPG: <span className="font-medium">{d?.ppg?.toFixed(1)}</span></p>}
       {!isGame && <p>Games: <span className="font-medium">{d?.gamesPlayed}</span></p>}
     </div>
@@ -208,6 +211,12 @@ interface PlayerDetailSheetProps {
   /** Tags applied but not saved yet, and how to add one. */
   pendingTags?: PendingTag[];
   onQueueTag?: (tag: PendingTag) => void;
+  /** False when the card is for another team. Extension and tag actions are then hidden. */
+  canManage?: boolean;
+  /** Shows the commissioner's contract editor on any team's card. */
+  isCommissioner?: boolean;
+  /** Dead cap by team and season in $M, so the editor can show the team's cap before and after. */
+  deadCapByRosterYear?: Record<number, Record<number, number>>;
 }
 
 export function PlayerDetailSheet({
@@ -220,6 +229,9 @@ export function PlayerDetailSheet({
   extensions = [],
   pendingTags = [],
   onQueueTag,
+  canManage = true,
+  isCommissioner = false,
+  deadCapByRosterYear = {},
 }: PlayerDetailSheetProps) {
   const { league, user } = useSleeper();
   const { toast } = useToast();
@@ -230,7 +242,9 @@ export function PlayerDetailSheet({
   const [applyingExt, setApplyingExt] = useState(false);
   const [applyingTag, setApplyingTag] = useState(false);
 
-  const contract = target?.contract ?? null;
+  // Prefer the live contract so an edit shows right away.
+  const contract =
+    (target ? parsedContracts.find(c => c.playerId === target.playerId && c.rosterId === target.rosterId) : null) ?? target?.contract ?? null;
   const playerId = target?.playerId ?? "";
   const leagueId = league?.leagueId ?? "";
 
@@ -297,8 +311,24 @@ export function PlayerDetailSheet({
     }));
   }, [careerGamesData]);
 
-  // X-axis tick values: unique season integers from chart data
-  const seasonTicks = useMemo(() => chartData.map(d => d.season), [chartData]);
+  // The x axis spans exactly the games played, so the plot fills the chart. Each season is labelled at its first game.
+  const seasonTicks = useMemo(() => {
+    const first = new Map<number, number>();
+    for (const g of gameScatterData) if (!first.has(g.season)) first.set(g.season, g.x);
+    return Array.from(first.values());
+  }, [gameScatterData]);
+  const xDomain = useMemo<[number, number] | null>(() => {
+    if (gameScatterData.length === 0) return null;
+    const xs = gameScatterData.map(g => g.x);
+    const min = Math.min(...xs);
+    const max = Math.max(...xs);
+    const pad = max === min ? 0.2 : (max - min) * 0.03;
+    return [min - pad, max + pad];
+  }, [gameScatterData]);
+  const currentSeasonStartX = useMemo(
+    () => gameScatterData.find(g => g.season === currentYear)?.x ?? null,
+    [gameScatterData, currentYear],
+  );
 
   // Trailing three-game rolling average across the player's chronological games.
   const rollingAverageData = useMemo(() => {
@@ -309,7 +339,7 @@ export function PlayerDetailSheet({
     });
   }, [gameScatterData]);
 
-  // Team limits, counting extensions and tags that are applied but not yet approved.
+  // Team limits, counting extensions and tags that are applied but not yet submitted.
   const allowances = contract
     ? getTeamAllowances(
         contract.rosterId,
@@ -377,7 +407,15 @@ export function PlayerDetailSheet({
   };
 
   // ── Contract timeline data for bar chart ──
-  const contractTimelineYears = [currentYear - 1, currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
+  // Runs from last season through the end of the contract, or of the extension being previewed (a 4-year extension
+  // signed now covers the next four seasons), and always at least three seasons ahead.
+  const lastContractYear = Math.max(
+    currentYear + 3,
+    ...Object.entries(contract?.parsedSalaries ?? {}).filter(([, v]) => (v as number) > 0).map(([y]) => Number(y)),
+    previewExtType !== null ? currentYear + previewExtType : 0,
+  );
+  const contractTimelineYears: number[] = [];
+  for (let y = currentYear - 1; y <= lastContractYear; y++) contractTimelineYears.push(y);
 
   // Position average salary per year
   const positionAvgData = useMemo(() => {
@@ -396,6 +434,13 @@ export function PlayerDetailSheet({
       }
     }
     return result;
+  }, [careerData?.player?.position, parsedContracts, playerMap, currentYear, lastContractYear]);
+
+  // What a franchise tag would cost at this position: top-5 average of non-rookie current-season salaries.
+  const tagPrice = useMemo(() => {
+    const position = careerData?.player?.position;
+    if (!position) return 0;
+    return tagSalary(position, currentYear, parsedContracts, id => playerMap[id]?.position);
   }, [careerData?.player?.position, parsedContracts, playerMap, currentYear]);
 
   const contractTimelineData = useMemo(() => {
@@ -419,7 +464,7 @@ export function PlayerDetailSheet({
         const contractThrough = contract.contractThrough ?? currentYear;
         const tagYear = contractThrough + 1;
         if (year === tagYear) {
-          tagPreview = -1; // sentinel: will display as "Top-5 avg"
+          tagPreview = tagPrice;
         }
       }
 
@@ -433,7 +478,7 @@ export function PlayerDetailSheet({
         isCurrent: year === currentYear,
       };
     });
-  }, [contract, currentYear, previewExtType, previewTag, contractTimelineYears, positionAvgData, extPricing, isRookieExt]);
+  }, [contract, currentYear, previewExtType, previewTag, tagPrice, contractTimelineYears, positionAvgData, extPricing, isRookieExt]);
 
   // ── Dynamic Y domain for contract timeline ──
   const timelineMax = useMemo(() => {
@@ -455,11 +500,14 @@ export function PlayerDetailSheet({
     ? pendingTags.find(t => t.playerId === playerId && t.rosterId === contract.rosterId)
     : undefined;
   const tagsLeft = allowances?.tagsLeft ?? 0;
-  const canExtend = contract && contract.hasBeenExtended === 0 && contract.extensionApplied === 0 && !pendingExt && !pendingTag;
+  // Extensions are only available in the final year of a deal.
+  const inFinalYear = (contract?.contractThrough ?? 0) === currentYear;
+  const canExtend = contract && inFinalYear && contract.hasBeenExtended === 0 && contract.extensionApplied === 0 && !pendingExt && !pendingTag;
   const canTag =
     contract &&
     contract.hasBeenFranchiseTagged === 0 &&
     contract.franchiseTagUsed === 0 &&
+    contract.contractThrough === currentYear &&
     !pendingExt &&
     !pendingTag &&
     tagsLeft > 0;
@@ -495,7 +543,7 @@ export function PlayerDetailSheet({
       queryClient.invalidateQueries({ queryKey: ["/api/league", leagueId, "extensions", String(currentYear)] });
       setPreviewExtType(null);
       setApplyingExt(false);
-      toast({ title: "Extension applied", description: "Saved as pending. Approve it in Contract Actions to make it official." });
+      toast({ title: "Extension applied", description: "Saved as pending. Submit it in Contract Actions to make it official." });
       onClose();
     },
     onError: (e: Error) => {
@@ -534,6 +582,18 @@ export function PlayerDetailSheet({
       toast({ title: "Tag Failed", description: e.message, variant: "destructive" });
     },
   });
+
+  // The team's committed cap by season in $M: contracts plus dead cap.
+  const teamSalaryByYear = useMemo(() => {
+    const out: Record<number, number> = {};
+    if (!target) return out;
+    for (const c of parsedContracts) {
+      if (c.rosterId !== target.rosterId) continue;
+      for (const [y, v] of Object.entries(c.parsedSalaries)) out[Number(y)] = (out[Number(y)] || 0) + (v || 0);
+    }
+    for (const [y, v] of Object.entries(deadCapByRosterYear[target.rosterId] ?? {})) out[Number(y)] = (out[Number(y)] || 0) + (v || 0);
+    return out;
+  }, [target, parsedContracts, deadCapByRosterYear]);
 
   // ── Render ──
   const player = careerData?.player;
@@ -602,6 +662,11 @@ export function PlayerDetailSheet({
         ) : (
           <div className="px-5 py-4 space-y-6">
 
+            {/* Position profile: percentile radar for the stats that matter at his position */}
+            <PositionRadar leagueId={leagueId} playerId={playerId} />
+
+            <Separator />
+
             {/* Career Production Chart */}
             <section>
               <div className="flex items-center justify-between mb-3">
@@ -630,16 +695,22 @@ export function PlayerDetailSheet({
 
               {chartData.length > 0 ? (
                 <>
-                  <div className="rounded-xl border border-border/40 p-1 pb-0">
+                  <div className="relative rounded-xl border border-border/40 p-1 pb-0">
+                  {!gamesLoading && gameScatterData.length === 0 && (
+                    <div className="absolute inset-0 flex items-center justify-center text-xs text-muted-foreground pointer-events-none">
+                      No scored games yet
+                    </div>
+                  )}
                   <ResponsiveContainer width="100%" height={220}>
-                    <ComposedChart margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
+                    <ComposedChart data={rollingAverageData} margin={{ top: 10, right: 12, left: -10, bottom: 0 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" strokeOpacity={0.6} />
 
                       {/* Numeric X axis — integers = seasons, fractional = individual weeks */}
                       <XAxis
                         type="number"
                         dataKey="x"
-                        domain={seasonTicks.length > 0 ? [seasonTicks[0] - 0.1, seasonTicks[seasonTicks.length - 1] + 1.05] : ["auto", "auto"]}
+                        domain={xDomain ?? ["auto", "auto"]}
+                        allowDataOverflow
                         ticks={seasonTicks}
                         tickFormatter={v => String(Math.round(v))}
                         tick={{ fontSize: 11 }}
@@ -649,19 +720,37 @@ export function PlayerDetailSheet({
                       <YAxis
                         type="number"
                         dataKey="y"
+                        domain={[(min: number) => Math.min(0, Math.floor(min)), (max: number) => Math.max(10, Math.ceil(max * 1.1))]}
                         tick={{ fontSize: 11 }}
                         axisLine={false}
                         tickLine={false}
                         label={{ value: "Pts", angle: -90, position: "insideLeft", offset: 15, fontSize: 10, fill: "hsl(var(--muted-foreground))" }}
                       />
-                      <Tooltip content={<CareerTooltip />} />
+                      {/* Hovering anywhere along the x axis shows the nearest game */}
+                      <Tooltip
+                        content={<CareerTooltip />}
+                        cursor={{ stroke: "hsl(var(--muted-foreground))", strokeDasharray: "3 3", strokeOpacity: 0.6 }}
+                      />
 
-                      {/* Current year marker */}
-                      <ReferenceLine
-                        x={currentYear}
-                        stroke="#f59e0b"
-                        strokeDasharray="4 4"
-                        label={{ value: String(currentYear), position: "top", fontSize: 9, fill: "#f59e0b" }}
+                      {/* Current season marker, at that season's first game */}
+                      {currentSeasonStartX != null && (
+                        <ReferenceLine
+                          x={currentSeasonStartX}
+                          stroke="#f59e0b"
+                          strokeDasharray="4 4"
+                          label={{ value: String(currentYear), position: "top", fontSize: 9, fill: "#f59e0b" }}
+                        />
+                      )}
+
+                      {/* Invisible line over the same games: makes the tooltip follow the mouse along x and highlights that game */}
+                      <Line
+                        type="linear"
+                        dataKey="y"
+                        stroke="transparent"
+                        dot={false}
+                        activeDot={{ r: 6, stroke: "hsl(var(--foreground))", strokeWidth: 1.5, fill: "transparent" }}
+                        isAnimationActive={false}
+                        legendType="none"
                       />
 
                       {/* Three-game rolling average, colored by team at each game */}
@@ -758,7 +847,7 @@ export function PlayerDetailSheet({
                         formatter={(v: number, name: string) => {
                           if (name === "posAvg") return [`${fmt(v)}`, `${careerData?.player?.position ?? "Pos"} avg`];
                           if (name === "extensionPreview") return [`${fmt(v)} (preview)`, "Extension"];
-                          if (name === "tagPreview") return ["Top-5 avg (preview)", "Franchise Tag"];
+                          if (name === "tagPreview") return [`${fmt(v)} (preview)`, "Franchise Tag"];
                           return [fmt(v), "Salary"];
                         }}
                         contentStyle={{
@@ -827,7 +916,9 @@ export function PlayerDetailSheet({
 
                   {/* Timeline legend */}
                   <div className="flex flex-wrap gap-3 mt-1 text-[10px] text-muted-foreground">
-                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-primary" />Salary</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-muted-foreground opacity-50" />Past</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-amber-500" />This season</span>
+                    <span className="flex items-center gap-1"><span className="inline-block w-3 h-2 rounded-sm bg-primary" />Future</span>
                     <span className="flex items-center gap-1">
                       <svg width="14" height="8"><line x1="0" y1="4" x2="14" y2="4" stroke="#14b8a6" strokeWidth="2" strokeDasharray="4 2" /></svg>
                       {careerData?.player?.position ?? "Pos"} Avg
@@ -855,7 +946,7 @@ export function PlayerDetailSheet({
                         {contractTimelineData.map(row => {
                           const extSal = row.extensionPreview;
                           const isPreviewRow = extSal !== undefined || row.tagPreview !== undefined;
-                          const displaySal = extSal ?? row.salary;
+                          const displaySal = extSal ?? row.tagPreview ?? row.salary;
                           return (
                             <tr
                               key={row.year}
@@ -869,12 +960,10 @@ export function PlayerDetailSheet({
                               </td>
                               <td className="px-3 py-1.5 text-right font-semibold">
                                 {displaySal ? (
-                                  <span className={isPreviewRow ? "text-amber-500" : ""}>
+                                  <span className={row.tagPreview !== undefined ? "text-purple-500" : isPreviewRow ? "text-amber-500" : ""}>
                                     {fmt(displaySal)}
                                     {isPreviewRow && <span className="text-[9px] ml-0.5 opacity-70">preview</span>}
                                   </span>
-                                ) : row.tagPreview !== undefined ? (
-                                  <span className="text-purple-500">Tag avg<span className="text-[9px] ml-0.5 opacity-70">preview</span></span>
                                 ) : (
                                   <span className="text-muted-foreground">—</span>
                                 )}
@@ -931,8 +1020,30 @@ export function PlayerDetailSheet({
               )}
             </section>
 
+            {/* Commissioner: edit or add this contract */}
+            {isCommissioner && target && user?.userId && (
+              <>
+                <Separator />
+                <section className="space-y-3">
+                  <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">Commissioner</h3>
+                  <CommissionerContractEditor
+                    key={`${target.rosterId}:${target.playerId}`}
+                    leagueId={leagueId}
+                    userId={user.userId}
+                    rosterId={target.rosterId}
+                    playerId={target.playerId}
+                    playerName={player?.name ?? playerMap[target.playerId]?.name ?? target.playerId}
+                    contract={contract}
+                    currentYear={currentYear}
+                    teamSalaryByYear={teamSalaryByYear}
+                    onDone={removed => { if (removed) onClose(); }}
+                  />
+                </section>
+              </>
+            )}
+
             {/* Extension & Tag Actions */}
-            {(canExtend || canTag || pendingExt || pendingTag) && (
+            {canManage && (canExtend || canTag || pendingExt || pendingTag) && (
               <>
                 <Separator />
                 <section className="space-y-4">
@@ -944,7 +1055,7 @@ export function PlayerDetailSheet({
                       <span className="font-semibold text-amber-600">
                         {pendingExt ? "Extension applied" : "Franchise tag applied"}
                       </span>
-                      {" "}but not saved yet. Approve or remove it in Contract Actions.
+                      {" "}but not submitted yet. Submit or remove it in Contract Actions.
                     </div>
                   )}
                   {!pendingExt && !pendingTag && tagsLeft === 0 && (
@@ -1054,7 +1165,7 @@ export function PlayerDetailSheet({
                         )}
                       </div>
                       <p className="text-xs text-muted-foreground">
-                        Salary will be set to the top-5 average at {player?.position ?? "this position"}.
+                        Salary will be set to the top-5 average of non-rookie salaries at {player?.position ?? "this position"}. Only expiring contracts can be tagged.
                         A player can only be tagged once per stint on this roster.
                       </p>
                       <Button
@@ -1085,7 +1196,7 @@ export function PlayerDetailSheet({
                                 position: careerData?.player.position ?? (playerMap[playerId] as any)?.position ?? "FLEX",
                               });
                               setPreviewTag(false);
-                              toast({ title: "Franchise tag applied", description: "Saved as pending. Approve it in Contract Actions to make it official." });
+                              toast({ title: "Franchise tag applied", description: "Saved as pending. Submit it in Contract Actions to make it official." });
                               onClose();
                               return;
                             }

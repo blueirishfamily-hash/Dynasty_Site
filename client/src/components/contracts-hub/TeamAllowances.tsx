@@ -49,7 +49,7 @@ export function getTeamAllowances(
     c => c.rosterId === rosterId && c.franchiseTagUsed === 1 && c.franchiseTagYear === currentYear + 1,
   ).length;
 
-  // Contracts as they will look once every pending extension and tag is approved.
+  // Contracts as they will look once every pending extension and tag is submitted.
   const pendingExts = teamExts.filter(e => e.status === "pending");
   const withPending: AllowanceContract[] = contracts.map(c => {
     if (c.rosterId !== rosterId || !c.playerId) return c;
@@ -85,7 +85,7 @@ export function getTeamAllowances(
     rookie4YearUsed: rookieExts.some(e => e.extensionType === 4),
     nonRookieLeft: Math.max(0, 2 - nonRookieExts.length),
     // Pending extensions and tags start next season, so they only change next season's counts.
-    // `*Saved` is the same count with only approved contracts.
+    // `*Saved` is the same count with only submitted contracts.
     thisYear: countByLength(contracts, currentYear),
     nextYear: countByLength(withPending, currentYear + 1),
     thisYearSaved: countByLength(contracts, currentYear),
@@ -160,7 +160,7 @@ export function TeamAllowancePanel({
               <div className="text-xs text-muted-foreground">{item.note}</div>
               {item.pending > 0 && (
                 <div className="text-xs text-blue-500 mt-0.5">
-                  {item.pending} pending approval (counted above)
+                  {item.pending} pending submission (counted above)
                 </div>
               )}
             </div>

@@ -85,9 +85,11 @@ export function extensionSalaries(ext: PendingExtensionLike): Record<number, num
 export interface SalaryContract {
   playerId: string;
   parsedSalaries: Record<number, number>;
+  /** 1 for a rookie deal. Rookie deals are left out of the franchise tag price. */
+  isRookieContract?: number;
 }
 
-// Franchise tag salary ($M): average of the top 5 current-season salaries at the position, rounded up
+// Franchise tag salary ($M): average of the top 5 current-season non-rookie salaries at the position, rounded up
 // to the nearest 0.1, the same way the franchise-tag route prices it.
 export function tagSalary(
   position: string,
@@ -98,6 +100,7 @@ export function tagSalary(
   const tenths: number[] = [];
   for (const c of contracts) {
     const sal = c.parsedSalaries[currentYear] || 0;
+    if (c.isRookieContract === 1) continue;
     if (sal > 0 && positionOf(c.playerId) === position) tenths.push(Math.round(sal * 10));
   }
   const top5 = tenths.sort((a, b) => b - a).slice(0, 5);

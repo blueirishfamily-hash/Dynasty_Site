@@ -46,6 +46,8 @@ const baseNavItems = [
   { title: "League History", url: "/history", icon: History },
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
+  { title: "Contracts Hub", url: "/contracts-hub", icon: Building2 },
+  // The old Contracts page: only the commissioner sees it while the Hub takes over.
   { title: "Contracts", url: "/contracts", icon: FileText },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Year Recap", url: "/year-recap", icon: CalendarCheck },
@@ -54,9 +56,8 @@ const baseNavItems = [
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
-const commissionerNavItems = [
-  { title: "Contracts Hub", url: "/contracts-hub", icon: Building2 },
-];
+// Pages only the commissioner sees in the menu.
+const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League History", "Contracts"]);
 
 interface DraftPick {
   year: number;
@@ -82,8 +83,8 @@ export default function AppSidebar({
   ));
 
   const navItems = isCommissioner
-    ? [...baseNavItems, ...commissionerNavItems]
-    : baseNavItems.filter((item) => item.title !== "Settings" && item.title !== "League History");
+    ? baseNavItems
+    : baseNavItems.filter((item) => !COMMISSIONER_ONLY_TITLES.has(item.title));
 
   const getRoundColor = (round: number) => {
     if (round === 1) return "bg-primary text-primary-foreground";
