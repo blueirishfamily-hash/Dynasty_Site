@@ -2543,12 +2543,19 @@ export async function registerRoutes(
       const positionsForStrength = ["QB", "RB", "WR", "TE", "K", "DEF"] as const;
       positionsForStrength.forEach(pos => {
         const rosterTotals: { rosterId: number; ownerId: string; totalPpg: number }[] = rosters.map(r => {
-          let totalPpg = 0;
+          // Average PPG of this roster's scoring players at the position (talent over pure depth)
+          let sumPpg = 0;
+          let scorers = 0;
           (r.players || []).forEach(pid => {
             const player = players[pid];
             if (!player || player.position !== pos) return;
-            totalPpg += playerPPG.get(pid) || 0;
+            const ppg = playerPPG.get(pid) || 0;
+            if (ppg > 0) {
+              sumPpg += ppg;
+              scorers++;
+            }
           });
+          const totalPpg = scorers > 0 ? sumPpg / scorers : 0;
           return { rosterId: r.roster_id, ownerId: r.owner_id, totalPpg };
         });
         rosterTotals.sort((a, b) => b.totalPpg - a.totalPpg || a.rosterId - b.rosterId);

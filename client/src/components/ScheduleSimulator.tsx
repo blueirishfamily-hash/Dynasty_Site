@@ -1,8 +1,7 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { Clover, CloudRain, Feather, Mountain, TrendingDown, TrendingUp } from "lucide-react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import type { AnalysisTeam, SimRecord, StandingsAnalysis } from "@shared/standingsAnalysis";
 
 interface ScheduleSimulatorProps {
@@ -37,12 +36,12 @@ function TeamAvatar({ team, className = "w-7 h-7" }: { team: AnalysisTeam; class
 }
 
 function cellClass(cell: SimRecord, actual: SimRecord, isActual: boolean): string {
-  if (isActual) return "bg-primary/20 font-bold ring-1 ring-inset ring-primary/60";
+  if (isActual) return "bg-primary/20 ring-1 ring-inset ring-primary font-bold text-foreground";
   const diff = winsOf(cell) - winsOf(actual);
-  if (diff >= 3) return "bg-emerald-500/30 text-emerald-300";
-  if (diff > 0) return "bg-emerald-500/15 text-emerald-300";
-  if (diff <= -3) return "bg-red-500/30 text-red-300";
-  if (diff < 0) return "bg-red-500/15 text-red-300";
+  if (diff >= 3) return "bg-[#0F5A3E] text-[#D1FAE5]";
+  if (diff > 0) return "bg-[#0D3A2A] text-[#A7F3D0]";
+  if (diff <= -3) return "bg-[#6B1F2A] text-[#FECACA]";
+  if (diff < 0) return "bg-[#3F1820] text-[#FCA5A5]";
   return "text-muted-foreground";
 }
 
@@ -89,12 +88,49 @@ function SummaryCard({
   );
 }
 
+function TeamChip({ team, selected, onSelect }: { team: AnalysisTeam; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      aria-pressed={selected}
+      data-testid={`sim-chip-${team.rosterId}`}
+      className={`shrink-0 inline-flex items-center gap-2 min-h-[44px] rounded-full border pl-2 pr-3.5 text-sm font-medium whitespace-nowrap transition-colors ${
+        selected ? "border-primary bg-primary/10" : "border-border hover:bg-muted/50"
+      }`}
+    >
+      <TeamAvatar team={team} className="w-6 h-6" />
+      <span className={team.isUser ? "text-primary" : ""}>{team.name.length > 14 ? `${team.name.slice(0, 13)}\u2026` : team.name}</span>
+    </button>
+  );
+}
+
 export default function ScheduleSimulator({ analysis }: ScheduleSimulatorProps) {
   const { teams, simulation, summary } = analysis;
   const teamById = new Map(teams.map((t) => [t.rosterId, t]));
   const difficultyById = new Map(simulation.difficulty.map((d) => [d.rosterId, d]));
+  const defaultId = (teams.find((t) => t.isUser) ?? teams[0])?.rosterId;
+  const [selectedId, setSelectedId] = useState<number | undefined>(defaultId);
 
   const { toughestSchedule, easiestSchedule, biggestUpgrade, biggestDowngrade, unluckiest, luckiest } = summary;
+
+  const selectedRow = simulation.rows.find((r) => r.rosterId === selectedId) ?? simulation.rows[0];
+  const selectedTeam = selectedRow ? teamById.get(selectedRow.rosterId) : undefined;
+  const maxGames = selectedRow ? Math.max(1, ...selectedRow.results.map((r) => r.wins + r.losses + r.ties)) : 1;
+
+  // Phone list: this team's record on every schedule, best first.
+  const phoneList = selectedRow
+    ? selectedRow.results
+        .map((cell, idx) => ({ cell, schedule: teams[idx] }))
+        .sort((a, b) => winsOf(b.cell) - winsOf(a.cell))
+    : [];
+  const diffSorted = [...simulation.difficulty].sort((a, b) => a.avgWinsAllowed - b.avgWinsAllowed);
+  const maxAllowed = Math.max(1, ...simulation.difficulty.map((d) => d.avgWinsAllowed));
+
+  const gridCols = { gridTemplateColumns: `190px repeat(${teams.length}, minmax(0, 1fr)) 64px 64px 60px` };
+
+  const luckClass = (luck: number) =>
+    luck > 0.05 ? "text-emerald-400" : luck < -0.05 ? "text-red-400" : "text-muted-foreground";
 
   return (
     <div className="space-y-6">
@@ -102,93 +138,183 @@ export default function ScheduleSimulator({ analysis }: ScheduleSimulatorProps) 
         <CardHeader>
           <CardTitle className="font-heading text-xl">Schedule Simulator</CardTitle>
           <CardDescription>
-            Each row replays that team's weekly scores against the opponents on the schedule shown in each column. The highlighted
-            diagonal is the team's actual record. When a schedule's opponent would be the team itself, it plays the schedule's owner instead.
+            What if you had played someone else's schedule? Each row replays that team's weekly scores against the opponents on the
+            schedule shown in each column. The highlighted diagonal is the team's actual record. When a schedule's opponent would be the
+            team itself, it plays the schedule's owner instead.
           </CardDescription>
         </CardHeader>
-        <CardContent>
-          <Table data-testid="table-schedule-simulator">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="sticky left-0 z-10 bg-card min-w-[170px]">
-                  <span className="text-xs uppercase tracking-wider">Team scores</span>
-                  <span className="block text-[10px] font-normal text-muted-foreground">vs. schedule of &rarr;</span>
-                </TableHead>
-                {teams.map((schedule) => (
-                  <TableHead key={schedule.rosterId} className="text-center px-1" data-testid={`sim-col-${schedule.rosterId}`}>
-                    <div className="flex flex-col items-center gap-1" title={`${schedule.name}'s schedule`}>
+        <CardContent className="space-y-4">
+          {selectedRow && selectedTeam && (
+            <div
+              className="hidden md:flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-primary bg-card px-[18px] py-3.5"
+              data-testid="sim-selected-strip-desktop"
+            >
+              <span className="text-[11px] font-bold uppercase tracking-wider text-primary">{selectedTeam.name}</span>
+              <span className="flex items-baseline gap-2">
+                <span className="font-heading text-[26px] font-bold tabular-nums">{formatRecord(selectedRow.actual)}</span>
+                <span className="text-muted-foreground">actual</span>
+              </span>
+              <span className="flex items-baseline gap-2">
+                <span className="font-heading text-[26px] font-bold tabular-nums">{selectedRow.expectedWins.toFixed(1)}</span>
+                <span className="text-muted-foreground">avg wins on other schedules</span>
+              </span>
+              <span className="flex items-baseline gap-2">
+                <span className={`font-heading text-[26px] font-bold tabular-nums ${luckClass(selectedRow.luck)}`}>{formatSigned(selectedRow.luck)}</span>
+                <span className="text-muted-foreground">luck</span>
+              </span>
+              <span className="ml-auto text-[13px] text-muted-foreground">Select a team in the table to see its numbers here.</span>
+            </div>
+          )}
+
+          {selectedRow && selectedTeam && (
+            <div
+              className="md:hidden rounded-lg border border-primary/60 bg-card p-3 sm:p-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-6"
+              data-testid="sim-selected-strip"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <TeamAvatar team={selectedTeam} className="w-9 h-9" />
+                <span className={`font-heading font-semibold truncate ${selectedTeam.isUser ? "text-primary" : ""}`}>{selectedTeam.name}</span>
+              </div>
+              <div className="grid grid-cols-3 gap-3 sm:flex sm:gap-8 sm:ml-auto">
+                <div>
+                  <div className="font-heading text-xl font-bold tabular-nums">{formatRecord(selectedRow.actual)}</div>
+                  <div className="text-[11px] text-muted-foreground">Actual</div>
+                </div>
+                <div>
+                  <div className="font-heading text-xl font-bold tabular-nums">{selectedRow.expectedWins.toFixed(1)}</div>
+                  <div className="text-[11px] text-muted-foreground">Avg sim wins</div>
+                </div>
+                <div>
+                  <div className={`font-heading text-xl font-bold tabular-nums ${luckClass(selectedRow.luck)}`}>{formatSigned(selectedRow.luck)}</div>
+                  <div className="text-[11px] text-muted-foreground">Luck</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Phone: team picker + this team's record on each schedule */}
+          <div className="md:hidden space-y-3" data-testid="sim-mobile">
+            <div className="flex gap-2 overflow-x-auto pb-1" role="group" aria-label="Team">
+              {teams.map((t) => (
+                <TeamChip key={t.rosterId} team={t} selected={t.rosterId === selectedRow?.rosterId} onSelect={() => setSelectedId(t.rosterId)} />
+              ))}
+            </div>
+            {selectedRow && (
+              <div className="space-y-1.5">
+                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Record on each schedule</p>
+                {phoneList.map(({ cell, schedule }) => {
+                  const isActual = schedule.rosterId === selectedRow.rosterId;
+                  const diff = winsOf(cell) - winsOf(selectedRow.actual);
+                  const bar = isActual ? "bg-primary" : diff > 0 ? "bg-emerald-500" : diff < 0 ? "bg-red-500" : "bg-slate-500";
+                  return (
+                    <div
+                      key={schedule.rosterId}
+                      className={`grid grid-cols-[28px_1fr_64px] items-center gap-2.5 min-h-[48px] rounded-lg border px-2 py-1.5 ${
+                        isActual ? "border-primary/60 bg-primary/10" : "border-transparent"
+                      }`}
+                      data-testid={`sim-mobile-row-${schedule.rosterId}`}
+                    >
                       <TeamAvatar team={schedule} />
-                      <span className={`text-[10px] ${schedule.isUser ? "text-primary" : ""}`}>{schedule.initials}</span>
+                      <div className="min-w-0 space-y-1">
+                        <div className={`text-sm font-medium truncate ${schedule.isUser ? "text-primary" : ""}`}>
+                          {schedule.name}
+                          {isActual && <span className="text-muted-foreground font-normal"> (actual)</span>}
+                        </div>
+                        <div className="h-1.5 rounded-full bg-muted">
+                          <div className={`h-1.5 rounded-full ${bar}`} style={{ width: `${(winsOf(cell) / maxGames) * 100}%` }} />
+                        </div>
+                      </div>
+                      <div className="text-right tabular-nums">
+                        <div className="text-sm font-bold">{formatRecord(cell)}</div>
+                        <div className={`text-[11px] font-semibold ${isActual ? "text-primary" : diff > 0 ? "text-emerald-400" : diff < 0 ? "text-red-400" : "text-muted-foreground"}`}>
+                          {isActual ? "actual" : diff === 0 ? "same" : formatSigned(diff)}
+                        </div>
+                      </div>
                     </div>
-                  </TableHead>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Desktop: full matrix */}
+          <div className="hidden md:block overflow-x-auto" data-testid="table-schedule-simulator">
+            <div className="min-w-[1020px] flex flex-col gap-[3px]">
+              <div className="grid items-end gap-[3px] pb-1.5" style={gridCols}>
+                <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  Team scores
+                  <span className="block font-medium normal-case tracking-normal">vs. schedule of &rarr;</span>
+                </span>
+                {teams.map((schedule) => (
+                  <span key={schedule.rosterId} className="flex justify-center" data-testid={`sim-col-${schedule.rosterId}`} title={`${schedule.name}'s schedule`}>
+                    <TeamAvatar team={schedule} />
+                  </span>
                 ))}
-                <TableHead className="text-center border-l border-border">Actual</TableHead>
-                <TableHead className="text-center">Avg sim</TableHead>
-                <TableHead className="text-center">Luck</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
+                <span className="text-center text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Actual</span>
+                <span className="text-center text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Avg sim</span>
+                <span className="text-center text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Luck</span>
+              </div>
+
               {simulation.rows.map((row) => {
                 const team = teamById.get(row.rosterId)!;
+                const isSelected = row.rosterId === selectedRow?.rosterId;
                 return (
-                  <TableRow key={row.rosterId} data-testid={`sim-row-${row.rosterId}`}>
-                    <TableCell className="sticky left-0 z-10 bg-card">
-                      <div className="flex items-center gap-2">
-                        <TeamAvatar team={team} />
-                        <span className={`text-sm font-medium truncate max-w-[120px] ${team.isUser ? "text-primary" : ""}`}>
-                          {team.name}
-                        </span>
-                      </div>
-                    </TableCell>
+                  <div
+                    key={row.rosterId}
+                    className={`grid items-center gap-[3px] rounded-[10px] py-[3px] ${isSelected ? "bg-primary/10" : ""}`}
+                    style={gridCols}
+                    data-testid={`sim-row-${row.rosterId}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelectedId(row.rosterId)}
+                      aria-pressed={isSelected}
+                      className="flex min-h-[40px] min-w-0 items-center gap-2 px-2 text-left text-[13px] font-semibold"
+                    >
+                      <TeamAvatar team={team} className="w-6 h-6" />
+                      <span className={`truncate ${team.isUser ? "text-primary" : ""}`}>{team.name}</span>
+                    </button>
                     {row.results.map((cell, idx) => {
                       const schedule = teams[idx];
                       const isActual = schedule.rosterId === row.rosterId;
                       return (
-                        <TableCell
+                        <span
                           key={schedule.rosterId}
-                          className={`text-center px-1 py-2 text-xs tabular-nums ${cellClass(cell, row.actual, isActual)}`}
+                          className={`rounded-md py-[9px] text-center text-xs tabular-nums ${cellClass(cell, row.actual, isActual)}`}
                           data-testid={`sim-cell-${row.rosterId}-${schedule.rosterId}`}
                         >
                           {formatRecord(cell)}
-                        </TableCell>
+                        </span>
                       );
                     })}
-                    <TableCell className="text-center tabular-nums font-semibold border-l border-border">
-                      {formatRecord(row.actual)}
-                    </TableCell>
-                    <TableCell className="text-center tabular-nums">{row.expectedWins.toFixed(1)}</TableCell>
-                    <TableCell
-                      className={`text-center tabular-nums font-semibold ${
-                        row.luck > 0.05 ? "text-emerald-400" : row.luck < -0.05 ? "text-red-400" : "text-muted-foreground"
-                      }`}
-                    >
-                      {formatSigned(row.luck)}
-                    </TableCell>
-                  </TableRow>
+                    <span className="border-l border-border text-center font-bold tabular-nums">{formatRecord(row.actual)}</span>
+                    <span className="text-center tabular-nums">{row.expectedWins.toFixed(1)}</span>
+                    <span className={`text-center font-bold tabular-nums ${luckClass(row.luck)}`}>{formatSigned(row.luck)}</span>
+                  </div>
                 );
               })}
-              <TableRow className="border-t-2 border-border hover:bg-transparent">
-                <TableCell className="sticky left-0 z-10 bg-card text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                  Avg wins allowed
-                </TableCell>
+
+              <div className="mt-1 grid items-center gap-[3px] border-t-2 border-border pt-2" style={gridCols}>
+                <span className="pl-2 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">Avg wins allowed</span>
                 {teams.map((schedule) => (
-                  <TableCell key={schedule.rosterId} className="text-center px-1 text-xs tabular-nums text-muted-foreground">
+                  <span key={schedule.rosterId} className="text-center text-xs tabular-nums text-muted-foreground">
                     {difficultyById.get(schedule.rosterId)?.avgWinsAllowed.toFixed(1)}
-                  </TableCell>
+                  </span>
                 ))}
-                <TableCell colSpan={3} />
-              </TableRow>
-            </TableBody>
-          </Table>
-          <div className="flex flex-wrap items-center gap-4 mt-4 text-xs text-muted-foreground">
+                <span /><span /><span />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="w-3 h-3 rounded-sm bg-primary/20 ring-1 ring-primary/60" /> Actual schedule
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-sm bg-emerald-500/30" /> More wins than actual
+              <span className="w-3 h-3 rounded-sm bg-[#0F5A3E]" /> More wins than actual
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-3 h-3 rounded-sm bg-red-500/30" /> Fewer wins than actual
+              <span className="w-3 h-3 rounded-sm bg-[#6B1F2A]" /> Fewer wins than actual
             </span>
             <span>Luck = actual wins minus average simulated wins on the other schedules.</span>
           </div>
@@ -275,6 +401,26 @@ export default function ScheduleSimulator({ analysis }: ScheduleSimulatorProps) 
           }
         />
       </div>
+
+      <Card className="md:hidden" data-testid="sim-mobile-difficulty">
+        <CardContent className="p-4 space-y-2">
+          <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Average wins allowed, by schedule</p>
+          {diffSorted.map((d) => {
+            const t = teamById.get(d.rosterId);
+            if (!t) return null;
+            return (
+              <div key={d.rosterId} className="grid grid-cols-[28px_1fr_40px] items-center gap-2.5 min-h-[32px]">
+                <TeamAvatar team={t} />
+                <div className="h-1.5 rounded-full bg-muted">
+                  <div className="h-1.5 rounded-full bg-primary" style={{ width: `${(d.avgWinsAllowed / maxAllowed) * 100}%` }} />
+                </div>
+                <span className="text-right text-xs tabular-nums text-muted-foreground">{d.avgWinsAllowed.toFixed(1)}</span>
+              </div>
+            );
+          })}
+          <p className="text-[11px] text-muted-foreground">Lower means a tougher schedule.</p>
+        </CardContent>
+      </Card>
     </div>
   );
 }
