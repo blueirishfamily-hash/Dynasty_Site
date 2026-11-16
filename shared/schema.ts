@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { pgTable, text, integer, bigint, varchar, real, unique } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, varchar, real, unique, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 
 // Database Tables for persistent storage
@@ -393,6 +394,131 @@ export const favoriteExpiringPlayersTable = pgTable("favorite_expiring_players",
   playerId: varchar("player_id", { length: 64 }).notNull(),
   createdAt: bigint("created_at", { mode: "number" }).notNull(),
 });
+
+// ─── Multi-league registry (docs/multi-league/PLAN.md, "Data model") ─────────────────────────────
+// Created by docs/multi-league/sql/001_create_league_registry.sql, not by db:push. Keep the two in step.
+
+// One row per league on the site. A league lasts across seasons; Sleeper league IDs are per season.
+export const leaguesTable = pgTable("leagues", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  name: varchar("name", { length: 128 }).notNull(),
+  slug: varchar("slug", { length: 64 }).notNull().unique(), // league address in links: /l/<slug>/...
+  inviteCode: varchar("invite_code", { length: 32 }).unique(), // stored upper case; null until the commissioner sets one
+  contractsEnabled: integer("contracts_enabled").notNull().default(0),
+  leaguePinHash: text("league_pin_hash"),
+  leaguePinSetAt: bigint("league_pin_set_at", { mode: "number" }),
+  status: varchar("status", { length: 16 }).notNull().default("active"), // active | archived
+  createdBy: varchar("created_by", { length: 64 }).notNull(), // Sleeper user ID
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (t) => [
+  check("leagues_slug_format", sql`${t.slug} ~ '^[a-z0-9]+(-[a-z0-9]+)*$'`),
+  check("leagues_invite_code_format", sql`${t.inviteCode} IS NULL OR (${t.inviteCode} = upper(${t.inviteCode}) AND length(${t.inviteCode}) >= 6)`),
+  check("leagues_contracts_enabled_bool", sql`${t.contractsEnabled} IN (0, 1)`),
+  check("leagues_status_values", sql`${t.status} IN ('active', 'archived')`),
+]);
+
+// Each league's chain of Sleeper league IDs, one row per season. Exactly one current row per league.
+export const leagueSeasonHistoryTable = pgTable("league_season_history", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 36 }).notNull().references(() => leaguesTable.id),
+  season: varchar("season", { length: 8 }).notNull(),
+  sleeperLeagueId: varchar("sleeper_league_id", { length: 64 }).notNull().unique(), // one league site-wide
+  previousSleeperLeagueId: varchar("previous_sleeper_league_id", { length: 64 }),
+  status: varchar("status", { length: 16 }).notNull(), // current | past
+  rolledOverAt: bigint("rolled_over_at", { mode: "number" }),
+  rolledOverBy: varchar("rolled_over_by", { length: 64 }),
+  migrationId: varchar("migration_id", { length: 36 }),
+}, (t) => [
+  unique("league_season_history_league_season_unique").on(t.leagueId, t.season),
+  uniqueIndex("league_season_history_one_current").on(t.leagueId).where(sql`${t.status} = 'current'`),
+  check("league_season_history_status_values", sql`${t.status} IN ('current', 'past')`),
+]);
+
+// Commissioners and co-commissioners. Each has their own commissioner PIN for this league only.
+export const leagueCommissionersTable = pgTable("league_commissioners", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 36 }).notNull().references(() => leaguesTable.id),
+  sleeperUserId: varchar("sleeper_user_id", { length: 64 }).notNull(),
+  role: varchar("role", { length: 16 }).notNull(), // owner | co
+  pinHash: text("pin_hash"),
+  pinSetAt: bigint("pin_set_at", { mode: "number" }),
+  addedBy: varchar("added_by", { length: 64 }).notNull(),
+  addedAt: bigint("added_at", { mode: "number" }).notNull(),
+}, (t) => [
+  unique("league_commissioners_league_user_unique").on(t.leagueId, t.sleeperUserId),
+  check("league_commissioners_role_values", sql`${t.role} IN ('owner', 'co')`),
+]);
+
+// Contract and league rules (shared/leagueRules.ts LeagueRules), one row per league per season.
+export const leagueRulesTable = pgTable("league_rules", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 36 }).notNull().references(() => leaguesTable.id),
+  season: varchar("season", { length: 8 }).notNull(),
+  rules: jsonb("rules").notNull(),
+  updatedBy: varchar("updated_by", { length: 64 }).notNull(),
+  updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
+}, (t) => [
+  unique("league_rules_league_season_unique").on(t.leagueId, t.season),
+]);
+
+// Devices that joined a league with its invite code. Only a hash of the device token is stored.
+export const leagueDeviceAccessTable = pgTable("league_device_access", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 36 }).notNull().references(() => leaguesTable.id),
+  deviceTokenHash: varchar("device_token_hash", { length: 128 }).notNull().unique(),
+  rosterId: integer("roster_id"), // team picked on this device; null until picked
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  lastUsedAt: bigint("last_used_at", { mode: "number" }).notNull(),
+  revokedAt: bigint("revoked_at", { mode: "number" }),
+}, (t) => [
+  index("league_device_access_league_idx").on(t.leagueId),
+]);
+
+// The site admin passcode (hash only). At most one row.
+export const siteAdminTable = pgTable("site_admin", {
+  id: integer("id").primaryKey().default(1),
+  passcodeHash: text("passcode_hash").notNull(),
+  setAt: bigint("set_at", { mode: "number" }).notNull(),
+}, (t) => [
+  check("site_admin_single_row", sql`${t.id} = 1`),
+]);
+
+// Wrong tries, for the 15-minute pause after 5 failures.
+export const pinAttemptsTable = pgTable("pin_attempts", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  kind: varchar("kind", { length: 32 }).notNull(), // league_pin | commissioner_pin | admin_passcode | invite_code
+  target: varchar("target", { length: 64 }).notNull().default(""), // league id or commissioner row id; "" for site-wide
+  deviceKey: varchar("device_key", { length: 128 }).notNull(), // hashed device token or client address
+  failures: integer("failures").notNull().default(0),
+  firstFailedAt: bigint("first_failed_at", { mode: "number" }).notNull(),
+  pausedUntil: bigint("paused_until", { mode: "number" }),
+}, (t) => [
+  unique("pin_attempts_kind_target_device_unique").on(t.kind, t.target, t.deviceKey),
+  check("pin_attempts_kind_values", sql`${t.kind} IN ('league_pin', 'commissioner_pin', 'admin_passcode', 'invite_code')`),
+]);
+
+// Sensitive actions: PIN resets, rule changes, rollovers, leagues added. league_id is null for site actions.
+export const auditLogTable = pgTable("audit_log", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 36 }).references(() => leaguesTable.id),
+  actorSleeperUserId: varchar("actor_sleeper_user_id", { length: 64 }),
+  actorRole: varchar("actor_role", { length: 16 }).notNull(), // admin | commissioner | system
+  action: varchar("action", { length: 64 }).notNull(),
+  details: jsonb("details"),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+}, (t) => [
+  index("audit_log_league_created_idx").on(t.leagueId, t.createdAt),
+  check("audit_log_actor_role_values", sql`${t.actorRole} IN ('admin', 'commissioner', 'system')`),
+]);
+
+export type League = typeof leaguesTable.$inferSelect;
+export type LeagueSeasonHistory = typeof leagueSeasonHistoryTable.$inferSelect;
+export type LeagueCommissioner = typeof leagueCommissionersTable.$inferSelect;
+export type LeagueRulesRow = typeof leagueRulesTable.$inferSelect;
+export type LeagueDeviceAccess = typeof leagueDeviceAccessTable.$inferSelect;
+export type SiteAdmin = typeof siteAdminTable.$inferSelect;
+export type PinAttempt = typeof pinAttemptsTable.$inferSelect;
+export type AuditLogEntry = typeof auditLogTable.$inferSelect;
 
 // Drizzle insert schemas
 export const insertRuleSuggestionDbSchema = createInsertSchema(ruleSuggestionsTable).omit({ id: true, createdAt: true, status: true });

@@ -18,7 +18,7 @@ The plan's source of truth is the claude.ai doc "Multi-League Plan" (https://cla
 - Stack: React and TypeScript client (`client/`), Express server (`server/`), Drizzle with Postgres on Supabase (`shared/schema.ts`), Sleeper API.
 - `server/routes.ts` is about 12,000 lines. Splitting it is phase 0.
 - Contract salaries are stored in tenths of $M. The client divides by 10. The cap is $250M.
-- The user is the commissioner and site admin: Sleeper user ID `900186363130503168`, team "Rough Start", roster 1, league "ATL Dynasty". ATL's past Sleeper league IDs: 2023 `918240874625257472`, 2024 `1048746932522405888`, 2025 `1194798912048705536`.
+- The user is the commissioner and site admin: Sleeper user ID `900186363130503168`, team "Rough Start", roster 1, league "ATL Dynasty". ATL's past Sleeper league IDs: 2023 `918240874625257472`, 2024 `1048746932522405888`, 2025 `1194798912048705536`, 2026 `1389347703116267520` (current).
 - Scripts: `npm run dev`, `npm run check` (tsc), `npm test` (vitest), `npm run db:push`.
 - Don't use `npm run db:push` for the new tables. It syncs the whole schema and could try to change other tables. Write a SQL file that only creates the 8 new tables, and have the user run it in the Supabase SQL editor, or run it yourself if the user agrees.
 - GitHub repo: `blueirishfamily-hash/Dynasty_Site`, branch `main`. GitHub says it moved from `dynasty_site`, so update the remote URL if pushes warn about it.
@@ -30,7 +30,21 @@ The plan's source of truth is the claude.ai doc "Multi-League Plan" (https://cla
 - Phase 0 done (uncommitted, on `multi-league`): `server/routes.ts` was split as a pure move into `server/routes/*.ts`, one file per area. `server/routes/index.ts` keeps `registerRoutes` and registers the area files in order. Helpers used by more than one file are in `server/routes/shared.ts`, and `COMMISSIONER_USER_IDS` and `isCommissioner` are in `server/middleware/commissioner.ts`. The largest file is `contracts.ts` at about 1,340 lines.
   - How it was checked: the same 143 method and path pairs before and after. The 12 pairs that can match the same request keep their original order. Every original line is present. The same 166 routes register at runtime. `tsc` shows the same errors as before the split. `npm test` matches the baseline.
   - Already broken before the split, still to fix: `npm run check` fails with about 60 errors, mostly TS2802 because `tsconfig.json` has no `target`. The `contractRules.test.ts` test "phase dates > null dates do not crash" fails (expected 8 to be 9).
-- Phases 1 to 6 not started.
+- Phase 0 is committed as `ced5fe0e` on `multi-league`.
+- Phase 1 in progress (uncommitted):
+  - The 8 tables are in `shared/schema.ts`, with checks, uniques, the one-current-season index and foreign keys. `docs/multi-league/sql/001_create_league_registry.sql` creates them in one transaction, and also turns on row level security so Supabase's public Data API can't read PIN hashes. The DDL was generated from the schema by `drizzle-kit generate` offline, so the two match. The user ran it on 2026-11-16.
+  - `docs/multi-league/sql/002_insert_atl_dynasty.sql` inserts ATL Dynasty: address `atl-dynasty`, contracts on, no invite code, the 2023 to 2026 season chain (2023 to 2025 checked against Sleeper), the user as owner, and 2026 rules. The 2026 Sleeper ID is read from `active_leagues`, because Claude was not allowed to query the real database. The user ran it on 2026-11-16. The 2026 ID came out as `1389347703116267520`, and Sleeper confirms its previous league is 2025.
+  - `shared/leagueRules.ts` holds the `LeagueRules` type and `atlDynastyRules()`, built from today's constants. A test checks that the SQL's JSON equals it.
+  - The league lookup is in `server/middleware/league.ts` (logic, testable without a database) and `server/leagueRegistry.ts` (database reads and the shared `leagueResolver`). `registerRoutes` adds it with `app.param("leagueId")`, so every `:leagueId` route sets `req.league`. It is lenient until phase 4: unregistered IDs pass through, and if the tables are missing it logs once and passes through, retrying every 60 s. An `X-League: <slug>` header that names a different league than the Sleeper ID's is refused with 409. 16 tests in `server/middleware/league.test.ts` (vitest now also runs `server/**/*.test.ts`).
+  - League addresses (uncommitted):
+    - `App.tsx` wraps the app in wouter's `<Route path="/l/:slug" nest>`, so links and `setLocation` stay relative and no page had to change. Old addresses redirect to `/l/<last used league, else atl-dynasty>/<same page>?<same query>`. A malformed address shows the 404 page.
+    - `client/src/lib/league-address.ts` keeps the current address and wraps `fetch` to add `X-League` to same-origin `/api/` calls. It never replaces an `X-League` the caller set.
+    - `SleeperProvider` takes `leagueSlug`. It asks `GET /api/registry/leagues/:slug` (`server/routes/leagues.ts`, public details only) and shows "League not found" on a 404. Its cached league is stored per address (`sleeper_league:<slug>`), and ATL falls back to the old `sleeper_league` key.
+    - **For ATL, `active_leagues` still decides which Sleeper league loads**, because Settings' league switch and Advance League Year write there. Phase 5 must make rollover update `league_season_history` and then drop this exception. Until then, a new season's Sleeper ID is unregistered and passes the lenient lookup.
+    - Lookup rule changed: an unregistered Sleeper ID under a real address passes in lenient mode (strict refuses it). Only an ID that belongs to another league is refused (409).
+    - Checked with Vite alone (`.claude/launch.json`, "client-only"), with no API and no database. Redirects keep the page and query, sidebar links stay under the address, history deep links work, a bad slug shows 404, and there are no console errors. 8 tests in `client/src/lib/league-address.test.ts` cover the header and redirects. Not yet checked against the real API.
+  - Still to do in phase 1: the mismatch tests against two test leagues (needs the test database).
+  - Known gap for phase 4: the signed-in user (`sleeper_user`) is still one per device, not one per league.
 
 ## Decided with the user (2026-11-16)
 

@@ -1,5 +1,17 @@
 import { createContext, useContext, useState, useEffect, type ReactNode } from "react";
 import type { LeagueInfo, UserInfo } from "@shared/schema";
+import { LEGACY_LEAGUE_SLUG } from "./league-address";
+
+/** The league registry's public details for the league in the address (/api/registry/leagues/:slug). */
+export interface RegistryLeague {
+  id: string;
+  name: string;
+  slug: string;
+  contractsEnabled: boolean;
+  status: string;
+  currentSeason: string;
+  currentSleeperLeagueId: string;
+}
 
 interface SleeperContextType {
   user: UserInfo | null;
@@ -9,6 +21,12 @@ interface SleeperContextType {
   isLoading: boolean;
   isOffseason: boolean;
   error: string | null;
+  /** The league address (/l/<slug>/) this app is showing. */
+  leagueSlug: string;
+  /** The registry entry for leagueSlug; null if the registry could not be reached. */
+  registryLeague: RegistryLeague | null;
+  /** True when the address names no league. */
+  leagueNotFound: boolean;
   setUser: (user: UserInfo | null) => void;
   setLeague: (league: LeagueInfo | null) => void;
   clearSession: () => void;
@@ -17,9 +35,25 @@ interface SleeperContextType {
 const SleeperContext = createContext<SleeperContextType | null>(null);
 
 const STORAGE_KEY_USER = "sleeper_user";
-const STORAGE_KEY_LEAGUE = "sleeper_league";
+const LEGACY_STORAGE_KEY_LEAGUE = "sleeper_league";
 
-export function SleeperProvider({ children }: { children: ReactNode }) {
+/** The cached league is kept per address so one league's data never shows under another's address. */
+function leagueStorageKey(slug: string) {
+  return `sleeper_league:${slug}`;
+}
+
+function readStoredLeague(slug: string): string | null {
+  if (typeof localStorage === "undefined") return null;
+  const stored = localStorage.getItem(leagueStorageKey(slug));
+  // Devices from before league addresses cached ATL Dynasty's league under the old key.
+  if (!stored && slug === LEGACY_LEAGUE_SLUG) return localStorage.getItem(LEGACY_STORAGE_KEY_LEAGUE);
+  return stored;
+}
+
+export function SleeperProvider({ children, leagueSlug }: { children: ReactNode; leagueSlug: string }) {
+  const STORAGE_KEY_LEAGUE = leagueStorageKey(leagueSlug);
+  const [registryLeague, setRegistryLeague] = useState<RegistryLeague | null>(null);
+  const [leagueNotFound, setLeagueNotFound] = useState(false);
   const [user, setUserState] = useState<UserInfo | null>(null);
   const [league, setLeagueState] = useState<LeagueInfo | null>(null);
   const [currentWeek, setCurrentWeek] = useState(1);
@@ -39,7 +73,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         // Load stored league first (faster, works offline)
         // Check if localStorage is available (SSR safety)
         if (typeof localStorage !== 'undefined') {
-          const storedLeague = localStorage.getItem(STORAGE_KEY_LEAGUE);
+          const storedLeague = readStoredLeague(leagueSlug);
           if (storedLeague) {
             try {
               const leagueInfo = JSON.parse(storedLeague);
@@ -69,10 +103,39 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
             ),
           ]).catch(() => null);
 
-        const [nflStateRes, activeLeagueRes] = await Promise.all([
+        // The address names the league: the registry gives its current Sleeper league ID.
+        const [nflStateRes, registryRes] = await Promise.all([
           fetchWithTimeout("/api/sleeper/nfl-state"),
-          fetchWithTimeout("/api/league/active"),
+          fetchWithTimeout(`/api/registry/leagues/${encodeURIComponent(leagueSlug)}`),
         ]);
+
+        let registryEntry: RegistryLeague | null = null;
+        if (registryRes?.ok) {
+          try {
+            registryEntry = await registryRes.json();
+          } catch {
+            registryEntry = null;
+          }
+        }
+        if (registryRes?.status === 404) {
+          setLeagueNotFound(true);
+          setLeagueState(null);
+          setError("League not found");
+          return;
+        }
+        setRegistryLeague(registryEntry);
+
+        // ATL Dynasty still loads the site-wide active league (active_leagues), as before league addresses:
+        // Settings' league switch and Advance League Year write there, and the registry only learns about
+        // new seasons once rollover is rebuilt in phase 5. Other leagues load the registry's current season.
+        let activeLeagueRes: Response | null = null;
+        if (leagueSlug === LEGACY_LEAGUE_SLUG) {
+          activeLeagueRes = await fetchWithTimeout("/api/league/active");
+        } else if (!registryEntry) {
+          setLeagueState(null);
+          setError("Failed to connect to league: league registry unavailable");
+          return;
+        }
 
         // Get NFL state
         let nflState: any = null;
@@ -102,7 +165,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
           }
         } else if (activeLeagueRes?.status === 404) {
           // If 404, check if we have stored league data to use
-          const storedLeague = typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY_LEAGUE) : null;
+          const storedLeague = readStoredLeague(leagueSlug);
           if (storedLeague) {
             try {
               const parsed = JSON.parse(storedLeague);
@@ -112,6 +175,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
             }
           }
         }
+        if (!activeLeagueId && registryEntry) activeLeagueId = registryEntry.currentSleeperLeagueId;
 
         // Fetch the active league (refresh stored data) and prioritize its season
         if (activeLeagueId) {
@@ -140,14 +204,14 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
             }
           } catch (err: any) {
             console.error("Error fetching league:", err);
-            const hasStoredLeague = typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_LEAGUE);
+            const hasStoredLeague = readStoredLeague(leagueSlug);
             if (!hasStoredLeague) {
               setError(`Failed to connect to league: ${err?.message || "Network error"}`);
               setSeason(nflState?.season || new Date().getFullYear().toString());
             } else {
               // If we have stored league, use its season
               try {
-                const storedLeague = JSON.parse(localStorage.getItem(STORAGE_KEY_LEAGUE)!);
+                const storedLeague = JSON.parse(readStoredLeague(leagueSlug)!);
                 if (storedLeague?.season) {
                   setSeason(storedLeague.season);
                 } else {
@@ -160,10 +224,10 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
           }
         } else {
           // No active league from API - try to use stored league data
-          const hasStoredLeague = typeof localStorage !== 'undefined' && localStorage.getItem(STORAGE_KEY_LEAGUE);
+          const hasStoredLeague = readStoredLeague(leagueSlug);
           if (hasStoredLeague) {
             try {
-              const storedLeague = JSON.parse(localStorage.getItem(STORAGE_KEY_LEAGUE)!);
+              const storedLeague = JSON.parse(readStoredLeague(leagueSlug)!);
               if (storedLeague?.leagueId) {
                 // Use stored league data
                 setLeagueState(storedLeague);
@@ -193,7 +257,7 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
 
     initializeApp();
     return () => clearTimeout(forceDoneTimer);
-  }, []);
+  }, [leagueSlug]);
 
   const setUser = (newUser: UserInfo | null) => {
     setUserState(newUser);
@@ -230,6 +294,9 @@ export function SleeperProvider({ children }: { children: ReactNode }) {
         isLoading,
         isOffseason,
         error,
+        leagueSlug,
+        registryLeague,
+        leagueNotFound,
         setUser,
         setLeague,
         clearSession,

@@ -233,10 +233,10 @@ There are seven phases, and ATL Dynasty keeps working after each one. A second l
 
 **Phase 1: registry and season history**
 
-- [ ] Create the eight tables
-- [ ] Insert ATL Dynasty's rows: its league, its 2023 to 2026 season history linked in order, you as commissioner, its 2026 rules
-- [ ] Add the shared league lookup to every league route
-- [ ] Move pages under `/l/<league>/`, with today's addresses redirecting to ATL Dynasty
+- [x] Create the eight tables
+- [x] Insert ATL Dynasty's rows: its league, its 2023 to 2026 season history linked in order, you as commissioner, its 2026 rules
+- [x] Add the shared league lookup to every league route (lenient until phase 4)
+- [x] Move pages under `/l/<league>/`, with today's addresses redirecting to ATL Dynasty
 - [ ] Write the mismatch tests against two test leagues
 
 **Phase 2: PINs, commissioners and admin**

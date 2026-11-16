@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
-import { Switch, Route, useLocation } from "wouter";
+import { Switch, Route, Redirect, useLocation, useSearch } from "wouter";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { SleeperProvider, useSleeper } from "@/lib/sleeper-context";
+import { isValidLeagueSlug, legacyRedirectTarget, setLeagueSlug } from "@/lib/league-address";
 import AppSidebar from "@/components/AppSidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import SetupModal from "@/components/SetupModal";
@@ -68,7 +69,7 @@ function Router() {
 }
 
 function AppContent() {
-  const { user, league, clearSession, season, isLoading, error } = useSleeper();
+  const { user, league, clearSession, season, isLoading, error, leagueNotFound } = useSleeper();
   const [showSetup, setShowSetup] = useState(false);
   const [, setLocation] = useLocation();
 
@@ -256,7 +257,7 @@ function AppContent() {
               </div>
             )}
             <main className="flex-1 overflow-auto bg-background">
-              <Router />
+              {leagueNotFound ? <NotFound /> : <Router />}
             </main>
           </div>
         </div>
@@ -265,13 +266,38 @@ function AppContent() {
   );
 }
 
+// Every page lives under its league's address, /l/<slug>/. Inside the nested route, links and
+// setLocation stay relative ("/team" goes to /l/<slug>/team), so pages don't need to know the address.
+function LeagueApp({ slug }: { slug: string }) {
+  if (!isValidLeagueSlug(slug)) return <NotFound />;
+  setLeagueSlug(slug); // before any child fetches, so they carry the X-League header
+  return (
+    <SleeperProvider key={slug} leagueSlug={slug}>
+      <AppContent />
+    </SleeperProvider>
+  );
+}
+
+// Addresses from before league addresses (/team, /standings?x=1, ...) open the same page in the
+// device's last used league, or ATL Dynasty.
+function LegacyRedirect() {
+  const [location] = useLocation();
+  const search = useSearch();
+  return <Redirect to={legacyRedirectTarget(location, search)} replace />;
+}
+
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
-        <SleeperProvider>
-          <AppContent />
-        </SleeperProvider>
+        <Switch>
+          <Route path="/l/:slug" nest>
+            {(params) => <LeagueApp slug={params.slug} />}
+          </Route>
+          <Route>
+            <LegacyRedirect />
+          </Route>
+        </Switch>
         <Toaster />
       </TooltipProvider>
     </QueryClientProvider>

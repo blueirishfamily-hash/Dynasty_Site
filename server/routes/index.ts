@@ -1,6 +1,9 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { isCommissioner } from "../middleware/commissioner";
+import { registerLeagueLookup } from "../middleware/league";
+import { leagueResolver } from "../leagueRegistry";
+import { registerLeaguesRoutes } from "./leagues";
 import { registerSleeperProxyRoutes } from "./sleeperProxy";
 import { registerPlayersRoutes } from "./players";
 import { registerContractsRoutes } from "./contracts";
@@ -26,6 +29,10 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
+  // Shared league lookup for every route with a :leagueId parameter (sets req.league). Lenient until phase 4.
+  registerLeagueLookup(app, leagueResolver);
+  registerLeaguesRoutes(app);
+
   registerSleeperProxyRoutes(app);
   registerPlayersRoutes(app);
   registerContractsRoutes(app);
