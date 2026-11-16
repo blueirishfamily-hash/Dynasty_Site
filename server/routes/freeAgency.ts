@@ -2,7 +2,7 @@
 // Moved out of server/routes.ts unchanged.
 import type { Express } from "express";
 import { storage } from "../storage";
-import { getLeague, getAllPlayers, type SleeperPlayer } from "../sleeper";
+import { getLeague, getAllPlayers, fetchFromSleeper, type SleeperPlayer } from "../sleeper";
 import type { PlayerBid } from "../../shared/schema";
 import {
   dbErrorMessage,
@@ -219,11 +219,8 @@ export function registerFreeAgencyRoutes(app: Express): void {
       let trendingCountByPlayer: Record<string, number> = {};
 
       try {
-        const trendingRes = await fetch(
-          "https://api.sleeper.app/v1/players/nfl/trending/add?lookback_hours=24&limit=30"
-        );
-        if (trendingRes.ok) {
-          const trending = await trendingRes.json();
+        {
+          const trending = await fetchFromSleeper<any>("/players/nfl/trending/add?lookback_hours=24&limit=30");
           if (Array.isArray(trending)) {
             for (const item of trending) {
               const pid = item?.player_id ?? item?.playerId;

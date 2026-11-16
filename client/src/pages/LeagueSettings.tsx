@@ -152,6 +152,7 @@ interface SettingsResponse {
   contractsEnabled: boolean;
   inviteCode: string | null;
   leaguePinSet: boolean;
+  joinGraceUntil: number | null;
   commissioners: Array<{ sleeperUserId: string; role: "owner" | "co"; pinState: string }>;
 }
 
@@ -233,7 +234,29 @@ function LeagueAccessTab({ slug }: { slug: string }) {
         </div>
       </Section>
 
-      <Section title="League PIN" description="Optional. Asked once when a device first joins the league. 4 to 8 digits.">
+      {data.inviteCode && (
+        <Section
+          title="Existing devices"
+          description="When a league first gets an invite code, devices already using it keep working for a while and are joined automatically the next time they save something. After that they must enter the code."
+        >
+          {data.joinGraceUntil && data.joinGraceUntil > Date.now() ? (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm" data-testid="text-grace-active">Devices that haven't joined keep working until {new Date(data.joinGraceUntil).toLocaleDateString()}.</span>
+              <div className="flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { joinGraceDays: 30 }), "Extended to 30 days from now")}>Restart 30 days</Button>
+                <Button variant="outline" size="sm" onClick={() => { if (confirm("End the grace period now? Devices that haven't entered the invite code can't save anything until they do.")) run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { joinGraceDays: 0 }), "Grace period ended"); }}>End now</Button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="text-sm text-muted-foreground">No grace period: devices must enter the invite code before they can save anything.</span>
+              <Button variant="outline" size="sm" onClick={() => run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { joinGraceDays: 30 }), "Grace period started")}>Start 30 days</Button>
+            </div>
+          )}
+        </Section>
+      )}
+
+      <Section title="League PIN" description="Optional. Asked once when a device first joins the league. 4 to 8 digits. Setting, changing or clearing it signs every device out of the league; they join again with the code and the new PIN.">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm text-muted-foreground">{data.leaguePinSet ? "Set" : "Not set"}</span>
           <Input type="password" inputMode="numeric" pattern="[0-9]*" value={leaguePin} onChange={(e) => setLeaguePin(e.target.value.replace(/\D/g, ""))} placeholder="New PIN" className="w-32" aria-label="New league PIN" autoComplete="off" />

@@ -10,6 +10,7 @@ import {
   getNFLState,
   getAllPlayers,
   getPlayerStats,
+  fetchFromSleeper,
   type SleeperRoster,
   type SleeperLeagueUser,
 } from "../sleeper";
@@ -542,8 +543,7 @@ export function registerRostersRoutes(app: Express): void {
       const weeklyStatsPromises: Promise<Record<string, any>>[] = [];
       for (let w = Math.max(1, currentWeek - weeksToFetch + 1); w <= currentWeek; w++) {
         weeklyStatsPromises.push(
-          fetch(`https://api.sleeper.app/v1/stats/nfl/regular/${season}/${w}?season_type=regular`)
-            .then(r => r.ok ? r.json() : {})
+          fetchFromSleeper<Record<string, any>>(`/stats/nfl/regular/${season}/${w}?season_type=regular`)
             .catch(() => ({}))
         );
       }

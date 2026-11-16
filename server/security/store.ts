@@ -1,11 +1,12 @@
 // Database access for the registry tables used by phase 2: pin_attempts, site_admin,
 // league_commissioners, audit_log, and adding leagues with their season history.
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db";
 import {
   auditLogTable,
   leagueCommissionersTable,
+  leagueDeviceAccessTable,
   leagueSeasonHistoryTable,
   leaguesTable,
   pinAttemptsTable,
@@ -13,6 +14,7 @@ import {
   type AuditLogEntry,
   type League,
   type LeagueCommissioner,
+  type LeagueDeviceAccess,
   type LeagueSeasonHistory,
 } from "../../shared/schema";
 import type { AttemptKind, AttemptStore } from "./attempts";
@@ -246,4 +248,54 @@ export async function appendCurrentSeason(
       migrationId: next.migrationId,
     });
   });
+}
+
+// ─── Devices that joined a league ──────────────────────────────────────────────
+
+/** The active league with this invite code (stored upper case) and its current season, or null. */
+export async function findLeagueByInviteCode(code: string) {
+  const rows = await db
+    .select()
+    .from(leaguesTable)
+    .where(and(eq(leaguesTable.inviteCode, code.trim().toUpperCase()), eq(leaguesTable.status, "active")))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function createDevice(leagueId: string, tokenHash: string, now = Date.now()): Promise<LeagueDeviceAccess> {
+  const row = { id: randomUUID(), leagueId, deviceTokenHash: tokenHash, rosterId: null, createdAt: now, lastUsedAt: now, revokedAt: null };
+  await db.insert(leagueDeviceAccessTable).values(row);
+  return row;
+}
+
+/** The device with this token hash for this league, if it hasn't been signed out. */
+export async function findActiveDevice(leagueId: string, tokenHash: string): Promise<LeagueDeviceAccess | null> {
+  const rows = await db
+    .select()
+    .from(leagueDeviceAccessTable)
+    .where(and(
+      eq(leagueDeviceAccessTable.deviceTokenHash, tokenHash),
+      eq(leagueDeviceAccessTable.leagueId, leagueId),
+      isNull(leagueDeviceAccessTable.revokedAt),
+    ))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+export async function touchDevice(id: string, now = Date.now()) {
+  await db.update(leagueDeviceAccessTable).set({ lastUsedAt: now }).where(eq(leagueDeviceAccessTable.id, id));
+}
+
+export async function setDeviceRoster(id: string, rosterId: number | null) {
+  await db.update(leagueDeviceAccessTable).set({ rosterId }).where(eq(leagueDeviceAccessTable.id, id));
+}
+
+/** Signs out every device in a league (a league PIN change or reset does this). Returns how many. */
+export async function revokeAllDevices(leagueId: string, now = Date.now()): Promise<number> {
+  const rows = await db
+    .update(leagueDeviceAccessTable)
+    .set({ revokedAt: now })
+    .where(and(eq(leagueDeviceAccessTable.leagueId, leagueId), isNull(leagueDeviceAccessTable.revokedAt)))
+    .returning({ id: leagueDeviceAccessTable.id });
+  return rows.length;
 }

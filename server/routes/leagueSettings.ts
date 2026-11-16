@@ -20,7 +20,9 @@ import { leagueRulesFor, rulesRows, saveRulesRow, deleteRulesRow } from "../leag
 import { leagueResolver } from "../leagueRegistry";
 import { auditActor, requireAdmin, requireCommissioner } from "../security/guards";
 import { SETUP_PREFIX, generateSetupCode, hashSecret, isValidPin, normalizeSetupCode, readPinSlot } from "../security/secrets";
-import { addCommissioner, findCommissioner, listCommissioners, removeCommissioner, updateLeague, writeAudit } from "../security/store";
+import { addCommissioner, findCommissioner, listCommissioners, removeCommissioner, revokeAllDevices, updateLeague, writeAudit } from "../security/store";
+import { DEFAULT_GRACE_DAYS, MAX_GRACE_DAYS, graceEndFor } from "../security/membership";
+import { readGraceUntil, writeGraceUntil } from "../security/membershipStore";
 import { normalizeInviteCode } from "./adminLeagues";
 import { leagueFromSlug } from "./security";
 
@@ -134,6 +136,8 @@ export function registerLeagueSettingsRoutes(app: Express): void {
       contractsEnabled: league.league.contractsEnabled === 1,
       inviteCode: league.league.inviteCode,
       leaguePinSet: !!league.league.leaguePinHash,
+      // Until this time, devices that haven't joined with the invite code keep working and are joined quietly.
+      joinGraceUntil: await readGraceUntil(league.league.id),
       commissioners: commissioners.map((c) => ({ sleeperUserId: c.sleeperUserId, role: c.role, pinState: readPinSlot(c.pinHash, c.pinSetAt).state })),
     });
   }));
@@ -156,6 +160,11 @@ export function registerLeagueSettingsRoutes(app: Express): void {
       if (code === "invalid") return res.status(400).json({ error: "Invite codes are 6 to 32 letters and digits." });
       patch.inviteCode = code;
       changed.push("inviteCode");
+      // The first invite code starts a grace period, so devices already using the league aren't locked out.
+      if (code && !league.league.inviteCode) {
+        await writeGraceUntil(league.league.id, graceEndFor(DEFAULT_GRACE_DAYS));
+        changed.push("joinGrace");
+      }
     }
     if (body.leaguePin !== undefined) {
       if (body.leaguePin === null) {
@@ -168,15 +177,23 @@ export function registerLeagueSettingsRoutes(app: Express): void {
       }
       changed.push("leaguePin");
     }
+    if (body.joinGraceDays !== undefined) {
+      const days = Number(body.joinGraceDays);
+      if (!Number.isInteger(days) || days < 0 || days > MAX_GRACE_DAYS) return res.status(400).json({ error: `The grace period is 0 to ${MAX_GRACE_DAYS} days.` });
+      await writeGraceUntil(league.league.id, graceEndFor(days));
+      if (!changed.includes("joinGrace")) changed.push("joinGrace");
+    }
     if (changed.length === 0) return res.status(400).json({ error: "Nothing to change." });
-    await updateLeague(league.league.id, patch);
+    if (Object.keys(patch).length > 0) await updateLeague(league.league.id, patch);
+    // Changing or clearing the league PIN signs out every device; they join again with the code and the new PIN.
+    const signedOut = body.leaguePin !== undefined ? await revokeAllDevices(league.league.id) : 0;
     leagueResolver.invalidate();
     await writeAudit({
       leagueId: league.league.id,
       ...auditActor(actor),
       action: "league_settings_changed",
       // Never log the invite code or PIN themselves.
-      details: { changed, contractsEnabled: body.contractsEnabled, leaguePinCleared: body.leaguePin === null || undefined },
+      details: { changed, contractsEnabled: body.contractsEnabled, leaguePinCleared: body.leaguePin === null || undefined, devicesSignedOut: signedOut || undefined, joinGraceDays: body.joinGraceDays },
     });
     res.json({ updated: changed });
   }));

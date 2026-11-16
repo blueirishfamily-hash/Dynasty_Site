@@ -1,4 +1,7 @@
-const SLEEPER_BASE_URL = "https://api.sleeper.app/v1";
+import { createSleeperGate } from "./sleeperGate";
+
+// Every Sleeper call goes through one gate: shared cache, one queue under Sleeper's rate limit, and stats.
+export const sleeperGate = createSleeperGate();
 
 export interface SleeperUser {
   user_id: string;
@@ -120,12 +123,9 @@ export interface SleeperLeagueUser {
   };
 }
 
-async function fetchFromSleeper<T>(endpoint: string): Promise<T> {
-  const response = await fetch(`${SLEEPER_BASE_URL}${endpoint}`);
-  if (!response.ok) {
-    throw new Error(`Sleeper API error: ${response.status} ${response.statusText}`);
-  }
-  return response.json();
+/** GET a Sleeper path (like "/league/123/rosters") through the shared cache and queue. */
+export function fetchFromSleeper<T>(endpoint: string): Promise<T> {
+  return sleeperGate.get<T>(endpoint);
 }
 
 export async function getSleeperUser(username: string): Promise<SleeperUser | null> {
@@ -177,19 +177,9 @@ export async function getNFLState(): Promise<SleeperNFLState> {
   return fetchFromSleeper<SleeperNFLState>(`/state/nfl`);
 }
 
-let playersCache: Record<string, SleeperPlayer> | null = null;
-let playersCacheTime: number = 0;
-const PLAYERS_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 hours
-
+/** The 5 MB player list: fetched at most once a day for the whole site, as Sleeper asks. */
 export async function getAllPlayers(): Promise<Record<string, SleeperPlayer>> {
-  const now = Date.now();
-  if (playersCache && now - playersCacheTime < PLAYERS_CACHE_DURATION) {
-    return playersCache;
-  }
-  
-  playersCache = await fetchFromSleeper<Record<string, SleeperPlayer>>(`/players/nfl`);
-  playersCacheTime = now;
-  return playersCache;
+  return fetchFromSleeper<Record<string, SleeperPlayer>>(`/players/nfl`);
 }
 
 export async function getPlayerStats(season: string, week?: number): Promise<Record<string, Record<string, number>>> {

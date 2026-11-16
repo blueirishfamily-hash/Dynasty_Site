@@ -101,3 +101,28 @@ Also done after the first pass:
 Still open after phase 3:
 - The settings routes in `server/routes/leagueSettings.ts` have no automated tests (they need the test database).
 - Phase 1 mismatch tests still need the test database.
+
+## Phase 4 built (uncommitted, 2026-11-16)
+
+Decisions with the user: join page = mockup A (one card, steps in place); sidebar switcher = mockup B ("Your leagues" list above the pages); existing ATL devices are **grandfathered**.
+
+How grandfathering works (a limit the user has not seen yet): the server can't tell an existing device from a stranger, so grandfathering is a **time-boxed grace period per league**, not permanent. ATL has no invite code, and a league without one isn't asked to join, so nothing changes for ATL until the commissioner sets a code. Setting the first invite code starts a 30-day grace period (`league_settings` key `join_grace_until`, under the registry league's own id). During it, a write from a device that hasn't joined joins it quietly and sets its cookie, so it is remembered when the grace period ends. The commissioner can restart or end it in League Settings → League access ("Existing devices"). After it ends, un-joined devices get `join_required` on writes and the client shows the join card. The hole during the grace period is that anyone hitting a write route with the league's Sleeper ID gets enrolled; it closes when the period ends.
+
+Server:
+- `server/sleeperGate.ts`: one queue for every Sleeper call (max 300 a minute, 8 at once), a shared cache with a lifetime by data type, dedupe of identical simultaneous calls, copies handed out, and stats. `server/sleeper.ts` goes through it (`fetchFromSleeper` is now exported, and the two direct `fetch` calls in freeAgency.ts and rosters.ts use it). Admin page, Leagues tab: "Sleeper load" card from `GET /api/admin/sleeper-stats`. Stat and projection payloads are shared as-is rather than copied, for speed.
+- Devices: `server/security/membership.ts` (cookie `ld_<league id>`, only a SHA-256 of the token is stored in `league_device_access`, one token per league), `membershipStore.ts` (database deps and the grace setting), store functions in `security/store.ts`.
+- `server/routes/join.ts`: `POST /api/registry/join/check` and `/join` (invite code, then league PIN if set; both rate limited, 5 wrong tries per device then a 15-minute pause), `GET /api/registry/my-leagues`, `POST /api/registry/leagues/:slug/device/team` (not called by the client yet). `GET /api/registry/leagues/:slug` now also returns `joinRequired`, `joined`, `graceActive`.
+- `server/middleware/memberGate.ts`: on every write under `/api/league(s)/:id/...` and rule votes, the device must have joined (unlocked commissioner or admin counts), archived leagues refuse, and any roster the request names (body, path or query) must belong to that league (Sleeper rosters, cached; fails closed with 503 if they can't be read). Reads stay open. Unregistered leagues and an unreachable registry stay lenient. Slug-versus-Sleeper-ID mismatch is refused (409) here too.
+- Changing, setting or clearing the league PIN signs out every device in the league (`revokeAllDevices`), from League Settings and the admin reset.
+
+Client:
+- `components/JoinCard.tsx` (the card; digit boxes for the league PIN open the phone number pad), `pages/Join.tsx` at `/join` (outside league addresses). A league that needs joining shows the card in place of its pages (`needsJoin` from the registry). After joining, the page reloads into the league and opens the team picker if no team is saved.
+- The picked team is now stored per league (`sleeper_user:<slug>`, ATL falls back to the old `sleeper_user` key). Logging out of ATL also clears the legacy keys, which fixes the old key coming back after log out.
+- `AppSidebar` has the "Your leagues" list (joined leagues plus the open one) and "Join another league".
+
+Tests: `server/middleware/memberGate.test.ts` (19: a source scan that every write route is covered, rosters named in a request, a joined device, league A's device refused in league B, league B's Sleeper ID under league A's address, a roster from another league, rule votes, grace period enrolling, signed-out devices, archived leagues, unregistered leagues, roster lookup failing) and `server/sleeperGate.test.ts` (9). 109 tests pass; "phase dates" still fails as before. tsc unchanged (58 errors, all pre-existing). Checked in the browser against a throwaway mock API (deleted): the join card from a league link, wrong code and wrong PIN messages, a lower-case code accepted, the PIN step, joining and reload, the sidebar list. **Not run against the real server.**
+
+Still open:
+- The mismatch tests that need real data (rule, nomination and contract IDs from another league, and the PIN and rules cases against two test leagues) still need the test database. The gate's own cross-league cases are covered with fakes.
+- A joined device is not bound to the team it picked, as the plan accepts ("anyone who joined can still pick any team"). The server records `roster_id` only through the unused device/team endpoint.
+- The grace period start has no UI at league creation; leagues created by the admin with an invite code start with no grace period, which is right for a new league.

@@ -5,6 +5,7 @@ import {
   SidebarContent,
   SidebarGroup,
   SidebarGroupContent,
+  SidebarGroupLabel,
   SidebarHeader,
   SidebarMenu,
   SidebarMenuButton,
@@ -31,8 +32,9 @@ import {
   History,
   Building2,
   SlidersHorizontal,
+  Plus,
 } from "lucide-react";
-import { useIsCommissioner } from "@/lib/commissioner";
+import { useIsCommissioner, useMyLeagues } from "@/lib/commissioner";
 import { useContractsEnabled } from "@/lib/leagueRules";
 
 const baseNavItems = [
@@ -78,7 +80,8 @@ export default function AppSidebar({
 }: AppSidebarProps) {
   const contractsOn = useContractsEnabled();
   const [location] = useLocation();
-  const { user, league } = useSleeper();
+  const { user, league, leagueSlug } = useSleeper();
+  const { data: joinedLeagues } = useMyLeagues();
 
   const isCommissioner = useIsCommissioner();
 
@@ -91,6 +94,13 @@ export default function AppSidebar({
     if (round === 2) return "bg-chart-2 text-white";
     return "bg-muted text-muted-foreground";
   };
+
+  // Your leagues: the ones this device joined, plus the open one even if it doesn't ask for a code.
+  const myLeagues = [
+    ...(joinedLeagues ?? []).map((l) => ({ slug: l.slug, name: l.name })),
+    ...((joinedLeagues ?? []).some((l) => l.slug === leagueSlug) ? [] : [{ slug: leagueSlug, name: leagueName }]),
+  ].sort((a, b) => (a.slug === leagueSlug ? -1 : b.slug === leagueSlug ? 1 : a.name.localeCompare(b.name)));
+  const initialsOf = (name: string) => name.split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
 
   return (
     <Sidebar>
@@ -109,6 +119,31 @@ export default function AppSidebar({
       </SidebarHeader>
 
       <SidebarContent className="px-2 py-4">
+        <SidebarGroup className="pb-0">
+          <SidebarGroupLabel>Your leagues</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu data-testid="list-your-leagues">
+              {myLeagues.map((l) => (
+                <SidebarMenuItem key={l.slug}>
+                  <SidebarMenuButton asChild className={l.slug === leagueSlug ? "bg-sidebar-accent" : ""}>
+                    <Link href={`~/l/${l.slug}`} data-testid={`league-link-${l.slug}`}>
+                      <span className="flex h-5 w-5 items-center justify-center rounded bg-primary/15 text-[10px] font-medium text-primary">{initialsOf(l.name)}</span>
+                      <span className="truncate">{l.name}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild>
+                  <Link href="~/join" data-testid="link-join-another">
+                    <Plus className="h-4 w-4" />
+                    <span>Join another league</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>

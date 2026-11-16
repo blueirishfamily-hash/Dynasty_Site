@@ -257,10 +257,10 @@ There are seven phases, and ATL Dynasty keeps working after each one. A second l
 
 **Phase 4: joining and separation**
 
-- [ ] Join page with invite code and league PIN, and remembered devices
-- [ ] Several leagues per device, with the sidebar switcher
-- [ ] Membership checks on every write route
-- [ ] Sleeper request queue, shared caches and staggered background jobs per league
+- [x] Join page with invite code and league PIN, and remembered devices
+- [x] Several leagues per device, with the sidebar switcher
+- [x] Membership checks on every write route
+- [x] Sleeper request queue, shared caches and staggered background jobs per league (the queue and caches are built; the app has no background timers today, so there was nothing to stagger)
 - [ ] All mismatch tests pass
 
 **Phase 5: season rollover**

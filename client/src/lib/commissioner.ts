@@ -43,3 +43,23 @@ export function useMyCommissionerEntry(): LeagueCommissionerInfo | null {
   const { data } = useLeagueCommissioners();
   return (user?.userId && data?.find((c) => c.sleeperUserId === user.userId)) || null;
 }
+
+export interface MyLeague {
+  slug: string;
+  name: string;
+  rosterId: number | null;
+}
+
+/** The leagues this browser has joined (from its per-league device cookies). */
+export function useMyLeagues() {
+  return useQuery<MyLeague[]>({
+    queryKey: ["/api/registry/my-leagues"],
+    queryFn: async () => {
+      const res = await fetch("/api/registry/my-leagues");
+      if (!res.ok) throw new Error("Could not load your leagues");
+      return res.json();
+    },
+    staleTime: 60 * 1000,
+    retry: 1,
+  });
+}

@@ -7,8 +7,12 @@ import { leagueResolver } from "../leagueRegistry";
 import { normalizeSlug } from "../middleware/league";
 import { requireAdmin } from "../security/guards";
 import { SETUP_PREFIX, generateSetupCode, hashSecret, normalizeSetupCode, readPinSlot } from "../security/secrets";
+import { DEFAULT_GRACE_DAYS, graceEndFor } from "../security/membership";
+import { writeGraceUntil } from "../security/membershipStore";
+import { sleeperGate } from "../sleeper";
 import {
   addCommissioner,
+  revokeAllDevices,
   createLeague,
   getCommissioner,
   getLeagueById,
@@ -169,6 +173,7 @@ export function registerAdminLeagueRoutes(app: Express): void {
       const code = normalizeInviteCode(body.inviteCode);
       if (code === "invalid") return res.status(400).json({ error: "Invite codes are 6 to 32 letters and digits." });
       patch.inviteCode = code; changed.push("inviteCode");
+      if (code && !league.inviteCode) await writeGraceUntil(league.id, graceEndFor(DEFAULT_GRACE_DAYS));
     }
     if (body.status !== undefined) {
       if (body.status !== "active" && body.status !== "archived") return res.status(400).json({ error: "Status is active or archived." });
@@ -196,9 +201,10 @@ export function registerAdminLeagueRoutes(app: Express): void {
     const league = await getLeagueById(req.params.id);
     if (!league) return res.status(404).json({ error: "League not found" });
     await updateLeague(league.id, { leaguePinHash: null, leaguePinSetAt: null });
+    const signedOut = await revokeAllDevices(league.id);
     leagueResolver.invalidate();
-    await writeAudit({ leagueId: league.id, actorSleeperUserId: null, actorRole: "admin", action: "league_pin_reset", details: null });
-    res.json({ reset: true });
+    await writeAudit({ leagueId: league.id, actorSleeperUserId: null, actorRole: "admin", action: "league_pin_reset", details: { devicesSignedOut: signedOut } });
+    res.json({ reset: true, devicesSignedOut: signedOut });
   }));
 
   app.post("/api/admin/leagues/:id/commissioners", handle(async (req, res) => {
@@ -233,6 +239,11 @@ export function registerAdminLeagueRoutes(app: Express): void {
     await setCommissionerPinHash(row.id, setup.stored, now);
     await writeAudit({ leagueId: row.leagueId, actorSleeperUserId: null, actorRole: "admin", action: "commissioner_pin_reset", details: { commissionerId: row.id, sleeperUserId: row.sleeperUserId } }, now);
     res.json({ setupCode: setup.code });
+  }));
+
+  // Sleeper load: calls per minute against the 300 a minute limit, cache hits and queue depth.
+  app.get("/api/admin/sleeper-stats", handle(async (_req, res) => {
+    res.json(sleeperGate.stats());
   }));
 
   app.get("/api/admin/audit", handle(async (req, res) => {

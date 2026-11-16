@@ -347,11 +347,57 @@ function EditLeagueDialog({ league, onClose }: { league: AdminLeague | null; onC
   );
 }
 
+interface SleeperStats {
+  callsLastMinute: number;
+  callsLastHour: number;
+  perMinute: number[];
+  limitPerMinute: number;
+  cacheEntries: number;
+  cacheHits: number;
+  cacheMisses: number;
+  dedupedRequests: number;
+  errors: number;
+  queued: number;
+}
+
+// Sleeper asks apps to stay under 1,000 calls a minute. Every call goes through one queue capped well below that.
+function SleeperLoadCard() {
+  const { data } = useQuery<SleeperStats>({
+    queryKey: ["/api/admin", "sleeper-stats"],
+    queryFn: () => api<SleeperStats>("GET", "/api/admin/sleeper-stats"),
+    refetchInterval: 15_000,
+  });
+  if (!data) return null;
+  const lookups = data.cacheHits + data.cacheMisses + data.dedupedRequests;
+  const saved = lookups > 0 ? Math.round(((data.cacheHits + data.dedupedRequests) / lookups) * 100) : 0;
+  const peak = Math.max(1, ...data.perMinute);
+  return (
+    <Card data-testid="card-sleeper-load">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-base">Sleeper load</CardTitle>
+        <CardDescription>All leagues share one cache and one queue, capped at {data.limitPerMinute} calls a minute (Sleeper's limit is 1,000).</CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex gap-6 text-sm">
+          <div><div className="text-2xl font-semibold tabular-nums">{data.callsLastMinute}</div><div className="text-xs text-muted-foreground">calls last minute</div></div>
+          <div><div className="text-2xl font-semibold tabular-nums">{data.callsLastHour}</div><div className="text-xs text-muted-foreground">last hour</div></div>
+          <div><div className="text-2xl font-semibold tabular-nums">{saved}%</div><div className="text-xs text-muted-foreground">served from cache</div></div>
+          {data.queued > 0 && <div><div className="text-2xl font-semibold tabular-nums text-amber-500">{data.queued}</div><div className="text-xs text-muted-foreground">waiting</div></div>}
+        </div>
+        <div className="flex h-10 items-end gap-0.5" role="img" aria-label="Sleeper calls per minute, last 15 minutes">
+          {data.perMinute.map((n, i) => <span key={i} className="w-2 rounded-sm bg-primary/70" style={{ height: `${Math.max(8, (n / peak) * 100)}%` }} title={`${n} calls`} />)}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function LeaguesTab({ leagues, onSetupCode }: { leagues: AdminLeague[]; onSetupCode: (code: string, who: string) => void }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<AdminLeague | null>(null);
   return (
     <div className="flex flex-col gap-3">
+      <SleeperLoadCard />
       <div className="flex items-center justify-between">
         <p className="text-sm text-muted-foreground">{leagues.length} {leagues.length === 1 ? "league" : "leagues"} on the site</p>
         <Button onClick={() => setAdding(true)} data-testid="button-add-league"><Plus className="mr-1 h-4 w-4" />Add league</Button>

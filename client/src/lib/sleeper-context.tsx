@@ -11,6 +11,9 @@ export interface RegistryLeague {
   status: string;
   currentSeason: string;
   currentSleeperLeagueId: string;
+  joinRequired?: boolean;
+  joined?: boolean;
+  graceActive?: boolean;
 }
 
 interface SleeperContextType {
@@ -27,6 +30,8 @@ interface SleeperContextType {
   registryLeague: RegistryLeague | null;
   /** True when the address names no league. */
   leagueNotFound: boolean;
+  /** The league asks for its invite code and this browser hasn't joined (and no grace period applies). */
+  needsJoin: boolean;
   setUser: (user: UserInfo | null) => void;
   setLeague: (league: LeagueInfo | null) => void;
   clearSession: () => void;
@@ -34,8 +39,21 @@ interface SleeperContextType {
 
 const SleeperContext = createContext<SleeperContextType | null>(null);
 
-const STORAGE_KEY_USER = "sleeper_user";
+const LEGACY_STORAGE_KEY_USER = "sleeper_user";
 const LEGACY_STORAGE_KEY_LEAGUE = "sleeper_league";
+
+/** The picked team is kept per league, so a device can be a different team in each league. */
+function userStorageKey(slug: string) {
+  return `sleeper_user:${slug}`;
+}
+
+function readStoredUser(slug: string): string | null {
+  if (typeof localStorage === "undefined") return null;
+  const stored = localStorage.getItem(userStorageKey(slug));
+  // Devices from before league addresses saved the user under the old key; that was ATL Dynasty.
+  if (!stored && slug === LEGACY_LEAGUE_SLUG) return localStorage.getItem(LEGACY_STORAGE_KEY_USER);
+  return stored;
+}
 
 /** The cached league is kept per address so one league's data never shows under another's address. */
 function leagueStorageKey(slug: string) {
@@ -52,6 +70,7 @@ function readStoredLeague(slug: string): string | null {
 
 export function SleeperProvider({ children, leagueSlug }: { children: ReactNode; leagueSlug: string }) {
   const STORAGE_KEY_LEAGUE = leagueStorageKey(leagueSlug);
+  const STORAGE_KEY_USER = userStorageKey(leagueSlug);
   const [registryLeague, setRegistryLeague] = useState<RegistryLeague | null>(null);
   const [leagueNotFound, setLeagueNotFound] = useState(false);
   const [user, setUserState] = useState<UserInfo | null>(null);
@@ -84,7 +103,7 @@ export function SleeperProvider({ children, leagueSlug }: { children: ReactNode;
           }
 
           // Load stored user if available
-          const storedUser = localStorage.getItem(STORAGE_KEY_USER);
+          const storedUser = readStoredUser(leagueSlug);
           if (storedUser) {
             try {
               setUserState(JSON.parse(storedUser));
@@ -265,6 +284,7 @@ export function SleeperProvider({ children, leagueSlug }: { children: ReactNode;
       localStorage.setItem(STORAGE_KEY_USER, JSON.stringify(newUser));
     } else {
       localStorage.removeItem(STORAGE_KEY_USER);
+      if (leagueSlug === LEGACY_LEAGUE_SLUG) localStorage.removeItem(LEGACY_STORAGE_KEY_USER);
     }
   };
 
@@ -282,6 +302,10 @@ export function SleeperProvider({ children, leagueSlug }: { children: ReactNode;
     setLeague(null);
     localStorage.removeItem(STORAGE_KEY_USER);
     localStorage.removeItem(STORAGE_KEY_LEAGUE);
+    if (leagueSlug === LEGACY_LEAGUE_SLUG) {
+      localStorage.removeItem(LEGACY_STORAGE_KEY_USER);
+      localStorage.removeItem(LEGACY_STORAGE_KEY_LEAGUE);
+    }
   };
 
   return (
@@ -297,6 +321,7 @@ export function SleeperProvider({ children, leagueSlug }: { children: ReactNode;
         leagueSlug,
         registryLeague,
         leagueNotFound,
+        needsJoin: !!registryLeague && !!registryLeague.joinRequired && !registryLeague.joined && !registryLeague.graceActive,
         setUser,
         setLeague,
         clearSession,

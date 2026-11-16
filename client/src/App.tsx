@@ -9,6 +9,8 @@ import { SleeperProvider, useSleeper } from "@/lib/sleeper-context";
 import { isValidLeagueSlug, legacyRedirectTarget, setLeagueSlug } from "@/lib/league-address";
 import "@/lib/unlock";
 import UnlockDialog from "@/components/UnlockDialog";
+import JoinCard, { PICK_TEAM_AFTER_JOIN_KEY } from "@/components/JoinCard";
+import JoinPage from "@/pages/Join";
 import AdminPage from "@/pages/Admin";
 import AppSidebar from "@/components/AppSidebar";
 import ThemeToggle from "@/components/ThemeToggle";
@@ -87,7 +89,7 @@ function Router() {
 }
 
 function AppContent() {
-  const { user, league, clearSession, season, isLoading, error, leagueNotFound } = useSleeper();
+  const { user, league, clearSession, season, isLoading, error, leagueNotFound, needsJoin, leagueSlug, registryLeague } = useSleeper();
   const [showSetup, setShowSetup] = useState(false);
   const [, setLocation] = useLocation();
 
@@ -140,12 +142,34 @@ function AppContent() {
     setLocation("/");
   };
 
+  // Just joined this league: open the team picker (the last step of joining).
+  useEffect(() => {
+    if (isLoading || !league || user) return;
+    try {
+      if (sessionStorage.getItem(PICK_TEAM_AFTER_JOIN_KEY) === leagueSlug) {
+        sessionStorage.removeItem(PICK_TEAM_AFTER_JOIN_KEY);
+        setShowSetup(true);
+      }
+    } catch {
+      /* storage unavailable: the Connect your league prompts still work */
+    }
+  }, [isLoading, league, user, leagueSlug]);
+
   const sidebarStyle = {
     "--sidebar-width": "16rem",
     "--sidebar-width-icon": "3rem",
   };
 
   // Show loading state while league is being fetched (inline styles so it's visible even if CSS fails)
+  // The league asks for its invite code and this device hasn't joined: show the join card instead of the pages.
+  if (!isLoading && needsJoin) {
+    return (
+      <div className="min-h-screen w-full bg-background">
+        <JoinCard expectedSlug={leagueSlug} expectedName={registryLeague?.name} />
+      </div>
+    );
+  }
+
   if (isLoading) {
     return (
       <div
@@ -316,6 +340,7 @@ function App() {
       <TooltipProvider>
         <Switch>
           <Route path="/admin" component={AdminPage} />
+          <Route path="/join" component={JoinPage} />
           <Route path="/l/:slug" nest>
             {(params) => <LeagueApp slug={params.slug} />}
           </Route>

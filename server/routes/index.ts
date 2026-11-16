@@ -2,11 +2,17 @@ import type { Express } from "express";
 import type { Server } from "http";
 import { registerLeagueLookup } from "../middleware/league";
 import { contractsGate } from "../middleware/contractsGate";
+import { memberGate } from "../middleware/memberGate";
+import { dbMembershipDeps } from "../security/membershipStore";
+import { leagueActor } from "../security/guards";
+import { getLeagueRosters } from "../sleeper";
+import { storage } from "../storage";
 import { leagueResolver } from "../leagueRegistry";
 import { registerLeaguesRoutes } from "./leagues";
 import { registerSecurityRoutes } from "./security";
 import { registerAdminLeagueRoutes } from "./adminLeagues";
 import { registerLeagueSettingsRoutes } from "./leagueSettings";
+import { registerJoinRoutes } from "./join";
 import { registerSleeperProxyRoutes } from "./sleeperProxy";
 import { registerPlayersRoutes } from "./players";
 import { registerContractsRoutes } from "./contracts";
@@ -36,10 +42,19 @@ export async function registerRoutes(
   registerLeagueLookup(app, leagueResolver);
   // Contracts switch: contract routes refuse when the league has contracts off.
   app.use(contractsGate(leagueResolver));
+  // Membership: writes need a device that joined the league, and any roster named must be in the league.
+  app.use(memberGate({
+    resolver: leagueResolver,
+    membership: dbMembershipDeps,
+    ruleLeague: async (id) => (await storage.getRuleSuggestionById(id))?.leagueId,
+    rosterIds: async (sleeperLeagueId) => (await getLeagueRosters(sleeperLeagueId)).map((r) => r.roster_id),
+    isUnlockedStaff: async (req, league) => !!(await leagueActor(req, league)),
+  }));
   registerLeaguesRoutes(app);
   registerSecurityRoutes(app);
   registerAdminLeagueRoutes(app);
   registerLeagueSettingsRoutes(app);
+  registerJoinRoutes(app);
 
   registerSleeperProxyRoutes(app);
   registerPlayersRoutes(app);
