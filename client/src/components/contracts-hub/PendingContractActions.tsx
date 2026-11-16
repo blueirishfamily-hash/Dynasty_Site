@@ -15,6 +15,7 @@ import {
   type PendingTag,
   type SalaryContract,
 } from "./pendingContracts";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 interface PanelContract extends SalaryContract {
   rosterId: number;
@@ -86,12 +87,14 @@ export function PendingContractActionsPanel({
   deadCapEntries: PanelDeadCap[];
   /** The next season with no games played; the projection is for this season. */
   projectionYear: number;
-  /** True while tags and extensions can be submitted (regular season, through Week 14). */
+  /** True while tags and extensions can be submitted (regular season, through the league's deadline week). */
   windowOpen: boolean;
   /** From the rollover until the rookie draft: the team's expected rookie contracts (purple, outside the cap). */
   draftCapital?: DraftCapitalEstimate | null;
   className?: string;
 }) {
+  const deadlineWeek = useLeagueRules().contractDeadlineWeek;
+  const tagTopSalaries = useLeagueRules().franchiseTag.topSalaries;
   const { toast } = useToast();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const nextYear = projectionYear;
@@ -120,9 +123,9 @@ export function PendingContractActionsPanel({
           playerId: t.playerId,
           playerName: t.playerName,
           position: t.position,
-          label: `Franchise tag (top-5 ${t.position} average)`,
+          label: `Franchise tag (top-${tagTopSalaries} ${t.position} average)`,
           years: String(tagYear),
-          salaries: { [tagYear]: tagSalary(t.position, currentYear, parsedContracts, positionOf) },
+          salaries: { [tagYear]: tagSalary(t.position, currentYear, parsedContracts, positionOf, tagTopSalaries) },
         };
       });
     return [...extRows, ...tagRows];
@@ -283,7 +286,7 @@ export function PendingContractActionsPanel({
 
         {!windowOpen && (
           <p className="text-sm text-muted-foreground">
-            Tags and extensions open during the regular season and close after Week 14.
+            Tags and extensions open during the regular season and close after Week {deadlineWeek}.
           </p>
         )}
         {rows.length === 0 ? (

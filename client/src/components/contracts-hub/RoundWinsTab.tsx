@@ -2,10 +2,11 @@ import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { capBySeason, CURRENT_SEASON_CAP, validateRoundResolution } from "@shared/contractRules";
+import { capBySeason, validateRoundResolution } from "@shared/contractRules";
 import { useToast } from "@/hooks/use-toast";
 import { CapBar, Legend, PlayerAvatar, PositionBadge, money, usePositionRanks } from "./FreeAgencyBiddingTab";
 import type { ParsedContract } from "./types";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 type RoundSummary = {
   results: Array<{
@@ -68,6 +69,8 @@ export function RoundWinsTab({
   allRosters: Array<{ rosterId: number; teamName: string }>;
   playerMap: Record<string, { position?: string }>;
 }) {
+  const leagueRules = useLeagueRules();
+  const CURRENT_SEASON_CAP = leagueRules.salaryCap;
   const [rejected, setRejected] = useState<Set<string>>(new Set());
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -115,7 +118,11 @@ export function RoundWinsTab({
   const isRejected = (w: any) => (confirmed ? w.result === "rejected" : rejected.has(w.id));
   const kept = wins.filter(w => !isRejected(w));
   const keptContracts = kept.map(w => ({ yearlySalary: w.bidAmount, startYear: currentYear, years: w.contractYears, playerId: w.playerId }));
-  const validation = useMemo(() => validateRoundResolution(team, keptContracts, currentYear), [team, keptContracts, currentYear]);
+  // Same check the server makes on confirm: the cap in every season, and the contract-length limits.
+  const validation = useMemo(
+    () => validateRoundResolution(team, keptContracts, currentYear, leagueRules.salaryCap, leagueRules.contractLengthLimits),
+    [team, keptContracts, currentYear, leagueRules],
+  );
 
   const maxYears = Math.max(1, ...wins.map(w => Number(w.contractYears) || 1));
   const seasons: number[] = [];

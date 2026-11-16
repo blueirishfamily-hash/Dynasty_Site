@@ -17,6 +17,8 @@ import {
 import { ArrowLeftRight, Check, Search, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { useContractsEnabled, useLeagueRules } from "@/lib/leagueRules";
+import { DEFAULT_DEAD_CAP_SHARES, type DeadCapShares } from "@shared/contractRules";
 
 type Position = "QB" | "RB" | "WR" | "TE";
 
@@ -97,7 +99,6 @@ const positionColors: Record<Position, string> = {
   TE: "bg-chart-4 text-white",
 };
 
-const TOTAL_CAP = 250;
 
 interface SalaryCapImpact {
   year: number;
@@ -132,7 +133,8 @@ function calculateSalaryCapImpactWithOpponent(
   contractData: ContractDataStore,
   currentYear: number,
   contractYears: number[],
-  deadCapEnabled: boolean
+  deadCapEnabled: boolean,
+  deadCapShares: DeadCapShares = DEFAULT_DEAD_CAP_SHARES
 ): {
   userImpact: SalaryCapImpact[];
   opponentImpact: SalaryCapImpact[];
@@ -163,17 +165,13 @@ function calculateSalaryCapImpactWithOpponent(
     }
 
     const yearsRemaining = contractEndYear - year + 1;
-    const deadCapPercentages: Record<number, number> = {
-      1: 0,
-      2: 0.25,
-      3: 0.5,
-      4: 0.75,
-      5: 1.0,
-    };
+    // The league's dead cap share by years left (ATL: 0/25/50/75/100%).
     const deadCapPercent =
       year === currentYear
         ? 1.0 // Current year: 100% dead cap
-        : deadCapPercentages[Math.min(yearsRemaining, 5)] || 0;
+        : yearsRemaining >= 5
+          ? deadCapShares["5plus"]
+          : deadCapShares[String(Math.max(1, yearsRemaining)) as "1" | "2" | "3" | "4"] ?? 0;
 
     const salary = contract.salaries[year] || 0;
     return salary * deadCapPercent;
@@ -275,6 +273,9 @@ export default function TradeCenter({
   getRosterId,
   onProposeTrade,
 }: TradeCenterProps) {
+  const contractsOn = useContractsEnabled();
+  const deadCapShares = useLeagueRules().deadCap.shareByYearsLeft;
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { season } = useSleeper();
   const currentYear = parseInt(season) || new Date().getFullYear();
   const contractYears = [currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
@@ -433,7 +434,8 @@ export default function TradeCenter({
       contractData,
       currentYear,
       contractYears,
-      deadCapEnabled
+      deadCapEnabled,
+      deadCapShares
     );
   }, [
     leagueId,
@@ -1010,7 +1012,7 @@ export default function TradeCenter({
               </div>
             </div>
 
-            {capImpact && selectedTeam && (
+            {contractsOn && capImpact && selectedTeam && (
               <div className="mt-4 p-4 bg-muted/30 rounded-md">
                 <p className="text-sm font-medium mb-3">Salary Cap Impact (Next 4 Seasons)</p>
                 <div className="overflow-x-auto">

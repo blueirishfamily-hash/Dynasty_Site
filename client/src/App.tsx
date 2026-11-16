@@ -29,6 +29,7 @@ import Historical from "@/pages/Historical";
 import LeagueHistory from "@/pages/LeagueHistory";
 import YearRecap from "@/pages/YearRecap";
 import Suggestions from "@/pages/Suggestions";
+import LeagueSettings from "@/pages/LeagueSettings";
 import NotFound from "@/pages/not-found";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,20 @@ import {
 import { Search, Bell, ChevronDown, LogOut, Settings as SettingsIcon, User, RefreshCw, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { useContractsEnabled } from "@/lib/leagueRules";
+
+// Contract pages show a short notice instead when the league has contracts turned off.
+function ContractsOnly({ children }: { children: React.ReactNode }) {
+  if (useContractsEnabled()) return <>{children}</>;
+  return (
+    <div className="flex h-full items-center justify-center p-6">
+      <div className="max-w-sm text-center">
+        <h1 className="text-lg font-semibold">Contracts are off for this league</h1>
+        <p className="mt-1 text-sm text-muted-foreground">The commissioner can turn them on in League Settings.</p>
+      </div>
+    </div>
+  );
+}
 
 function Router() {
   return (
@@ -58,8 +73,9 @@ function Router() {
       <Route path="/metrics" component={Metrics} />
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
-      <Route path="/contracts" component={Contracts} />
-      <Route path="/contracts-hub" component={ContractsHub} />
+      <Route path="/league-settings" component={LeagueSettings} />
+      <Route path="/contracts">{() => <ContractsOnly><Contracts /></ContractsOnly>}</Route>
+      <Route path="/contracts-hub">{() => <ContractsOnly><ContractsHub /></ContractsOnly>}</Route>
       <Route path="/historical" component={Historical} />
       <Route path="/history/*" component={LeagueHistory} />
       <Route path="/history" component={LeagueHistory} />

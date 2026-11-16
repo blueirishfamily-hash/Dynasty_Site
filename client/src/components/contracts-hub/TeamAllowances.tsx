@@ -1,11 +1,17 @@
 import { Card, CardContent } from "@/components/ui/card";
 
-// Team limits, matching the server's extension and bidding checks:
+import { atlDynastyRules, type LeagueRules } from "@shared/leagueRules";
+import { useLeagueRules } from "@/lib/leagueRules";
+
+// Team limits from the league's rules, matching the server's extension and bidding checks (ATL values):
 //  - Franchise tags: 1 per team per season.
 //  - Rookie extensions: 3 per season, only 1 of them can be 4-year.
 //  - Non-rookie extensions: 2 per season.
 //  - Non-rookie contracts by length: 2-year max 5, 3-year max 4, 4+-year max 3. Rookie contracts are not counted.
-export const CONTRACT_LENGTH_LIMITS: Record<number, number> = { 2: 5, 3: 4, 4: 3 };
+export function contractLengthLimitsFor(rules: Pick<LeagueRules, "contractLengthLimits">): Record<number, number> {
+  const l = rules.contractLengthLimits;
+  return { 2: l.twoYear, 3: l.threeYear, 4: l.fourPlusYear };
+}
 
 const CONTRACT_LENGTH_ROWS = [
   { label: "1-year", bucket: 1 },
@@ -40,6 +46,7 @@ export function getTeamAllowances(
   contracts: AllowanceContract[],
   pendingTagCount = 0,
   pendingTagPlayerIds: string[] = [],
+  rules: LeagueRules = atlDynastyRules(),
 ) {
   const teamExts = extensions.filter(e => e.rosterId === rosterId);
   const rookieExts = teamExts.filter(e => e.isRookieExtension === 1);
@@ -80,10 +87,10 @@ export function getTeamAllowances(
   };
 
   return {
-    tagsLeft: Math.max(0, 1 - tagsUsed - pendingTagCount),
-    rookieLeft: Math.max(0, 3 - rookieExts.length),
-    rookie4YearUsed: rookieExts.some(e => e.extensionType === 4),
-    nonRookieLeft: Math.max(0, 2 - nonRookieExts.length),
+    tagsLeft: Math.max(0, rules.franchiseTag.perTeamPerSeason - tagsUsed - pendingTagCount),
+    rookieLeft: Math.max(0, rules.extensions.rookiePerSeason - rookieExts.length),
+    rookie4YearUsed: rookieExts.filter(e => e.extensionType === 4).length >= rules.extensions.rookieFourYearPerSeason,
+    nonRookieLeft: Math.max(0, rules.extensions.nonRookiePerSeason - nonRookieExts.length),
     // Pending extensions and tags start next season, so they only change next season's counts.
     // `*Saved` is the same count with only submitted contracts.
     thisYear: countByLength(contracts, currentYear),
@@ -98,8 +105,8 @@ export function getTeamAllowances(
   };
 }
 
-function LengthCount({ count, saved, bucket }: { count: number; saved: number; bucket: number }) {
-  const limit = CONTRACT_LENGTH_LIMITS[bucket];
+function LengthCount({ count, saved, bucket, limits }: { count: number; saved: number; bucket: number; limits: Record<number, number> }) {
+  const limit = limits[bucket];
   const over = limit !== undefined && count > limit;
   const delta = count - saved;
   return (
@@ -138,12 +145,22 @@ export function TeamAllowancePanel({
   pendingTagPlayerIds?: string[];
   className?: string;
 }) {
-  const a = getTeamAllowances(rosterId, currentYear, extensions, parsedContracts, pendingTagCount, pendingTagPlayerIds);
+  const rules = useLeagueRules();
+  const limits = contractLengthLimitsFor(rules);
+  const a = getTeamAllowances(rosterId, currentYear, extensions, parsedContracts, pendingTagCount, pendingTagPlayerIds, rules);
+  const tags = rules.franchiseTag.perTeamPerSeason;
+  const ext = rules.extensions;
 
   const items = [
-    { label: "Franchise tags", left: a.tagsLeft, total: 1, note: "1 per team per season", pending: a.pending.tags },
-    { label: "Rookie extensions", left: a.rookieLeft, total: 3, note: a.rookie4YearUsed ? "4-year already used" : "Only 1 can be 4-year", pending: a.pending.rookie },
-    { label: "Non-rookie extensions", left: a.nonRookieLeft, total: 2, note: "2 per team per season", pending: a.pending.nonRookie },
+    { label: "Franchise tags", left: a.tagsLeft, total: tags, note: `${tags} per team per season`, pending: a.pending.tags },
+    {
+      label: "Rookie extensions",
+      left: a.rookieLeft,
+      total: ext.rookiePerSeason,
+      note: a.rookie4YearUsed ? "4-year already used" : `Only ${ext.rookieFourYearPerSeason} can be 4-year`,
+      pending: a.pending.rookie,
+    },
+    { label: "Non-rookie extensions", left: a.nonRookieLeft, total: ext.nonRookiePerSeason, note: `${ext.nonRookiePerSeason} per team per season`, pending: a.pending.nonRookie },
   ];
 
   return (
@@ -176,11 +193,11 @@ export function TeamAllowancePanel({
                 <div className="mt-2 grid grid-cols-2 gap-2">
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{currentYear}</div>
-                    <LengthCount count={a.thisYear[row.bucket]} saved={a.thisYearSaved[row.bucket]} bucket={row.bucket} />
+                    <LengthCount count={a.thisYear[row.bucket]} saved={a.thisYearSaved[row.bucket]} bucket={row.bucket} limits={limits} />
                   </div>
                   <div>
                     <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-0.5">{currentYear + 1}</div>
-                    <LengthCount count={a.nextYear[row.bucket]} saved={a.nextYearSaved[row.bucket]} bucket={row.bucket} />
+                    <LengthCount count={a.nextYear[row.bucket]} saved={a.nextYearSaved[row.bucket]} bucket={row.bucket} limits={limits} />
                   </div>
                 </div>
               </div>

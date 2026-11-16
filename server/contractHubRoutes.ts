@@ -4,9 +4,7 @@ import { registerSandboxRoutes } from "./testSandbox";
 import { requireCommissioner } from "./security/guards";
 import { getLeague, getNFLState, getLeagueRosters, getLeagueUsers } from "./sleeper";
 import {
-  CONTRACT_DEADLINE_WEEK,
   isOffseasonPhase,
-  RFA_ENABLED,
   canMatchRFA,
   createInSeasonSigning,
   designateRFA,
@@ -23,6 +21,8 @@ import {
   type TeamCapInput,
   type TradePlayerSide,
 } from "../shared/contractRules";
+import { activePhases } from "../shared/leagueRules";
+import { rulesForSleeperLeague } from "./leagueRules";
 
 const PHASE_SETTINGS_KEY = "contract_phases_json";
 const PHASE_OVERRIDE_KEY = "contract_current_phase";
@@ -107,7 +107,7 @@ async function cachedLeagueSeason(leagueId: string): Promise<number> {
  * - deadlinePassed: Week 14 of the contract year is complete (or the season is over).
  */
 export async function getSeasonClock(leagueId: string) {
-  const [contractYear, nfl] = await Promise.all([cachedLeagueSeason(leagueId), cachedNflState()]);
+  const [contractYear, nfl, rules] = await Promise.all([cachedLeagueSeason(leagueId), cachedNflState(), rulesForSleeperLeague(leagueId)]);
   const nflSeason = parseInt(String(nfl?.season ?? ""), 10);
   const type = String(nfl?.season_type || "");
   const week = Number(nfl?.week || 0);
@@ -123,29 +123,33 @@ export async function getSeasonClock(leagueId: string) {
     } else if (nflSeason === contractYear) {
       const seasonOver = type === "post" || (type === "off" && kickedOff);
       seasonPlayed = seasonOver || (type === "regular" && (week >= 2 || kickedOff));
-      deadlinePassed = seasonOver || (type === "regular" && week > CONTRACT_DEADLINE_WEEK);
+      deadlinePassed = seasonOver || (type === "regular" && week > rules.contractDeadlineWeek);
     }
   }
   return {
     contractYear,
     projectionYear: seasonPlayed ? contractYear + 1 : contractYear,
     deadlinePassed,
+    deadlineWeek: rules.contractDeadlineWeek,
   };
 }
 
 export async function getPhaseState(leagueId: string) {
   const json = await storage.getLeagueSetting(leagueId, PHASE_SETTINGS_KEY);
   const override = await storage.getLeagueSetting(leagueId, PHASE_OVERRIDE_KEY);
-  const phases = parsePhaseConfig(json);
+  const rules = await rulesForSleeperLeague(leagueId);
+  const leaguePhases = activePhases(rules);
+  const phases = parsePhaseConfig(json, leaguePhases);
   const clock = await getSeasonClock(leagueId);
   let current = getCurrentPhase(
     phases,
     Date.now(),
     (override as LeaguePhaseId) || null,
+    leaguePhases,
   );
-  // The tag / extension / trade window closes on its own once Week 14 is complete.
+  // The tag / extension / trade window closes on its own once the league's deadline week is complete.
   if (current === "regular_season" && clock.deadlinePassed) current = "deadline_passed";
-  return { phases, current, ...clock };
+  return { phases, current, rfaEnabled: rules.rfaEnabled, ...clock };
 }
 
 /**
@@ -379,8 +383,13 @@ export function registerContractHubRoutes(app: Express) {
       if (phase !== "fa_round_1" && phase !== "fa_round_2") {
         return res.status(400).json({ error: "Bidding not open in current phase", reason: `Phase is ${phase}` });
       }
-      // RFA is paused: every bid is a plain free agent bid.
-      const bidIsRfa = RFA_ENABLED && !!isRfa;
+      const rules = await rulesForSleeperLeague(leagueId);
+      const years = Number(contractYears || 1);
+      if (!Number.isInteger(years) || years < 1 || years > rules.maxContractYears) {
+        return res.status(400).json({ error: `Contracts can be 1 to ${rules.maxContractYears} years` });
+      }
+      // With RFA off, every bid is a plain free agent bid.
+      const bidIsRfa = rules.rfaEnabled && !!isRfa;
       if (bidIsRfa && originalRosterId === rosterId) {
         return res.status(400).json({ error: "Cannot bid on your own designated RFA" });
       }
@@ -535,16 +544,23 @@ export function registerContractHubRoutes(app: Express) {
         years: w.contractYears,
         playerId: w.playerId,
       }));
-      const validation = validateRoundResolution(team, flat, season);
+      const rules = await rulesForSleeperLeague(leagueId);
+      // Bids may go over the contract-length limits; the team has to be back under them to confirm its wins.
+      const validation = validateRoundResolution(team, flat, season, rules.salaryCap, rules.contractLengthLimits);
       if (!validation.canConfirm) {
-        return res.status(400).json({ error: "Cannot confirm", reason: validation.reason, bySeason: validation.bySeason });
+        return res.status(400).json({
+          error: "Cannot confirm",
+          reason: validation.reason,
+          bySeason: validation.bySeason,
+          lengthCheck: validation.lengthCheck,
+        });
       }
       const allContracts = await storage.getPlayerContracts(leagueId);
       for (const w of wins) {
         const result = rejectSet.has(w.id) ? "rejected" : "kept";
         await storage.updatePlayerBid(w.id, rosterId, { result } as any);
         // A kept win is a signed contract right away: years from this season at the winning yearly salary.
-        if (result === "kept" && !(RFA_ENABLED && w.isRfa === 1)) {
+        if (result === "kept" && !(rules.rfaEnabled && w.isRfa === 1)) {
           const years = Math.max(1, w.contractYears || 1);
           const tenths = Math.round(Number(w.bidAmount) * 10);
           const salaries: Record<string, number> = {};
@@ -571,7 +587,7 @@ export function registerContractHubRoutes(app: Express) {
             if (!stillPaid) await storage.deletePlayerContract(leagueId, old.rosterId, old.playerId);
           }
         }
-        if (RFA_ENABLED && result === "kept" && w.isRfa === 1 && w.originalRosterId != null) {
+        if (rules.rfaEnabled && result === "kept" && w.isRfa === 1 && w.originalRosterId != null) {
           const window = round === 1 ? 1 : 2;
           await storage.createRfaOffer({
             leagueId,
@@ -598,8 +614,8 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/rfa/designate", async (req, res) => {
     try {
-      if (!RFA_ENABLED) return res.status(400).json({ error: "RFA is turned off for now" });
       const { leagueId } = req.params;
+      if (!(await rulesForSleeperLeague(leagueId)).rfaEnabled) return res.status(400).json({ error: "RFA is turned off for this league" });
       const { rosterId, playerId, playerName, season, isExpiringRookie } = req.body;
       const { current } = await getPhaseState(leagueId);
       const existing = await storage.getRfaDesignations(leagueId, season);
@@ -622,8 +638,8 @@ export function registerContractHubRoutes(app: Express) {
 
   app.get("/api/league/:leagueId/rfa", async (req, res) => {
     try {
-      if (!RFA_ENABLED) return res.json({ designations: [], offers: [], enabled: false });
       const { leagueId } = req.params;
+      if (!(await rulesForSleeperLeague(leagueId)).rfaEnabled) return res.json({ designations: [], offers: [], enabled: false });
       const season = parseInt(String(req.query.season), 10);
       const designations = await storage.getRfaDesignations(leagueId, season);
       const offers = await storage.getRfaOffers(leagueId, season);
@@ -635,8 +651,9 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/rfa/:offerId/match", async (req, res) => {
     try {
-      if (!RFA_ENABLED) return res.status(400).json({ error: "RFA is turned off for now" });
       const { leagueId, offerId } = req.params;
+      const rules = await rulesForSleeperLeague(leagueId);
+      if (!rules.rfaEnabled) return res.status(400).json({ error: "RFA is turned off for this league" });
       const offers = await storage.getRfaOffers(leagueId, parseInt(String(req.body.season), 10));
       const offer = offers.find(o => o.id === offerId);
       if (!offer) return res.status(404).json({ error: "Offer not found" });
@@ -645,7 +662,7 @@ export function registerContractHubRoutes(app: Express) {
         yearlySalary: offer.yearlySalary,
         startYear: offer.season,
         years: offer.contractYears,
-      });
+      }, rules.salaryCap);
       if (!matchCheck.eligible) return res.status(400).json({ error: matchCheck.reason });
       await storage.updateRfaOfferStatus(offerId, "matched");
       await logTx(leagueId, "rfa_match", offer.originalRosterId, { offerId });
@@ -657,8 +674,8 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/rfa/:offerId/walk", async (req, res) => {
     try {
-      if (!RFA_ENABLED) return res.status(400).json({ error: "RFA is turned off for now" });
       const { leagueId, offerId } = req.params;
+      if (!(await rulesForSleeperLeague(leagueId)).rfaEnabled) return res.status(400).json({ error: "RFA is turned off for this league" });
       // Window closed with no decision — treat as walk (configurable later).
       await storage.updateRfaOfferStatus(offerId, "walked");
       await logTx(leagueId, "rfa_walk", null, { offerId });
@@ -678,10 +695,11 @@ export function registerContractHubRoutes(app: Express) {
         teamASends: TradePlayerSide[];
         teamBSends: TradePlayerSide[];
       };
-      const { current: tradePhase } = await getPhaseState(leagueId);
+      const { current: tradePhase, deadlineWeek } = await getPhaseState(leagueId);
       if (tradePhase !== "regular_season") {
-        return res.status(400).json({ error: "Trades are only open during the regular season, through Week 14" });
+        return res.status(400).json({ error: `Trades are only open during the regular season, through Week ${deadlineWeek}` });
       }
+      const rules = await rulesForSleeperLeague(leagueId);
       const teamA = await buildTeamCapInput(leagueId, teamARosterId, season);
       const teamB = await buildTeamCapInput(leagueId, teamBRosterId, season);
       const salaryABefore = teamA.contracts.reduce((s, c) => s + (c.salaries[season] || 0), 0) + (teamA.deadCapByYear[season] || 0);
@@ -691,6 +709,7 @@ export function registerContractHubRoutes(app: Express) {
         { salaryBefore: salaryBBefore },
         teamASends,
         teamBSends,
+        rules.salaryCap,
       );
       const offer = await storage.createTradeOffer({
         leagueId,
@@ -713,7 +732,7 @@ export function registerContractHubRoutes(app: Express) {
     try {
       const { leagueId } = req.params;
       const { rosterId, playerId, faabBid } = req.body;
-      const signing = createInSeasonSigning(faabBid ?? null);
+      const signing = createInSeasonSigning(faabBid ?? null, (await rulesForSleeperLeague(leagueId)).inSeasonPickup);
       await logTx(leagueId, "in_season_signing", rosterId, { playerId, ...signing });
       res.json(signing);
     } catch (e) {

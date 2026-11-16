@@ -17,7 +17,8 @@ import { CommissionerContractEditor } from "@/components/contracts-hub/Commissio
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-import { TeamAllowancePanel, getTeamAllowances, CONTRACT_LENGTH_LIMITS, type AllowanceExtension } from "@/components/contracts-hub/TeamAllowances";
+import { TeamAllowancePanel, getTeamAllowances, contractLengthLimitsFor, type AllowanceExtension } from "@/components/contracts-hub/TeamAllowances";
+import { extensionMultiplier } from "@shared/leagueRules";
 import { tagSalary, type PendingTag } from "@/components/contracts-hub/pendingContracts";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,6 +46,7 @@ import {
   CheckCircle,
   Eye,
 } from "lucide-react";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -104,7 +106,6 @@ export interface PlayerCardTarget {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TOTAL_CAP = 250;
 
 const TEAM_PALETTE = [
   "#f59e0b", "#3b82f6", "#22c55e", "#ec4899", "#8b5cf6",
@@ -233,6 +234,8 @@ export function PlayerDetailSheet({
   isCommissioner = false,
   deadCapByRosterYear = {},
 }: PlayerDetailSheetProps) {
+  const leagueRules = useLeagueRules();
+  const TOTAL_CAP = leagueRules.salaryCap;
   const { league, user } = useSleeper();
   const { toast } = useToast();
 
@@ -347,6 +350,8 @@ export function PlayerDetailSheet({
         extensions,
         parsedContracts,
         pendingTags.filter(t => t.rosterId === contract.rosterId).length,
+        [],
+        leagueRules,
       )
     : null;
 
@@ -374,7 +379,7 @@ export function PlayerDetailSheet({
   /** The new contract starts next season, so next season's count for that length must have room. */
   const lengthLimitReason = (type: number): string | null => {
     if (!allowances || !contract) return null;
-    const limit = CONTRACT_LENGTH_LIMITS[Math.min(type, 4)];
+    const limit = contractLengthLimitsFor(leagueRules)[Math.min(type, 4)];
     if (limit === undefined) return null;
     const bucket = Math.min(type, 4);
     // A non-rookie player's own contract is replaced by the extension, so it does not count against it.
@@ -440,8 +445,8 @@ export function PlayerDetailSheet({
   const tagPrice = useMemo(() => {
     const position = careerData?.player?.position;
     if (!position) return 0;
-    return tagSalary(position, currentYear, parsedContracts, id => playerMap[id]?.position);
-  }, [careerData?.player?.position, parsedContracts, playerMap, currentYear]);
+    return tagSalary(position, currentYear, parsedContracts, id => playerMap[id]?.position, leagueRules.franchiseTag.topSalaries);
+  }, [careerData?.player?.position, parsedContracts, playerMap, currentYear, leagueRules]);
 
   const contractTimelineData = useMemo(() => {
     if (!contract) return [];
@@ -1113,7 +1118,7 @@ export function PlayerDetailSheet({
                       <p className="text-xs text-muted-foreground">
                         {isRookieExt
                           ? "Rookie extensions are 3 or 4 years at one flat salary set by this player's PPG rank at his position."
-                          : "Salary is set by this player's PPG rank at his position: 80% of the base for 1 year, 90% for 2, 100% for 3 and 110% for 4."}
+                          : `Salary is set by this player's PPG rank at his position: ${[1, 2, 3, 4].map(y => `${Math.round(extensionMultiplier(leagueRules, y) * 100)}% of the base for ${y === 1 ? "1 year" : y}`).join(", ").replace(/, ([^,]*)$/, " and $1")}.`}
                         {extPricing?.rank != null && (
                           <> Ranked {extPricing.rank} of {extPricing.totalPlayersAtPosition}.</>
                         )}
@@ -1147,7 +1152,7 @@ export function PlayerDetailSheet({
                             >
                               <div className="font-semibold mb-0.5">{et.label}</div>
                               <div className="text-muted-foreground">
-                                {unavailable ? (pricingLoading ? "..." : extensionBlockReason(et.value) ?? "Not available") : `${isRookieExt ? "Flat" : `${et.pct}%`} · ${fmt(projSal)}/yr`}
+                                {unavailable ? (pricingLoading ? "..." : extensionBlockReason(et.value) ?? "Not available") : `${isRookieExt ? "Flat" : `${Math.round(extensionMultiplier(leagueRules, et.value) * 100)}%`} · ${fmt(projSal)}/yr`}
                               </div>
                               {isSelected && (
                                 <div className="text-blue-500 mt-1 text-[10px] flex items-center gap-1">

@@ -69,7 +69,7 @@ async function checkWithLimits(
   return false;
 }
 
-async function leagueFromSlug(req: Request, res: Response): Promise<LeagueContext | null> {
+export async function leagueFromSlug(req: Request, res: Response): Promise<LeagueContext | null> {
   const slug = normalizeSlug(req.params.slug);
   const league = slug ? await dbLeagueRegistry.findBySlug(slug) : null;
   if (!league || league.league.status !== "active") {

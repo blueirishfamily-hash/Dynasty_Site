@@ -1,9 +1,9 @@
 import { useMemo, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent } from "@/components/ui/card";
-import { CURRENT_SEASON_CAP } from "@shared/contractRules";
 import { CapBar, Legend, PlayerAvatar, PositionBadge, money } from "./FreeAgencyBiddingTab";
 import type { ParsedContract } from "./types";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 interface Signing {
   id: string;
@@ -74,6 +74,7 @@ export function FreeAgencyRecapTab({
   draftCapital: DraftCapitalData | undefined;
   onOpenPlayer?: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
+  const CURRENT_SEASON_CAP = useLeagueRules().salaryCap;
   const { data, isLoading, error } = useQuery<{ signings: Signing[] }>({
     queryKey: ["/api/league", leagueId, "fa-recap", currentYear],
     queryFn: async () => {

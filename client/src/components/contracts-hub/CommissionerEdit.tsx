@@ -11,8 +11,8 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { deadCapForEndedContract } from "@shared/contractRules";
+import { useLeagueRules } from "@/lib/leagueRules";
 
-const TOTAL_CAP = 250;
 const REASONS = ["Fix wrong salary", "Missed pickup", "Trade adjustment", "League decision", "Other"];
 
 export interface EditableContract {
@@ -120,6 +120,7 @@ export function CommissionerContractEditor({
   /** Called after a save or removal; `removed` is true when the contract was deleted. */
   onDone: (removed: boolean) => void;
 }) {
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { toast } = useToast();
   const years = useMemo(() => [0, 1, 2, 3, 4].map(i => currentYear + i), [currentYear]);
   const original = useMemo(() => Object.fromEntries(years.map(y => [y, contract?.parsedSalaries[y] ?? 0])) as Record<number, number>, [contract, years]);
@@ -221,7 +222,7 @@ export function CommissionerContractEditor({
               <Input
                 type="number"
                 min={0}
-                max={250}
+                max={TOTAL_CAP}
                 step={0.5}
                 inputMode="decimal"
                 placeholder="0"
@@ -341,6 +342,7 @@ export function CommissionerRosterTools({
   contractsByPlayer: Record<string, Record<number, number>>;
   rosterNames: Record<number, string>;
 }) {
+  const leagueRules = useLeagueRules();
   const { toast } = useToast();
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -408,7 +410,7 @@ export function CommissionerRosterTools({
     const sal = contractsByPlayer[deadForm.playerId];
     if (!sal) return toast({ title: "No contract for that player on this team", description: "Enter the amounts by hand.", variant: "destructive" });
     const tenths = Object.fromEntries(Object.entries(sal).map(([y, v]) => [y, Math.round(v * 10)]));
-    const dead = deadCapForEndedContract(tenths, currentYear);
+    const dead = deadCapForEndedContract(tenths, currentYear, leagueRules.deadCap.shareByYearsLeft);
     setDeadForm(f => ({ ...f, years: Object.fromEntries(deadYears.map(y => [y, dead[String(y)] ? String(dead[String(y)] / 10) : ""])) }));
   };
 
@@ -469,7 +471,7 @@ export function CommissionerRosterTools({
             {addFor === p.id && (
               <div className="border-t border-border/60 px-3 py-3 flex flex-wrap items-end gap-3">
                 <Field label="Salary ($M / yr)"><Input type="number" min={0.5} step={0.5} value={form.salary} onChange={e => setForm(f => ({ ...f, salary: e.target.value }))} className="h-8 w-24" /></Field>
-                <Field label="Years"><Input type="number" min={1} max={5} value={form.years} onChange={e => setForm(f => ({ ...f, years: e.target.value }))} className="h-8 w-20" /></Field>
+                <Field label="Years"><Input type="number" min={1} max={leagueRules.maxContractYears} value={form.years} onChange={e => setForm(f => ({ ...f, years: e.target.value }))} className="h-8 w-20" /></Field>
                 <Field label="Starts"><Input type="number" value={form.start} onChange={e => setForm(f => ({ ...f, start: e.target.value }))} className="h-8 w-24" /></Field>
                 <Button size="sm" disabled={!reason || busy} onClick={() => createContract(p.id)}>Create contract</Button>
               </div>

@@ -45,8 +45,10 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Checkbox } from "@/components/ui/checkbox";
 import { getRookieSalary, formatDraftPosition } from "@/utils/rookiePayScale";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { useLeagueRules } from "@/lib/leagueRules";
+import { extensionMultiplier } from "@shared/leagueRules";
+import { contractLengthLimitsFor } from "@/components/contracts-hub/TeamAllowances";
 
-const TOTAL_CAP = 250;
 
 const COLORS = {
   available: "#3b82f6",
@@ -204,6 +206,7 @@ function calculateTeamSalary(
 }
 
 function TeamCapChart({ team, onClick }: { team: TeamCapData; onClick: () => void }) {
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const data = [
     { name: "Available", value: Math.max(0, team.available), color: COLORS.available },
     { name: "Salaries", value: team.salaries, color: COLORS.salaries },
@@ -313,6 +316,7 @@ interface TeamContractModalProps {
 }
 
 function TeamContractModal({ team, players, contractData, open, onClose }: TeamContractModalProps) {
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { season } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   
@@ -482,6 +486,9 @@ interface ContractInputTabProps {
 }
 
 function ContractInputTab({ teams, playerMap, contractData, onContractChange, onSave, hasChanges, isSaving = false, isCommissioner = false, deadCapEnabled = true, onDeadCapToggle }: ContractInputTabProps) {
+  const deadCapShares = useLeagueRules().deadCap.shareByYearsLeft;
+  const rookieScale = useLeagueRules().rookieScale;
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { toast } = useToast();
   const { season, league, user, isOffseason } = useSleeper();
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
@@ -718,7 +725,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         
         // Only auto-apply if no existing contract or contract has no salaries
         if (!hasExistingSalaries) {
-          const salary = getRookieSalary(data.round, data.draftSlot);
+          const salary = getRookieSalary(data.round, data.draftSlot, rookieScale);
           
           // Set 3-year rookie contract
           onContractChange(selectedRosterId, playerId, "isRookieContract", true);
@@ -751,8 +758,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
         // This allows manual override
         if (numValue !== getRookieSalary(
           rookieDraftPositions[playerId]?.round || 1,
-          rookieDraftPositions[playerId]?.draftSlot || 1
-        )) {
+          rookieDraftPositions[playerId]?.draftSlot || 1, rookieScale)) {
           setApplyRookiePayScale(prev => {
             const updated = { ...prev };
             delete updated[playerId];
@@ -920,7 +926,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
 
   // Handler to manually apply rookie pay scale
   const handleApplyRookiePayScale = (playerId: string, round: number, draftSlot: number) => {
-    const salary = getRookieSalary(round, draftSlot);
+    const salary = getRookieSalary(round, draftSlot, rookieScale);
     
     // Set 3-year rookie contract
     onContractChange(selectedRosterId, playerId, "isRookieContract", true);
@@ -1400,7 +1406,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                           }}
                                           className="w-full"
                                         >
-                                          Apply ${getRookieSalary(manualDraftInputs[player.playerId]?.round || 1, manualDraftInputs[player.playerId]?.draftSlot || 1)}/yr
+                                          Apply ${getRookieSalary(manualDraftInputs[player.playerId]?.round || 1, manualDraftInputs[player.playerId]?.draftSlot || 1, rookieScale)}/yr
                                         </Button>
                                       </div>
                                     </PopoverContent>
@@ -1471,7 +1477,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                               Draft Position: {formatDraftPosition(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}
                                             </div>
                                             <div className="text-xs text-muted-foreground">
-                                              Salary: ${getRookieSalary(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}M/year
+                                              Salary: ${getRookieSalary(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!, rookieScale)}M/year
                                             </div>
                                             <Button
                                               size="sm"
@@ -1485,7 +1491,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                                 setShowRookiePayScalePopover(null);
                                               }}
                                             >
-                                              Apply ${getRookieSalary(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!)}/yr
+                                              Apply ${getRookieSalary(rookieDraftPositions[player.playerId].round!, rookieDraftPositions[player.playerId].draftSlot!, rookieScale)}/yr
                                             </Button>
                                           </div>
                                         ) : (
@@ -1527,7 +1533,7 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                                                 setShowRookiePayScalePopover(null);
                                               }}
                                             >
-                                              Apply ${getRookieSalary(manualDraftInputs[player.playerId]?.round || 1, manualDraftInputs[player.playerId]?.draftSlot || 1)}/yr
+                                              Apply ${getRookieSalary(manualDraftInputs[player.playerId]?.round || 1, manualDraftInputs[player.playerId]?.draftSlot || 1, rookieScale)}/yr
                                             </Button>
                                           </div>
                                         )}
@@ -1598,8 +1604,8 @@ function ContractInputTab({ teams, playerMap, contractData, onContractChange, on
                           const yearsRemaining = contractEndYear - year + 1;
                           // Current year = 100% dead cap; future years based on years remaining
                           // Years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
-                          const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
-                          const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
+                          const deadCapByYearsRemaining: Record<number, number> = { 1: deadCapShares["1"], 2: deadCapShares["2"], 3: deadCapShares["3"], 4: deadCapShares["4"] };
+                          const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : yearsRemaining >= 5 ? deadCapShares["5plus"] : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
                           const deadCapValue = deadCapEnabled ? (salaryValue * deadCapPercent) : 0;
                           const isCurrentYearVoided = player.isOnIr && year === CURRENT_YEAR;
                           // Manage League: all years from current through current+4 are editable
@@ -1772,6 +1778,9 @@ function ManageTeamContractsTab({
   leagueId,
   deadCapEnabled = true
 }: ManageTeamContractsTabProps) {
+  const leagueRules = useLeagueRules();
+  const deadCapShares = useLeagueRules().deadCap.shareByYearsLeft;
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { toast } = useToast();
   const { user, league, season, isOffseason } = useSleeper();
   
@@ -1783,8 +1792,8 @@ function ManageTeamContractsTab({
   const CONTRACT_YEARS = [CURRENT_YEAR, CURRENT_YEAR + 1, CURRENT_YEAR + 2, CURRENT_YEAR + 3];
   const OPTION_YEAR = CURRENT_YEAR + 4;
 
-  // Contract tier limits (same as bidding): max contracts per years-remaining bucket
-  const CONTRACT_LIMITS: Record<number, number> = { 4: 3, 3: 4, 2: 5 };
+  // Contract tier limits from the league's rules (same as bidding): max contracts per years-remaining bucket
+  const CONTRACT_LIMITS = contractLengthLimitsFor(leagueRules);
 
   // Count existing non-rookie contracts by contract length bucket (used to gate extensions)
   const existingContractCounts = useMemo(() => {
@@ -2295,7 +2304,9 @@ function ManageTeamContractsTab({
     for (const contract of dbContracts) {
       const player = playerMap[contract.playerId];
       if (!player?.position) continue;
-      
+      // Rookie deals do not set the tag price (same as the server).
+      if (contract.isRookieContract === 1) continue;
+
       const salaryCurrent = contract.salaries?.[CURRENT_YEAR] || 0;
       if (salaryCurrent <= 0) continue;
       
@@ -2305,14 +2316,13 @@ function ManageTeamContractsTab({
       salariesByPosition[player.position].push(salaryCurrent);
     }
     
-    // Sort and take top 5, calculate average rounded up
+    // Average of the league's top-N salaries (ATL: 5), rounded up to $0.1M like the server's tag price.
     const result: Record<string, number> = {};
     for (const position of Object.keys(salariesByPosition)) {
       const sorted = salariesByPosition[position].sort((a, b) => b - a);
-      const top5 = sorted.slice(0, 5);
-      if (top5.length > 0) {
-        const avg = top5.reduce((sum, s) => sum + s, 0) / top5.length;
-        result[position] = Math.ceil(avg);
+      const top = sorted.slice(0, leagueRules.franchiseTag.topSalaries).map(s => Math.round(s * 10));
+      if (top.length > 0) {
+        result[position] = Math.ceil(top.reduce((sum, t) => sum + t, 0) / top.length) / 10;
       } else {
         result[position] = 0;
       }
@@ -3634,8 +3644,8 @@ function ManageTeamContractsTab({
                         const yearsRemaining = contractEndYear - year + 1;
                         // Current year = 100% dead cap; future years based on years remaining
                         // Years remaining: 1yr=0%, 2yr=25%, 3yr=50%, 4yr=75%, 5yr=100%
-                        const deadCapByYearsRemaining: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75, 5: 1.0 };
-                        const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
+                        const deadCapByYearsRemaining: Record<number, number> = { 1: deadCapShares["1"], 2: deadCapShares["2"], 3: deadCapShares["3"], 4: deadCapShares["4"] };
+                        const deadCapPercent = deadCapEnabled ? (year === CURRENT_YEAR ? 1.0 : yearsRemaining >= 5 ? deadCapShares["5plus"] : (deadCapByYearsRemaining[yearsRemaining] || 0)) : 0;
                         const deadCapValue = deadCapEnabled ? (currentValue * deadCapPercent) : 0;
 
                         const isReadOnlySalary = player.isRosterPlayer && !player.isFreeAgent;
@@ -3852,13 +3862,13 @@ function ManageTeamContractsTab({
                           if (isRookiePlayer) {
                             // Rookie: exhausted if 3 rookie extensions used, or if only 4-year left but 4-year already used,
                             // or if all available year lengths are blocked by contract tier limits
-                            const can3YrRookie = extensionEligibility.canDo3Year && rookieExtCount < 3 && !wouldExceedContractLimit(extensionEligibility.extensionYear, 3);
-                            const can4YrRookie = extensionEligibility.canDo4Year && rookieExtCount < 3 && !rookieUsed4Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 4);
+                            const can3YrRookie = extensionEligibility.canDo3Year && rookieExtCount < leagueRules.extensions.rookiePerSeason && !wouldExceedContractLimit(extensionEligibility.extensionYear, 3);
+                            const can4YrRookie = extensionEligibility.canDo4Year && rookieExtCount < leagueRules.extensions.rookiePerSeason && !rookieUsed4Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 4);
                             allOptionsExhausted = !can3YrRookie && !can4YrRookie;
                           } else {
                             // Non-rookie: exhausted if team already used both non-rookie extensions (2 per season),
                             // or if all available year lengths are blocked by contract tier limits
-                            if (nonRookieExtCount >= 2) {
+                            if (nonRookieExtCount >= leagueRules.extensions.nonRookiePerSeason) {
                               allOptionsExhausted = true;
                             } else {
                               const can1Yr = extensionEligibility.canDo1Year && !wouldExceedContractLimit(extensionEligibility.extensionYear, 1);
@@ -3962,16 +3972,16 @@ function ManageTeamContractsTab({
                                       mainText = "This player has a confirmed extension.";
                                     } else if (availableTypes.length === 0 && extensionEligibility.eligible) {
                                       if (isRookiePlayer) {
-                                        mainText = rookieExtCount >= 3
-                                          ? `Team has used all 3 rookie extensions for ${CURRENT_YEAR}`
+                                        mainText = rookieExtCount >= leagueRules.extensions.rookiePerSeason
+                                          ? `Team has used all ${leagueRules.extensions.rookiePerSeason} rookie extensions for ${CURRENT_YEAR}`
                                           : `Team has already used their 4-year rookie extension for ${CURRENT_YEAR}`;
                                       } else {
-                                        mainText = `Team has already used both non-rookie extensions for ${CURRENT_YEAR} (${nonRookieExtCount}/2)`;
+                                        mainText = `Team has already used both non-rookie extensions for ${CURRENT_YEAR} (${nonRookieExtCount}/${leagueRules.extensions.nonRookiePerSeason})`;
                                       }
                                     } else if (extensionEligibility.eligible) {
                                       const limitInfo = isRookiePlayer 
-                                        ? ` (${rookieExtCount}/3 rookie extensions used)`
-                                        : ` (${nonRookieExtCount}/2 non-rookie extensions used)`;
+                                        ? ` (${rookieExtCount}/${leagueRules.extensions.rookiePerSeason} rookie extensions used)`
+                                        : ` (${nonRookieExtCount}/${leagueRules.extensions.nonRookiePerSeason} non-rookie extensions used)`;
                                       mainText = `Click to choose extension type (Available: ${availableTypes.join(", ")})${limitInfo}`;
                                     } else {
                                       mainText = extensionEligibility.reason;
@@ -4120,7 +4130,7 @@ function ManageTeamContractsTab({
                                                       );
                                                       setOpenExtensionPopover(null);
                                                     }}
-                                                    disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || limitHit}
+                                                    disabled={applyExtensionMutation.isPending || rookieExtCount >= leagueRules.extensions.rookiePerSeason || limitHit}
                                                     title={limitHit ? "Roster limit for 3-year contracts is full" : undefined}
                                                   >
                                                     <span>3-Year Extension</span>
@@ -4147,7 +4157,7 @@ function ManageTeamContractsTab({
                                                       );
                                                       setOpenExtensionPopover(null);
                                                     }}
-                                                    disabled={applyExtensionMutation.isPending || rookieExtCount >= 3 || rookieUsed4Year || limitHit}
+                                                    disabled={applyExtensionMutation.isPending || rookieExtCount >= leagueRules.extensions.rookiePerSeason || rookieUsed4Year || limitHit}
                                                     title={limitHit ? "Roster limit for 4-year contracts is full" : undefined}
                                                   >
                                                     <span>4-Year Extension</span>
@@ -4182,11 +4192,11 @@ function ManageTeamContractsTab({
                                                       );
                                                       setOpenExtensionPopover(null);
                                                     }}
-                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || limitHit}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= leagueRules.extensions.nonRookiePerSeason || limitHit}
                                                     title={limitHit ? "Roster limit for 1-year contracts is full" : undefined}
                                                   >
-                                                    <span>1-Year (80%)</span>
-                                                    <span className="text-emerald-600 font-medium">${(d.salary1YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.8)).toFixed(0)}M/yr</span>
+                                                    <span>1-Year ({Math.round(extensionMultiplier(leagueRules, 1) * 100)}%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary1YearMillions ?? Math.ceil(d.extensionSalaryMillions * extensionMultiplier(leagueRules, 1))).toFixed(0)}M/yr</span>
                                                   </Button>
                                                 );
                                               })()}
@@ -4209,11 +4219,11 @@ function ManageTeamContractsTab({
                                                       );
                                                       setOpenExtensionPopover(null);
                                                     }}
-                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || limitHit}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= leagueRules.extensions.nonRookiePerSeason || limitHit}
                                                     title={limitHit ? "Roster limit for 2-year contracts is full" : undefined}
                                                   >
-                                                    <span>2-Year (90%)</span>
-                                                    <span className="text-emerald-600 font-medium">${(d.salary2YearMillions ?? Math.ceil(d.extensionSalaryMillions * 0.9)).toFixed(0)}M/yr</span>
+                                                    <span>2-Year ({Math.round(extensionMultiplier(leagueRules, 2) * 100)}%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary2YearMillions ?? Math.ceil(d.extensionSalaryMillions * extensionMultiplier(leagueRules, 2))).toFixed(0)}M/yr</span>
                                                   </Button>
                                                 );
                                               })()}
@@ -4236,11 +4246,11 @@ function ManageTeamContractsTab({
                                                       );
                                                       setOpenExtensionPopover(null);
                                                     }}
-                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || limitHit}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= leagueRules.extensions.nonRookiePerSeason || limitHit}
                                                     title={limitHit ? "Roster limit for 3-year contracts is full" : undefined}
                                                   >
-                                                    <span>3-Year (100%)</span>
-                                                    <span className="text-emerald-600 font-medium">${(d.salary3YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.0)).toFixed(0)}M/yr</span>
+                                                    <span>3-Year ({Math.round(extensionMultiplier(leagueRules, 3) * 100)}%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary3YearMillions ?? Math.ceil(d.extensionSalaryMillions * extensionMultiplier(leagueRules, 3))).toFixed(0)}M/yr</span>
                                                   </Button>
                                                 );
                                               })()}
@@ -4264,11 +4274,11 @@ function ManageTeamContractsTab({
                                                       );
                                                       setOpenExtensionPopover(null);
                                                     }}
-                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= 2 || exceedsMaxYear || limitHit}
+                                                    disabled={applyExtensionMutation.isPending || nonRookieExtCount >= leagueRules.extensions.nonRookiePerSeason || exceedsMaxYear || limitHit}
                                                     title={exceedsMaxYear ? `4-year extension would exceed max contract year (${OPTION_YEAR}). Use 3-year or less.` : limitHit ? "Roster limit for 4-year contracts is full" : undefined}
                                                   >
-                                                    <span>4-Year (110%)</span>
-                                                    <span className="text-emerald-600 font-medium">${(d.salary4YearMillions ?? Math.ceil(d.extensionSalaryMillions * 1.1)).toFixed(0)}M/yr</span>
+                                                    <span>4-Year ({Math.round(extensionMultiplier(leagueRules, 4) * 100)}%)</span>
+                                                    <span className="text-emerald-600 font-medium">${(d.salary4YearMillions ?? Math.ceil(d.extensionSalaryMillions * extensionMultiplier(leagueRules, 4))).toFixed(0)}M/yr</span>
                                                   </Button>
                                                 );
                                               })()}
@@ -4285,8 +4295,8 @@ function ManageTeamContractsTab({
                                   </div>
                                   <div className="text-xs text-muted-foreground border-t pt-2">
                                     {isRookiePlayer
-                                      ? `Rookie extensions: ${rookieExtCount}/3 used this season. PPG-based pricing (final year of rookie contract).`
-                                      : `Non-rookie extensions: ${nonRookieExtCount}/2 used this season. PPG-based pricing (80-110%).`
+                                      ? `Rookie extensions: ${rookieExtCount}/${leagueRules.extensions.rookiePerSeason} used this season. PPG-based pricing (final year of rookie contract).`
+                                      : `Non-rookie extensions: ${nonRookieExtCount}/${leagueRules.extensions.nonRookiePerSeason} used this season. PPG-based pricing (${Math.round(extensionMultiplier(leagueRules, 1) * 100)}-${Math.round(extensionMultiplier(leagueRules, 4) * 100)}%).`
                                     }
                                   </div>
                                 </div>
@@ -4335,11 +4345,11 @@ function ManageTeamContractsTab({
             </p>
             <p className="flex items-center gap-2">
               <Star className="w-4 h-4" />
-              <span>Franchise tag adds 1 year at the average of top 5 salaries at that position (rounded up). Each team gets 1 tag per season.</span>
+              <span>Franchise tag adds 1 year at the average of the top {leagueRules.franchiseTag.topSalaries} non-rookie salaries at that position (rounded up to $0.1M). Each team gets {leagueRules.franchiseTag.perTeamPerSeason} tag{leagueRules.franchiseTag.perTeamPerSeason === 1 ? "" : "s"} per season.</span>
             </p>
             <p className="flex items-center gap-2">
               <ArrowRightLeft className="w-4 h-4" />
-              <span>Extensions use PPG-based pricing. Non-rookies: 1-year (80%), 2-year (90%), 3-year (100%), 4-year (110%) of adjusted PPG salary. Rookies: 3 or 4-year at full PPG salary (final year of rookie contract). Each team gets up to 2 non-rookie and 3 rookie extensions per season.</span>
+              <span>Extensions use PPG-based pricing. Non-rookies: {[1, 2, 3, 4].map(y => `${y}-year (${Math.round(extensionMultiplier(leagueRules, y) * 100)}%)`).join(", ")} of adjusted PPG salary. Rookies: 3 or 4-year at full PPG salary (final year of rookie contract). Each team gets up to {leagueRules.extensions.nonRookiePerSeason} non-rookie and {leagueRules.extensions.rookiePerSeason} rookie extensions per season.</span>
             </p>
           </div>
         </CardContent>
@@ -4359,6 +4369,8 @@ interface PlayerBiddingTabProps {
 }
 
 function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts, teamCapData, expiringPlayerIds }: PlayerBiddingTabProps) {
+  const leagueRules = useLeagueRules();
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { league, user, season, isOffseason } = useSleeper();
   const leagueId = league?.leagueId;
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
@@ -4388,12 +4400,9 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
     return new Set(rosterPlayerIds);
   }, [rosterPlayerIds]);
 
-  // Contract limits by years remaining: 3 with 4+ years left, 4 with 3 years left, 5 with 2 years left. Rookie contracts have no limit.
-  const CONTRACT_LIMITS: Record<number, number> = {
-    4: 3,
-    3: 4,
-    2: 5,
-  };
+  // Contract limits by years remaining, from the league's rules (ATL: 3 with 4+ years left, 4 with 3, 5 with 2).
+  // Rookie contracts have no limit.
+  const CONTRACT_LIMITS = contractLengthLimitsFor(leagueRules);
 
   // Calculate existing contract counts by years remaining (not contract length). Rookie contracts are excluded from limits.
   const existingContractCounts = useMemo(() => {
@@ -6108,6 +6117,8 @@ interface OrphanedContract {
 }
 
 export default function Contracts() {
+  const rookieScale = useLeagueRules().rookieScale;
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { toast } = useToast();
   const { user, league, isLoading, season } = useSleeper();
   const [, setLocation] = useLocation();
@@ -6602,13 +6613,13 @@ export default function Contracts() {
         if (draftPos && draftPos.round != null && draftPos.draftSlot != null) {
           // If round 4 or 5, use 3.12 salary ($2M)
           if (draftPos.round >= 4) {
-            salary = getRookieSalary(3, 12); // $2M
+            salary = getRookieSalary(3, 12, rookieScale); // $2M
           } else {
-            salary = getRookieSalary(draftPos.round, draftPos.draftSlot);
+            salary = getRookieSalary(draftPos.round, draftPos.draftSlot, rookieScale);
           }
         } else {
           // No draft position (undrafted or not in league draft) - use default rookie salary ($2M)
-          salary = getRookieSalary(3, 12);
+          salary = getRookieSalary(3, 12, rookieScale);
         }
         
         // Apply salary to remaining years

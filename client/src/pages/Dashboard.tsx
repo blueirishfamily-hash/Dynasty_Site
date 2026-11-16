@@ -10,8 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useContractsEnabled, useLeagueRules } from "@/lib/leagueRules";
 
-const TOTAL_CAP = 250;
 
 interface PlayoffPredictionData {
   predictions: { rosterId: number; makePlayoffsPct: number }[];
@@ -97,6 +97,8 @@ function AttentionRow({
 }
 
 export default function Dashboard() {
+  const contractsOn = useContractsEnabled();
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { user, league, currentWeek, season } = useSleeper();
   const leagueId = league?.leagueId;
   const currentYear = parseInt(season) || new Date().getFullYear();
@@ -288,7 +290,7 @@ export default function Dashboard() {
                   action="Vote"
                 />
               )}
-              {(cap?.expiring ?? 0) > 0 && (
+              {contractsOn && (cap?.expiring ?? 0) > 0 && (
                 <AttentionRow
                   testId="attention-expiring"
                   title={`${cap!.expiring} ${cap!.expiring === 1 ? "contract expires" : "contracts expire"} after this season`}
@@ -415,7 +417,7 @@ export default function Dashboard() {
             </CardContent>
           </Card>
 
-          {cap && (
+          {contractsOn && cap && (
             <Card data-testid="card-cap-room">
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-2">

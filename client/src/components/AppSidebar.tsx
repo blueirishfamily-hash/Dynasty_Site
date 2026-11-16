@@ -30,8 +30,10 @@ import {
   MessageSquare,
   History,
   Building2,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { useContractsEnabled } from "@/lib/leagueRules";
 
 const baseNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -50,11 +52,14 @@ const baseNavItems = [
   { title: "Year Recap", url: "/year-recap", icon: CalendarCheck },
   { title: "Suggestions", url: "/suggestions", icon: MessageSquare },
   { title: "Historical", url: "/historical", icon: Database },
+  { title: "League Settings", url: "/league-settings", icon: SlidersHorizontal },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
+const CONTRACT_PAGE_URLS = new Set(["/contracts-hub", "/contracts"]);
+
 // Pages only the commissioner sees in the menu.
-const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League History", "Contracts"]);
+const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League History", "Contracts", "League Settings"]);
 
 interface DraftPick {
   year: number;
@@ -71,14 +76,15 @@ export default function AppSidebar({
   leagueName = "Dynasty League",
   draftPicks = [],
 }: AppSidebarProps) {
+  const contractsOn = useContractsEnabled();
   const [location] = useLocation();
   const { user, league } = useSleeper();
 
   const isCommissioner = useIsCommissioner();
 
-  const navItems = isCommissioner
-    ? baseNavItems
-    : baseNavItems.filter((item) => !COMMISSIONER_ONLY_TITLES.has(item.title));
+  const navItems = (isCommissioner ? baseNavItems : baseNavItems.filter((item) => !COMMISSIONER_ONLY_TITLES.has(item.title)))
+    // Contracts off: the contract pages are hidden for this league.
+    .filter((item) => contractsOn || !CONTRACT_PAGE_URLS.has(item.url));
 
   const getRoundColor = (round: number) => {
     if (round === 1) return "bg-primary text-primary-foreground";

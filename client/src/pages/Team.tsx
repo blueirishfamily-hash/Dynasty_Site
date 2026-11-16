@@ -9,6 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Users, Swords, Trophy, TrendingUp, TrendingDown } from "lucide-react";
+import { useContractsEnabled, useLeagueRules } from "@/lib/leagueRules";
 
 type Position = "QB" | "RB" | "WR" | "TE" | "K" | "DEF";
 type RosterStatus = "starter" | "bench" | "taxi" | "ir";
@@ -76,7 +77,6 @@ interface DbContractLite {
   salaries: string;
 }
 
-const TOTAL_CAP = 250;
 const POSITIONS: Position[] = ["QB", "RB", "WR", "TE", "K", "DEF"];
 const POS_COLOR: Record<string, string> = {
   QB: "#F472B6",
@@ -300,6 +300,8 @@ function RivalryCard({
 }
 
 export default function Team() {
+  const contractsOn = useContractsEnabled();
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { user, league, currentWeek, isOffseason, season } = useSleeper();
   const leagueId = league?.leagueId;
   const currentYear = parseInt(season) || new Date().getFullYear();
@@ -479,7 +481,10 @@ export default function Team() {
   const bestRivalry = [...eligible].sort((a, b) => rateOf(b) - rateOf(a))[0];
   const worstRivalry = [...eligible].sort((a, b) => rateOf(a) - rateOf(b))[0];
 
-  const rosterCols = "grid-cols-[minmax(0,1fr)_52px_84px_120px_70px_56px_64px]";
+  // The 120px column is the contract; it's left out when the league has contracts off.
+  const rosterCols = contractsOn
+    ? "grid-cols-[minmax(0,1fr)_52px_84px_120px_70px_56px_64px]"
+    : "grid-cols-[minmax(0,1fr)_52px_84px_70px_56px_64px]";
 
   return (
     <div className="p-4 sm:p-6 space-y-6">
@@ -521,7 +526,7 @@ export default function Team() {
                   {myOdds != null && <Kpi label="Playoff odds" value={`${Math.round(myOdds)}%`} sub={`Top ${league.playoffTeams || 6} make it`} accent />}
                   <Kpi label="Points for" value={Math.round(userStanding.pointsFor ?? 0).toLocaleString()} sub={pfRank ? `${ordinal(pfRank)} in league` : undefined} />
                   {gamesPlayed > 0 && <Kpi label="Avg per week" value={((userStanding.pointsFor ?? 0) / gamesPlayed).toFixed(1)} />}
-                  {capSpace != null && <Kpi label="Cap room" value={`$${capSpace.toFixed(1)}M`} sub={`${expiringCount} expiring`} accent />}
+                  {contractsOn && capSpace != null && <Kpi label="Cap room" value={`$${capSpace.toFixed(1)}M`} sub={`${expiringCount} expiring`} accent />}
                   {avgAge != null && <Kpi label="Roster age" value={avgAge.toFixed(1)} />}
                 </div>
               </CardContent>
@@ -613,7 +618,7 @@ export default function Team() {
                               <span>Player</span>
                               <span>Pos</span>
                               <span>Status</span>
-                              <span>Contract</span>
+                              {contractsOn && <span>Contract</span>}
                               <span className="text-right">Season</span>
                               <span className="text-right">PPG</span>
                               <span className="text-right">Rank</span>
@@ -645,7 +650,7 @@ export default function Team() {
                                     </span>
                                   </span>
                                   <span className={`text-xs font-bold ${STATUS_COLOR[p.status]}`}>{STATUS_LABEL[p.status]}</span>
-                                  <span>
+                                  {contractsOn && <span>
                                     {c ? (
                                       <>
                                         <span className="block font-semibold tabular-nums">${c.salary.toFixed(1)}M</span>
@@ -656,7 +661,7 @@ export default function Team() {
                                     ) : (
                                       <span className="text-muted-foreground">—</span>
                                     )}
-                                  </span>
+                                  </span>}
                                   <span className="text-right tabular-nums">{p.seasonPoints ? p.seasonPoints.toFixed(1) : "–"}</span>
                                   <span className="text-right font-bold tabular-nums">{p.weeklyAvg ? p.weeklyAvg.toFixed(1) : "–"}</span>
                                   <span className="text-right text-xs text-muted-foreground">{p.positionRank ? `${p.position}${p.positionRank}` : "–"}</span>
@@ -692,7 +697,7 @@ export default function Team() {
                                     {p.position}
                                   </span>
                                 </div>
-                                <div className="grid grid-cols-4 gap-2">
+                                <div className={`grid ${contractsOn ? "grid-cols-4" : "grid-cols-3"} gap-2`}>
                                   <div>
                                     <div className="font-bold tabular-nums">{p.weeklyAvg ? p.weeklyAvg.toFixed(1) : "–"}</div>
                                     <div className="text-[10px] text-muted-foreground">PPG</div>
@@ -705,12 +710,12 @@ export default function Team() {
                                     <div className="text-sm">{p.positionRank ? `${p.position}${p.positionRank}` : "–"}</div>
                                     <div className="text-[10px] text-muted-foreground">Rank</div>
                                   </div>
-                                  <div>
+                                  {contractsOn && <div>
                                     <div className="font-semibold tabular-nums">{c ? `$${c.salary.toFixed(1)}M` : "—"}</div>
                                     <div className={`text-[10px] ${expiring ? "font-bold text-amber-500" : "text-muted-foreground"}`}>
                                       {c ? (expiring ? `Expiring ${c.through}` : `thru ${c.through}`) : ""}
                                     </div>
-                                  </div>
+                                  </div>}
                                 </div>
                                 <div className={`text-xs font-bold ${STATUS_COLOR[p.status]}`}>{STATUS_LABEL[p.status]}</div>
                               </button>

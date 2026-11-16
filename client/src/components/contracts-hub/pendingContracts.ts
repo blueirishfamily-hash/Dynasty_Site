@@ -89,13 +89,14 @@ export interface SalaryContract {
   isRookieContract?: number;
 }
 
-// Franchise tag salary ($M): average of the top 5 current-season non-rookie salaries at the position, rounded up
-// to the nearest 0.1, the same way the franchise-tag route prices it.
+// Franchise tag salary ($M): average of the league's top-N current-season non-rookie salaries at the position
+// (ATL: 5), rounded up to the nearest 0.1, the same way the franchise-tag route prices it.
 export function tagSalary(
   position: string,
   currentYear: number,
   contracts: SalaryContract[],
   positionOf: (playerId: string) => string | undefined,
+  topSalaries = 5,
 ): number {
   const tenths: number[] = [];
   for (const c of contracts) {
@@ -103,9 +104,9 @@ export function tagSalary(
     if (c.isRookieContract === 1) continue;
     if (sal > 0 && positionOf(c.playerId) === position) tenths.push(Math.round(sal * 10));
   }
-  const top5 = tenths.sort((a, b) => b - a).slice(0, 5);
-  if (top5.length === 0) return 0;
-  return Math.ceil(top5.reduce((s, n) => s + n, 0) / top5.length) / 10;
+  const top = tenths.sort((a, b) => b - a).slice(0, topSalaries);
+  if (top.length === 0) return 0;
+  return Math.ceil(top.reduce((s, n) => s + n, 0) / top.length) / 10;
 }
 
 export interface EffectContract extends SalaryContract {
@@ -123,6 +124,7 @@ export function pendingSalaryEffects(
   contracts: EffectContract[],
   currentYear: number,
   positionOf: (playerId: string) => string | undefined,
+  tagTopSalaries = 5,
 ): { added: Record<number, number>; replaced: Record<number, number> } {
   const added: Record<number, number> = {};
   const replaced: Record<number, number> = {};
@@ -145,7 +147,7 @@ export function pendingSalaryEffects(
     if (t.rosterId !== rosterId) continue;
     const contract = contracts.find(c => c.rosterId === rosterId && c.playerId === t.playerId);
     const tagYear = (contract?.contractThrough ?? currentYear) + 1;
-    add(added, tagYear, tagSalary(t.position, currentYear, contracts, positionOf));
+    add(added, tagYear, tagSalary(t.position, currentYear, contracts, positionOf, tagTopSalaries));
   }
 
   return { added, replaced };

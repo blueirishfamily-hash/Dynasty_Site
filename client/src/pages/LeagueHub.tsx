@@ -51,6 +51,7 @@ import {
 } from "lucide-react";
 import type { RuleSuggestion, AwardNomination, RuleVote, AwardBallot } from "@shared/schema";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 interface RuleSuggestionWithVoting extends RuleSuggestion {
   votingEnabled?: boolean;
@@ -153,6 +154,7 @@ function CountdownTimer({ targetDate, label, icon: Icon }: { targetDate: Date; l
 }
 
 export default function LeagueHub() {
+  const awardRules = useLeagueRules().awards;
   const { user, league, season } = useSleeper();
   const { toast } = useToast();
   const [activeTab, setActiveTab] = useState<"rules" | "awards">("rules");
@@ -626,7 +628,7 @@ export default function LeagueHub() {
                   <CardDescription>
                     {isLocked 
                       ? "Nominations locked. Voting is still open."
-                      : "Nominate players (max 3 per award) and cast your ranked ballot"
+                      : `Nominate players (max ${awardRules.nominationLimit} per award) and cast your ranked ballot`
                     }
                   </CardDescription>
                   {isCommissioner && (
@@ -693,7 +695,7 @@ export default function LeagueHub() {
                           data-testid="button-nominate"
                         >
                           <Plus className="w-4 h-4 mr-2" />
-                          Nominate ({nominationCount?.remaining ?? 3} left)
+                          Nominate ({nominationCount?.remaining ?? awardRules.nominationLimit} left)
                         </Button>
                       </DialogTrigger>
                       <DialogContent className="sm:max-w-lg">
@@ -864,7 +866,7 @@ export default function LeagueHub() {
                         <div className="space-y-2">
                           <Label className="flex items-center gap-2">
                             <Award className="w-4 h-4 text-yellow-500" />
-                            1st Place (3 points)
+                            1st Place ({awardRules.ballotPoints[0] ?? 0} point{(awardRules.ballotPoints[0] ?? 0) === 1 ? "" : "s"})
                           </Label>
                           <Select value={firstPlace} onValueChange={setFirstPlace}>
                             <SelectTrigger data-testid="select-first-place">
@@ -887,7 +889,7 @@ export default function LeagueHub() {
                         <div className="space-y-2">
                           <Label className="flex items-center gap-2">
                             <Medal className="w-4 h-4 text-gray-400" />
-                            2nd Place (2 points)
+                            2nd Place ({awardRules.ballotPoints[1] ?? 0} point{(awardRules.ballotPoints[1] ?? 0) === 1 ? "" : "s"})
                           </Label>
                           <Select value={secondPlace} onValueChange={setSecondPlace}>
                             <SelectTrigger data-testid="select-second-place">
@@ -910,7 +912,7 @@ export default function LeagueHub() {
                         <div className="space-y-2">
                           <Label className="flex items-center gap-2">
                             <Medal className="w-4 h-4 text-orange-700" />
-                            3rd Place (1 point)
+                            3rd Place ({awardRules.ballotPoints[2] ?? 0} point{(awardRules.ballotPoints[2] ?? 0) === 1 ? "" : "s"})
                           </Label>
                           <Select value={thirdPlace} onValueChange={setThirdPlace}>
                             <SelectTrigger data-testid="select-third-place">

@@ -8,6 +8,8 @@ import {
   dbErrorMessage,
 } from "./shared";
 import { requireCommissioner } from "../security/guards";
+import { rulesForSleeperLeague } from "../leagueRules";
+import { deadCapForEndedContract } from "../../shared/contractRules";
 
 export function registerFreeAgencyRoutes(app: Express): void {
   // ==================== PLAYER BIDS ====================
@@ -430,24 +432,13 @@ export function registerFreeAgencyRoutes(app: Express): void {
       const { leagueId } = req.params;
       const { rosterId, playerId, playerName, playerPosition, reason, contract } = req.body;
       
-      const deadCapPercentages = [0.5, 0.25, 0.1, 0];
+      // Same dead cap rule as drops synced from Sleeper (server/deadCap.ts): the contract year costs 100%, later
+      // seasons the league's share by years left. Salaries arrive in tenths of $M, as stored.
       const contractSalaries: Record<string, number> = contract?.salaries || {};
-      const years = Object.keys(contractSalaries)
-        .map(Number)
-        .filter(year => !isNaN(year))
-        .sort((a, b) => a - b);
+      const { getPhaseState } = await import("../contractHubRoutes");
+      const [{ contractYear }, rules] = await Promise.all([getPhaseState(leagueId), rulesForSleeperLeague(leagueId)]);
+      const deadCapAmounts = deadCapForEndedContract(contractSalaries, contractYear, rules.deadCap.shareByYearsLeft);
 
-      const deadCapAmounts: Record<string, number> = {};
-      
-      years.forEach((year, index) => {
-        const salary = Number(contractSalaries[String(year)] || 0);
-        for (let i = index; i < Math.min(index + deadCapPercentages.length, years.length); i++) {
-          const dcPercent = deadCapPercentages[i - index] || 0;
-          const dcYear = years[i];
-          deadCapAmounts[String(dcYear)] = (deadCapAmounts[String(dcYear)] || 0) + Math.ceil(salary * dcPercent);
-        }
-      });
-      
       const entry = await storage.createDeadCapEntry({
         leagueId,
         rosterId,

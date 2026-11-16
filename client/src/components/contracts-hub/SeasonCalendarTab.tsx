@@ -1,14 +1,15 @@
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
-import { PHASE_LABELS, RFA_ENABLED, formatPhaseDate, type LeaguePhaseId, type PhaseConfigEntry } from "@shared/contractRules";
+import { PHASE_LABELS, formatPhaseDate, type LeaguePhaseId, type PhaseConfigEntry } from "@shared/contractRules";
+import { useLeagueRules } from "@/lib/leagueRules";
 
-const PHASE_BULLETS: Record<LeaguePhaseId, string[]> = {
+const phaseBullets = (rfaEnabled: boolean, deadlineWeek: number): Record<LeaguePhaseId, string[]> => ({
   league_year_rollover: [
     "Commissioner attaches the renewed Sleeper league",
     "Next season becomes the contract year",
     "Expired contracts come off; those players are free agents",
   ],
-  fa_round_1: RFA_ENABLED
+  fa_round_1: rfaEnabled
     ? ["Blind bids on FAs and RFAs", "No minimum bid", "Bids may exceed cap until results"]
     : ["Blind bids on free agents", "No minimum bid", "Bids may exceed cap until results"],
   round_1_results: [
@@ -21,9 +22,9 @@ const PHASE_BULLETS: Record<LeaguePhaseId, string[]> = {
   round_2_results: ["Same confirm flow as Round 1", "Unsigned after Round 2 → in-season FA"],
   rfa_match_2: ["Final RFA match window", "Same match / walk rules"],
   fa_recap: ["Every player each team signed", "Rookie draft, then rookie contracts"],
-  regular_season: ["Tag or extend expiring contracts", "Trades open", "Closes automatically after Week 14"],
+  regular_season: ["Tag or extend expiring contracts", "Trades open", `Closes automatically after Week ${deadlineWeek}`],
   deadline_passed: ["Tags, extensions and trades closed", "League rolls over after the championship"],
-};
+});
 
 /**
  * The league year as a bar of dot nodes. Finished phases are filled, the open phase is highlighted,
@@ -45,13 +46,14 @@ export function SeasonCalendarBar({
   advancing?: boolean;
   onAdvance?: (next: LeaguePhaseId) => void;
 }) {
+  const leagueRules = useLeagueRules();
   if (phases.length === 0) return null;
   const currentIndex = phases.findIndex(p => p.id === currentPhase);
   const next = currentIndex >= 0 && currentIndex < phases.length - 1 ? phases[currentIndex + 1].id : null;
-  // The regular-season window closes on its own after Week 14; the rollover happens from Settings.
+  // The regular-season window closes on its own after the deadline week; the rollover happens from Settings.
   const advanceNote =
     currentPhase === "regular_season"
-      ? "Closes automatically after Week 14"
+      ? `Closes automatically after Week ${leagueRules.contractDeadlineWeek}`
       : currentPhase === "deadline_passed"
         ? "After the championship, roll over from Settings → Advance league year"
         : null;
@@ -73,7 +75,7 @@ export function SeasonCalendarBar({
             </Button>
           ) : null
         )}
-        {!canAdvance && <p className="text-[11px] text-muted-foreground">Tags, extensions and trades: regular season through Week 14</p>}
+        {!canAdvance && <p className="text-[11px] text-muted-foreground">Tags, extensions and trades: regular season through Week {leagueRules.contractDeadlineWeek}</p>}
       </div>
 
       <div className="overflow-x-auto pb-1">
@@ -125,7 +127,7 @@ export function SeasonCalendarBar({
                       {dates ? ` · ${dates}` : ""}
                     </p>
                     <ul className="mt-1.5 list-disc pl-4 space-y-0.5 text-[11px]">
-                      {PHASE_BULLETS[p.id].map(b => (
+                      {phaseBullets(leagueRules.rfaEnabled, leagueRules.contractDeadlineWeek)[p.id].map(b => (
                         <li key={b}>{b}</li>
                       ))}
                     </ul>

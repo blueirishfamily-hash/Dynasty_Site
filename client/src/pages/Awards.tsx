@@ -47,6 +47,7 @@ import {
 } from "lucide-react";
 import type { AwardNomination, AwardBallot } from "@shared/schema";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
@@ -132,6 +133,7 @@ function CountdownTimer({ targetDate, label }: { targetDate: Date; label: string
 }
 
 export default function Awards() {
+  const awardRules = useLeagueRules().awards;
   const { user, league, season } = useSleeper();
   const { toast } = useToast();
   const [selectedSeason, setSelectedSeason] = useState<string>(season);
@@ -471,7 +473,7 @@ export default function Awards() {
                           disabled={!userRosterId || (nominationCount?.remaining ?? 0) <= 0}
                         >
                           <Plus className="w-4 h-4 mr-2" />
-                          Nominate ({nominationCount?.remaining ?? 3} left)
+                          Nominate ({nominationCount?.remaining ?? awardRules.nominationLimit} left)
                         </Button>
                       </DialogTrigger>
                       <DialogContent>
@@ -563,7 +565,7 @@ export default function Awards() {
                         ) : (
                           <>
                             <div className="space-y-2">
-                              <Label>1st Place (5 points)</Label>
+                              <Label>1st Place ({awardRules.ballotPoints[0] ?? 0} point{(awardRules.ballotPoints[0] ?? 0) === 1 ? "" : "s"})</Label>
                               <Select value={firstPlace} onValueChange={setFirstPlace}>
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select 1st place..." />
@@ -578,7 +580,7 @@ export default function Awards() {
                               </Select>
                             </div>
                             <div className="space-y-2">
-                              <Label>2nd Place (3 points)</Label>
+                              <Label>2nd Place ({awardRules.ballotPoints[1] ?? 0} point{(awardRules.ballotPoints[1] ?? 0) === 1 ? "" : "s"})</Label>
                               <Select value={secondPlace} onValueChange={setSecondPlace}>
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select 2nd place..." />
@@ -593,7 +595,7 @@ export default function Awards() {
                               </Select>
                             </div>
                             <div className="space-y-2">
-                              <Label>3rd Place (1 point)</Label>
+                              <Label>3rd Place ({awardRules.ballotPoints[2] ?? 0} point{(awardRules.ballotPoints[2] ?? 0) === 1 ? "" : "s"})</Label>
                               <Select value={thirdPlace} onValueChange={setThirdPlace}>
                                 <SelectTrigger>
                                   <SelectValue placeholder="Select 3rd place..." />

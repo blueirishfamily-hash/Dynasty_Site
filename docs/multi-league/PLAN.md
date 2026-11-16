@@ -250,10 +250,10 @@ There are seven phases, and ATL Dynasty keeps working after each one. A second l
 
 **Phase 3: rules and contracts switch**
 
-- [ ] Move the cap, rookie scale, deadline week, RFA, pickup contract and award constants into `league_rules` and league settings
-- [ ] Read rules by league and season, with saved changes going to next season, plus the site admin's emergency change with a reason
-- [ ] League Settings page with current and next-season rules
-- [ ] Contracts switch: hide pages and widgets, and have contract routes refuse when it's off
+- [x] Move the cap, rookie scale, deadline week, RFA, pickup contract and award constants into `league_rules` and league settings
+- [x] Read rules by league and season, with saved changes going to next season, plus the site admin's emergency change with a reason
+- [x] League Settings page with current and next-season rules
+- [x] Contracts switch: hide pages and widgets, and have contract routes refuse when it's off
 
 **Phase 4: joining and separation**
 

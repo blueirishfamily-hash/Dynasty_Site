@@ -17,22 +17,6 @@ import {
 
 export function registerRookieContractsRoutes(app: Express): void {
   // Assign contracts to players with 3+ years experience based on quartile rankings
-  // Rookie pay scale utility function
-  function getRookieSalary(round: number, draftSlot: number): number {
-    if (round === 1) {
-      // First round pay scale
-      const firstRoundSalaries: Record<number, number> = {
-        1: 12, 2: 11, 3: 11, 4: 9, 5: 9, 6: 9,
-        7: 7, 8: 7, 9: 7, 10: 6, 11: 6, 12: 6
-      };
-      return firstRoundSalaries[draftSlot] || 4; // Default to $4 if outside 1-12
-    } else if (round === 2) {
-      return 4; // All second round picks
-    } else if (round === 3) {
-      return 2; // All third round picks
-    }
-    return 0; // No pay scale for rounds 4+
-  }
 
   app.post("/api/league/:leagueId/assign-contracts-by-quartile", async (req, res) => {
     if (!(await requireCommissioner(req, res))) return;

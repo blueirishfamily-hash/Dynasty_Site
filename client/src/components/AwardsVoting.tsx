@@ -21,6 +21,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { ChevronDown, ChevronRight, Crown, Plus, Star, Vote } from "lucide-react";
 import type { AwardNomination, AwardBallot } from "@shared/schema";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 type AwardType = "mvp" | "roy" | "gm";
 type Phase = "nominate" | "open" | "closed";
@@ -31,8 +32,6 @@ const AWARDS: Array<{ type: AwardType; label: string; desc: string; noun: string
   { type: "gm", label: "Best GM", desc: "Best roster builder and manager", noun: "team" },
 ];
 
-const NOMINATION_LIMIT = 3;
-const SLOT_POINTS = [3, 2, 1];
 const SLOT_LABELS = ["1st", "2nd", "3rd"];
 
 const positionColors: Record<string, string> = {
@@ -143,6 +142,7 @@ function useAwardData(leagueId: string, season: string, type: AwardType, rosterI
 }
 
 export default function AwardsVoting({ leagueId, season, userId, userRosterId, teamName, isCommissioner, teams }: Props) {
+  const NOMINATION_LIMIT = useLeagueRules().awards.nominationLimit;
   const { toast } = useToast();
   const [openAward, setOpenAward] = useState<AwardType | null>("mvp");
 
@@ -336,6 +336,8 @@ function AwardPanel({
   ballot: AwardBallot | null;
   nominationCount: number;
 }) {
+  const SLOT_POINTS = useLeagueRules().awards.ballotPoints;
+  const NOMINATION_LIMIT = useLeagueRules().awards.nominationLimit;
   const { toast } = useToast();
   const base = `/api/league/${leagueId}/awards/${season}/${award.type}`;
   const [picks, setPicks] = useState<(string | null)[] | null>(null);
@@ -609,6 +611,7 @@ function NominateDialog({
   pending: boolean;
   onPick: (n: { playerId: string; playerName: string; playerPosition: string; playerTeam: string | null }) => void;
 }) {
+  const NOMINATION_LIMIT = useLeagueRules().awards.nominationLimit;
   const [search, setSearch] = useState("");
   const [debounced, setDebounced] = useState("");
   const [selected, setSelected] = useState<{ playerId: string; playerName: string; playerPosition: string; playerTeam: string | null } | null>(null);

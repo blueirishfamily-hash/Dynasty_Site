@@ -4,7 +4,9 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
 import { resetTestMode, setTestMode, useContractsTestMode } from "@/lib/contractsTestMode";
-import { ACTIVE_PHASES, PHASE_LABELS, type LeaguePhaseId } from "@shared/contractRules";
+import { PHASE_LABELS, type LeaguePhaseId } from "@shared/contractRules";
+import { activePhases } from "@shared/leagueRules";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 interface Props {
   leagueId: string | undefined;
@@ -14,6 +16,7 @@ interface Props {
 
 /** Switch for test mode plus, while it is on, the banner with the phase walker. */
 export function TestModeBar({ leagueId, currentYear, currentPhase }: Props) {
+  const ACTIVE_PHASES = activePhases(useLeagueRules());
   const on = useContractsTestMode();
   const { toast } = useToast();
   const [busy, setBusy] = useState(false);

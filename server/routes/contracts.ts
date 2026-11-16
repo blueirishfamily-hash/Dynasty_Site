@@ -9,6 +9,8 @@ import {
   computeAdjustedPPGForPlayer,
 } from "./shared";
 import { requireCommissioner } from "../security/guards";
+import { rulesForSleeperLeague } from "../leagueRules";
+import { extensionMultiplier, lengthLimit } from "../../shared/leagueRules";
 
 export function registerContractsRoutes(app: Express): void {
   // Create (or fix) rookie contracts for everyone drafted in this season's rookie draft. Commissioner only.
@@ -372,25 +374,25 @@ export function registerContractsRoutes(app: Express): void {
         }
       }
 
-      // Determine extension salary
+      // Determine extension salary. The league's minimum extension salary (ATL: $5M) is the floor and fallback.
+      const minTenths = Math.round((await rulesForSleeperLeague(leagueId)).extensions.minSalary * 10);
       let extensionSalary: number;
       if (neighborAbove && neighborBelow) {
         extensionSalary = Math.round((neighborAbove.salary + neighborBelow.salary) / 2);
       } else if (neighborAbove) {
         // Rookie is ranked last among salaried players — use highest salary at position
         const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
-        extensionSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50; // fallback $5M
+        extensionSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : minTenths;
       } else if (neighborBelow) {
         // Rookie is ranked first — use highest salary at position
         const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
-        extensionSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50;
+        extensionSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : minTenths;
       } else {
         // No salaried neighbors at all — minimum
-        extensionSalary = 50; // $5M fallback
+        extensionSalary = minTenths;
       }
 
-      // Ensure minimum salary of $5M (50 tenths)
-      extensionSalary = Math.max(extensionSalary, 50);
+      extensionSalary = Math.max(extensionSalary, minTenths);
 
       console.log(`[Rookie Extension] ${player.full_name || playerId} (${position}): adjustedPPG=${adjustedPPG.toFixed(1)}, rank=${rank}/${totalPlayers}, salary=${extensionSalary/10}M`);
 
@@ -531,26 +533,29 @@ export function registerContractsRoutes(app: Express): void {
         }
       }
 
+      const extRules = await rulesForSleeperLeague(leagueId);
+      const minTenths = Math.round(extRules.extensions.minSalary * 10);
       let baseSalary: number;
       if (neighborAbove && neighborBelow) {
         baseSalary = Math.round((neighborAbove.salary + neighborBelow.salary) / 2);
       } else if (neighborAbove) {
         const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
-        baseSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50;
+        baseSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : minTenths;
       } else if (neighborBelow) {
         const allSalaries = rankedPlayers.filter(p => p.currentYearSalary > 0).map(p => p.currentYearSalary);
-        baseSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : 50;
+        baseSalary = allSalaries.length > 0 ? Math.max(...allSalaries) : minTenths;
       } else {
-        baseSalary = 50;
+        baseSalary = minTenths;
       }
 
-      baseSalary = Math.max(baseSalary, 50);
+      baseSalary = Math.max(baseSalary, minTenths);
 
+      // League multipliers by length (ATL: 1 yr 80%, 2 yr 90%, 3 yr 100%, 4 yr 110%), rounded up to whole $M.
       const baseSalaryMillions = baseSalary / 10;
-      const salary1Year = Math.ceil(baseSalaryMillions * 0.8) * 10;
-      const salary2Year = Math.ceil(baseSalaryMillions * 0.9) * 10;
-      const salary3Year = Math.ceil(baseSalaryMillions * 1.0) * 10;
-      const salary4Year = Math.ceil(baseSalaryMillions * 1.1) * 10;
+      const salary1Year = Math.ceil(baseSalaryMillions * extensionMultiplier(extRules, 1)) * 10;
+      const salary2Year = Math.ceil(baseSalaryMillions * extensionMultiplier(extRules, 2)) * 10;
+      const salary3Year = Math.ceil(baseSalaryMillions * extensionMultiplier(extRules, 3)) * 10;
+      const salary4Year = Math.ceil(baseSalaryMillions * extensionMultiplier(extRules, 4)) * 10;
 
       console.log(`[Non-Rookie Extension] ${player.full_name || playerId} (${position}): adjustedPPG=${adjustedPPG.toFixed(1)}, rank=${rank}/${totalPlayers}, baseSalary=${baseSalary/10}M`);
 
@@ -595,12 +600,13 @@ export function registerContractsRoutes(app: Express): void {
         return res.status(400).json({ error: "Missing required fields" });
       }
 
-      // Extensions are only made while the regular-season window is open (it closes after Week 14).
+      // Extensions are only made while the regular-season window is open (it closes after the deadline week).
+      const rules = await rulesForSleeperLeague(leagueId);
       {
         const { getPhaseState } = await import("../contractHubRoutes");
         const { current: extPhase } = await getPhaseState(leagueId);
         if (extPhase !== "regular_season") {
-          return res.status(400).json({ error: "Extensions can only be made during the regular season, through Week 14" });
+          return res.status(400).json({ error: `Extensions can only be made during the regular season, through Week ${rules.contractDeadlineWeek}` });
         }
       }
 
@@ -650,42 +656,39 @@ export function registerContractsRoutes(app: Express): void {
       // Reuse allExtensionsForSeason fetched earlier for the duplicate-pending check
       const teamExtensionsForRoster = allExtensionsForSeason.filter(e => e.rosterId === rosterId);
 
+      const ext = rules.extensions;
       if (isRookieContract) {
-        // Rookie extensions: max 3 per season, max 1 can be 4-year
+        // Rookie extensions per season, and how many of them may be 4-year (ATL: 3, of which 1 four-year)
         const rookieExts = teamExtensionsForRoster.filter(e => e.isRookieExtension === 1);
-        if (rookieExts.length >= 3) {
-          return res.status(400).json({ 
-            error: "Team has already used all 3 rookie extensions for this season" 
+        if (rookieExts.length >= ext.rookiePerSeason) {
+          return res.status(400).json({
+            error: `Team has already used all ${ext.rookiePerSeason} rookie extensions for this season`
           });
         }
-        if (extensionType === 4 && rookieExts.some(e => e.extensionType === 4)) {
-          return res.status(400).json({ 
-            error: "Team has already used their one 4-year rookie extension for this season" 
+        if (extensionType === 4 && rookieExts.filter(e => e.extensionType === 4).length >= ext.rookieFourYearPerSeason) {
+          return res.status(400).json({
+            error: `Team has already used its ${ext.rookieFourYearPerSeason} 4-year rookie extension${ext.rookieFourYearPerSeason === 1 ? "" : "s"} for this season`
           });
         }
       } else {
-        // Non-rookie extensions: max 2 per season
+        // Non-rookie extensions per season (ATL: 2)
         const nonRookieExts = teamExtensionsForRoster.filter(e => e.isRookieExtension !== 1);
-        if (nonRookieExts.length >= 2) {
-          return res.status(400).json({ 
-            error: "Team has already used both non-rookie extensions for this season",
+        if (nonRookieExts.length >= ext.nonRookiePerSeason) {
+          return res.status(400).json({
+            error: `Team has already used all ${ext.nonRookiePerSeason} non-rookie extensions for this season`,
             existingExtension: nonRookieExts[0]
           });
         }
       }
 
-      // Validate contract tier limits (same limits as bidding system):
-      //   bucket 4 (4+ yrs remaining): max 3 contracts
-      //   bucket 3 (3 yrs remaining):  max 4 contracts
-      //   bucket 2 (2 yrs remaining):  max 5 contracts
-      // Only non-rookie contracts count toward limits; rookie contracts are excluded.
-      const CONTRACT_LIMITS: Record<number, number> = { 4: 3, 3: 4, 2: 5 };
+      // Validate the league's contract-length limits (same limits as free agency, ATL: 4+ yrs max 3,
+      // 3 yrs max 4, 2 yrs max 5). Only non-rookie contracts count; rookie contracts are excluded.
       {
         // The bucket is the extension length itself (3-year ext → 3-year limit, etc.)
         const bucket = Math.min(Math.max(extensionType, 1), 4);
-        const limit = CONTRACT_LIMITS[bucket];
+        const limit = lengthLimit(rules, bucket);
 
-        if (limit !== undefined) {
+        if (limit !== null) {
           // The extension starts next season, so count the contracts the roster will have then: seasons from
           // the extension year on. The player being extended is left out because the extension replaces his deal.
           const rosterContracts = playerContracts.filter(
@@ -762,20 +765,17 @@ export function registerContractsRoutes(app: Express): void {
         if (extensionType >= 3) extensionSalary3 = salary;
         if (extensionType >= 4) extensionSalary4 = salary;
       } else {
-        // Non-rookie extensions: PPG-based with percentage multipliers
-        // 1-yr = 80%, 2-yr = 90%, 3-yr = 100%, 4-yr = 110%
+        // Non-rookie extensions: PPG-based with the league's multipliers by length
         const baseSalaryMillions = salary / 10;
-        const percentages: Record<number, number> = { 1: 0.8, 2: 0.9, 3: 1.0, 4: 1.1 };
-        const salaryPerYear = Math.ceil(baseSalaryMillions * percentages[extensionType]) * 10;
+        const salaryPerYear = Math.ceil(baseSalaryMillions * extensionMultiplier(rules, extensionType)) * 10;
         extensionSalary1 = salaryPerYear;
         if (extensionType >= 2) extensionSalary2 = salaryPerYear;
         if (extensionType >= 3) extensionSalary3 = salaryPerYear;
         if (extensionType >= 4) extensionSalary4 = salaryPerYear;
       }
 
-      // Validate extension year(s) are within supported range (current season to season+4)
-      // Contract years are: season, season+1, season+2, season+3, with year 5 (season+4) for extensions
-      const maxContractYear = season + 4; // Option year / max extension year
+      // Extension years must stay within the league's max contract length (ATL: 5 seasons, through season + 4).
+      const maxContractYear = season + rules.maxContractYears - 1;
       const maxExtensionYear = extensionType === 1 ? extensionYear : (extensionType === 2 ? extensionYear + 1 : (extensionType === 3 ? extensionYear + 2 : extensionYear + 3));
       if (extensionYear < season || maxExtensionYear > maxContractYear) {
         return res.status(400).json({ 
@@ -858,9 +858,9 @@ export function registerContractsRoutes(app: Express): void {
 
       {
         const { getPhaseState } = await import("../contractHubRoutes");
-        const { current: extPhase } = await getPhaseState(leagueId);
+        const { current: extPhase, deadlineWeek } = await getPhaseState(leagueId);
         if (extPhase !== "regular_season") {
-          return res.status(400).json({ error: "Extensions can only be submitted during the regular season, through Week 14" });
+          return res.status(400).json({ error: `Extensions can only be submitted during the regular season, through Week ${deadlineWeek}` });
         }
       }
 
@@ -986,7 +986,9 @@ export function registerContractsRoutes(app: Express): void {
       }
 
       const currentYear = parseInt(league.season || String(new Date().getFullYear()), 10) || new Date().getFullYear();
-      const optionYear = currentYear + 4;
+      const tagRules = await rulesForSleeperLeague(leagueId);
+      // The last season the league's max contract length reaches (ATL: current + 4).
+      const optionYear = currentYear + tagRules.maxContractYears - 1;
 
       const allContracts = await storage.getPlayerContracts(leagueId);
       const contract = allContracts.find((c: any) => c.playerId === playerId && c.rosterId === Number(rosterId));
@@ -999,18 +1001,18 @@ export function registerContractsRoutes(app: Express): void {
         });
       }
 
-      // Tags are only made while the regular-season window is open (it closes after Week 14).
+      // Tags are only made while the regular-season window is open (it closes after the deadline week).
       const { getPhaseState } = await import("../contractHubRoutes");
       const { current: tagPhase } = await getPhaseState(leagueId);
       if (tagPhase !== "regular_season") {
-        return res.status(400).json({ error: "Franchise tags can only be applied during the regular season, through Week 14" });
+        return res.status(400).json({ error: `Franchise tags can only be applied during the regular season, through Week ${tagRules.contractDeadlineWeek}` });
       }
 
-      // One tag per team for the coming season.
+      // The league's tags per team for the coming season (ATL: 1).
       const teamTagCount = allContracts.filter(
         (c: any) => c.rosterId === Number(rosterId) && c.franchiseTagUsed === 1 && c.franchiseTagYear === currentYear + 1,
       ).length;
-      if (teamTagCount >= 1) {
+      if (teamTagCount >= tagRules.franchiseTag.perTeamPerSeason) {
         return res.status(400).json({ error: "This team has no franchise tag left this season" });
       }
 
@@ -1056,8 +1058,9 @@ export function registerContractsRoutes(app: Express): void {
         salariesByPosition[pos].push(Number(currentSalary));
       }
       const positionSalaries = salariesByPosition[position] || [];
-      const top5 = positionSalaries.sort((a, b) => b - a).slice(0, 5);
-      const franchiseSalaryTenths = top5.length > 0 ? Math.ceil(top5.reduce((s, n) => s + n, 0) / top5.length) : 0;
+      // Tag price: average of the league's top-N non-rookie salaries at the position (ATL: 5), rounded up to $0.1M.
+      const top = positionSalaries.sort((a, b) => b - a).slice(0, tagRules.franchiseTag.topSalaries);
+      const franchiseSalaryTenths = top.length > 0 ? Math.ceil(top.reduce((s, n) => s + n, 0) / top.length) : 0;
 
       salaries[String(franchiseYear)] = franchiseSalaryTenths;
       const salariesPayload = JSON.stringify(salaries);

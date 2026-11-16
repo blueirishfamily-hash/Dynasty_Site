@@ -17,9 +17,7 @@ import { FreeAgencyRecapTab, type DraftCapitalData } from "@/components/contract
 import { RfaMatchTab } from "@/components/contracts-hub/RfaMatchTab";
 import { NotOpenYet } from "@/components/contracts-hub/NotOpenYet";
 import {
-  ACTIVE_PHASES,
   isOffseasonPhase,
-  RFA_ENABLED,
   PHASE_LABELS,
   formatPhaseDate,
   type LeaguePhaseId,
@@ -97,10 +95,11 @@ import {
   Trophy,
 } from "lucide-react";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { useLeagueRules } from "@/lib/leagueRules";
+import { activePhases } from "@shared/leagueRules";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const TOTAL_CAP = 250;
 const positionColors: Record<string, string> = {
   QB: "bg-rose-500 text-white",
   RB: "bg-emerald-500 text-white",
@@ -348,6 +347,9 @@ function OverviewTab({
   pendingExtensions: TeamExtension[];
   pendingTags: PendingTag[];
 }) {
+  const leagueRules = useLeagueRules();
+  const tagTopSalaries = useLeagueRules().franchiseTag.topSalaries;
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const [productiveMode, setProductiveMode] = useState<"total" | "ppg">("total");
 
   const teamEntry = allRosters.find(r => r.rosterId === selectedRosterId);
@@ -454,8 +456,9 @@ function OverviewTab({
             parsedContracts,
             currentYear,
             id => playerMap[id]?.position,
+            tagTopSalaries,
           ),
-    [selectedRosterId, pendingExtensions, pendingTags, parsedContracts, currentYear, playerMap],
+    [selectedRosterId, pendingExtensions, pendingTags, parsedContracts, currentYear, playerMap, tagTopSalaries],
   );
   const salaryCommitmentsData = commitmentYears.map(year => {
     const pending = pendingEffects.added[year] || 0;
@@ -802,7 +805,7 @@ function OverviewTab({
                     )}
                     {fa.isRookieContract === 1 && (
                       <span className="text-[9px] text-muted-foreground block mt-1">
-                        {!RFA_ENABLED
+                        {!leagueRules.rfaEnabled
                           ? "Rookie deal ending"
                           : rfaPlayerIds.has(fa.playerId)
                             ? "Designated RFA"
@@ -972,6 +975,7 @@ function TeamContractsDialog({
   /** Commissioner only: jump to this team's Team Overview. */
   onOpenOverview?: (rosterId: number) => void;
 }) {
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const roster = allRosters.find(r => r.rosterId === rosterId) ?? null;
   const years = [currentYear, currentYear + 1, currentYear + 2, currentYear + 3];
 
@@ -1327,6 +1331,7 @@ function LeagueCapTab({
   /** When set, only this team is shown. The League Cap page leaves this unset so every team shows. */
   ownRosterId?: number | null;
 }) {
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const [sortKey, setSortKey] = useState<"capUsed" | "available" | "expiring" | "future">("capUsed");
   const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
 
@@ -1726,6 +1731,7 @@ function ExtensionModal({
   currentYear: number;
   isLoading: boolean;
 }) {
+  const leagueRules = useLeagueRules();
   const [extensionType, setExtensionType] = useState<string>("1");
   if (!contract) return null;
 
@@ -1789,7 +1795,7 @@ function ExtensionModal({
             </div>
           </div>
           {contract.isRookieContract === 1 && (
-            <p className="text-xs text-blue-500">This is a rookie contract — counts toward the rookie extension limit (max 3/season).</p>
+            <p className="text-xs text-blue-500">This is a rookie contract — counts toward the rookie extension limit (max {leagueRules.extensions.rookiePerSeason}/season).</p>
           )}
         </div>
         <DialogFooter>
@@ -1891,6 +1897,7 @@ function RosterManagementTab({
   userId: string;
   onOpenPlayer: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { toast } = useToast();
   const [search, setSearch] = useState("");
   const [filterPos, setFilterPos] = useState("ALL");
@@ -2366,7 +2373,11 @@ function ContractActionsBanner({
   currentPhase: LeaguePhaseId;
   phases: PhaseConfigEntry[];
 }) {
-  const copy = PHASE_ACTION_COPY[currentPhase];
+  const leagueRules = useLeagueRules();
+  const ACTIVE_PHASES = activePhases(leagueRules);
+  const baseCopy = PHASE_ACTION_COPY[currentPhase];
+  // The copy says "Week 14"; use this league's deadline week.
+  const copy = { ...baseCopy, detail: baseCopy.detail.replace(/Week 14/g, `Week ${leagueRules.contractDeadlineWeek}`) };
   const entry = phases.find(p => p.id === currentPhase);
   const idx = ACTIVE_PHASES.indexOf(currentPhase);
   const next = idx >= 0 && idx < ACTIVE_PHASES.length - 1 ? ACTIVE_PHASES[idx + 1] : null;
@@ -2402,6 +2413,8 @@ function ContractActionsBanner({
 // ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function ContractsHub() {
+  const leagueRules = useLeagueRules();
+  const TOTAL_CAP = useLeagueRules().salaryCap;
   const { user, league, season } = useSleeper();
   const [, setLocation] = useLocation();
   const currentYear = parseInt(season) || new Date().getFullYear();
@@ -2532,7 +2545,7 @@ export default function ContractsHub() {
   const { toast: hubToast } = useToast();
   const { data: phaseState } = useContractPhase(league?.leagueId);
   const currentPhase: LeaguePhaseId = phaseState?.current ?? "regular_season";
-  // Tags, extensions and trades are open in the regular season until Week 14 is complete.
+  // Tags, extensions and trades are open in the regular season until the league's deadline week is complete.
   const windowOpen = currentPhase === "regular_season";
   // The salary projection is for the next season with no games played yet.
   const projectionYear = phaseState?.projectionYear ?? currentYear + 1;
@@ -2587,7 +2600,7 @@ export default function ContractsHub() {
       if (!res.ok) throw new Error("RFA");
       return res.json();
     },
-    enabled: !!league?.leagueId && RFA_ENABLED,
+    enabled: !!league?.leagueId && leagueRules.rfaEnabled,
   });
 
   const rfaPlayerIds = useMemo(

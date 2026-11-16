@@ -1,10 +1,12 @@
 import type { Express } from "express";
 import type { Server } from "http";
 import { registerLeagueLookup } from "../middleware/league";
+import { contractsGate } from "../middleware/contractsGate";
 import { leagueResolver } from "../leagueRegistry";
 import { registerLeaguesRoutes } from "./leagues";
 import { registerSecurityRoutes } from "./security";
 import { registerAdminLeagueRoutes } from "./adminLeagues";
+import { registerLeagueSettingsRoutes } from "./leagueSettings";
 import { registerSleeperProxyRoutes } from "./sleeperProxy";
 import { registerPlayersRoutes } from "./players";
 import { registerContractsRoutes } from "./contracts";
@@ -32,9 +34,12 @@ export async function registerRoutes(
 ): Promise<Server> {
   // Shared league lookup for every route with a :leagueId parameter (sets req.league). Lenient until phase 4.
   registerLeagueLookup(app, leagueResolver);
+  // Contracts switch: contract routes refuse when the league has contracts off.
+  app.use(contractsGate(leagueResolver));
   registerLeaguesRoutes(app);
   registerSecurityRoutes(app);
   registerAdminLeagueRoutes(app);
+  registerLeagueSettingsRoutes(app);
 
   registerSleeperProxyRoutes(app);
   registerPlayersRoutes(app);

@@ -4,6 +4,13 @@ import type { Express } from "express";
 import { storage } from "../storage";
 import { getLeague } from "../sleeper";
 import { leagueActor, requireCommissioner, requireCommissionerFor } from "../security/guards";
+import { rulesForSleeperLeague } from "../leagueRules";
+
+/** Points for 1st, 2nd and 3rd on a ballot under the league's rules (ATL: 3/2/1). */
+async function ballotPoints(leagueId: string): Promise<[number, number, number]> {
+  const pts = (await rulesForSleeperLeague(leagueId)).awards.ballotPoints;
+  return [pts[0] ?? 0, pts[1] ?? 0, pts[2] ?? 0];
+}
 
 export function registerGovernanceRoutes(app: Express): void {
   // Rule Suggestions API - Health Check
@@ -652,10 +659,11 @@ export function registerGovernanceRoutes(app: Express): void {
         return res.status(403).json({ error: "Nominations are closed." });
       }
 
-      // Check nomination limit (3 per team per award type)
+      // The league's nomination limit per team per award (ATL: 3)
+      const limit = (await rulesForSleeperLeague(leagueId)).awards.nominationLimit;
       const currentCount = await storage.getNominationCountByRoster(leagueId, season, awardType, nominatedByRosterId);
-      if (currentCount >= 3) {
-        return res.status(400).json({ error: "Maximum 3 nominations per team per award" });
+      if (currentCount >= limit) {
+        return res.status(400).json({ error: `Maximum ${limit} nominations per team per award` });
       }
 
       const nomination = await storage.createAwardNomination({
@@ -685,14 +693,15 @@ export function registerGovernanceRoutes(app: Express): void {
         return res.status(400).json({ error: "Invalid award type" });
       }
       const count = await storage.getNominationCountByRoster(leagueId, season, awardType, parseInt(rosterId));
-      res.json({ count, remaining: 3 - count });
+      const limit = (await rulesForSleeperLeague(leagueId)).awards.nominationLimit;
+      res.json({ count, limit, remaining: Math.max(0, limit - count) });
     } catch (error) {
       console.error("Error fetching nomination count:", error);
       res.status(500).json({ error: "Failed to fetch nomination count" });
     }
   });
 
-  // Submit ranked ballot (1st=3pts, 2nd=2pts, 3rd=1pt)
+  // Submit ranked ballot (points per place come from the league's rules; ATL 3/2/1)
   app.post("/api/league/:leagueId/awards/:season/:awardType/ballot", async (req, res) => {
     try {
       const { leagueId, season, awardType } = req.params;
@@ -763,6 +772,8 @@ export function registerGovernanceRoutes(app: Express): void {
 
       const nominations = await storage.getAwardNominations(leagueId, season, awardType);
       const ballots = await storage.getAwardBallots(leagueId, season, awardType);
+      const [p1, p2, p3] = await ballotPoints(leagueId);
+      const awardRules = (await rulesForSleeperLeague(leagueId)).awards;
 
       // Calculate scores for each nomination
       const scores = new Map<string, number>();
@@ -772,9 +783,9 @@ export function registerGovernanceRoutes(app: Express): void {
         const current1 = scores.get(ballot.firstPlaceId) || 0;
         const current2 = scores.get(ballot.secondPlaceId) || 0;
         const current3 = scores.get(ballot.thirdPlaceId) || 0;
-        scores.set(ballot.firstPlaceId, current1 + 3);
-        scores.set(ballot.secondPlaceId, current2 + 2);
-        scores.set(ballot.thirdPlaceId, current3 + 1);
+        scores.set(ballot.firstPlaceId, current1 + p1);
+        scores.set(ballot.secondPlaceId, current2 + p2);
+        scores.set(ballot.thirdPlaceId, current3 + p3);
       });
 
       const results = nominations.map(n => ({
@@ -788,7 +799,8 @@ export function registerGovernanceRoutes(app: Express): void {
       res.json({ 
         results, 
         totalBallots: ballots.length,
-        totalTeams: nominations.length > 0 ? 12 : 0 // Adjust based on league size
+        totalTeams: nominations.length > 0 ? awardRules.resultTeamCount : 0,
+        ballotPoints: [p1, p2, p3],
       });
     } catch (error) {
       console.error("Error fetching award results:", error);

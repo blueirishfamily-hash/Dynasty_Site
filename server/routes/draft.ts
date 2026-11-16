@@ -1,6 +1,7 @@
 // Draft odds order, draft picks and draft capital.
 // Moved out of server/routes.ts unchanged.
 import type { Express } from "express";
+import { rulesForSleeperLeague } from "../leagueRules";
 import { storage } from "../storage";
 import {
   getLeague,
@@ -243,6 +244,7 @@ export function registerDraftRoutes(app: Express): void {
         }
         // The board as it was drafted: who picked whom at each slot, and that slot's rookie contract.
         const { rookiePayScale } = await import("../rookieContracts");
+        const { rookieScale } = await rulesForSleeperLeague(leagueId);
         const picks = await getDraftPicks(draft.draft_id).catch(() => [] as any[]);
         const board = picks
           .map((p: any) => ({
@@ -250,7 +252,7 @@ export function registerDraftRoutes(app: Express): void {
             slot: p.draft_slot,
             ownerRosterId: p.roster_id,
             originalRosterId: p.roster_id,
-            salary: rookiePayScale(p.round, p.draft_slot),
+            salary: rookiePayScale(p.round, p.draft_slot, rookieScale),
             playerId: p.player_id ? String(p.player_id) : null,
             playerName: [p.metadata?.first_name, p.metadata?.last_name].filter(Boolean).join(" ") || null,
             playerPosition: p.metadata?.position || null,
@@ -296,6 +298,7 @@ export function registerDraftRoutes(app: Express): void {
       }
 
       const { rookiePayScale } = await import("../rookieContracts");
+      const { rookieScale } = await rulesForSleeperLeague(leagueId);
       const rounds = Math.max(1, Number(draft?.settings?.rounds) || 3);
       const traded = await getTradedPicks(leagueId).catch(() => [] as any[]);
       const byRoster: Record<number, { total: number; picks: Array<{ round: number; slot: number; salary: number; fromRosterId: number }> }> = {};
@@ -306,7 +309,7 @@ export function registerDraftRoutes(app: Express): void {
             (tp: any) => String(tp.season) === String(season) && tp.round === round && tp.roster_id === originalRosterId,
           );
           const owner = trade ? trade.owner_id : originalRosterId;
-          const salary = rookiePayScale(round, slot);
+          const salary = rookiePayScale(round, slot, rookieScale);
           board.push({ round, slot, ownerRosterId: owner, originalRosterId, salary, playerId: null, playerName: null, playerPosition: null });
           if (salary <= 0) continue;
           const entry = (byRoster[owner] ||= { total: 0, picks: [] });

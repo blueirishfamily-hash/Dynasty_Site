@@ -71,3 +71,33 @@ The plan's source of truth is the claude.ai doc "Multi-League Plan" (https://cla
 ## Next steps
 
 1. Phase 1: write the SQL for the 8 tables, then the ATL Dynasty insert, then the shared league lookup (in `server/middleware/`).
+
+## Phase 3 built (uncommitted, 2026-11-16)
+
+Decisions with the user:
+- All of these become editable per league and season: max contract length (5), rookie deal length (3), tag price top-N (5) and tags per team (1), extension multipliers (80/90/100/110%), extension minimum ($5M), extension limits (3 rookie with one 4-yr, 2 non-rookie), contract-length limits (2yr 5 / 3yr 4 / 4+yr 3), dead cap shares by years left, ballot points (3/2/1) and All-League teams (3). The cap, rookie scale, deadline week, RFA, pickup contract and award limits were already planned.
+- Dead cap: the Contracts Hub rule (100% this season, then 0/25/50/75/100% by years left). The cut/trade route now uses it.
+- Tag price: the server version (skip rookie deals, round up to $0.1M). The client copy in Contracts.tsx (`top5SalariesByPosition`) must change to match.
+- Contract-length limits: bids may go over them but must be flagged in the bid form. They're enforced at round confirmation (done on the server).
+- League Settings page: mockup B (tabs by topic, editing next season, with the current value under each field).
+
+Done (server and shared, tests pass, tsc unchanged):
+- `shared/leagueRules.ts` v2: the full `LeagueRules` type, ATL defaults, `validateRules`, helpers. `mergeRules` fills fields missing from older rows. `rulesForSeason` picks the latest row at or before a season.
+- `shared/contractRules.ts`: optional cap, phases, pickup and dead cap share parameters, plus `checkContractLengthLimits`. `validateRoundResolution` takes length limits.
+- `server/leagueRules.ts` (`rulesForSleeperLeague`) and `server/routes/leagueSettings.ts`: rules GET, PUT next, DELETE next, PUT current (admin emergency with a reason); settings GET and PATCH (contracts switch, invite code, league PIN); add or remove co-commissioners.
+- `server/middleware/contractsGate.ts`: contract routes refuse when contracts are off.
+- Switched to league rules: contractHubRoutes (deadline, phases, RFA, bid max years, round confirm with length limits, trades, pickup), deadCap.ts (shares, pickup), rookieContracts.ts and draft.ts (scale, rookie length), commissionerEdits (cap), routes/contracts.ts (extension price, multipliers, limits, length limits, max year, tag top-N and count, deadline messages), freeAgency cut/trade (dead cap rule).
+
+Also done after the first pass:
+- Awards on the server read the league rules: nomination limit, ballot points, result team count, All-League start year and team count (max 3; validation limits it to 1-3). The award lock date was not one of the chosen rules, so it stays hardcoded.
+- Client: `client/src/lib/leagueRules.ts` provides `useLeagueRules()` (current season, falls back to ATL rules) and `useContractsEnabled()`. The rules replace all 7 `TOTAL_CAP = 250` copies and the shared `CURRENT_SEASON_CAP` imports, the rookie scale (`utils/rookiePayScale.ts` takes a scale), the dead cap copies (Contracts, TradeCenter, CommissionerEdit), the extension multipliers, limits and help text (Contracts, PlayerDetailSheet, TeamAllowances), the tag price (Contracts.tsx now matches the server: skips rookies, rounds to $0.1M, top-N), the contract-length limits, "Week 14" text, RFA and the phase list (SeasonCalendarTab, TestModeBar, ContractsHub), FA bid years, and the award constants (AwardsVoting, Awards, LeagueHub).
+- Label fixes: Awards.tsx said 1st = 5 points and 2nd = 3 points; the server always scored 3/2/1. Labels now come from the rules.
+- The bid form flags bids that would put the team over a contract-length limit (if this bid and the other bids all win, and if every bid wins). RoundWinsTab checks the cap and length limits the same way the server does on confirm.
+- Contracts switch in the client: the sidebar hides Contracts and Contracts Hub, those pages show a notice, and the Dashboard cap card and expiring reminder, the My Team cap KPI and contract column, and the Trade Center cap impact are hidden.
+- League Settings page (`/league-settings`, sidebar link for commissioners), mockup B: tabs Contracts, Extensions and tags, Dead cap and limits, Awards, League access. It edits next season by default; "this season (site admin)" mode needs a reason. League access covers the contracts switch, invite code, league PIN, co-commissioners (setup code) and changing your own PIN. `components/SetupCodeDialog.tsx` is shared with the admin page.
+- Tests: `shared/contractRulesLeague.test.ts` (length limits, round confirm, dead cap shares, pickup, trades at a league cap), `shared/leagueRules.test.ts`, `server/middleware/contractsGate.test.ts`. 81 pass; "phase dates" still fails as before. tsc is unchanged (58 errors, all pre-existing).
+- Checked in the browser against a throwaway mock API (deleted): editing and saving 2027 rules asks for the PIN, then saves; unsaved changes are counted and highlighted; League access renders; contracts off hides the links and shows the notice. **Not run against the real server.**
+
+Still open after phase 3:
+- The settings routes in `server/routes/leagueSettings.ts` have no automated tests (they need the test database).
+- Phase 1 mismatch tests still need the test database.

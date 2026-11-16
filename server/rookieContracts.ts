@@ -1,15 +1,11 @@
 import { storage } from "./storage";
 import { getLeague, getLeagueRosters, getLeagueDrafts, getDraftPicks } from "./sleeper";
+import { atlDynastyRules, rookieSalaryFromScale, type RookieScale } from "../shared/leagueRules";
+import { rulesForSleeperLeague } from "./leagueRules";
 
-/** Rookie pay scale in $M for a rookie draft pick. Rounds after the third have no scale. */
-export function rookiePayScale(round: number, draftSlot: number): number {
-  if (round === 1) {
-    const firstRound: Record<number, number> = { 1: 12, 2: 11, 3: 11, 4: 9, 5: 9, 6: 9, 7: 7, 8: 7, 9: 7, 10: 6, 11: 6, 12: 6 };
-    return firstRound[draftSlot] || 4;
-  }
-  if (round === 2) return 4;
-  if (round === 3) return 2;
-  return 0;
+/** Rookie pay scale in $M for a rookie draft pick, under the league's scale (ATL's by default). */
+export function rookiePayScale(round: number, draftSlot: number, scale: RookieScale = atlDynastyRules().rookieScale): number {
+  return rookieSalaryFromScale(scale, round, draftSlot);
 }
 
 export interface RookieSyncResult {
@@ -85,7 +81,9 @@ export async function syncRookieContracts(leagueId: string): Promise<RookieSyncR
   }
 
   const contracts = await storage.getPlayerContracts(leagueId);
-  const years = [season, season + 1, season + 2];
+  const rules = await rulesForSleeperLeague(leagueId);
+  // A rookie contract covers the league's rookie contract length (ATL: 3 seasons) from the draft season.
+  const years = Array.from({ length: rules.rookieContractYears }, (_, i) => season + i);
 
   for (const p of drafted) {
     const rosterId = rosterOf.get(p.playerId);
@@ -93,7 +91,7 @@ export async function syncRookieContracts(leagueId: string): Promise<RookieSyncR
       result.skipped.push({ name: p.name, reason: "not on a roster" });
       continue;
     }
-    const scale = rookiePayScale(p.round, p.draftSlot);
+    const scale = rookiePayScale(p.round, p.draftSlot, rules.rookieScale);
     if (scale <= 0) {
       result.skipped.push({ name: p.name, reason: `round ${p.round} has no pay scale` });
       continue;
@@ -120,7 +118,7 @@ export async function syncRookieContracts(leagueId: string): Promise<RookieSyncR
         isOnIr: (existing as any)?.isOnIr ?? 0,
         franchiseTagUsed: 0,
         franchiseTagYear: null,
-        originalContractYears: 3,
+        originalContractYears: years.length,
         isRookieContract: 1,
       } as any);
       result.created.push(p.name);
@@ -131,14 +129,14 @@ export async function syncRookieContracts(leagueId: string): Promise<RookieSyncR
 
     const keys = Object.keys(salaries);
     const matchesScale =
-      keys.length === 3 && years.every(y => salaries[String(y)] === tenths);
+      keys.length === years.length && years.every(y => salaries[String(y)] === tenths);
     if (matchesScale) {
       await storage.upsertPlayerContract({
         leagueId,
         rosterId,
         playerId: p.playerId,
         salaries: existing.salaries,
-        originalContractYears: 3,
+        originalContractYears: years.length,
         isRookieContract: 1,
       } as any);
       result.flagged.push(p.name);

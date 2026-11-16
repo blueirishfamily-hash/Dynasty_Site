@@ -195,12 +195,13 @@ export function capBySeason(
   years: number[],
   extraContracts: FlatSalaryContract[] = [],
   excludePlayerIds: string[] = [],
+  salaryCap: number = CURRENT_SEASON_CAP,
 ): Record<number, { committed: number; cap: number; room: number }> {
   const exclude = new Set(excludePlayerIds);
   const out: Record<number, { committed: number; cap: number; room: number }> = {};
   for (const year of years) {
     const committed = salariesForSeason(team, year, extraContracts, exclude);
-    const cap = CURRENT_SEASON_CAP;
+    const cap = salaryCap;
     out[year] = {
       committed,
       cap,
@@ -214,13 +215,14 @@ export function fitsUnderCapAllSeasons(
   team: TeamCapInput,
   contracts: FlatSalaryContract[],
   years?: number[],
+  salaryCap: number = CURRENT_SEASON_CAP,
 ): { ok: boolean; worstSeason: number | null; overBy: number; reason: string } {
   const contractYears = new Set<number>();
   for (const c of contracts) {
     for (let i = 0; i < c.years; i++) contractYears.add(c.startYear + i);
   }
   const seasonList = years ?? [...contractYears].sort((a, b) => a - b);
-  const bySeason = capBySeason(team, seasonList, contracts);
+  const bySeason = capBySeason(team, seasonList, contracts, [], salaryCap);
   let worst: number | null = null;
   let maxOver = 0;
   for (const y of seasonList) {
@@ -248,19 +250,86 @@ export function validateRoundResolution(
   team: TeamCapInput,
   keptWins: FlatSalaryContract[],
   currentYear: number,
-): { canConfirm: boolean; bySeason: ReturnType<typeof capBySeason>; reason: string } {
+  salaryCap: number = CURRENT_SEASON_CAP,
+  lengthLimits: LengthLimits | null = null,
+): {
+  canConfirm: boolean;
+  bySeason: ReturnType<typeof capBySeason>;
+  reason: string;
+  lengthCheck: ReturnType<typeof checkContractLengthLimits> | null;
+} {
   const years = new Set<number>();
   for (const w of keptWins) {
     for (let i = 0; i < w.years; i++) years.add(w.startYear + i);
   }
   if (years.size === 0) years.add(currentYear);
   const seasonList = [...years].sort((a, b) => a - b);
-  const fit = fitsUnderCapAllSeasons(team, keptWins, seasonList);
-  const bySeason = capBySeason(team, seasonList, keptWins);
+  const fit = fitsUnderCapAllSeasons(team, keptWins, seasonList, salaryCap);
+  const bySeason = capBySeason(team, seasonList, keptWins, [], salaryCap);
+  // Winning bids may go over the contract-length limits; the team has to get back under them to confirm.
+  const lengthCheck = lengthLimits ? checkContractLengthLimits(team, keptWins, currentYear, lengthLimits) : null;
+  const canConfirm = fit.ok && (lengthCheck?.ok ?? true);
   return {
-    canConfirm: fit.ok,
+    canConfirm,
     bySeason,
-    reason: fit.reason,
+    reason: !fit.ok ? fit.reason : lengthCheck && !lengthCheck.ok ? lengthCheck.reason : fit.reason,
+    lengthCheck,
+  };
+}
+
+// ─── Contract-length limits ──────────────────────────────────────────────────
+
+/** Most non-rookie contracts a team may hold by years left (matches LeagueRules.contractLengthLimits). */
+export interface LengthLimits {
+  twoYear: number;
+  threeYear: number;
+  fourPlusYear: number;
+}
+
+const LENGTH_BUCKETS = [
+  { key: "fourPlusYear", years: 4, label: "4+ year" },
+  { key: "threeYear", years: 3, label: "3-year" },
+  { key: "twoYear", years: 2, label: "2-year" },
+] as const;
+
+/** Seasons left on a contract from `fromSeason` on (seasons with salary). */
+function yearsLeftFrom(salaries: Record<number, number>, fromSeason: number): number {
+  return Object.entries(salaries).filter(([y, v]) => Number(y) >= fromSeason && Number(v) > 0).length;
+}
+
+/**
+ * Counts the team's non-rookie contracts by years left from `fromSeason` (existing contracts plus the new
+ * ones) and compares them with the limits. Rookie contracts don't count.
+ */
+export function checkContractLengthLimits(
+  team: TeamCapInput,
+  newContracts: FlatSalaryContract[],
+  fromSeason: number,
+  limits: LengthLimits,
+): { ok: boolean; counts: Record<"twoYear" | "threeYear" | "fourPlusYear", number>; over: Array<{ label: string; count: number; limit: number }>; reason: string } {
+  const replaced = new Set(newContracts.map((c) => c.playerId).filter(Boolean) as string[]);
+  const lengths: number[] = [];
+  for (const c of team.contracts) {
+    if (c.isRookieContract === 1 || replaced.has(c.playerId)) continue;
+    lengths.push(yearsLeftFrom(c.salaries, fromSeason));
+  }
+  for (const c of newContracts) {
+    const first = Math.max(c.startYear, fromSeason);
+    lengths.push(Math.max(0, c.startYear + c.years - first));
+  }
+  const counts = {
+    fourPlusYear: lengths.filter((n) => n >= 4).length,
+    threeYear: lengths.filter((n) => n === 3).length,
+    twoYear: lengths.filter((n) => n === 2).length,
+  };
+  const over = LENGTH_BUCKETS.filter((b) => counts[b.key] > limits[b.key]).map((b) => ({ label: b.label, count: counts[b.key], limit: limits[b.key] }));
+  return {
+    ok: over.length === 0,
+    counts,
+    over,
+    reason: over.length === 0
+      ? "Within contract-length limits"
+      : "Over the contract-length limit: " + over.map((o) => `${o.count} ${o.label} contracts (limit ${o.limit})`).join(", "),
   };
 }
 
@@ -291,10 +360,11 @@ export function designateRFA(
 export function canMatchRFA(
   originalTeam: TeamCapInput,
   offer: FlatSalaryContract,
+  salaryCap: number = CURRENT_SEASON_CAP,
 ): { eligible: boolean; shortSeason: number | null; overBy: number; reason: string } {
   const years: number[] = [];
   for (let i = 0; i < offer.years; i++) years.push(offer.startYear + i);
-  const fit = fitsUnderCapAllSeasons(originalTeam, [offer], years);
+  const fit = fitsUnderCapAllSeasons(originalTeam, [offer], years, salaryCap);
   if (fit.ok) {
     return { eligible: true, shortSeason: null, overBy: 0, reason: "Can match offer" };
   }
@@ -322,12 +392,13 @@ export function validateTradeSide(
   salaryBefore: number,
   sends: TradePlayerSide[],
   receives: TradePlayerSide[],
+  salaryCap: number = CURRENT_SEASON_CAP,
 ): { pass: boolean; salaryAfter: number; netChange: number; reason: string } {
   const sent = sends.reduce((s, p) => s + p.currentYearSalary, 0);
   const recv = receives.reduce((s, p) => s + p.currentYearSalary, 0);
   const netChange = recv - sent;
   const salaryAfter = salaryBefore + netChange;
-  const cap = CURRENT_SEASON_CAP;
+  const cap = salaryCap;
   if (salaryAfter <= cap) {
     return {
       pass: true,
@@ -357,29 +428,43 @@ export function validateTrade(
   sideB: { salaryBefore: number },
   aSends: TradePlayerSide[],
   bSends: TradePlayerSide[],
+  salaryCap: number = CURRENT_SEASON_CAP,
 ): {
   teamA: ReturnType<typeof validateTradeSide>;
   teamB: ReturnType<typeof validateTradeSide>;
   bothPass: boolean;
 } {
-  const teamA = validateTradeSide(sideA.salaryBefore, aSends, bSends);
-  const teamB = validateTradeSide(sideB.salaryBefore, bSends, aSends);
+  const teamA = validateTradeSide(sideA.salaryBefore, aSends, bSends, salaryCap);
+  const teamB = validateTradeSide(sideB.salaryBefore, bSends, aSends, salaryCap);
   return { teamA, teamB, bothPass: teamA.pass && teamB.pass };
 }
 
 // ─── In-season signing ───────────────────────────────────────────────────────
 
-/** A player picked up from free agency or waivers during the season signs for 1 year at $1, whatever the FAAB bid. */
+/**
+ * A player picked up from free agency or waivers during the season signs the league's pickup contract
+ * (ATL: 1 year at $1), whatever the FAAB bid.
+ */
 export function createInSeasonSigning(
   _faabBid?: number | null,
+  pickup: { years: number; salary: number } = { years: 1, salary: 1 },
 ): { contractType: ContractType; years: number; yearlySalary: number; reason: string } {
-  return { contractType: "STANDARD", years: 1, yearlySalary: 1, reason: "1-year STANDARD at $1 (in-season pickup)" };
+  const y = pickup.years;
+  return {
+    contractType: "STANDARD",
+    years: y,
+    yearlySalary: pickup.salary,
+    reason: `${y}-year STANDARD at ${pickup.salary} (in-season pickup)`,
+  };
 }
 
 // ─── Phase resolution ────────────────────────────────────────────────────────
 
-export function parsePhaseConfig(json: string | null | undefined): PhaseConfigEntry[] {
-  const defaults: PhaseConfigEntry[] = ACTIVE_PHASES.map(id => ({
+export function parsePhaseConfig(
+  json: string | null | undefined,
+  activePhases: readonly LeaguePhaseId[] = ACTIVE_PHASES,
+): PhaseConfigEntry[] {
+  const defaults: PhaseConfigEntry[] = activePhases.map(id => ({
     id,
     startAt: null,
     endAt: null,
@@ -389,7 +474,7 @@ export function parsePhaseConfig(json: string | null | undefined): PhaseConfigEn
     const parsed = JSON.parse(json) as PhaseConfigEntry[];
     if (!Array.isArray(parsed)) return defaults;
     const byId = new Map(parsed.map(p => [p.id, p]));
-    return ACTIVE_PHASES.map(id => byId.get(id) ?? { id, startAt: null, endAt: null });
+    return activePhases.map(id => byId.get(id) ?? { id, startAt: null, endAt: null });
   } catch {
     return defaults;
   }
@@ -399,6 +484,7 @@ export function getCurrentPhase(
   phases: PhaseConfigEntry[],
   now: number = Date.now(),
   manualOverride: LeaguePhaseId | null = null,
+  activePhases: readonly LeaguePhaseId[] = ACTIVE_PHASES,
 ): LeaguePhaseId {
   const withDates = phases.filter(p => p.startAt != null && p.endAt != null);
   if (withDates.length > 0) {
@@ -409,12 +495,12 @@ export function getCurrentPhase(
     }
     const future = phases.find(p => p.startAt != null && p.startAt > now);
     if (future) {
-      const idx = ACTIVE_PHASES.indexOf(future.id);
-      return idx > 0 ? ACTIVE_PHASES[idx - 1] : ACTIVE_PHASES[0];
+      const idx = activePhases.indexOf(future.id);
+      return idx > 0 ? activePhases[idx - 1] : activePhases[0];
     }
     return "regular_season";
   }
-  if (manualOverride && ACTIVE_PHASES.includes(manualOverride)) {
+  if (manualOverride && activePhases.includes(manualOverride)) {
     return manualOverride;
   }
   return "regular_season";
@@ -425,13 +511,20 @@ export function formatPhaseDate(ts: number | null): string {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
 }
 
-const SHARE_BY_YEARS_LEFT: Record<number, number> = { 1: 0, 2: 0.25, 3: 0.5, 4: 0.75 };
+/** Dead cap share of a later season by contract years left from it (matches LeagueRules.deadCap). */
+export type DeadCapShares = { "1": number; "2": number; "3": number; "4": number; "5plus": number };
+export const DEFAULT_DEAD_CAP_SHARES: DeadCapShares = { "1": 0, "2": 0.25, "3": 0.5, "4": 0.75, "5plus": 1 };
 
 /**
  * Dead cap by season, in tenths of $M as stored, for a contract ended in `season`.
  * `salaries` is the stored contract salary JSON (tenths of $M by season).
+ * The ended season costs 100%; each later season costs the league's share for its years left.
  */
-export function deadCapForEndedContract(salaries: Record<string, number>, season: number): Record<string, number> {
+export function deadCapForEndedContract(
+  salaries: Record<string, number>,
+  season: number,
+  shares: DeadCapShares = DEFAULT_DEAD_CAP_SHARES,
+): Record<string, number> {
   const years = Object.entries(salaries)
     .map(([y, v]) => [Number(y), Number(v) || 0] as const)
     .filter(([y, v]) => !Number.isNaN(y) && y >= season && v > 0)
@@ -440,7 +533,8 @@ export function deadCapForEndedContract(salaries: Record<string, number>, season
   const lastYear = years[years.length - 1][0];
   const out: Record<string, number> = {};
   for (const [year, salary] of years) {
-    const share = year === season ? 1 : SHARE_BY_YEARS_LEFT[lastYear - year + 1] ?? 1;
+    const left = lastYear - year + 1;
+    const share = year === season ? 1 : left >= 5 ? shares["5plus"] : shares[String(left) as "1" | "2" | "3" | "4"];
     const dead = Math.round(salary * share);
     if (dead > 0) out[String(year)] = dead;
   }

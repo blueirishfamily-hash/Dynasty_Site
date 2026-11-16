@@ -1,6 +1,7 @@
 // League history, game details, year recap, trophies and player awards.
 // Moved out of server/routes.ts unchanged.
 import type { Express } from "express";
+import { rulesForSleeperLeague } from "../leagueRules";
 import { storage } from "../storage";
 import { assembleLeagueHistory, buildSeasonHistory } from "../leagueHistory";
 import type { SeasonHistory } from "../../shared/leagueHistory";
@@ -575,7 +576,9 @@ export function registerHistoryRoutes(app: Express): void {
       const dedicatedSlots = slotOrderUnique.filter((s: string) => !isFlexSlot(s));
       const flexSlots = slotOrderUnique.filter((s: string) => isFlexSlot(s));
       const slotAssignments: Array<{ slot: string; team: 1 | 2 | 3 }> = [];
-      for (let t = 1; t <= 3; t++) {
+      // The league's number of All-League teams (ATL: 3; at most 3 are shown).
+      const allLeagueTeamCount = Math.min(3, (await rulesForSleeperLeague(leagueId)).awards.allLeagueTeams);
+      for (let t = 1; t <= allLeagueTeamCount; t++) {
         dedicatedSlots.forEach((slot: string) => {
           const n = slotCounts.get(slot) || 0;
           for (let i = 0; i < n; i++) {
@@ -925,12 +928,13 @@ export function registerHistoryRoutes(app: Express): void {
             
             if (nominations.length === 0 || ballots.length === 0) continue;
             
-            // Calculate points for each nomination
+            // Calculate points for each nomination (the league's ballot points; ATL 3/2/1)
+            const bp = (await rulesForSleeperLeague(leagueId)).awards.ballotPoints;
             const points: Record<string, number> = {};
             ballots.forEach(ballot => {
-              points[ballot.firstPlaceId] = (points[ballot.firstPlaceId] || 0) + 3;
-              points[ballot.secondPlaceId] = (points[ballot.secondPlaceId] || 0) + 2;
-              points[ballot.thirdPlaceId] = (points[ballot.thirdPlaceId] || 0) + 1;
+              points[ballot.firstPlaceId] = (points[ballot.firstPlaceId] || 0) + (bp[0] ?? 0);
+              points[ballot.secondPlaceId] = (points[ballot.secondPlaceId] || 0) + (bp[1] ?? 0);
+              points[ballot.thirdPlaceId] = (points[ballot.thirdPlaceId] || 0) + (bp[2] ?? 0);
             });
             
             // Find winner
@@ -994,7 +998,7 @@ export function registerHistoryRoutes(app: Express): void {
         } catch { break; }
       }
 
-      const allLeagueStartYear = 2025;
+      const allLeagueStartYear = (await rulesForSleeperLeague(leagueId)).awards.allLeagueStartYear;
       const leagueIdsFromThisYear = leagueIds.filter(({ season }) => parseInt(season, 10) >= allLeagueStartYear);
 
       interface PlayerAwardCounts {
@@ -1110,7 +1114,8 @@ export function registerHistoryRoutes(app: Express): void {
           const dedicatedSlots = slotOrderUnique.filter((s: string) => !isFlexSlotLocal(s));
           const flexSlots = slotOrderUnique.filter((s: string) => isFlexSlotLocal(s));
           const slotAssignments: Array<{ slot: string; team: 1 | 2 | 3 }> = [];
-          for (let t = 1; t <= 3; t++) {
+          const allLeagueTeamCount = Math.min(3, (await rulesForSleeperLeague(lid)).awards.allLeagueTeams);
+          for (let t = 1; t <= allLeagueTeamCount; t++) {
             dedicatedSlots.forEach((slot: string) => { const n = slotCounts.get(slot) || 0; for (let i = 0; i < n; i++) slotAssignments.push({ slot, team: t as 1 | 2 | 3 }); });
             flexSlots.forEach((slot: string) => { const n = slotCounts.get(slot) || 0; for (let i = 0; i < n; i++) slotAssignments.push({ slot, team: t as 1 | 2 | 3 }); });
           }
@@ -1160,11 +1165,12 @@ export function registerHistoryRoutes(app: Express): void {
               const nominations = await storage.getAwardNominations(lid, season, awardType);
               const ballots = await storage.getAwardBallots(lid, season, awardType);
               if (nominations.length === 0 || ballots.length === 0) continue;
+              const bp = (await rulesForSleeperLeague(lid)).awards.ballotPoints;
               const points: Record<string, number> = {};
               ballots.forEach((ballot: any) => {
-                points[ballot.firstPlaceId] = (points[ballot.firstPlaceId] || 0) + 3;
-                points[ballot.secondPlaceId] = (points[ballot.secondPlaceId] || 0) + 2;
-                points[ballot.thirdPlaceId] = (points[ballot.thirdPlaceId] || 0) + 1;
+                points[ballot.firstPlaceId] = (points[ballot.firstPlaceId] || 0) + (bp[0] ?? 0);
+                points[ballot.secondPlaceId] = (points[ballot.secondPlaceId] || 0) + (bp[1] ?? 0);
+                points[ballot.thirdPlaceId] = (points[ballot.thirdPlaceId] || 0) + (bp[2] ?? 0);
               });
               const sorted = [...nominations].sort((a: any, b: any) => (points[b.id] || 0) - (points[a.id] || 0));
               const winner = sorted[0];

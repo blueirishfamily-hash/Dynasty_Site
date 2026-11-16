@@ -4,10 +4,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
-import { capBySeason, CURRENT_SEASON_CAP, type LeaguePhaseId } from "@shared/contractRules";
+import { capBySeason, checkContractLengthLimits, type LeaguePhaseId } from "@shared/contractRules";
 import { useToast } from "@/hooks/use-toast";
 import type { ParsedContract } from "./types";
 import type { DraftCapitalEstimate } from "./PendingContractActions";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 type PlayerRow = {
   playerId: string;
@@ -43,7 +44,6 @@ type SortKey = "pts" | "rank" | "ppg" | "age" | "last";
 
 const POSITION_FILTERS = ["ALL", "QB", "RB", "WR", "TE", "FLEX", "K", "DEF"] as const;
 const FLEX_POSITIONS = new Set(["RB", "WR", "TE"]);
-const YEAR_OPTIONS = [1, 2, 3, 4, 5];
 const QUICK_SALARIES = [5, 10, 15, 20];
 const MAX_SEASONS_SHOWN = 5;
 /** Bars in the cap charts run to this many $M so going over the cap still shows. */
@@ -89,6 +89,7 @@ export function PositionBadge({ position }: { position: string }) {
 
 /** A horizontal bar of stacked segments against the cap line. */
 export function CapBar({ segments, height = "h-3" }: { segments: Array<{ value: number; className: string }>; height?: string }) {
+  const CURRENT_SEASON_CAP = useLeagueRules().salaryCap;
   return (
     <div className={`relative flex ${height} w-full overflow-hidden rounded-full bg-muted`}>
       {segments.map((s, i) => (
@@ -201,6 +202,10 @@ export function FreeAgencyBiddingTab({
   /** Opens the player card. Free agents have no contract on a team, so none is passed. */
   onOpenPlayer?: (playerId: string, rosterId: number, contract: ParsedContract | null) => void;
 }) {
+  const leagueRules = useLeagueRules();
+  const CURRENT_SEASON_CAP = leagueRules.salaryCap;
+  // Contract lengths the league allows (ATL: 1 to 5 years).
+  const YEAR_OPTIONS = Array.from({ length: leagueRules.maxContractYears }, (_, i) => i + 1);
   const round = currentPhase === "fa_round_2" ? 2 : 1;
   const [selected, setSelected] = useState<PlayerRow | null>(null);
   const [years, setYears] = useState(1);
@@ -306,7 +311,7 @@ export function FreeAgencyBiddingTab({
     // Bidding on a player again changes the open bid, so start from what is already there.
     const existing = bidByPlayer.get(p.playerId);
     if (existing) {
-      setYears(Math.min(5, Math.max(1, Number(existing.contractYears) || 1)));
+      setYears(Math.min(leagueRules.maxContractYears, Math.max(1, Number(existing.contractYears) || 1)));
       setSalary(String(existing.bidAmount));
     } else {
       setYears(1);
@@ -372,7 +377,9 @@ export function FreeAgencyBiddingTab({
   // ── Cap picture ──────────────────────────────────────────────────────────────
   const capInput = {
     rosterId,
-    contracts: parsedContracts.filter(c => c.rosterId === rosterId).map(c => ({ playerId: c.playerId, salaries: c.parsedSalaries })),
+    contracts: parsedContracts
+      .filter(c => c.rosterId === rosterId)
+      .map(c => ({ playerId: c.playerId, salaries: c.parsedSalaries, isRookieContract: c.isRookieContract })),
     deadCapByYear,
   };
   const seasons: number[] = [];
@@ -404,6 +411,21 @@ export function FreeAgencyBiddingTab({
     return { y, committed, bids, draft: i === 0 ? draftTotal : 0, room: CURRENT_SEASON_CAP - committed - bids };
   });
   const overSeasons = outlook.filter(o => o.room < 0).map(o => o.y);
+
+  // Contract-length limits: bids may go over them (not every bid wins), but the manager should know.
+  // They're enforced when the team confirms its round results.
+  const asContract = (b: any) => ({ playerId: b.playerId, yearlySalary: Number(b.bidAmount) || 0, startYear: currentYear, years: Number(b.contractYears) || 1 });
+  const lengthIfAllWin = checkContractLengthLimits(capInput, myBids.map(asContract), currentYear, leagueRules.contractLengthLimits);
+  const lengthWithThisBid = selected
+    ? checkContractLengthLimits(
+        capInput,
+        [...otherBids.map(asContract), { playerId: selected.playerId, yearlySalary: salaryNum, startYear: currentYear, years }],
+        currentYear,
+        leagueRules.contractLengthLimits,
+      )
+    : null;
+  const describeOver = (over: Array<{ label: string; count: number; limit: number }>) =>
+    over.map(o => `${o.count} ${o.label} contracts (limit ${o.limit})`).join(", ");
 
   const openCard = (p: PlayerRow) => {
     // The player's last team is the closest thing to a roster for the card header.
@@ -715,6 +737,11 @@ export function FreeAgencyBiddingTab({
                   </div>
                 </div>
 
+                {lengthWithThisBid && !lengthWithThisBid.ok && (
+                  <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200" data-testid="text-bid-length-limit">
+                    If this bid and your other bids all win, you'd have {describeOver(lengthWithThisBid.over)}. You can still bid; when results open you decline wins until you're within the limits.
+                  </p>
+                )}
                 <div className="space-y-2">
                   <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Your cap if this bid wins</p>
                   {impact.map(r => (
@@ -835,6 +862,11 @@ export function FreeAgencyBiddingTab({
             {overSeasons.length > 0 && (
               <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
                 If every bid wins you are over the cap in {overSeasons.join(", ")}. That is allowed while bidding; when results open you reject wins until every season fits.
+              </p>
+            )}
+            {!lengthIfAllWin.ok && (
+              <p className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-200">
+                If every bid wins you'd have {describeOver(lengthIfAllWin.over)}. That is allowed while bidding; when results open you decline wins until you're within the limits.
               </p>
             )}
           </CardContent>

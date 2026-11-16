@@ -4,8 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { validateTrade } from "@shared/contractRules";
-import { CURRENT_SEASON_CAP } from "@shared/contractRules";
 import type { ParsedContract } from "./types";
+import { useLeagueRules } from "@/lib/leagueRules";
 
 export function TradesHubTab({
   leagueId,
@@ -20,6 +20,8 @@ export function TradesHubTab({
   parsedContracts: ParsedContract[];
   deadCapByRoster: Record<number, number>;
 }) {
+  const deadlineWeek = useLeagueRules().contractDeadlineWeek;
+  const CURRENT_SEASON_CAP = useLeagueRules().salaryCap;
   const [teamA, setTeamA] = useState<number | null>(null);
   const [teamB, setTeamB] = useState<number | null>(null);
   const [sendA, setSendA] = useState<string[]>([]);
@@ -102,7 +104,7 @@ export function TradesHubTab({
     <div className="space-y-4">
       <div>
         <h2 className="text-lg font-bold">Trades</h2>
-        <p className="text-sm text-muted-foreground">Deadline Week 14 · Cap ${CURRENT_SEASON_CAP} this season only</p>
+        <p className="text-sm text-muted-foreground">Deadline Week {deadlineWeek} · Cap ${CURRENT_SEASON_CAP} this season only</p>
       </div>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Card>

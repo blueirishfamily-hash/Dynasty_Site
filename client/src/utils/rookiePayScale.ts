@@ -1,3 +1,4 @@
+import { atlDynastyRules, rookieSalaryFromScale, type RookieScale } from "@shared/leagueRules";
 /**
  * Rookie Pay Scale Utility
  * 
@@ -22,20 +23,9 @@
  * Rounds 4+: No pay scale (returns 0)
  */
 
-export function getRookieSalary(round: number, draftSlot: number): number {
-  if (round === 1) {
-    // First round pay scale
-    const firstRoundSalaries: Record<number, number> = {
-      1: 12, 2: 11, 3: 11, 4: 9, 5: 9, 6: 9,
-      7: 7, 8: 7, 9: 7, 10: 6, 11: 6, 12: 6
-    };
-    return firstRoundSalaries[draftSlot] || 4; // Default to $4 if outside 1-12
-  } else if (round === 2) {
-    return 4; // All second round picks
-  } else if (round === 3) {
-    return 2; // All third round picks
-  }
-  return 0; // No pay scale for rounds 4+
+/** Rookie salary for a pick under the league's scale (ATL's by default). */
+export function getRookieSalary(round: number, draftSlot: number, scale: RookieScale = atlDynastyRules().rookieScale): number {
+  return rookieSalaryFromScale(scale, round, draftSlot);
 }
 
 /**

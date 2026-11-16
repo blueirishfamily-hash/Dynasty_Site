@@ -10,6 +10,7 @@ import { storage } from "./storage";
 import { getAllPlayers } from "./sleeper";
 import { auditActor, requireCommissioner, type Actor } from "./security/guards";
 import { writeAudit } from "./security/store";
+import { rulesForSleeperLeague } from "./leagueRules";
 
 const LOG_LIMIT = 300;
 const REASONS = ["Fix wrong salary", "Missed pickup", "Trade adjustment", "League decision", "Other"];
@@ -93,14 +94,14 @@ async function appendLog(leagueId: string, actor: Actor, entry: Omit<ChangeLogEn
   }
 }
 
-/** $M by season (from the client) to tenths of $M as stored. Drops zero and invalid seasons. */
-function toTenths(input: unknown): Record<string, number> | null {
+/** $M by season (from the client) to tenths of $M as stored, each season at most the league cap. Drops zero seasons. */
+function toTenths(input: unknown, maxPerSeason: number): Record<string, number> | null {
   if (!input || typeof input !== "object") return null;
   const out: Record<string, number> = {};
   for (const [y, v] of Object.entries(input as Record<string, unknown>)) {
     const year = Number(y);
     const m = Number(v);
-    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isFinite(m) || m < 0 || m > 250) return null;
+    if (!Number.isInteger(year) || year < 2000 || year > 2100 || !Number.isFinite(m) || m < 0 || m > maxPerSeason) return null;
     const tenths = Math.round(m * 10);
     if (tenths > 0) out[String(year)] = tenths;
   }
@@ -153,8 +154,9 @@ export function registerCommissionerEditRoutes(app: Express) {
       if (!Number.isInteger(roster) || typeof playerId !== "string" || !playerId) {
         return res.status(400).json({ error: "Team and player are required" });
       }
-      const tenths = toTenths(salaries);
-      if (!tenths) return res.status(400).json({ error: "Salaries must be between $0 and $250" });
+      const cap = (await rulesForSleeperLeague(leagueId)).salaryCap;
+      const tenths = toTenths(salaries, cap);
+      if (!tenths) return res.status(400).json({ error: `Salaries must be between $0 and $${cap}` });
       const years = Object.keys(tenths).map(Number).sort((a, b) => a - b);
       if (years.length === 0) return res.status(400).json({ error: "Set at least one season's salary, or remove the contract" });
 
@@ -251,7 +253,7 @@ export function registerCommissionerEditRoutes(app: Express) {
       if (!Number.isInteger(roster) || typeof playerId !== "string" || !playerId) {
         return res.status(400).json({ error: "Team and player are required" });
       }
-      const tenths = toTenths(deadCapSalaries);
+      const tenths = toTenths(deadCapSalaries, (await rulesForSleeperLeague(req.params.leagueId)).salaryCap);
       if (!tenths || Object.keys(tenths).length === 0) return res.status(400).json({ error: "Enter at least one season of dead cap" });
 
       const entries = await storage.getDeadCapEntriesByLeague(leagueId);

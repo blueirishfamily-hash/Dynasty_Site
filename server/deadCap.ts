@@ -7,18 +7,20 @@
  * contract with no dead cap. Trades never create dead cap; the contract moves with the player.
  *
  * In-season pickups: a player added from free agency or waivers during the regular season, who is still on that
- * team and has no contract with it, gets a 1-year $1 contract for the current season. This does not depend on the
+ * team and has no contract with it, gets the league's pickup contract (ATL: 1 year at $1) from the current season. This does not depend on the
  * dead cap setting. Team defenses are left out: they get no pickup contract (they can still be tagged or extended
  * if they have a contract).
  *
- * Dead cap rule: this season's remaining salary is 100% dead. Each later season's salary is dead by how many
- * contract years are left from that season on: 1 left = 0%, 2 = 25%, 3 = 50%, 4 = 75%, 5 or more = 100%.
+ * Dead cap rule: this season's remaining salary is 100% dead. Each later season's salary is dead by the league's
+ * share for how many contract years are left from that season on (ATL: 1 left = 0%, 2 = 25%, 3 = 50%, 4 = 75%,
+ * 5 or more = 100%). See LeagueRules.deadCap.
  */
 import { storage } from "./storage";
 import { getLeagueRosters, getLeagueTransactions, getAllPlayers, getNFLState } from "./sleeper";
 import { currentSandboxId } from "./testSandbox";
 import { getPhaseState } from "./contractHubRoutes";
 import { isOffseasonPhase, deadCapForEndedContract } from "../shared/contractRules";
+import { rulesForSleeperLeague } from "./leagueRules";
 
 export const DEAD_CAP_ENABLED_KEY = "dead_cap_enabled";
 export const DEAD_CAP_ENABLED_AT_KEY = "dead_cap_enabled_at";
@@ -27,8 +29,6 @@ export const REGULAR_SEASON_STARTED_AT_KEY = "regular_season_started_at";
 
 const SLEEPER_WEEKS = 18;
 const SYNC_EVERY_MS = 5 * 60 * 1000;
-/** In-season free agent pickups: 1 year at $1M, stored in tenths. */
-const IN_SEASON_SIGNING_TENTHS = 10;
 
 export async function getDeadCapSetting(leagueId: string): Promise<{ enabled: boolean; enabledAt: number | null }> {
   const [value, at] = await Promise.all([
@@ -122,6 +122,10 @@ async function processDrops(leagueId: string): Promise<number> {
   ]);
   const onRoster = new Map<number, Set<string>>(rosters.map(r => [r.roster_id, new Set((r.players || []).map(String))]));
 
+  const rules = await rulesForSleeperLeague(leagueId);
+  /** The league's in-season pickup contract, in tenths per season. */
+  const pickupTenths = Math.round(rules.inSeasonPickup.salary * 10);
+  const pickupYears = Math.max(1, rules.inSeasonPickup.years);
   let ended = 0;
   let players: Record<string, any> | null = null;
   for (const drop of drops) {
@@ -142,7 +146,7 @@ async function processDrops(leagueId: string): Promise<number> {
 
     const inSeason = !offseasonNow && seasonStart > 0 && drop.at >= seasonStart;
     if (inSeason) {
-      const dead = deadCapForEndedContract(salaries, phase.contractYear);
+      const dead = deadCapForEndedContract(salaries, phase.contractYear, rules.deadCap.shareByYearsLeft);
       if (Object.keys(dead).length > 0) {
         players ??= await getAllPlayers().catch(() => ({}));
         const p = players[drop.playerId] || {};
@@ -165,7 +169,7 @@ async function processDrops(leagueId: string): Promise<number> {
     );
   }
 
-  // In-season pickups still on the team that added them, with no contract there yet: 1 year at $1.
+  // In-season pickups still on the team that added them, with no contract there yet: the league's pickup contract.
   let signed = 0;
   const current = ended > 0 ? await storage.getPlayerContracts(leagueId) : contracts;
   const byKey = new Map(current.map(c => [`${c.rosterId}:${c.playerId}`, c]));
@@ -186,24 +190,26 @@ async function processDrops(leagueId: string): Promise<number> {
       } catch { /* ignore */ }
       if (Number(past[year]) > 0 || Object.keys(past).some(y => Number(y) > phase.contractYear && Number(past[y]) > 0)) continue;
     }
+    const signedSalaries: Record<string, number> = { ...past };
+    for (let i = 0; i < pickupYears; i++) signedSalaries[String(phase.contractYear + i)] = pickupTenths;
     await storage.upsertPlayerContract({
       leagueId,
       rosterId: pickup.rosterId,
       playerId: pickup.playerId,
-      salaries: JSON.stringify({ ...past, [year]: IN_SEASON_SIGNING_TENTHS }),
+      salaries: JSON.stringify(signedSalaries),
       fifthYearOption: null,
       isOnIr: 0,
       franchiseTagUsed: 0,
       franchiseTagYear: null,
-      originalContractYears: 1,
+      originalContractYears: pickupYears,
       isRookieContract: 0,
       extensionApplied: 0,
       hasBeenExtended: 0,
       hasBeenFranchiseTagged: 0,
     } as any);
-    byKey.set(key, { ...(existing ?? {}), salaries: JSON.stringify({ ...past, [year]: IN_SEASON_SIGNING_TENTHS }) } as any);
+    byKey.set(key, { ...(existing ?? {}), salaries: JSON.stringify(signedSalaries) } as any);
     signed++;
-    console.log(`[in-season] ${leagueId}: roster ${pickup.rosterId} picked up ${pickup.playerId}; 1-year $1 contract for ${phase.contractYear}`);
+    console.log(`[in-season] ${leagueId}: roster ${pickup.rosterId} picked up ${pickup.playerId}; ${pickupYears}-year ${rules.inSeasonPickup.salary} contract from ${phase.contractYear}`);
   }
   return ended + signed;
 }
