@@ -415,7 +415,7 @@ export default function Standings() {
         </TabsContent>
 
         <TabsContent value="race" className="mt-0">
-          {renderAnalysis((data) => <PointsRaceChart analysis={data} />)}
+          {renderAnalysis((data) => <PointsRaceChart analysis={data} playoffTeams={playoffTeams} />)}
         </TabsContent>
 
         <TabsContent value="simulator" className="mt-0">
@@ -536,14 +536,38 @@ export default function Standings() {
                     const connectLast = semis.length === 2 && finals.length === 1;
 
                     return (
-                      <div className="overflow-x-auto pb-4">
+                      <div>
+                        {byeTeams.length > 0 && (
+                          <div className="mb-5 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-lg border border-dashed border-border bg-muted/20 px-4 py-3" data-testid="bracket-byes">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                              First-round bye{byeTeams.length > 1 ? "s" : ""}
+                            </p>
+                            {byeTeams.map((t) => {
+                              const info = bracketData.teams[t.rosterId];
+                              return (
+                                <div key={t.rosterId} className="flex items-center gap-2">
+                                  <Avatar className="w-6 h-6 shrink-0">
+                                    {info?.avatar && <AvatarImage src={info.avatar} alt={t.name} />}
+                                    <AvatarFallback className="text-[10px] bg-muted">{info?.initials ?? t.name.slice(0, 2).toUpperCase()}</AvatarFallback>
+                                  </Avatar>
+                                  <span className="text-sm font-medium">
+                                    <span className="text-muted-foreground font-semibold mr-1.5">#{t.seed}</span>
+                                    {t.name}
+                                    {t.rosterId === myRosterId && <span className="ml-1.5 text-[10px] font-bold text-primary">· YOU</span>}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        <div className="overflow-x-auto pb-4">
                         <div className="flex min-w-max items-stretch">
                           {roundNums.map((r) => {
                             const state = roundState(r);
                             const isFinalRound = r === bracketData.rounds;
                             return (
                               <Fragment key={r}>
-                                <div className="flex flex-col" style={{ width: 240 }} data-testid={`bracket-round-${r}`}>
+                                <div className="flex flex-col" style={{ width: 270 }} data-testid={`bracket-round-${r}`}>
                                   <div className="flex items-center justify-between px-1 mb-3" style={{ height: HEADER - 12 }}>
                                     <span className="font-heading text-xs font-semibold text-muted-foreground uppercase tracking-wider">{roundName(r)}</span>
                                     <span className={`text-[10px] font-semibold uppercase ${state === "live" ? "text-red-500" : state === "done" ? "text-emerald-500" : "text-muted-foreground"}`}>
@@ -552,18 +576,11 @@ export default function Standings() {
                                   </div>
                                   <div className="flex flex-col justify-around" style={{ height: H }}>
                                     {gamesIn(r).map((m) => {
-                                      const champion = isFinalRound && m.winner ? bracketData.teams[m.winner] : null;
                                       const mine = myRosterId != null && (m.team1?.rosterId === myRosterId || m.team2?.rosterId === myRosterId);
                                       const done = gameDone(m);
                                       const live = !done && ((m.team1Score ?? 0) > 0 || (m.team2Score ?? 0) > 0);
                                       return (
                                         <div key={m.matchupId} className="relative" style={{ height: CARD_H }} data-testid={`bracket-matchup-${r}-${m.matchupId}`}>
-                                          {champion && (
-                                            <div className="absolute -top-6 left-1/2 -translate-x-1/2 flex items-center gap-1 text-primary z-10">
-                                              <Crown className="w-4 h-4" />
-                                              <span className="font-heading font-bold text-xs whitespace-nowrap">Champion</span>
-                                            </div>
-                                          )}
                                           <div
                                             className={`flex flex-col border rounded-lg overflow-hidden h-full ${isFinalRound ? "border-amber-500/70 border-2" : "border-border"} ${mine && !isFinalRound ? "ring-2 ring-primary" : ""} ${done ? "cursor-pointer hover:border-primary/60 transition-colors" : ""}`}
                                             {...gameProps(m, roundName(r), bracketData.playoffWeekStart != null ? bracketData.playoffWeekStart + r - 1 : undefined)}
@@ -594,24 +611,10 @@ export default function Standings() {
                                       );
                                     })}
                                   </div>
-                                  {r === 1 && byeTeams.length > 0 && (
-                                    <div className="mt-5 rounded-lg border border-dashed border-border p-3 space-y-1" data-testid="bracket-byes">
-                                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                                        First-round bye{byeTeams.length > 1 ? "s" : ""}
-                                      </p>
-                                      {byeTeams.map((t) => (
-                                        <p key={t.rosterId} className="text-sm font-medium">
-                                          <span className="text-muted-foreground font-semibold mr-1.5">#{t.seed}</span>
-                                          {t.name}
-                                          {t.rosterId === myRosterId && <span className="ml-1.5 text-[10px] font-bold text-primary">· YOU</span>}
-                                        </p>
-                                      ))}
-                                    </div>
-                                  )}
                                 </div>
 
                                 {r < bracketData.rounds && (
-                                  <div style={{ width: 64, paddingTop: HEADER }} aria-hidden="true">
+                                  <div style={{ width: 80, paddingTop: HEADER }} aria-hidden="true">
                                     <div className="relative" style={{ height: H }}>
                                       {r === bracketData.rounds - 1 && connectLast ? (
                                         <>
@@ -622,7 +625,7 @@ export default function Standings() {
                                         </>
                                       ) : (
                                         <div className="absolute inset-x-0 top-1/2 -translate-y-1/2 text-center text-[10px] font-semibold uppercase leading-tight tracking-wide text-muted-foreground">
-                                          Reseed
+                                          Reseed →
                                         </div>
                                       )}
                                     </div>
@@ -631,28 +634,43 @@ export default function Standings() {
                               </Fragment>
                             );
                           })}
+                          {finals.length === 1 && (() => {
+                            const fm = finals[0];
+                            const champ = fm.winner != null ? bracketData.teams[fm.winner] : null;
+                            return (
+                              <>
+                                <div style={{ width: 48, paddingTop: HEADER }} aria-hidden="true">
+                                  <div className="relative" style={{ height: H }}>
+                                    <div className="absolute bg-border" style={{ left: 0, top: "50%", width: "100%", height: 2 }} />
+                                  </div>
+                                </div>
+                                <div className="flex flex-col" style={{ width: 210 }} data-testid="bracket-champion">
+                                  <div style={{ height: HEADER }} />
+                                  <div className="flex items-center" style={{ height: H }}>
+                                    <div className={`flex w-full flex-col items-center gap-1.5 rounded-xl border-2 border-dashed px-4 py-5 text-center ${champ ? "border-amber-500/70 bg-amber-500/5" : "border-amber-500/40"}`}>
+                                      <Crown className="w-7 h-7 text-amber-500" />
+                                      <span className="font-heading font-bold text-sm">{champ ? champ.name : "Champion"}</span>
+                                      <span className="text-xs text-muted-foreground">{champ ? "League champion" : "Decided in the Championship"}</span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
                         </div>
                       </div>
                     );
                   })()}
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    Winners reseed after Round 1: the top seed plays the lowest remaining seed. Click a completed game for the starter-by-starter breakdown.
+                  </p>
                 </CardContent>
               </Card>
 
               {/* Consolation/Placement Games Section */}
               {bracketData.consolationMatchups && bracketData.consolationMatchups.length > 0 && (
                 <>
-                  {/* Visual separator */}
-                  <div className="relative my-8">
-                    <div className="absolute inset-0 flex items-center">
-                      <div className="w-full border-t-2 border-border"></div>
-                    </div>
-                    <div className="relative flex justify-center">
-                      <span className="bg-background px-4 text-sm font-medium text-muted-foreground">
-                        Placement Games
-                      </span>
-                    </div>
-                  </div>
-                  
                   {/* Consolation bracket card */}
                   <Card className="border-muted">
                     <CardHeader className="bg-muted/30">
@@ -663,7 +681,7 @@ export default function Standings() {
                       <CardDescription>Games determine final standings and draft positions for eliminated teams</CardDescription>
                     </CardHeader>
                     <CardContent>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         {bracketData.consolationMatchups
                           .filter(matchup => matchup.placement === 7 || matchup.placement === 5 || matchup.placement === 3)
                           .sort((a, b) => {
@@ -710,35 +728,6 @@ export default function Standings() {
                   </Card>
                 </>
               )}
-
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="font-heading text-lg">Legend</CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-6">
-                    <div className="flex items-center gap-2 text-sm">
-                      <div className="w-4 h-4 rounded bg-primary" />
-                      <span className="text-muted-foreground">Advanced</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <div className="w-4 h-4 rounded bg-destructive/20 border border-destructive/30" />
-                      <span className="text-muted-foreground">Eliminated</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <div className="w-4 h-4 rounded border border-border bg-card" />
-                      <span className="text-muted-foreground">Pending</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <Crown className="w-4 h-4 text-primary" />
-                      <span className="text-muted-foreground">Champion</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-sm">
-                      <span className="text-muted-foreground">Click a completed game for details</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
             </div>
           )}
         </TabsContent>

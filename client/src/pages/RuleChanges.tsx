@@ -33,6 +33,7 @@ import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import SetupModal from "@/components/SetupModal";
+import AwardsVoting from "@/components/AwardsVoting";
 import {
   ThumbsUp,
   ThumbsDown,
@@ -80,7 +81,7 @@ function formatTimeAgo(timestamp: number): string {
 }
 
 export default function RuleChanges() {
-  const { user, league } = useSleeper();
+  const { user, league, season } = useSleeper();
   const { toast } = useToast();
   const [showSetup, setShowSetup] = useState(false);
   const [ruleDialogOpen, setRuleDialogOpen] = useState(false);
@@ -950,6 +951,16 @@ export default function RuleChanges() {
             </Card>
           )
         ) : null}
+
+        <AwardsVoting
+          leagueId={league.leagueId}
+          season={season}
+          userId={user?.userId}
+          userRosterId={userRosterId}
+          teamName={userTeam?.name || user?.displayName || "Your Team"}
+          isCommissioner={isCommissioner}
+          teams={(standings ?? []).map((t: any) => ({ rosterId: t.rosterId, name: t.name }))}
+        />
 
         {/* Edit Rule Dialog */}
         <Dialog open={editDialogOpen} onOpenChange={setEditDialogOpen}>

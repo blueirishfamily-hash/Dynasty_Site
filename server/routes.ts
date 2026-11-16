@@ -7626,6 +7626,57 @@ export async function registerRoutes(
     }
   });
 
+  // Awards voting window (separate from rule voting).
+  // Phases: "nominate" (switch off: nominations open, ballots closed) -> "open" (ballots open until the
+  // close time, nominations closed) -> "closed" (close time passed).
+  async function getAwardVotingState(leagueId: string) {
+    const masterEnabled = (await storage.getLeagueSetting(leagueId, "award_voting_master")) === "true";
+    const raw = await storage.getLeagueSetting(leagueId, "award_voting_closes_at");
+    const closesAt = raw != null && raw !== "" ? (parseInt(raw, 10) || null) : null;
+    const phase: "nominate" | "open" | "closed" = !masterEnabled
+      ? "nominate"
+      : closesAt == null || Date.now() < closesAt
+        ? "open"
+        : "closed";
+    return { masterEnabled, closesAt, phase };
+  }
+
+  app.get("/api/league/:leagueId/award-voting", async (req, res) => {
+    try {
+      res.json(await getAwardVotingState(req.params.leagueId));
+    } catch (error) {
+      console.error("Error fetching award voting state:", error);
+      res.status(500).json({ error: "Failed to fetch awards voting state" });
+    }
+  });
+
+  app.post("/api/league/:leagueId/award-voting", async (req, res) => {
+    try {
+      const leagueId = req.params.leagueId;
+      const { userId, enabled, closesAt } = req.body;
+      if (!leagueId || userId == null) return res.status(400).json({ error: "League ID and userId are required" });
+      if (!(await isCommissioner(userId, leagueId))) {
+        return res.status(403).json({ error: "Only the commissioner can change awards voting." });
+      }
+      if (enabled !== undefined) {
+        await storage.setLeagueSetting(leagueId, "award_voting_master", enabled ? "true" : "false");
+      }
+      if (closesAt !== undefined) {
+        if (closesAt === null) {
+          await storage.setLeagueSetting(leagueId, "award_voting_closes_at", "");
+        } else {
+          const ts = typeof closesAt === "number" ? closesAt : parseInt(String(closesAt), 10);
+          if (isNaN(ts)) return res.status(400).json({ error: "closesAt must be a valid timestamp (ms)." });
+          await storage.setLeagueSetting(leagueId, "award_voting_closes_at", String(ts));
+        }
+      }
+      res.json(await getAwardVotingState(leagueId));
+    } catch (error) {
+      console.error("Error setting award voting state:", error);
+      res.status(500).json({ error: "Failed to update awards voting" });
+    }
+  });
+
   app.post("/api/league/:leagueId/rule-suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
@@ -8074,6 +8125,10 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Missing required fields" });
       }
 
+      if ((await getAwardVotingState(leagueId)).phase !== "nominate") {
+        return res.status(403).json({ error: "Nominations are closed." });
+      }
+
       // Check nomination limit (3 per team per award type)
       const currentCount = await storage.getNominationCountByRoster(leagueId, season, awardType, nominatedByRosterId);
       if (currentCount >= 3) {
@@ -8125,6 +8180,10 @@ export async function registerRoutes(
       }
       if (!rosterId || !voterName || !firstPlaceId || !secondPlaceId || !thirdPlaceId) {
         return res.status(400).json({ error: "Missing required fields - must vote for 1st, 2nd, and 3rd place" });
+      }
+
+      if ((await getAwardVotingState(leagueId)).phase !== "open") {
+        return res.status(403).json({ error: "Awards voting is not open." });
       }
 
       // Validate all three picks are different

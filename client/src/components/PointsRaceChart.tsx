@@ -1,16 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } from "recharts";
 import { Pause, Play, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import type { AnalysisTeam, StandingsAnalysis } from "@shared/standingsAnalysis";
 
-const CHART_HEIGHT = 520;
-const MARGIN = { top: 24, right: 36, bottom: 8, left: 4 };
-const X_AXIS_HEIGHT = 28;
-const ICON_SIZE = 28;
 const PLAYBACK_WEEKS_PER_SECOND = 1.1;
+const ICON_R = 12;
 
 const TEAM_COLORS = [
   "#4FD1C5", "#F6AD55", "#63B3ED", "#FC8181", "#B794F4", "#68D391",
@@ -20,138 +16,97 @@ const TEAM_COLORS = [
 
 interface PointsRaceChartProps {
   analysis: StandingsAnalysis;
+  /** How many teams make the playoffs. Draws the cutoff line. */
+  playoffTeams?: number;
 }
 
-type RaceRow = { week: number } & Record<string, number>;
-
-function buildRows(analysis: StandingsAnalysis, progress: number): { rows: RaceRow[]; headWeek: number } {
+/** Rank (1 = most points) of every roster after each week. */
+function buildRanks(analysis: StandingsAnalysis): Record<number, number[]> {
   const { weeks, cumulative, teams } = analysis;
-  const lastIndex = weeks.length - 1;
-  const clamped = Math.min(Math.max(progress, 0), lastIndex);
-  const base = Math.floor(clamped);
-  const frac = clamped - base;
-
-  const rows: RaceRow[] = [];
-  for (let i = 0; i <= base; i++) {
-    const row: RaceRow = { week: weeks[i] };
-    teams.forEach((t) => {
-      row[`t${t.rosterId}`] = cumulative[t.rosterId][i];
-    });
-    rows.push(row);
-  }
-
-  if (frac > 0 && base < lastIndex) {
-    const row: RaceRow = { week: weeks[base] + frac * (weeks[base + 1] - weeks[base]) };
-    teams.forEach((t) => {
-      const from = cumulative[t.rosterId][base];
-      const to = cumulative[t.rosterId][base + 1];
-      row[`t${t.rosterId}`] = from + (to - from) * frac;
-    });
-    rows.push(row);
-  }
-
-  return { rows, headWeek: rows[rows.length - 1].week };
+  const ranks: Record<number, number[]> = {};
+  teams.forEach((t) => (ranks[t.rosterId] = new Array(weeks.length).fill(0)));
+  weeks.forEach((_, i) => {
+    const order = [...teams].sort(
+      (a, b) => (cumulative[b.rosterId]?.[i] ?? 0) - (cumulative[a.rosterId]?.[i] ?? 0) || a.rosterId - b.rosterId,
+    );
+    order.forEach((t, r) => (ranks[t.rosterId][i] = r + 1));
+  });
+  return ranks;
 }
 
-/**
- * Spreads head icons vertically so teams with similar totals stay readable. Overlapping icons
- * push apart symmetrically and the group is kept inside the plot area.
- */
-function computeIconOffsets(
-  values: Array<{ rosterId: number; value: number }>,
-  pxPerPoint: number,
-  plotHeight: number,
-): Map<number, number> {
-  const sorted = [...values].sort((a, b) => b.value - a.value);
-  const original = sorted.map((v) => (plotHeight / pxPerPoint - v.value) * pxPerPoint);
-  const positions = [...original];
-  const minGap = ICON_SIZE - 2;
-  const half = ICON_SIZE / 2;
-
-  for (let pass = 0; pass < 200; pass++) {
-    let moved = false;
-    for (let i = 1; i < positions.length; i++) {
-      const overlap = minGap - (positions[i] - positions[i - 1]);
-      if (overlap > 0.1) {
-        positions[i - 1] -= overlap / 2;
-        positions[i] += overlap / 2;
-        moved = true;
-      }
-    }
-    positions.forEach((pos, i) => {
-      positions[i] = Math.min(Math.max(pos, half), plotHeight - half);
-    });
-    if (!moved) break;
-  }
-
-  const offsets = new Map<number, number>();
-  sorted.forEach((v, i) => offsets.set(v.rosterId, positions[i] - original[i]));
-  return offsets;
+function lerp(arr: number[], progress: number): number {
+  const last = arr.length - 1;
+  const p = Math.min(Math.max(progress, 0), last);
+  const base = Math.floor(p);
+  const frac = p - base;
+  return base >= last ? arr[last] : arr[base] + (arr[base + 1] - arr[base]) * frac;
 }
 
-function TeamHeadIcon({
-  cx,
-  cy,
+function useWidth<T extends HTMLElement>() {
+  const ref = useRef<T | null>(null);
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const update = () => setWidth(el.clientWidth);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return [ref, width] as const;
+}
+
+function TeamBadge({
   team,
   color,
-  dimmed,
-  offsetY,
+  x,
+  y,
+  clipId,
 }: {
-  cx: number;
-  cy: number;
   team: AnalysisTeam;
   color: string;
-  dimmed: boolean;
-  offsetY: number;
+  x: number;
+  y: number;
+  clipId: string;
 }) {
-  const r = ICON_SIZE / 2;
-  const y = cy + offsetY;
-  const clipId = `race-clip-${team.rosterId}`;
-
   return (
-    <g opacity={dimmed ? 0.25 : 1} data-testid={`race-icon-${team.rosterId}`}>
-      {Math.abs(offsetY) > 1 && <line x1={cx} y1={cy} x2={cx} y2={y} stroke={color} strokeWidth={1} opacity={0.6} />}
-      <circle cx={cx} cy={y} r={r} fill="hsl(var(--card))" stroke={color} strokeWidth={team.isUser ? 3 : 2} />
-      <text
-        x={cx}
-        y={y}
-        textAnchor="middle"
-        dominantBaseline="central"
-        fontSize={10}
-        fontWeight={700}
-        fill="hsl(var(--foreground))"
-      >
+    <>
+      <circle cx={x} cy={y} r={ICON_R} fill="hsl(var(--card))" stroke={color} strokeWidth={team.isUser ? 3 : 2} />
+      <text x={x} y={y} textAnchor="middle" dominantBaseline="central" fontSize={9} fontWeight={700} fill="hsl(var(--foreground))">
         {team.initials}
       </text>
       {team.avatar && (
         <>
           <clipPath id={clipId}>
-            <circle cx={cx} cy={y} r={r - 1} />
+            <circle cx={x} cy={y} r={ICON_R - 1} />
           </clipPath>
           <image
             href={team.avatar}
-            x={cx - r}
-            y={y - r}
-            width={ICON_SIZE}
-            height={ICON_SIZE}
+            x={x - ICON_R}
+            y={y - ICON_R}
+            width={ICON_R * 2}
+            height={ICON_R * 2}
             clipPath={`url(#${clipId})`}
             preserveAspectRatio="xMidYMid slice"
           />
         </>
       )}
-    </g>
+    </>
   );
 }
 
-export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
-  const { teams, weeks } = analysis;
+export default function PointsRaceChart({ analysis, playoffTeams = 6 }: PointsRaceChartProps) {
+  const { teams, weeks, cumulative } = analysis;
   const lastIndex = weeks.length - 1;
+  const n = teams.length;
 
   const [progress, setProgress] = useState(lastIndex);
   const [playing, setPlaying] = useState(false);
   const [focused, setFocused] = useState<number | null>(null);
   const frameRef = useRef<number | null>(null);
   const lastTickRef = useRef<number>(0);
+  const [wrapRef, width] = useWidth<HTMLDivElement>();
 
   useEffect(() => {
     setProgress(lastIndex);
@@ -193,25 +148,7 @@ export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
     return map;
   }, [teams]);
 
-  const { rows, headWeek } = useMemo(() => buildRows(analysis, progress), [analysis, progress]);
-  const headRow = rows[rows.length - 1];
-
-  const yMax = useMemo(() => {
-    const max = Math.max(...teams.map((t) => headRow[`t${t.rosterId}`] ?? 0), 1);
-    const step = max > 400 ? 100 : 50;
-    return Math.ceil((max * 1.06) / step) * step;
-  }, [teams, headRow]);
-
-  const plotHeight = CHART_HEIGHT - MARGIN.top - MARGIN.bottom - X_AXIS_HEIGHT;
-  const offsets = useMemo(
-    () =>
-      computeIconOffsets(
-        teams.map((t) => ({ rosterId: t.rosterId, value: headRow[`t${t.rosterId}`] ?? 0 })),
-        plotHeight / yMax,
-        plotHeight,
-      ),
-    [teams, headRow, plotHeight, yMax],
-  );
+  const ranks = useMemo(() => buildRanks(analysis), [analysis]);
 
   const handlePlayToggle = useCallback(() => {
     if (playing) {
@@ -227,22 +164,70 @@ export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
     setPlaying(true);
   }, []);
 
-  const currentWeekLabel = weeks[Math.min(Math.round(progress), lastIndex)];
+  const headIdx = Math.min(Math.round(progress), lastIndex);
+  const currentWeekLabel = weeks[headIdx];
 
-  const leaderboard = useMemo(
+  // Chart geometry
+  const wide = width >= 640;
+  const rowGap = wide ? 30 : 26;
+  const L = 34;
+  const R = wide ? 170 : 30;
+  const T = 24;
+  const B = 28;
+  const plotH = Math.max(n - 1, 1) * rowGap;
+  const height = T + plotH + B;
+  const plotW = Math.max(width - L - R, 50);
+  const xOf = (i: number) => L + (lastIndex > 0 ? (plotW * i) / lastIndex : plotW / 2);
+  const yOf = (rank: number) => T + (n > 1 ? ((rank - 1) / (n - 1)) * plotH : plotH / 2);
+  const showCutoff = n > playoffTeams && playoffTeams > 0;
+  const cutoffY = showCutoff ? (yOf(playoffTeams) + yOf(playoffTeams + 1)) / 2 : 0;
+
+  // Standings at the current week
+  const atHead = useMemo(
     () =>
       [...teams]
-        .map((t) => ({ team: t, value: headRow[`t${t.rosterId}`] ?? 0 }))
-        .sort((a, b) => b.value - a.value),
-    [teams, headRow],
+        .map((t) => ({ team: t, rank: ranks[t.rosterId][headIdx], points: cumulative[t.rosterId]?.[headIdx] ?? 0 }))
+        .sort((a, b) => a.rank - b.rank),
+    [teams, ranks, cumulative, headIdx],
   );
+
+  const bubble = useMemo(() => {
+    const user = atHead.find((r) => r.team.isUser);
+    const lastIn = atHead[playoffTeams - 1];
+    const firstOut = atHead[playoffTeams];
+    if (!user || !lastIn || !firstOut) return null;
+    const line = (lastIn.points + firstOut.points) / 2;
+    return {
+      userGap: user.points - line,
+      userIn: user.rank <= playoffTeams,
+      firstOut,
+      outGap: firstOut.points - line,
+      behindLastIn: lastIn.points - firstOut.points,
+    };
+  }, [atHead, playoffTeams]);
+
+  const movers = useMemo(() => {
+    const cmp = Math.max(0, headIdx - 4);
+    const span = headIdx - cmp;
+    const changes = teams.map((t) => ({ team: t, change: ranks[t.rosterId][cmp] - ranks[t.rosterId][headIdx] }));
+    return {
+      span,
+      up: changes.filter((c) => c.change > 0).sort((a, b) => b.change - a.change).slice(0, 3),
+      down: changes.filter((c) => c.change < 0).sort((a, b) => a.change - b.change).slice(0, 3),
+    };
+  }, [teams, ranks, headIdx]);
+
+  const fmt = (v: number) => v.toFixed(1);
+  const base = Math.floor(Math.min(progress, lastIndex));
+  const frac = progress - base;
 
   return (
     <Card data-testid="card-points-race">
       <CardHeader>
-        <CardTitle className="font-heading text-xl">Cumulative Points Race</CardTitle>
+        <CardTitle className="font-heading text-xl">Rank Race</CardTitle>
         <CardDescription>
-          Running total of points scored each week. Press play to watch the season unfold, or drag the slider to jump to a week.
+          Each line is a team's rank by total points scored at the end of that week. Press play to watch the season unfold,
+          or drag the slider to jump to a week. Click a team to highlight it.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -273,111 +258,129 @@ export default function PointsRaceChart({ analysis }: PointsRaceChartProps) {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 xl:grid-cols-[1fr_220px] gap-4">
-          <div style={{ height: CHART_HEIGHT }} data-testid="chart-points-race">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={rows} margin={MARGIN}>
-                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                <XAxis
-                  type="number"
-                  dataKey="week"
-                  domain={[weeks[0], Math.max(weeks[lastIndex], weeks[0] + 1)]}
-                  ticks={weeks}
-                  tick={{ fontSize: 11 }}
-                  stroke="hsl(var(--muted-foreground))"
-                  height={X_AXIS_HEIGHT}
-                  allowDecimals={false}
-                />
-                <YAxis
-                  type="number"
-                  domain={[0, yMax]}
-                  tick={{ fontSize: 11 }}
-                  stroke="hsl(var(--muted-foreground))"
-                  width={52}
-                  tickFormatter={(v) => Number(v).toLocaleString()}
-                />
-                <Tooltip
-                  cursor={{ stroke: "hsl(var(--muted-foreground))", strokeDasharray: "4 4" }}
-                  content={({ active, payload, label }) => {
-                    if (!active || !payload?.length) return null;
-                    const items = [...payload].sort((a, b) => Number(b.value) - Number(a.value));
+        <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_300px] gap-6 items-start">
+          <div ref={wrapRef} className="min-w-0" data-testid="chart-points-race">
+            {width > 0 && n > 0 && (
+              <svg width={width} height={height} role="img" aria-label="Team rank by week">
+                {/* rank labels */}
+                {Array.from({ length: n }, (_, i) => (
+                  <text key={i} x={L - 12} y={yOf(i + 1)} textAnchor="end" dominantBaseline="central" fontSize={11} fill="hsl(var(--muted-foreground))">
+                    {i + 1}
+                  </text>
+                ))}
+                {weeks.map((w, i) => (
+                  <text key={w} x={xOf(i)} y={height - 8} textAnchor="middle" fontSize={11} fill="hsl(var(--muted-foreground))">
+                    {w}
+                  </text>
+                ))}
+                {/* playoff region */}
+                {showCutoff && (
+                  <>
+                    <rect x={L} y={T - 12} width={plotW} height={cutoffY - T + 12} fill="hsl(var(--primary))" opacity={0.05} />
+                    <line x1={L} y1={cutoffY} x2={L + plotW} y2={cutoffY} stroke="#D97706" strokeWidth={2} strokeDasharray="7 5" />
+                    <text x={L + 6} y={cutoffY - 6} fontSize={10} fontWeight={700} letterSpacing={0.8} fill="#F59E0B">
+                      PLAYOFF LINE
+                    </text>
+                  </>
+                )}
+                {/* lines */}
+                {[...teams]
+                  .sort((a, b) => Number(a.isUser) - Number(b.isUser))
+                  .map((team) => {
+                    const color = colorByRoster.get(team.rosterId)!;
+                    const dimmed = focused !== null && focused !== team.rosterId;
+                    const r = ranks[team.rosterId];
+                    const pts: Array<[number, number]> = [];
+                    for (let i = 0; i <= base; i++) pts.push([xOf(i), yOf(r[i])]);
+                    if (frac > 0 && base < lastIndex) pts.push([xOf(progress), yOf(lerp(r, progress))]);
+                    const head = pts[pts.length - 1];
+                    const thick = team.isUser || focused === team.rosterId;
+                    const labelX = head[0] + ICON_R + 8;
                     return (
-                      <div className="rounded-md border border-border bg-popover p-2 text-xs shadow-md">
-                        <div className="font-semibold mb-1">Week {Math.round(Number(label))}</div>
-                        {items.map((item) => {
-                          const team = teams.find((t) => `t${t.rosterId}` === item.dataKey);
-                          return (
-                            <div key={String(item.dataKey)} className="flex items-center justify-between gap-4">
-                              <span className="flex items-center gap-1.5">
-                                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: item.color }} />
-                                {team?.name}
-                              </span>
-                              <span className="tabular-nums font-medium">{Number(item.value).toFixed(1)}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
+                      <g
+                        key={team.rosterId}
+                        opacity={dimmed ? 0.2 : 1}
+                        className="cursor-pointer"
+                        onClick={() => setFocused((prev) => (prev === team.rosterId ? null : team.rosterId))}
+                        data-testid={`race-icon-${team.rosterId}`}
+                      >
+                        <polyline
+                          fill="none"
+                          stroke={color}
+                          strokeWidth={thick ? 4.5 : 2.5}
+                          strokeOpacity={thick ? 1 : 0.7}
+                          strokeLinejoin="round"
+                          strokeLinecap="round"
+                          points={pts.map((p) => p.join(",")).join(" ")}
+                        />
+                        {pts.slice(0, base + 1).map((p, i) => (
+                          <circle key={i} cx={p[0]} cy={p[1]} r={thick ? 4.5 : 3} fill={color} />
+                        ))}
+                        <TeamBadge team={team} color={color} x={head[0]} y={head[1]} clipId={`race-clip-${team.rosterId}`} />
+                        {wide && (
+                          <text
+                            x={labelX}
+                            y={head[1]}
+                            dominantBaseline="central"
+                            fontSize={11}
+                            fontWeight={team.isUser ? 700 : 500}
+                            fill={team.isUser ? "hsl(var(--foreground))" : "hsl(var(--muted-foreground))"}
+                            data-testid={`race-legend-${team.rosterId}`}
+                          >
+                            {team.name.length > 16 ? `${team.name.slice(0, 15)}…` : team.name}
+                          </text>
+                        )}
+                      </g>
                     );
-                  }}
-                />
-                {teams.map((team) => {
-                  const color = colorByRoster.get(team.rosterId)!;
-                  const dimmed = focused !== null && focused !== team.rosterId;
-                  return (
-                    <Line
-                      key={team.rosterId}
-                      type="monotone"
-                      dataKey={`t${team.rosterId}`}
-                      stroke={color}
-                      strokeWidth={team.isUser || focused === team.rosterId ? 3.5 : 2}
-                      strokeOpacity={dimmed ? 0.15 : 1}
-                      isAnimationActive={false}
-                      activeDot={false}
-                      dot={(props: any) => {
-                        const { cx, cy, index, key } = props;
-                        if (index !== rows.length - 1 || cx == null || cy == null) {
-                          return <g key={key ?? `${team.rosterId}-${index}`} />;
-                        }
-                        return (
-                          <TeamHeadIcon
-                            key={key ?? `${team.rosterId}-${index}`}
-                            cx={cx}
-                            cy={cy}
-                            team={team}
-                            color={color}
-                            dimmed={dimmed}
-                            offsetY={offsets.get(team.rosterId) ?? 0}
-                          />
-                        );
-                      }}
-                    />
-                  );
-                })}
-              </LineChart>
-            </ResponsiveContainer>
+                  })}
+              </svg>
+            )}
           </div>
 
-          <div className="space-y-1" data-testid="race-leaderboard">
-            <div className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-              Through week {Math.round(headWeek)}
+          <div className="space-y-4" data-testid="race-leaderboard">
+            {bubble && (
+              <div className="rounded-lg border border-border p-4 space-y-1.5" data-testid="race-bubble">
+                <p className="text-sm font-semibold">Playoff bubble</p>
+                <p className="text-sm">
+                  You are{" "}
+                  <b className={bubble.userGap >= 0 ? "text-emerald-500" : "text-red-500"}>{fmt(Math.abs(bubble.userGap))} points</b>{" "}
+                  {bubble.userGap >= 0 ? "over" : "behind"} the line.
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  The first team out ({bubble.firstOut.team.name}) is {fmt(bubble.outGap)} from the line, {fmt(bubble.behindLastIn)} behind the last playoff spot.
+                </p>
+              </div>
+            )}
+            <div className="rounded-lg border border-border p-4 space-y-2" data-testid="race-movers">
+              <p className="text-sm font-semibold">
+                {movers.span > 0 ? `Biggest risers over the last ${movers.span} week${movers.span === 1 ? "" : "s"}` : "Biggest risers"}
+              </p>
+              {movers.up.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No movement yet.</p>
+              ) : (
+                movers.up.map(({ team, change }) => (
+                  <div key={team.rosterId} className="flex items-center gap-2 text-sm">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: colorByRoster.get(team.rosterId) }} />
+                    <span className={`flex-1 truncate ${team.isUser ? "text-primary font-semibold" : ""}`}>{team.name}</span>
+                    <b className="text-emerald-500 tabular-nums">▲{change}</b>
+                  </div>
+                ))
+              )}
             </div>
-            {leaderboard.map(({ team, value }, index) => (
-              <button
-                key={team.rosterId}
-                type="button"
-                onClick={() => setFocused((prev) => (prev === team.rosterId ? null : team.rosterId))}
-                className={`w-full flex items-center gap-2 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-muted/60 ${
-                  focused === team.rosterId ? "bg-muted" : ""
-                } ${focused !== null && focused !== team.rosterId ? "opacity-50" : ""}`}
-                data-testid={`race-legend-${team.rosterId}`}
-              >
-                <span className="w-4 text-xs text-muted-foreground tabular-nums">{index + 1}</span>
-                <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: colorByRoster.get(team.rosterId) }} />
-                <span className={`flex-1 truncate ${team.isUser ? "text-primary font-semibold" : ""}`}>{team.name}</span>
-                <span className="tabular-nums text-xs font-medium">{value.toFixed(1)}</span>
-              </button>
-            ))}
-            <p className="text-xs text-muted-foreground pt-2">Click a team to highlight its line.</p>
+            <div className="rounded-lg border border-border p-4 space-y-2">
+              <p className="text-sm font-semibold">Biggest fallers</p>
+              {movers.down.length === 0 ? (
+                <p className="text-xs text-muted-foreground">No movement yet.</p>
+              ) : (
+                movers.down.map(({ team, change }) => (
+                  <div key={team.rosterId} className="flex items-center gap-2 text-sm">
+                    <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: colorByRoster.get(team.rosterId) }} />
+                    <span className={`flex-1 truncate ${team.isUser ? "text-primary font-semibold" : ""}`}>{team.name}</span>
+                    <b className="text-red-500 tabular-nums">▼{Math.abs(change)}</b>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
         </div>
       </CardContent>
