@@ -7,7 +7,7 @@ import type { PlayerBid } from "../../shared/schema";
 import {
   dbErrorMessage,
 } from "./shared";
-import { isCommissioner } from "../middleware/commissioner";
+import { requireCommissioner } from "../security/guards";
 
 export function registerFreeAgencyRoutes(app: Express): void {
   // ==================== PLAYER BIDS ====================
@@ -193,8 +193,7 @@ export function registerFreeAgencyRoutes(app: Express): void {
         return res.status(404).json({ error: "League not found" });
       }
 
-      // TODO: Add commissioner check here
-      // For now, allow access - can add auth check later if needed
+      if (!(await requireCommissioner(req, res))) return;
 
       await storage.setLeagueSetting(leagueId, "player_bidding_open", isOpen ? "true" : "false");
       res.json({ isOpen });
@@ -322,13 +321,7 @@ export function registerFreeAgencyRoutes(app: Express): void {
     try {
       const { leagueId } = req.params;
       const { userId, visible } = req.body;
-      if (!userId) {
-        return res.status(400).json({ error: "userId is required" });
-      }
-      const isUserCommissioner = await isCommissioner(userId, leagueId);
-      if (!isUserCommissioner) {
-        return res.status(403).json({ error: "Only the commissioner can change this setting" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
       await storage.setLeagueSetting(leagueId, "preferred_free_agents_visible", visible ? "true" : "false");
       res.json({ visible: !!visible });
     } catch (error) {
@@ -398,6 +391,7 @@ export function registerFreeAgencyRoutes(app: Express): void {
 
   app.post("/api/leagues/:leagueId/dead-cap", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId } = req.params;
       const data = req.body;
       
@@ -420,6 +414,7 @@ export function registerFreeAgencyRoutes(app: Express): void {
 
   app.delete("/api/leagues/:leagueId/dead-cap/:entryId", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { entryId } = req.params;
       await storage.deleteDeadCapEntry(entryId);
       res.json({ success: true });
@@ -431,6 +426,7 @@ export function registerFreeAgencyRoutes(app: Express): void {
 
   app.post("/api/leagues/:leagueId/process-cut-trade", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId } = req.params;
       const { rosterId, playerId, playerName, playerPosition, reason, contract } = req.body;
       

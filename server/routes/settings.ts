@@ -5,7 +5,7 @@ import { storage } from "../storage";
 import {
   dbErrorMessage,
 } from "./shared";
-import { isCommissioner } from "../middleware/commissioner";
+import { requireCommissioner } from "../security/guards";
 
 export function registerSettingsRoutes(app: Express): void {
   // IMPORTANT: Specific routes like /settings/dead-cap-enabled MUST be defined BEFORE
@@ -30,24 +30,14 @@ export function registerSettingsRoutes(app: Express): void {
   app.put("/api/league/:leagueId/settings/dead-cap-enabled", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const userId = req.query.userId as string;
       const { enabled } = req.body;
-      
-      if (!userId) {
-        return res.status(400).json({ error: "User ID is required" });
-      }
-      
+
       if (typeof enabled !== "boolean") {
         return res.status(400).json({ error: "Enabled must be a boolean" });
       }
 
-      // Check if user is commissioner
-      const isComm = await isCommissioner(userId, leagueId);
-      
-      if (!isComm) {
-        return res.status(403).json({ error: "Unauthorized: Only commissioners can change this setting" });
-      }
-      
+      if (!(await requireCommissioner(req, res))) return;
+
       const { setDeadCapEnabled } = await import("../deadCap");
       res.json(await setDeadCapEnabled(leagueId, enabled));
     } catch (error) {
@@ -68,9 +58,10 @@ export function registerSettingsRoutes(app: Express): void {
     }
   });
 
-  // Set league setting (commissioner only - verified on client) (generic - must come AFTER specific routes)
+  // Set league setting (commissioner only) (generic - must come AFTER specific routes)
   app.post("/api/league/:leagueId/settings/:settingKey", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId, settingKey } = req.params;
       const { value } = req.body;
       

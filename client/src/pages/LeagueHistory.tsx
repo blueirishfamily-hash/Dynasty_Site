@@ -18,8 +18,7 @@ import LeagueView from "@/components/history/LeagueView";
 import TeamsView from "@/components/history/TeamsView";
 import MatchupsView from "@/components/history/MatchupsView";
 import SeasonView from "@/components/history/SeasonView";
-
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 type Tab = "league" | "teams" | "matchups";
 
@@ -124,10 +123,7 @@ function HistoryBody() {
 export default function LeagueHistory() {
   const { user, league } = useSleeper();
   const [, setLocation] = useLocation();
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   useEffect(() => {
     if (user && league && !isCommissioner) setLocation("/");

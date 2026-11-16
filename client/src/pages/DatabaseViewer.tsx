@@ -25,8 +25,7 @@ import {
   Download,
   Search,
 } from "lucide-react";
-
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 interface TableInfo {
   name: string;
@@ -70,11 +69,7 @@ export default function DatabaseViewer() {
     }
   }, [initialTable]);
 
-  const isCommissioner = !!(
-    user?.userId &&
-    (COMMISSIONER_USER_IDS.includes(user.userId) ||
-      (league && league.commissionerId && user.userId === league.commissionerId))
-  );
+  const isCommissioner = useIsCommissioner();
 
   // Fetch table list
   const { data: tables, isLoading: tablesLoading, isError: tablesError, error: tablesErrorDetails } = useQuery<TableInfo[]>({

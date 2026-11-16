@@ -17,6 +17,7 @@ export interface SleeperLeague {
   roster_positions: string[];
   scoring_settings: Record<string, number>;
   owner_id: string;
+  previous_league_id?: string | null;
   settings: {
     playoff_teams?: number;
     waiver_budget?: number;

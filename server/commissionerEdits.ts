@@ -8,6 +8,8 @@ import type { Express } from "express";
 import { randomUUID } from "crypto";
 import { storage } from "./storage";
 import { getAllPlayers } from "./sleeper";
+import { auditActor, requireCommissioner, type Actor } from "./security/guards";
+import { writeAudit } from "./security/store";
 
 const LOG_LIMIT = 300;
 const REASONS = ["Fix wrong salary", "Missed pickup", "Trade adjustment", "League decision", "Other"];
@@ -23,6 +25,8 @@ export interface ChangeLogEntry {
   detail: string;
   reason: string;
   note: string;
+  /** Whose PIN made the change: a Sleeper user ID, or "admin". Empty for entries from before PINs. */
+  by?: string;
 }
 
 // league_settings.setting_value is varchar(256), so the log is a ring of small rows (one entry per row) instead of
@@ -36,7 +40,7 @@ const clip = (v: unknown, n: number) => String(v ?? "").slice(0, n);
 function packEntry(e: ChangeLogEntry): string {
   const limits = { s: 60, d: 70, o: 40, p: 24 };
   const build = () =>
-    JSON.stringify({ i: e.id.slice(0, 8), t: e.at, a: e.action, r: e.rosterId, k: e.playerId, p: clip(e.playerName, limits.p), s: clip(e.summary, limits.s), d: clip(e.detail, limits.d), w: clip(e.reason, 20), o: clip(e.note, limits.o) });
+    JSON.stringify({ i: e.id.slice(0, 8), t: e.at, a: e.action, r: e.rosterId, k: e.playerId, p: clip(e.playerName, limits.p), s: clip(e.summary, limits.s), d: clip(e.detail, limits.d), w: clip(e.reason, 20), o: clip(e.note, limits.o), b: clip(e.by, 20) });
   let out = build();
   for (const key of ["o", "d", "s", "p"] as const) {
     while (out.length > MAX_VALUE && limits[key] > 0) {
@@ -50,7 +54,7 @@ function packEntry(e: ChangeLogEntry): string {
 function unpackEntry(raw: string): ChangeLogEntry | null {
   try {
     const o = JSON.parse(raw);
-    return { id: o.i, at: o.t, action: o.a, rosterId: o.r, playerId: o.k, playerName: o.p ?? "", summary: o.s ?? "", detail: o.d ?? "", reason: o.w ?? "", note: o.o ?? "" };
+    return { id: o.i, at: o.t, action: o.a, rosterId: o.r, playerId: o.k, playerName: o.p ?? "", summary: o.s ?? "", detail: o.d ?? "", reason: o.w ?? "", note: o.o ?? "", by: o.b ?? "" };
   } catch {
     return null;
   }
@@ -69,9 +73,18 @@ async function readLog(leagueId: string): Promise<ChangeLogEntry[]> {
 }
 
 /** The edit itself is already saved by the time this runs, so a log failure is reported but never fails the request. */
-async function appendLog(leagueId: string, entry: Omit<ChangeLogEntry, "id" | "at">) {
+async function appendLog(leagueId: string, actor: Actor, entry: Omit<ChangeLogEntry, "id" | "at" | "by">) {
+  const by = actor.role === "commissioner" ? actor.sleeperUserId : "admin";
+  // The registry's audit log keeps the full record of who changed what.
+  const registryLeagueId = actor.role === "commissioner" ? actor.leagueId : null;
+  await writeAudit({
+    leagueId: registryLeagueId,
+    ...auditActor(actor),
+    action: `contract_${entry.action}`,
+    details: { sleeperLeagueId: leagueId, rosterId: entry.rosterId, playerId: entry.playerId, summary: entry.summary, detail: entry.detail, reason: entry.reason, note: entry.note },
+  });
   try {
-    const full: ChangeLogEntry = { id: randomUUID(), at: Date.now(), ...entry };
+    const full: ChangeLogEntry = { id: randomUUID(), at: Date.now(), ...entry, by };
     const n = parseInt((await storage.getLeagueSetting(leagueId, COUNTER_KEY)) ?? "0", 10) || 0;
     await storage.setLeagueSetting(leagueId, `ccl_${n % SLOT_COUNT}`, packEntry(full));
     await storage.setLeagueSetting(leagueId, COUNTER_KEY, String(n + 1));
@@ -105,19 +118,17 @@ async function playerName(playerId: string): Promise<string> {
   return String(p.full_name || [p.first_name, p.last_name].filter(Boolean).join(" ") || playerId).slice(0, 128);
 }
 
-export function registerCommissionerEditRoutes(app: Express, isCommissioner: (userId: string, leagueId?: string) => Promise<boolean>) {
-  /** Returns the cleaned reason, or sends the error response and returns null. */
-  const guard = async (req: any, res: any, userId: unknown, reason: unknown): Promise<string | null> => {
-    if (typeof userId !== "string" || !userId || !(await isCommissioner(userId, req.params.leagueId))) {
-      res.status(403).json({ error: "Only the commissioner can edit contracts" });
-      return null;
-    }
+export function registerCommissionerEditRoutes(app: Express) {
+  /** Returns the cleaned reason and who is acting, or sends the error response and returns null. */
+  const guard = async (req: any, res: any, reason: unknown): Promise<{ why: string; actor: Actor } | null> => {
+    const actor = await requireCommissioner(req, res);
+    if (!actor) return null;
     const r = typeof reason === "string" ? reason.trim() : "";
     if (!r || !REASONS.includes(r)) {
       res.status(400).json({ error: "Pick a reason for this change" });
       return null;
     }
-    return r;
+    return { why: r, actor };
   };
   const noteOf = (v: unknown) => (typeof v === "string" ? v.trim().slice(0, 300) : "");
 
@@ -135,8 +146,9 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
     try {
       const { leagueId } = req.params;
       const { userId, rosterId, playerId, salaries, flags, reason, note } = req.body ?? {};
-      const why = await guard(req, res, userId, reason);
-      if (why == null) return;
+      const g = await guard(req, res, reason);
+      if (!g) return;
+      const why = g.why;
       const roster = Number(rosterId);
       if (!Number.isInteger(roster) || typeof playerId !== "string" || !playerId) {
         return res.status(400).json({ error: "Team and player are required" });
@@ -177,7 +189,7 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
       } as any);
 
       const name = await playerName(playerId);
-      await appendLog(leagueId, {
+      await appendLog(leagueId, g.actor, {
         action: existing ? "contract_edit" : "contract_create",
         rosterId: roster,
         playerId,
@@ -198,8 +210,9 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
   app.delete("/api/league/:leagueId/commissioner/contract/:rosterId/:playerId", async (req, res) => {
     try {
       const { leagueId, rosterId, playerId } = req.params;
-      const why = await guard(req, res, req.query.userId, req.query.reason);
-      if (why == null) return;
+      const g = await guard(req, res, req.query.reason);
+      if (!g) return;
+      const why = g.why;
       const roster = parseInt(rosterId, 10);
       const existing = (await storage.getPlayerContracts(leagueId)).find(c => c.rosterId === roster && c.playerId === playerId) as any;
       if (!existing) return res.status(404).json({ error: "No contract to remove" });
@@ -209,7 +222,7 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
       } catch { /* */ }
       await storage.deletePlayerContract(leagueId, roster, playerId);
       const name = await playerName(playerId);
-      await appendLog(leagueId, {
+      await appendLog(leagueId, g.actor, {
         action: "contract_remove",
         rosterId: roster,
         playerId,
@@ -231,8 +244,9 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
     try {
       const { leagueId } = req.params;
       const { userId, rosterId, playerId, deadCapSalaries, entryId, reason, note } = req.body ?? {};
-      const why = await guard(req, res, userId, reason);
-      if (why == null) return;
+      const g = await guard(req, res, reason);
+      if (!g) return;
+      const why = g.why;
       const roster = Number(rosterId);
       if (!Number.isInteger(roster) || typeof playerId !== "string" || !playerId) {
         return res.status(400).json({ error: "Team and player are required" });
@@ -260,7 +274,7 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
       try {
         before = JSON.parse(old?.deadCapSalaries || "{}");
       } catch { /* */ }
-      await appendLog(leagueId, {
+      await appendLog(leagueId, g.actor, {
         action: old ? "dead_cap_edit" : "dead_cap_add",
         rosterId: roster,
         playerId,
@@ -280,8 +294,9 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
   app.delete("/api/league/:leagueId/commissioner/dead-cap/:entryId", async (req, res) => {
     try {
       const { leagueId, entryId } = req.params;
-      const why = await guard(req, res, req.query.userId, req.query.reason);
-      if (why == null) return;
+      const g = await guard(req, res, req.query.reason);
+      if (!g) return;
+      const why = g.why;
       const entry = (await storage.getDeadCapEntriesByLeague(leagueId)).find(e => e.id === entryId);
       if (!entry) return res.status(404).json({ error: "That dead cap entry no longer exists" });
       let before: Record<string, number> = {};
@@ -289,7 +304,7 @@ export function registerCommissionerEditRoutes(app: Express, isCommissioner: (us
         before = JSON.parse(entry.deadCapSalaries || "{}");
       } catch { /* */ }
       await storage.deleteDeadCapEntry(entryId);
-      await appendLog(leagueId, {
+      await appendLog(leagueId, g.actor, {
         action: "dead_cap_remove",
         rosterId: entry.rosterId,
         playerId: entry.playerId,

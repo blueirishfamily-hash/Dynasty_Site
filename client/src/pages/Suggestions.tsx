@@ -9,8 +9,7 @@ import { useToast } from "@/hooks/use-toast";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import { MessageSquare, Send, Trash2, Check } from "lucide-react";
 import type { Suggestion } from "@shared/schema";
-
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 function formatTimestamp(ts: number): string {
   const d = new Date(ts);
@@ -29,10 +28,7 @@ export default function Suggestions() {
   const [content, setContent] = useState("");
   const [submitted, setSubmitted] = useState(false);
 
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   const { data: suggestionsData, isLoading: suggestionsLoading } = useQuery<{ suggestions: Suggestion[] }>({
     queryKey: ["/api/league", league?.leagueId, "suggestions", user?.userId],

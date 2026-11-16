@@ -3,7 +3,7 @@
 import type { Express } from "express";
 import { storage } from "../storage";
 import { getAllPlayers, type SleeperPlayer } from "../sleeper";
-import { isCommissioner } from "../middleware/commissioner";
+import { requireCommissioner } from "../security/guards";
 
 export function registerDraftProspectsRoutes(app: Express): void {
   // Draft Prospects API (top 40 incoming rookies, 2026 class)
@@ -74,7 +74,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const leagueId = req.params.leagueId;
       const { userId, prospects: prospectsBody, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can manage draft prospects" });
+      if (!(await requireCommissioner(req, res))) return;
       const arr = Array.isArray(prospectsBody) ? prospectsBody : [];
       if (arr.length > 40) return res.status(400).json({ error: "Maximum 40 prospects allowed" });
       const prospects = arr.map((p: any) => ({
@@ -104,7 +104,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const { leagueId, id } = req.params;
       const { userId, ...data } = req.body;
       if (!leagueId || !id || !userId) return res.status(400).json({ error: "League ID, prospect ID, and userId required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can update draft prospects" });
+      if (!(await requireCommissioner(req, res))) return;
       const updated = await storage.updateDraftProspect(id, leagueId, data);
       if (!updated) return res.status(404).json({ error: "Prospect not found" });
       res.json(updated);
@@ -119,7 +119,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const { leagueId, id } = req.params;
       const userId = req.query.userId as string;
       if (!leagueId || !id || !userId) return res.status(400).json({ error: "League ID, prospect ID, and userId required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can delete draft prospects" });
+      if (!(await requireCommissioner(req, res))) return;
       await storage.deleteDraftProspect(id, leagueId);
       res.json({ success: true });
     } catch (error: any) {
@@ -133,7 +133,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const leagueId = req.params.leagueId;
       const { userId, orderedIds, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can reorder draft prospects" });
+      if (!(await requireCommissioner(req, res))) return;
       const ids = Array.isArray(orderedIds) ? orderedIds : [];
       if (ids.length > 40) return res.status(400).json({ error: "Maximum 40 prospects" });
       const result = await storage.reorderDraftProspects(leagueId, season, ids);
@@ -149,7 +149,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const leagueId = req.params.leagueId;
       const { userId, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can refresh combine & awards data" });
+      if (!(await requireCommissioner(req, res))) return;
       const combineUrl = (await storage.getLeagueSetting(leagueId, "draft_combine_url")) || DEFAULT_COMBINE_URL;
       const awardsUrl = (await storage.getLeagueSetting(leagueId, "draft_awards_url")) || DEFAULT_AWARDS_URL;
       const prospects = await storage.getDraftProspects(leagueId, season);
@@ -291,9 +291,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const leagueId = req.params.leagueId;
       const { userId, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
-      if (!(await isCommissioner(userId, leagueId))) {
-        return res.status(403).json({ error: "Only the commissioner can match Sleeper player IDs" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
       const prospects = await storage.getDraftProspects(leagueId, season);
       if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
 
@@ -417,7 +415,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const { userId, csv, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
       if (typeof csv !== "string") return res.status(400).json({ error: "CSV content required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can import combine CSV data" });
+      if (!(await requireCommissioner(req, res))) return;
 
       const prospects = await storage.getDraftProspects(leagueId, season);
       if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
@@ -579,7 +577,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const { userId, csv, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
       if (typeof csv !== "string") return res.status(400).json({ error: "CSV content required" });
-      if (!(await isCommissioner(userId, leagueId))) return res.status(403).json({ error: "Only the commissioner can import RAS data" });
+      if (!(await requireCommissioner(req, res))) return;
 
       const prospects = await storage.getDraftProspects(leagueId, season);
       if (prospects.length === 0) return res.status(400).json({ error: "No prospects to update. Add prospects first." });
@@ -785,8 +783,7 @@ export function registerDraftProspectsRoutes(app: Express): void {
       const leagueId = req.params.leagueId;
       const { userId, season = "2026" } = req.body;
       if (!leagueId || !userId) return res.status(400).json({ error: "League ID and userId required" });
-      if (!(await isCommissioner(userId, leagueId)))
-        return res.status(403).json({ error: "Only the commissioner can refresh advanced stats" });
+      if (!(await requireCommissioner(req, res))) return;
       const apiKey = process.env.COLLEGE_FOOTBALL_DATA_API_KEY;
       if (!apiKey)
         return res.status(400).json({ error: "COLLEGE_FOOTBALL_DATA_API_KEY is not set. Set it in your environment to use advanced stats." });

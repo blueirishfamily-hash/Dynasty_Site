@@ -58,8 +58,7 @@ import {
   getNflTeamLogoUrl,
   applyNflTeamLogoFallback,
 } from "@/lib/draftProspectMetrics";
-
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 const DEFAULT_SEASON = "2026";
 const ADP_RANGE_TOLERANCE = 2;
@@ -87,12 +86,7 @@ export default function DraftProspects() {
   const [combineImportCsv, setCombineImportCsv] = useState("");
   const [editForm, setEditForm] = useState<Partial<DraftProspect>>({});
 
-  const isCommissioner = !!(
-    user?.userId &&
-    league &&
-    ((league.commissionerId && user.userId === league.commissionerId) ||
-      COMMISSIONER_USER_IDS.includes(user.userId))
-  );
+  const isCommissioner = useIsCommissioner();
 
   const queryKey = ["/api/league", league?.leagueId, "draft-prospects", season];
   const {

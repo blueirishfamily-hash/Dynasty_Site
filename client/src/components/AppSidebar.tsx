@@ -31,10 +31,7 @@ import {
   History,
   Building2,
 } from "lucide-react";
-
-const COMMISSIONER_USER_IDS = [
-  "900186363130503168",
-];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 const baseNavItems = [
   { title: "Dashboard", url: "/", icon: LayoutDashboard },
@@ -77,10 +74,7 @@ export default function AppSidebar({
   const [location] = useLocation();
   const { user, league } = useSleeper();
 
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   const navItems = isCommissioner
     ? baseNavItems

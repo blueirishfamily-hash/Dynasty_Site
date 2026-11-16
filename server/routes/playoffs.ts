@@ -23,7 +23,7 @@ import {
   playerStatsCache,
   STATS_CACHE_TTL,
 } from "./shared";
-import { isCommissioner } from "../middleware/commissioner";
+import { requireCommissioner } from "../security/guards";
 
 export function registerPlayoffsRoutes(app: Express): void {
   // Playoff predictor - simulate remaining season
@@ -31,10 +31,7 @@ export function registerPlayoffsRoutes(app: Express): void {
   app.get("/api/sleeper/league/:leagueId/weekly-report", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const userId = req.query.userId as string | undefined;
-      if (!userId || !(await isCommissioner(userId, leagueId))) {
-        return res.status(403).json({ error: "Only the commissioner can export the weekly report." });
-      }
+      if (!(await requireCommissioner(req, res))) return;
       const [league, rosters, users, players, nflState] = await Promise.all([
         getLeague(leagueId).catch(() => null),
         getLeagueRosters(leagueId),

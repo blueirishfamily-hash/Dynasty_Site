@@ -45,6 +45,22 @@ The plan's source of truth is the claude.ai doc "Multi-League Plan" (https://cla
     - Checked with Vite alone (`.claude/launch.json`, "client-only"), with no API and no database. Redirects keep the page and query, sidebar links stay under the address, history deep links work, a bad slug shows 404, and there are no console errors. 8 tests in `client/src/lib/league-address.test.ts` cover the header and redirects. Not yet checked against the real API.
   - Still to do in phase 1: the mismatch tests against two test leagues (needs the test database).
   - Known gap for phase 4: the signed-in user (`sleeper_user`) is still one per device, not one per league.
+- Phase 1 committed as `86e03adb` (all but the mismatch tests).
+- Phase 2 built (uncommitted). Decisions made with the user:
+  - New commissioners, and commissioners after a PIN reset, set their PIN with a **one-time setup code** from the site admin. The code lasts 7 days and is stored hashed in `league_commissioners.pin_hash` with a `setup:` prefix, so no schema change was needed.
+  - Unlocks last **until the browser closes, with no time limit**. They are HMAC-signed session cookies, signed with `UNLOCK_SECRET`. Each token carries a fingerprint of the PIN or passcode hash, so a change or reset ends old unlocks.
+  - Wrong tries: 5 per device, then a 15-minute pause (device = `did` cookie). Added beyond the plan: 20 across all devices pause that secret for everyone, so clearing cookies doesn't buy more guesses.
+  - The admin passcode is set the first time, or reset, with `ADMIN_RECOVERY_KEY` from `.env`. An admin unlock counts as commissioner in every league.
+  - UI: PIN prompt mockup A (centered dialog with digit boxes; `inputMode="numeric"` opens the phone number pad) and admin page mockup C (tabs).
+- Phase 2 code:
+  - Server: `server/security/` (secrets, unlock tokens and cookies, attempts, store, guards) and `server/routes/security.ts` (unlock, setup, change PIN, admin unlock and passcode). `server/routes/adminLeagues.ts` adds, edits and archives leagues, manages commissioners and setup codes, clears league PINs, and serves the audit log. `server/leagueChain.ts` walks Sleeper's previous-season links.
+  - All `isCommissioner(userId)` checks are now `requireCommissioner` (or `requireCommissionerFor` when the league ID is in the body). About 15 commissioner-only routes that had no check are guarded too: generic settings POST, contract phase, FA round resolve, bidding status, assign-by-quartile, cut/trade, dead-cap writes, contract delete, set-active, roster mapping, extension undo and delete, toggle voting. The database viewer needs `requireAdmin`. `server/middleware/commissioner.ts` is deleted.
+  - Advance League Year now also appends the new season to `league_season_history` and writes an audit entry, as a stopgap until phase 5.
+  - Commissioner contract edits write the audit log, and the change log has a `by` field.
+  - Client: `lib/unlock.ts` (fetch wrapper: on a 401 `commissioner_unlock_required` or `admin_unlock_required`, it opens the prompt and retries once; members are never prompted), `components/UnlockDialog.tsx`, `lib/commissioner.ts` (`useIsCommissioner` from the registry; falls back to the Sleeper owner if the registry can't be reached) replacing the hardcoded ID in 12 places, and `pages/Admin.tsx` at `/admin` (outside league addresses; "Site admin" in the user menu for commissioners).
+  - Tests: `server/security/security.test.ts` and `guards.test.ts` (league A's unlock refused in B, resets end unlocks, admin vs commissioner). Total 60 passing; the "phase dates" failure is unchanged.
+  - Checked in the browser against a throwaway mock API (now deleted): auto-prompt and retry, wrong PIN with tries left, the setup-code flow at phone width, and the admin page tabs. **Not yet run against the real server.**
+- To go live with phase 2, the user must add `UNLOCK_SECRET` and `ADMIN_RECOVERY_KEY` to `.env` (see `.env.example`). Then: open `/admin` → set the passcode with the recovery key → Commissioners and PINs → New setup code for themself → set their PIN at the next commissioner action.
 
 ## Decided with the user (2026-11-16)
 

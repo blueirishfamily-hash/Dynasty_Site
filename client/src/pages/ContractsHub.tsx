@@ -96,12 +96,11 @@ import {
   Handshake,
   Trophy,
 } from "lucide-react";
+import { useIsCommissioner } from "@/lib/commissioner";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TOTAL_CAP = 250;
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
-
 const positionColors: Record<string, string> = {
   QB: "bg-rose-500 text-white",
   RB: "bg-emerald-500 text-white",
@@ -2408,12 +2407,7 @@ export default function ContractsHub() {
   const currentYear = parseInt(season) || new Date().getFullYear();
   const { tags: pendingTags, addTag: addPendingTag, removeTag: removePendingTag } = usePendingTags(league?.leagueId, currentYear);
 
-  const isCommissioner = !!(
-    user?.userId &&
-    league &&
-    ((league.commissionerId && user.userId === league.commissionerId) ||
-      COMMISSIONER_USER_IDS.includes(user.userId))
-  );
+  const isCommissioner = useIsCommissioner();
 
   const [activeTab, setActiveTab] = useState("overview");
   const [selectedRosterId, setSelectedRosterId] = useState<number | null>(null);

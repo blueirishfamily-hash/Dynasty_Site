@@ -21,18 +21,14 @@ import { queryClient } from "@/lib/queryClient";
 import { RefreshCw, Check, Bell, User, Database, FileDown, Scissors } from "lucide-react";
 import { buildWeeklyReportPdf, collectAvatarUrls, loadAvatars, reportFileName, type PlayoffData } from "@/lib/weeklyReportPdf";
 import type { ReportData } from "@shared/weeklyReport";
-
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 export default function Settings() {
   const { user, league, clearSession } = useSleeper();
   const [, setLocation] = useLocation();
   const { toast } = useToast();
 
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   useEffect(() => {
     if (user && league && !isCommissioner) setLocation("/");

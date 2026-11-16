@@ -7,6 +7,9 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { SleeperProvider, useSleeper } from "@/lib/sleeper-context";
 import { isValidLeagueSlug, legacyRedirectTarget, setLeagueSlug } from "@/lib/league-address";
+import "@/lib/unlock";
+import UnlockDialog from "@/components/UnlockDialog";
+import AdminPage from "@/pages/Admin";
 import AppSidebar from "@/components/AppSidebar";
 import ThemeToggle from "@/components/ThemeToggle";
 import SetupModal from "@/components/SetupModal";
@@ -38,10 +41,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Search, Bell, ChevronDown, LogOut, Settings as SettingsIcon, User, RefreshCw } from "lucide-react";
+import { Search, Bell, ChevronDown, LogOut, Settings as SettingsIcon, User, RefreshCw, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-
-const COMMISSIONER_USER_IDS = ["900186363130503168"];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 function Router() {
   return (
@@ -73,10 +75,7 @@ function AppContent() {
   const [showSetup, setShowSetup] = useState(false);
   const [, setLocation] = useLocation();
 
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   const { data: draftPicks } = useQuery({
     queryKey: ["/api/sleeper/league", league?.leagueId, "draft-picks"],
@@ -170,6 +169,9 @@ function AppContent() {
   return (
     <>
       <SetupModal open={showSetup} onComplete={() => setShowSetup(false)} />
+      <UnlockDialog
+        commissioner={isCommissioner && user?.userId ? { sleeperUserId: user.userId, label: userTeam?.name } : null}
+      />
       <SidebarProvider style={sidebarStyle as React.CSSProperties}>
         <div className="flex h-screen w-full overflow-hidden">
           <AppSidebar
@@ -220,6 +222,12 @@ function AppContent() {
                       <DropdownMenuItem onClick={() => setLocation("/settings")} data-testid="menu-item-settings">
                         <SettingsIcon className="w-4 h-4 mr-2" />
                         Settings
+                      </DropdownMenuItem>
+                    )}
+                    {isCommissioner && (
+                      <DropdownMenuItem onClick={() => setLocation("~/admin")} data-testid="menu-item-site-admin">
+                        <ShieldCheck className="w-4 h-4 mr-2" />
+                        Site admin
                       </DropdownMenuItem>
                     )}
                     <DropdownMenuItem onClick={() => setShowSetup(true)} data-testid="menu-item-select-team">
@@ -291,6 +299,7 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <TooltipProvider>
         <Switch>
+          <Route path="/admin" component={AdminPage} />
           <Route path="/l/:slug" nest>
             {(params) => <LeagueApp slug={params.slug} />}
           </Route>

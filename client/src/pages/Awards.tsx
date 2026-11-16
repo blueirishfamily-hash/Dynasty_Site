@@ -46,6 +46,7 @@ import {
   Users,
 } from "lucide-react";
 import type { AwardNomination, AwardBallot } from "@shared/schema";
+import { useIsCommissioner } from "@/lib/commissioner";
 
 const positionColors: Record<string, string> = {
   QB: "bg-red-500 text-white",
@@ -81,10 +82,6 @@ interface AwardResults {
 const LOCK_DATE = new Date("2025-12-09T12:00:00-05:00");
 
 // Additional users with commissioner privileges
-const COMMISSIONER_USER_IDS = [
-  "900186363130503168",
-];
-
 function CountdownTimer({ targetDate, label }: { targetDate: Date; label: string }) {
   const [timeLeft, setTimeLeft] = useState<{ days: number; hours: number; minutes: number; seconds: number } | null>(null);
 
@@ -182,10 +179,7 @@ export default function Awards() {
   const userTeamName = standings?.find((s: any) => s.isUser)?.name || user?.displayName || "Your Team";
   
   // Check if current user is the commissioner
-  const isCommissioner = user?.userId && (
-    (league?.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  );
+  const isCommissioner = useIsCommissioner();
 
   // Fetch award results for all categories
   const { data: mvpResults, isLoading: mvpLoading } = useQuery<AwardResults>({

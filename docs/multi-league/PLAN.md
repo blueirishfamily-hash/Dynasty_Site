@@ -241,12 +241,12 @@ There are seven phases, and ATL Dynasty keeps working after each one. A second l
 
 **Phase 2: PINs, commissioners and admin**
 
-- [ ] Admin passcode, with the recovery key in `.env`
-- [ ] A commissioner PIN for each commissioner and co-commissioner, each change recording whose PIN was used, unlocked until the browser closes, and the 15-minute pause
-- [ ] Replace the 32 hardcoded commissioner checks with the per-league list plus PIN
-- [ ] Admin page: add a league, fill its season history, set its address, invite code and commissioner
-- [ ] PIN resets by the site admin, and the audit log
-- [ ] Database viewer behind the admin passcode
+- [x] Admin passcode, with the recovery key in `.env`
+- [x] A commissioner PIN for each commissioner and co-commissioner, each change recording whose PIN was used, unlocked until the browser closes, and the 15-minute pause
+- [x] Replace the 32 hardcoded commissioner checks with the per-league list plus PIN
+- [x] Admin page: add a league, fill its season history, set its address, invite code and commissioner
+- [x] PIN resets by the site admin, and the audit log
+- [x] Database viewer behind the admin passcode
 
 **Phase 3: rules and contracts switch**
 

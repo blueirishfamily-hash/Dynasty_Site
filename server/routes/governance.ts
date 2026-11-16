@@ -3,7 +3,7 @@
 import type { Express } from "express";
 import { storage } from "../storage";
 import { getLeague } from "../sleeper";
-import { isCommissioner } from "../middleware/commissioner";
+import { leagueActor, requireCommissioner, requireCommissionerFor } from "../security/guards";
 
 export function registerGovernanceRoutes(app: Express): void {
   // Rule Suggestions API - Health Check
@@ -136,12 +136,8 @@ export function registerGovernanceRoutes(app: Express): void {
   app.post("/api/league/:leagueId/rule-voting-master", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const { userId, enabled } = req.body;
-      if (!leagueId || userId == null) return res.status(400).json({ error: "League ID and userId are required" });
-      const isUserCommissioner = await isCommissioner(userId, leagueId);
-      if (!isUserCommissioner) {
-        return res.status(403).json({ error: "Only the commissioner can change the voting state." });
-      }
+      const { enabled } = req.body;
+      if (!(await requireCommissioner(req, res))) return;
       await storage.setLeagueSetting(leagueId, "rule_voting_master", enabled ? "true" : "false");
       res.json({ votingMasterEnabled: !!enabled });
     } catch (error) {
@@ -153,12 +149,8 @@ export function registerGovernanceRoutes(app: Express): void {
   app.post("/api/league/:leagueId/rule-voting-closes-at", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const { userId, closesAt } = req.body;
-      if (!leagueId || userId == null) return res.status(400).json({ error: "League ID and userId are required" });
-      const isUserCommissioner = await isCommissioner(userId, leagueId);
-      if (!isUserCommissioner) {
-        return res.status(403).json({ error: "Only the commissioner can set the voting close time." });
-      }
+      const { closesAt } = req.body;
+      if (!(await requireCommissioner(req, res))) return;
       if (closesAt == null) {
         await storage.setLeagueSetting(leagueId, "rule_voting_closes_at", "");
       } else {
@@ -203,11 +195,8 @@ export function registerGovernanceRoutes(app: Express): void {
   app.post("/api/league/:leagueId/award-voting", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const { userId, enabled, closesAt } = req.body;
-      if (!leagueId || userId == null) return res.status(400).json({ error: "League ID and userId are required" });
-      if (!(await isCommissioner(userId, leagueId))) {
-        return res.status(403).json({ error: "Only the commissioner can change awards voting." });
-      }
+      const { enabled, closesAt } = req.body;
+      if (!(await requireCommissioner(req, res))) return;
       if (enabled !== undefined) {
         await storage.setLeagueSetting(leagueId, "award_voting_master", enabled ? "true" : "false");
       }
@@ -267,7 +256,8 @@ export function registerGovernanceRoutes(app: Express): void {
       }
 
       const votingMaster = await storage.getLeagueSetting(leagueId, "rule_voting_master");
-      const authorIsCommissioner = await isCommissioner(authorId, leagueId);
+      // While voting is open only a commissioner (unlocked with their PIN) can add suggestions.
+      const authorIsCommissioner = !!(await leagueActor(req, req.league));
       if (votingMaster === "true" && !authorIsCommissioner) {
         return res.status(403).json({
           error: "Suggestions are closed while voting is open. Only the commissioner can suggest during this time.",
@@ -337,14 +327,9 @@ export function registerGovernanceRoutes(app: Express): void {
       }
 
       // Check authorization: user must be the author or a commissioner
-      const league = await getLeague(leagueId);
+      // The author can edit their own suggestion; anyone else needs the commissioner PIN.
       const isAuthor = rule.authorId === userId;
-      const isCommissioner = league && (league.owner_id === userId || 
-        ["900186363130503168"].includes(userId));
-      
-      if (!isAuthor && !isCommissioner) {
-        return res.status(403).json({ error: "Unauthorized: You can only edit your own rule suggestions" });
-      }
+      if (!isAuthor && !(await requireCommissioner(req, res))) return;
 
       // Update the rule suggestion
       const updateData: { title?: string; description?: string; voteType?: "binary" | "multi_choice"; options?: string[] | null } = {};
@@ -404,14 +389,9 @@ export function registerGovernanceRoutes(app: Express): void {
       }
 
       // Check authorization: user must be the author or a commissioner
-      const league = await getLeague(leagueId);
+      // The author can delete their own suggestion; anyone else needs the commissioner PIN.
       const isAuthor = rule.authorId === userId;
-      const isCommissioner = league && (league.owner_id === userId || 
-        ["900186363130503168"].includes(userId));
-      
-      if (!isAuthor && !isCommissioner) {
-        return res.status(403).json({ error: "Unauthorized: You can only delete your own rule suggestions" });
-      }
+      if (!isAuthor && !(await requireCommissioner(req, res))) return;
 
       // Delete the rule suggestion (this will also delete associated votes)
       await storage.deleteRuleSuggestion(id);
@@ -446,12 +426,8 @@ export function registerGovernanceRoutes(app: Express): void {
   app.get("/api/league/:leagueId/suggestions", async (req, res) => {
     try {
       const leagueId = req.params.leagueId;
-      const userId = req.query.userId as string;
       if (!leagueId) return res.status(400).json({ error: "League ID is required" });
-      const isComm = userId && (await isCommissioner(userId, leagueId));
-      if (!isComm) {
-        return res.status(403).json({ error: "Only the commissioner can view suggestions" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
       const suggestions = await storage.getSuggestions(leagueId);
       res.json({ suggestions });
     } catch (error: any) {
@@ -485,12 +461,8 @@ export function registerGovernanceRoutes(app: Express): void {
   app.delete("/api/league/:leagueId/suggestions/:id", async (req, res) => {
     try {
       const { leagueId, id } = req.params;
-      const userId = req.body.userId as string;
       if (!leagueId || !id) return res.status(400).json({ error: "League ID and suggestion ID are required" });
-      const isComm = userId && (await isCommissioner(userId, leagueId));
-      if (!isComm) {
-        return res.status(403).json({ error: "Only the commissioner can delete suggestions" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
       await storage.deleteSuggestion(id);
       res.json({ success: true });
     } catch (error: any) {
@@ -634,6 +606,7 @@ export function registerGovernanceRoutes(app: Express): void {
       if (!leagueId || typeof enabled !== "boolean") {
         return res.status(400).json({ error: "Missing required fields" });
       }
+      if (!(await requireCommissionerFor(req, res, leagueId))) return;
       
       await storage.setLeagueSetting(
         leagueId,

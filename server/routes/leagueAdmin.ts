@@ -17,7 +17,9 @@ import {
   dbErrorMessage,
   getEffectiveWeek,
 } from "./shared";
-import { COMMISSIONER_USER_IDS, isCommissioner } from "../middleware/commissioner";
+import { auditActor, requireAdmin, requireCommissionerFor } from "../security/guards";
+import { appendCurrentSeason, writeAudit } from "../security/store";
+import { leagueResolver } from "../leagueRegistry";
 
 export function registerLeagueAdminRoutes(app: Express): void {
   // ==================== LEAGUE YEAR ADVANCEMENT ====================
@@ -72,6 +74,8 @@ export function registerLeagueAdminRoutes(app: Express): void {
       if (!leagueId) {
         return res.status(400).json({ error: "leagueId is required" });
       }
+      // Switching the site's active season is a commissioner action for the league that season belongs to.
+      if (!(await requireCommissionerFor(req, res, leagueId))) return;
 
       const league = await getLeague(leagueId);
       const existingLeagues = await storage.listLeagues();
@@ -115,10 +119,8 @@ export function registerLeagueAdminRoutes(app: Express): void {
         return res.status(400).json({ error: "New league ID must be different from current league ID" });
       }
 
-      const isUserCommissioner = await isCommissioner(userId, oldLeagueId);
-      if (!isUserCommissioner) {
-        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
-      }
+      const actor = await requireCommissionerFor(req, res, oldLeagueId);
+      if (!actor) return;
 
       const [oldLeague, newLeague] = await Promise.all([
         getLeague(oldLeagueId),
@@ -380,6 +382,37 @@ export function registerLeagueAdminRoutes(app: Express): void {
         isActive: 1,
       });
 
+      // League registry: the new Sleeper league becomes this league's current season, so league lookups and
+      // commissioner PINs keep working after the rollover. Phase 5 rebuilds rollover around this table.
+      try {
+        const old = await leagueResolver.resolve(oldLeagueId);
+        if (old.status === "ok") {
+          await appendCurrentSeason(old.context.league.id, {
+            season: String(newLeague.season),
+            sleeperLeagueId: newLeagueId,
+            previousSleeperLeagueId: oldLeagueId,
+            rolledOverBy: actor.role === "commissioner" ? actor.sleeperUserId : "admin",
+            migrationId: migration.id,
+          });
+          leagueResolver.invalidate();
+          await writeAudit({
+            leagueId: old.context.league.id,
+            ...auditActor(actor),
+            action: "season_rolled_over",
+            details: {
+              fromSeason: String(oldLeague.season),
+              toSeason: String(newLeague.season),
+              fromSleeperLeagueId: oldLeagueId,
+              toSleeperLeagueId: newLeagueId,
+              previousLinkMatches: String(newLeague.previous_league_id ?? "") === oldLeagueId,
+              migrationId: migration.id,
+            },
+          });
+        }
+      } catch (registryErr) {
+        console.error("[Advance Year] League registry not updated; commissioner actions on the new season will fail until it is:", registryErr);
+      }
+
       await storage.updateLeagueMigration(migration.id, { status: "completed", errorMessage: null });
       res.json({
         success: true,
@@ -412,6 +445,7 @@ export function registerLeagueAdminRoutes(app: Express): void {
       if (!oldLeagueId || !newLeagueId || !oldRosterId || !newRosterId || !mappingType) {
         return res.status(400).json({ error: "Missing required fields" });
       }
+      if (!(await requireCommissionerFor(req, res, oldLeagueId))) return;
       const mapping = await storage.createRosterMapping({
         migrationId,
         oldLeagueId,
@@ -431,15 +465,8 @@ export function registerLeagueAdminRoutes(app: Express): void {
   // Get list of all database tables with row counts
   app.get("/api/admin/database/tables", async (req, res) => {
     try {
-      const userId = req.query.userId as string;
-      if (!userId) {
-        return res.status(401).json({ error: "User ID required" });
-      }
-
-      // Check if user is commissioner (no league required for table list)
-      if (!COMMISSIONER_USER_IDS.includes(userId)) {
-        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
-      }
+      // The database viewer is a site admin tool: it needs the admin passcode.
+      if (!(await requireAdmin(req, res))) return;
 
       // Verify DATABASE_URL is set
       if (!process.env.DATABASE_URL) {
@@ -470,15 +497,8 @@ export function registerLeagueAdminRoutes(app: Express): void {
   app.get("/api/admin/database/tables/:tableName/schema", async (req, res) => {
     try {
       const { tableName } = req.params;
-      const userId = req.query.userId as string;
-      
-      if (!userId) {
-        return res.status(401).json({ error: "User ID required" });
-      }
-
-      if (!COMMISSIONER_USER_IDS.includes(userId)) {
-        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
-      }
+      // The database viewer is a site admin tool: it needs the admin passcode.
+      if (!(await requireAdmin(req, res))) return;
 
       const schema = await storage.getTableSchema(tableName);
       res.json(schema);
@@ -492,19 +512,12 @@ export function registerLeagueAdminRoutes(app: Express): void {
   app.get("/api/admin/database/tables/:tableName", async (req, res) => {
     try {
       const { tableName } = req.params;
-      const userId = req.query.userId as string;
       const leagueId = req.query.leagueId as string | undefined;
       const page = parseInt(req.query.page as string || "1", 10);
       const limit = Math.min(parseInt(req.query.limit as string || "100", 10), 1000); // Max 1000 rows
       const offset = (page - 1) * limit;
-
-      if (!userId) {
-        return res.status(401).json({ error: "User ID required" });
-      }
-
-      if (!COMMISSIONER_USER_IDS.includes(userId)) {
-        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
-      }
+      // The database viewer is a site admin tool: it needs the admin passcode.
+      if (!(await requireAdmin(req, res))) return;
 
       // Build filters from query params
       const filters: Record<string, any> = {};
@@ -542,16 +555,9 @@ export function registerLeagueAdminRoutes(app: Express): void {
   app.get("/api/admin/database/tables/:tableName/count", async (req, res) => {
     try {
       const { tableName } = req.params;
-      const userId = req.query.userId as string;
       const leagueId = req.query.leagueId as string | undefined;
-
-      if (!userId) {
-        return res.status(401).json({ error: "User ID required" });
-      }
-
-      if (!COMMISSIONER_USER_IDS.includes(userId)) {
-        return res.status(403).json({ error: "Unauthorized: Commissioner access required" });
-      }
+      // The database viewer is a site admin tool: it needs the admin passcode.
+      if (!(await requireAdmin(req, res))) return;
 
       const filters: Record<string, any> = {};
       if (leagueId) {

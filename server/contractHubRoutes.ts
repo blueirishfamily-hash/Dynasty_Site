@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { storage } from "./storage";
 import { registerSandboxRoutes } from "./testSandbox";
+import { requireCommissioner } from "./security/guards";
 import { getLeague, getNFLState, getLeagueRosters, getLeagueUsers } from "./sleeper";
 import {
   CONTRACT_DEADLINE_WEEK,
@@ -254,6 +255,7 @@ export function registerContractHubRoutes(app: Express) {
 
   app.put("/api/league/:leagueId/contract-phase", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId } = req.params;
       const { phases, currentPhase, ppgMinGames } = req.body as {
         phases?: PhaseConfigEntry[];
@@ -424,6 +426,7 @@ export function registerContractHubRoutes(app: Express) {
 
   app.post("/api/league/:leagueId/fa-round/resolve", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId } = req.params;
       const { round, season } = req.body;
       const winners = await resolveRoundBids(leagueId, round, season);

@@ -4,6 +4,7 @@ import type { Express } from "express";
 import { storage } from "../storage";
 import { createHash } from "crypto";
 import os from "os";
+import { requireCommissioner } from "../security/guards";
 import { getLeague, getLeagueRosters, getLeagueUsers, getNFLState, getAllPlayers } from "../sleeper";
 import type { Position } from "../../shared/schema";
 import {
@@ -34,6 +35,7 @@ export function registerRookieContractsRoutes(app: Express): void {
   }
 
   app.post("/api/league/:leagueId/assign-contracts-by-quartile", async (req, res) => {
+    if (!(await requireCommissioner(req, res))) return;
     const startTime = Date.now();
     const deviceId = os.hostname() || "unknown";
     const timestamp = new Date().toISOString();

@@ -8,17 +8,14 @@ import {
   fetchAllWeeklyStats,
   computeAdjustedPPGForPlayer,
 } from "./shared";
-import { isCommissioner } from "../middleware/commissioner";
+import { requireCommissioner } from "../security/guards";
 
 export function registerContractsRoutes(app: Express): void {
   // Create (or fix) rookie contracts for everyone drafted in this season's rookie draft. Commissioner only.
   app.post("/api/league/:leagueId/rookie-contracts/sync", async (req, res) => {
     try {
       const { leagueId } = req.params;
-      const { userId } = req.body || {};
-      if (!userId || !(await isCommissioner(userId, leagueId))) {
-        return res.status(403).json({ error: "Only the league commissioner can sync rookie contracts" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
       const { syncRookieContracts } = await import("../rookieContracts");
       res.json(await syncRookieContracts(leagueId));
     } catch (error) {
@@ -56,10 +53,7 @@ export function registerContractsRoutes(app: Express): void {
       if (!league) {
         return res.status(404).json({ error: "League not found" });
       }
-      const isComm = userId && await isCommissioner(userId, leagueId);
-      if (!isComm) {
-        return res.status(403).json({ error: "Only the league commissioner can save contracts directly" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
 
       // Get all existing contracts once to avoid repeated queries
       const existingContracts = await storage.getPlayerContracts(leagueId);
@@ -150,6 +144,7 @@ export function registerContractsRoutes(app: Express): void {
   // Delete a player contract
   app.delete("/api/league/:leagueId/contracts/:rosterId/:playerId", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId, rosterId, playerId } = req.params;
       await storage.deletePlayerContract(leagueId, parseInt(rosterId), playerId);
       res.json({ success: true });
@@ -986,10 +981,8 @@ export function registerContractsRoutes(app: Express): void {
         return res.status(404).json({ error: "Roster not found" });
       }
       if (String(roster.owner_id) !== String(userId)) {
-        const commish = await isCommissioner(userId, leagueId);
-        if (!commish) {
-          return res.status(403).json({ error: "Only the roster owner or commissioner can apply a franchise tag" });
-        }
+        // Not the roster's owner: only a commissioner (with their PIN) can tag for another team.
+        if (!(await requireCommissioner(req, res))) return;
       }
 
       const currentYear = parseInt(league.season || String(new Date().getFullYear()), 10) || new Date().getFullYear();
@@ -1104,10 +1097,7 @@ export function registerContractsRoutes(app: Express): void {
         return res.status(400).json({ error: "userId, rosterId, and playerId are required" });
       }
 
-      const isComm = await isCommissioner(userId, leagueId);
-      if (!isComm) {
-        return res.status(403).json({ error: "Only the league commissioner can undo a franchise tag" });
-      }
+      if (!(await requireCommissioner(req, res))) return;
 
       const allContracts = await storage.getPlayerContracts(leagueId);
       const contract = allContracts.find((c: any) => c.playerId === playerId && c.rosterId === Number(rosterId));
@@ -1200,6 +1190,7 @@ export function registerContractsRoutes(app: Express): void {
   // Undo a specific confirmed extension by ID (commissioner only)
   app.delete("/api/league/:leagueId/extensions/:extensionId/undo", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId, extensionId } = req.params;
 
       const extension = await storage.getTeamExtensionById(extensionId);
@@ -1267,6 +1258,7 @@ export function registerContractsRoutes(app: Express): void {
   // Delete a team extension (commissioner only - allows team to use extension again)
   app.delete("/api/league/:leagueId/extensions/:season/:rosterId", async (req, res) => {
     try {
+      if (!(await requireCommissioner(req, res))) return;
       const { leagueId, season, rosterId } = req.params;
       const seasonNum = parseInt(season);
       const rosterIdNum = parseInt(rosterId);

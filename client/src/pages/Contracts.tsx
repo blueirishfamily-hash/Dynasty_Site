@@ -44,10 +44,7 @@ import { Switch } from "@/components/ui/switch";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Checkbox } from "@/components/ui/checkbox";
 import { getRookieSalary, formatDraftPosition } from "@/utils/rookiePayScale";
-
-const COMMISSIONER_USER_IDS = [
-  "900186363130503168",
-];
+import { useIsCommissioner } from "@/lib/commissioner";
 
 const TOTAL_CAP = 250;
 
@@ -1779,10 +1776,7 @@ function ManageTeamContractsTab({
   const { user, league, season, isOffseason } = useSleeper();
   
   // Check if current user is the commissioner
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
   
   // Dynamic year calculation from Sleeper season
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
@@ -4369,10 +4363,7 @@ function PlayerBiddingTab({ userTeam, allPlayers, rosterPlayerIds, teamContracts
   const leagueId = league?.leagueId;
   const CURRENT_YEAR = parseInt(season) || new Date().getFullYear();
   const { toast } = useToast();
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   // Create mapping from rosterId to teamName for displaying bidding results
   const rosterIdToTeamName = useMemo(() => {
@@ -6138,10 +6129,7 @@ export default function Contracts() {
   
   const { CURRENT_YEAR, CONTRACT_YEARS, OPTION_YEAR } = yearConstants;
 
-  const isCommissioner = !!(user?.userId && league && (
-    (league.commissionerId && user.userId === league.commissionerId) ||
-    COMMISSIONER_USER_IDS.includes(user.userId)
-  ));
+  const isCommissioner = useIsCommissioner();
 
   const { data: rosters } = useQuery<any[]>({
     queryKey: ["/api/sleeper/league", league?.leagueId, "rosters"],
