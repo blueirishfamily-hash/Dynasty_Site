@@ -348,6 +348,44 @@ export default function MatchupScoutingReport({
   const s = headToHead.summary;
   const winnerTeam = (winner: "A" | "B" | "T") => (winner === "A" ? teamA : winner === "B" ? teamB : null);
 
+  const verdictItems: Array<{ key: string; title: string; body: string; tone: string; titleTone: string }> = [];
+  if (gamesPlayed > 0 && radarRows.length > 0) {
+    const withDiff = radarRows.map((r) => ({ ...r, diff: r.a - r.b }));
+    const best = [...withDiff].sort((x, y) => y.diff - x.diff)[0];
+    const worst = [...withDiff].sort((x, y) => x.diff - y.diff)[0];
+    if (best && best.diff > 0) {
+      verdictItems.push({
+        key: "edge",
+        title: `Your edge: ${best.category.toLowerCase()}`,
+        body: `${best.aRaw.toLocaleString()} vs ${best.bRaw.toLocaleString()}. You rank #${best.aRank} of ${data.leagueSize} in the league.`,
+        tone: "bg-emerald-500/10",
+        titleTone: "text-emerald-400",
+      });
+    }
+    if (worst && worst.diff < 0) {
+      verdictItems.push({
+        key: "their-edge",
+        title: `Their edge: ${worst.category.toLowerCase()}`,
+        body: `${worst.bRaw.toLocaleString()} vs your ${worst.aRaw.toLocaleString()}. They rank #${worst.bRank} of ${data.leagueSize}.`,
+        tone: "bg-red-500/10",
+        titleTone: "text-red-400",
+      });
+    }
+  }
+  if (headToHead.summary.games > 0) {
+    const hs = headToHead.summary;
+    const lead = hs.teamAWins === hs.teamBWins ? "even" : hs.teamAWins > hs.teamBWins ? "ahead" : "behind";
+    verdictItems.push({
+      key: "history",
+      title: lead === "ahead" ? "History favors you" : lead === "behind" ? "History is against you" : "History is even",
+      body: `You are ${hs.teamAWins}-${hs.teamBWins}${hs.ties ? `-${hs.ties}` : ""} against ${teamB.name}${
+        hs.streak ? `, and ${hs.streak.winner === "A" ? "you" : teamB.initials} won the last ${hs.streak.count}` : ""
+      }.`,
+      tone: lead === "ahead" ? "bg-emerald-500/10" : lead === "behind" ? "bg-amber-500/10" : "bg-muted/40",
+      titleTone: lead === "ahead" ? "text-emerald-400" : lead === "behind" ? "text-amber-500" : "text-foreground",
+    });
+  }
+
   return (
     <div className="space-y-6" data-testid="matchup-scouting-report">
       <Card className="bg-gradient-to-r from-[#4FD1C5]/10 via-transparent to-[#F6AD55]/10">
@@ -380,295 +418,318 @@ export default function MatchupScoutingReport({
         </CardContent>
       </Card>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)] gap-6">
-        <Card data-testid="card-season-snapshot">
-          <CardHeader className="pb-2">
-            <CardTitle className="font-heading text-lg">Season Snapshot</CardTitle>
-            <CardDescription>The highlighted side has the edge in each category.</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {snapshotRows.length > 0 ? (
-              snapshotRows.map((row) => (
-                <SnapshotRow key={row.id} label={row.label} a={row.a} b={row.b} edge={row.edge} testId={`snapshot-${row.id}`} />
-              ))
-            ) : (
-              <Skeleton className="h-64 w-full" />
-            )}
-          </CardContent>
-        </Card>
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,340px)_minmax(0,1fr)] gap-6 items-start">
+        <div className="space-y-6">
+          <Card data-testid="card-scouting-verdict">
+            <CardHeader className="pb-2">
+              <CardTitle className="font-heading text-lg">Scouting Verdict</CardTitle>
+              <CardDescription>What this matchup means for you.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-2">
+              {verdictItems.length > 0 ? (
+                verdictItems.map((v) => (
+                  <div key={v.key} className={`rounded-lg px-3 py-2.5 ${v.tone}`} data-testid={`verdict-${v.key}`}>
+                    <p className={`text-sm font-semibold ${v.titleTone}`}>{v.title}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{v.body}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="py-4 text-sm text-muted-foreground">The verdict appears once games have been played.</p>
+              )}
+            </CardContent>
+          </Card>
 
-        <Card data-testid="card-strength-radar">
-          <CardHeader className="pb-2">
-            <CardTitle className="font-heading text-lg">Team Strengths</CardTitle>
-            <CardDescription>
-              Production from started players, scaled so the league's best team is 100%. Hover for totals and league rank.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {gamesPlayed === 0 ? (
-              <p className="py-12 text-center text-muted-foreground">Strength data appears once games have been played.</p>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-[1fr_auto] gap-4 items-center">
-                <div className="h-96" data-testid="chart-radar">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <RadarChart data={radarRows} outerRadius="78%">
-                      <PolarGrid stroke="hsl(var(--border))" />
-                      <PolarAngleAxis dataKey="category" tick={{ fontSize: 12, fill: "hsl(var(--foreground))" }} />
-                      <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
-                      <Radar name={teamA.name} dataKey="a" stroke={COLOR_A} fill={COLOR_A} fillOpacity={0.3} strokeWidth={2} />
-                      <Radar name={teamB.name} dataKey="b" stroke={COLOR_B} fill={COLOR_B} fillOpacity={0.3} strokeWidth={2} />
-                      <Legend wrapperStyle={{ fontSize: 12 }} />
-                      <Tooltip
-                        content={({ active, payload }) => {
-                          if (!active || !payload?.length) return null;
-                          const row = payload[0].payload as (typeof radarRows)[number];
-                          return (
-                            <div className="rounded-md border border-border bg-popover p-2 text-xs shadow-md space-y-1">
-                              <div className="font-semibold">{row.category}</div>
-                              <div style={{ color: COLOR_A }}>
-                                {teamA.name}: {row.aRaw.toLocaleString()} (#{row.aRank} of {data.leagueSize})
+          <Card data-testid="card-strength-radar">
+            <CardHeader className="pb-2">
+              <CardTitle className="font-heading text-lg">Team Strengths</CardTitle>
+              <CardDescription>
+                Production from started players, scaled so the league's best team is 100%. Hover for totals and league rank.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {gamesPlayed === 0 ? (
+                <p className="py-12 text-center text-muted-foreground">Strength data appears once games have been played.</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-4 items-center">
+                  <div className="h-72" data-testid="chart-radar">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RadarChart data={radarRows} outerRadius="78%">
+                        <PolarGrid stroke="hsl(var(--border))" />
+                        <PolarAngleAxis dataKey="category" tick={{ fontSize: 12, fill: "hsl(var(--foreground))" }} />
+                        <PolarRadiusAxis domain={[0, 100]} tick={false} axisLine={false} />
+                        <Radar name={teamA.name} dataKey="a" stroke={COLOR_A} fill={COLOR_A} fillOpacity={0.3} strokeWidth={2} />
+                        <Radar name={teamB.name} dataKey="b" stroke={COLOR_B} fill={COLOR_B} fillOpacity={0.3} strokeWidth={2} />
+                        <Legend wrapperStyle={{ fontSize: 12 }} />
+                        <Tooltip
+                          content={({ active, payload }) => {
+                            if (!active || !payload?.length) return null;
+                            const row = payload[0].payload as (typeof radarRows)[number];
+                            return (
+                              <div className="rounded-md border border-border bg-popover p-2 text-xs shadow-md space-y-1">
+                                <div className="font-semibold">{row.category}</div>
+                                <div style={{ color: COLOR_A }}>
+                                  {teamA.name}: {row.aRaw.toLocaleString()} (#{row.aRank} of {data.leagueSize})
+                                </div>
+                                <div style={{ color: COLOR_B }}>
+                                  {teamB.name}: {row.bRaw.toLocaleString()} (#{row.bRank} of {data.leagueSize})
+                                </div>
                               </div>
-                              <div style={{ color: COLOR_B }}>
-                                {teamB.name}: {row.bRaw.toLocaleString()} (#{row.bRank} of {data.leagueSize})
-                              </div>
-                            </div>
-                          );
-                        }}
-                      />
-                    </RadarChart>
-                  </ResponsiveContainer>
+                            );
+                          }}
+                        />
+                      </RadarChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="text-xs" data-testid="radar-table">
+                    <div className="grid grid-cols-[auto_auto_auto] gap-x-4 gap-y-1.5 items-center">
+                      {radarRows.map((row) => (
+                        <div key={row.category} className="contents">
+                          <span className="text-right tabular-nums" style={{ color: COLOR_A }}>
+                            {row.aRaw.toLocaleString()} <span className="text-muted-foreground">#{row.aRank}</span>
+                          </span>
+                          <span className="text-muted-foreground uppercase tracking-wider text-[10px] text-center w-20">
+                            {row.category}
+                          </span>
+                          <span className="tabular-nums" style={{ color: COLOR_B }}>
+                            {row.bRaw.toLocaleString()} <span className="text-muted-foreground">#{row.bRank}</span>
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 </div>
-                <div className="text-xs" data-testid="radar-table">
-                  <div className="grid grid-cols-[auto_auto_auto] gap-x-4 gap-y-1.5 items-center">
-                    {radarRows.map((row) => (
-                      <div key={row.category} className="contents">
-                        <span className="text-right tabular-nums" style={{ color: COLOR_A }}>
-                          {row.aRaw.toLocaleString()} <span className="text-muted-foreground">#{row.aRank}</span>
-                        </span>
-                        <span className="text-muted-foreground uppercase tracking-wider text-[10px] text-center w-20">
-                          {row.category}
-                        </span>
-                        <span className="tabular-nums" style={{ color: COLOR_B }}>
-                          {row.bRaw.toLocaleString()} <span className="text-muted-foreground">#{row.bRank}</span>
-                        </span>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+        <div className="space-y-6">
+          <Card data-testid="card-season-snapshot">
+            <CardHeader className="pb-2">
+              <CardTitle className="font-heading text-lg">Season Snapshot</CardTitle>
+              <CardDescription>The highlighted side has the edge in each category.</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {snapshotRows.length > 0 ? (
+                snapshotRows.map((row) => (
+                  <SnapshotRow key={row.id} label={row.label} a={row.a} b={row.b} edge={row.edge} testId={`snapshot-${row.id}`} />
+                ))
+              ) : (
+                <Skeleton className="h-64 w-full" />
+              )}
+            </CardContent>
+          </Card>
+
+          <Card data-testid="card-season-form">
+            <CardHeader className="pb-2">
+              <CardTitle className="font-heading text-lg">Season Form</CardTitle>
+              <CardDescription>Wins, losses and point differential for each team, week by week.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {formRows.length === 0 ? (
+                <p className="py-8 text-center text-muted-foreground">No completed games yet this season.</p>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <ResultStrip team={teamA} results={data.form.teamA} color={COLOR_A} />
+                    <ResultStrip team={teamB} results={data.form.teamB} color={COLOR_B} />
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Weekly point differential</p>
+                      <div className="h-64" data-testid="chart-weekly-diff">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <BarChart data={formRows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                            <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                            <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                            <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
+                            <Tooltip
+                              contentStyle={TOOLTIP_STYLE}
+                              labelFormatter={(w) => `Week ${w}`}
+                              formatter={(value: number, name: string) => [fmtSigned(value), name === "a" ? teamA.name : teamB.name]}
+                            />
+                            <Bar dataKey="a" name="a" fill={COLOR_A} radius={[2, 2, 0, 0]} />
+                            <Bar dataKey="b" name="b" fill={COLOR_B} radius={[2, 2, 0, 0]} />
+                          </BarChart>
+                        </ResponsiveContainer>
                       </div>
-                    ))}
+                    </div>
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Cumulative point differential</p>
+                      <div className="h-64" data-testid="chart-cumulative-diff">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={formRows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                            <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                            <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                            <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
+                            <Tooltip
+                              contentStyle={TOOLTIP_STYLE}
+                              labelFormatter={(w) => `Week ${w}`}
+                              formatter={(value: number, name: string) => [fmtSigned(value), name === "cumA" ? teamA.name : teamB.name]}
+                            />
+                            <Line type="monotone" dataKey="cumA" name="cumA" stroke={COLOR_A} strokeWidth={2.5} dot={{ r: 3 }} />
+                            <Line type="monotone" dataKey="cumB" name="cumB" stroke={COLOR_B} strokeWidth={2.5} dot={{ r: 3 }} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
 
-      <Card data-testid="card-season-form">
-        <CardHeader className="pb-2">
-          <CardTitle className="font-heading text-lg">Season Form</CardTitle>
-          <CardDescription>Wins, losses and point differential for each team, week by week.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {formRows.length === 0 ? (
-            <p className="py-8 text-center text-muted-foreground">No completed games yet this season.</p>
-          ) : (
-            <>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <ResultStrip team={teamA} results={data.form.teamA} color={COLOR_A} />
-                <ResultStrip team={teamB} results={data.form.teamB} color={COLOR_B} />
-              </div>
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Weekly point differential</p>
-                  <div className="h-64" data-testid="chart-weekly-diff">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={formRows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                        <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                        <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                        <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
-                        <Tooltip
-                          contentStyle={TOOLTIP_STYLE}
-                          labelFormatter={(w) => `Week ${w}`}
-                          formatter={(value: number, name: string) => [fmtSigned(value), name === "a" ? teamA.name : teamB.name]}
-                        />
-                        <Bar dataKey="a" name="a" fill={COLOR_A} radius={[2, 2, 0, 0]} />
-                        <Bar dataKey="b" name="b" fill={COLOR_B} radius={[2, 2, 0, 0]} />
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">Cumulative point differential</p>
-                  <div className="h-64" data-testid="chart-cumulative-diff">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={formRows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                        <XAxis dataKey="week" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                        <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                        <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
-                        <Tooltip
-                          contentStyle={TOOLTIP_STYLE}
-                          labelFormatter={(w) => `Week ${w}`}
-                          formatter={(value: number, name: string) => [fmtSigned(value), name === "cumA" ? teamA.name : teamB.name]}
-                        />
-                        <Line type="monotone" dataKey="cumA" name="cumA" stroke={COLOR_A} strokeWidth={2.5} dot={{ r: 3 }} />
-                        <Line type="monotone" dataKey="cumB" name="cumB" stroke={COLOR_B} strokeWidth={2.5} dot={{ r: 3 }} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
 
-      <Card data-testid="card-head-to-head">
-        <CardHeader className="pb-2">
-          <CardTitle className="font-heading text-lg">Head-to-Head History</CardTitle>
-          <CardDescription>
-            Regular-season meetings between these two teams ({headToHead.seasonsSearched.join(", ")}).
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {s.games === 0 ? (
-            <p className="py-8 text-center text-muted-foreground" data-testid="h2h-empty">
-              These teams haven't met in a regular-season game yet.
-            </p>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 lg:grid-cols-5 gap-3" data-testid="h2h-summary">
-                <div className="rounded-lg border border-border p-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Series</p>
-                  <p className="text-2xl font-bold tabular-nums">
-                    <span style={{ color: COLOR_A }}>{s.teamAWins}</span>
-                    <span className="text-muted-foreground mx-1">-</span>
-                    <span style={{ color: COLOR_B }}>{s.teamBWins}</span>
-                    {s.ties > 0 && <span className="text-muted-foreground text-base ml-1">({s.ties} T)</span>}
-                  </p>
-                  {s.streak && (
-                    <p className="text-xs text-muted-foreground">
-                      {winnerTeam(s.streak.winner)?.initials} won last {s.streak.count}
-                    </p>
-                  )}
-                </div>
-                <div className="rounded-lg border border-border p-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Avg score</p>
-                  <p className="text-lg font-bold tabular-nums">
-                    <span style={{ color: COLOR_A }}>{fmt1(s.teamAAvgScore)}</span>
-                    <span className="text-muted-foreground mx-1">/</span>
-                    <span style={{ color: COLOR_B }}>{fmt1(s.teamBAvgScore)}</span>
-                  </p>
-                </div>
-                <div className="rounded-lg border border-border p-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Avg margin</p>
-                  <p className="text-lg font-bold tabular-nums" style={{ color: s.avgMarginForA >= 0 ? COLOR_A : COLOR_B }}>
-                    {s.avgMarginForA === 0 ? "Even" : `${s.avgMarginForA > 0 ? teamA.initials : teamB.initials} by ${Math.abs(s.avgMarginForA).toFixed(1)}`}
-                  </p>
-                </div>
-                <div className="rounded-lg border border-border p-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{teamA.initials} biggest win</p>
-                  <p className="text-lg font-bold tabular-nums" style={{ color: COLOR_A }}>
-                    {s.teamABiggestWin ? `+${s.teamABiggestWin.margin.toFixed(1)}` : "-"}
-                  </p>
-                  {s.teamABiggestWin && <p className="text-xs text-muted-foreground">{meetingLabel(s.teamABiggestWin)}</p>}
-                </div>
-                <div className="rounded-lg border border-border p-3">
-                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{teamB.initials} biggest win</p>
-                  <p className="text-lg font-bold tabular-nums" style={{ color: COLOR_B }}>
-                    {s.teamBBiggestWin ? `+${s.teamBBiggestWin.margin.toFixed(1)}` : "-"}
-                  </p>
-                  {s.teamBBiggestWin && <p className="text-xs text-muted-foreground">{meetingLabel(s.teamBBiggestWin)}</p>}
-                </div>
-              </div>
-
-              <div>
-                <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
-                  Margin by meeting ({teamA.initials} perspective)
+          <Card data-testid="card-head-to-head">
+            <CardHeader className="pb-2">
+              <CardTitle className="font-heading text-lg">Head-to-Head History</CardTitle>
+              <CardDescription>
+                Regular-season meetings between these two teams ({headToHead.seasonsSearched.join(", ")}).
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-6">
+              {s.games === 0 ? (
+                <p className="py-8 text-center text-muted-foreground" data-testid="h2h-empty">
+                  These teams haven't met in a regular-season game yet.
                 </p>
-                <div className="h-56" data-testid="chart-h2h-margin">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={h2hChartRows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
-                      <XAxis dataKey="label" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                      <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
-                      <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
-                      <Tooltip
-                        contentStyle={TOOLTIP_STYLE}
-                        formatter={(value: number) => [
-                          `${value >= 0 ? teamA.name : teamB.name} by ${Math.abs(value).toFixed(2)}`,
-                          "Result",
-                        ]}
-                      />
-                      <Bar dataKey="diff" radius={[3, 3, 3, 3]}>
-                        {h2hChartRows.map((row) => (
-                          <Cell key={row.label} fill={row.diff >= 0 ? COLOR_A : COLOR_B} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-3" data-testid="h2h-summary">
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Series</p>
+                      <p className="text-2xl font-bold tabular-nums">
+                        <span style={{ color: COLOR_A }}>{s.teamAWins}</span>
+                        <span className="text-muted-foreground mx-1">-</span>
+                        <span style={{ color: COLOR_B }}>{s.teamBWins}</span>
+                        {s.ties > 0 && <span className="text-muted-foreground text-base ml-1">({s.ties} T)</span>}
+                      </p>
+                      {s.streak && (
+                        <p className="text-xs text-muted-foreground">
+                          {winnerTeam(s.streak.winner)?.initials} won last {s.streak.count}
+                        </p>
+                      )}
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Avg score</p>
+                      <p className="text-lg font-bold tabular-nums">
+                        <span style={{ color: COLOR_A }}>{fmt1(s.teamAAvgScore)}</span>
+                        <span className="text-muted-foreground mx-1">/</span>
+                        <span style={{ color: COLOR_B }}>{fmt1(s.teamBAvgScore)}</span>
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Avg margin</p>
+                      <p className="text-lg font-bold tabular-nums" style={{ color: s.avgMarginForA >= 0 ? COLOR_A : COLOR_B }}>
+                        {s.avgMarginForA === 0 ? "Even" : `${s.avgMarginForA > 0 ? teamA.initials : teamB.initials} by ${Math.abs(s.avgMarginForA).toFixed(1)}`}
+                      </p>
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{teamA.initials} biggest win</p>
+                      <p className="text-lg font-bold tabular-nums" style={{ color: COLOR_A }}>
+                        {s.teamABiggestWin ? `+${s.teamABiggestWin.margin.toFixed(1)}` : "-"}
+                      </p>
+                      {s.teamABiggestWin && <p className="text-xs text-muted-foreground">{meetingLabel(s.teamABiggestWin)}</p>}
+                    </div>
+                    <div className="rounded-lg border border-border p-3">
+                      <p className="text-[10px] uppercase tracking-wider text-muted-foreground">{teamB.initials} biggest win</p>
+                      <p className="text-lg font-bold tabular-nums" style={{ color: COLOR_B }}>
+                        {s.teamBBiggestWin ? `+${s.teamBBiggestWin.margin.toFixed(1)}` : "-"}
+                      </p>
+                      {s.teamBBiggestWin && <p className="text-xs text-muted-foreground">{meetingLabel(s.teamBBiggestWin)}</p>}
+                    </div>
+                  </div>
 
-              <Table data-testid="table-h2h">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Season</TableHead>
-                    <TableHead>Week</TableHead>
-                    <TableHead>Winner</TableHead>
-                    <TableHead className="text-right">{teamA.initials}</TableHead>
-                    <TableHead className="text-right">{teamB.initials}</TableHead>
-                    <TableHead className="text-right">Margin</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {[...headToHead.meetings].reverse().map((m) => {
-                    const winner = winnerTeam(m.winner);
-                    return (
-                      <TableRow key={`${m.season}-${m.week}`} data-testid={`h2h-row-${m.season}-${m.week}`}>
-                        <TableCell className="tabular-nums">{m.season}</TableCell>
-                        <TableCell className="tabular-nums">{m.week}</TableCell>
-                        <TableCell>
-                          {winner ? (
-                            <span className="flex items-center gap-2">
-                              <TeamAvatar team={winner} className="w-5 h-5" />
-                              {winner.name}
-                            </span>
-                          ) : (
-                            "Tie"
-                          )}
-                        </TableCell>
-                        <TableCell className={`text-right tabular-nums ${m.winner === "A" ? "font-bold" : "text-muted-foreground"}`}>
-                          {m.teamAPoints.toFixed(2)}
-                        </TableCell>
-                        <TableCell className={`text-right tabular-nums ${m.winner === "B" ? "font-bold" : "text-muted-foreground"}`}>
-                          {m.teamBPoints.toFixed(2)}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">{m.margin.toFixed(2)}</TableCell>
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-2">
+                      Margin by meeting ({teamA.initials} perspective)
+                    </p>
+                    <div className="h-56" data-testid="chart-h2h-margin">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={h2hChartRows} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" vertical={false} />
+                          <XAxis dataKey="label" tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                          <YAxis tick={{ fontSize: 11 }} stroke="hsl(var(--muted-foreground))" />
+                          <ReferenceLine y={0} stroke="hsl(var(--muted-foreground))" />
+                          <Tooltip
+                            contentStyle={TOOLTIP_STYLE}
+                            formatter={(value: number) => [
+                              `${value >= 0 ? teamA.name : teamB.name} by ${Math.abs(value).toFixed(2)}`,
+                              "Result",
+                            ]}
+                          />
+                          <Bar dataKey="diff" radius={[3, 3, 3, 3]}>
+                            {h2hChartRows.map((row) => (
+                              <Cell key={row.label} fill={row.diff >= 0 ? COLOR_A : COLOR_B} />
+                            ))}
+                          </Bar>
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+
+                  <Table data-testid="table-h2h">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Season</TableHead>
+                        <TableHead>Week</TableHead>
+                        <TableHead>Winner</TableHead>
+                        <TableHead className="text-right">{teamA.initials}</TableHead>
+                        <TableHead className="text-right">{teamB.initials}</TableHead>
+                        <TableHead className="text-right">Margin</TableHead>
                       </TableRow>
-                    );
-                  })}
-                </TableBody>
-                <TableFooter>
-                  <TableRow data-testid="h2h-averages">
-                    <TableCell colSpan={3} className="font-semibold">
-                      Average ({s.games} {s.games === 1 ? "game" : "games"})
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold" style={{ color: COLOR_A }}>
-                      {s.teamAAvgScore.toFixed(2)}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold" style={{ color: COLOR_B }}>
-                      {s.teamBAvgScore.toFixed(2)}
-                    </TableCell>
-                    <TableCell className="text-right tabular-nums font-semibold">
-                      {s.avgMarginForA >= 0 ? teamA.initials : teamB.initials} {Math.abs(s.avgMarginForA).toFixed(2)}
-                    </TableCell>
-                  </TableRow>
-                </TableFooter>
-              </Table>
-            </>
-          )}
-        </CardContent>
-      </Card>
+                    </TableHeader>
+                    <TableBody>
+                      {[...headToHead.meetings].reverse().map((m) => {
+                        const winner = winnerTeam(m.winner);
+                        return (
+                          <TableRow key={`${m.season}-${m.week}`} data-testid={`h2h-row-${m.season}-${m.week}`}>
+                            <TableCell className="tabular-nums">{m.season}</TableCell>
+                            <TableCell className="tabular-nums">{m.week}</TableCell>
+                            <TableCell>
+                              {winner ? (
+                                <span className="flex items-center gap-2">
+                                  <TeamAvatar team={winner} className="w-5 h-5" />
+                                  {winner.name}
+                                </span>
+                              ) : (
+                                "Tie"
+                              )}
+                            </TableCell>
+                            <TableCell className={`text-right tabular-nums ${m.winner === "A" ? "font-bold" : "text-muted-foreground"}`}>
+                              {m.teamAPoints.toFixed(2)}
+                            </TableCell>
+                            <TableCell className={`text-right tabular-nums ${m.winner === "B" ? "font-bold" : "text-muted-foreground"}`}>
+                              {m.teamBPoints.toFixed(2)}
+                            </TableCell>
+                            <TableCell className="text-right tabular-nums">{m.margin.toFixed(2)}</TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                    <TableFooter>
+                      <TableRow data-testid="h2h-averages">
+                        <TableCell colSpan={3} className="font-semibold">
+                          Average ({s.games} {s.games === 1 ? "game" : "games"})
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold" style={{ color: COLOR_A }}>
+                          {s.teamAAvgScore.toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold" style={{ color: COLOR_B }}>
+                          {s.teamBAvgScore.toFixed(2)}
+                        </TableCell>
+                        <TableCell className="text-right tabular-nums font-semibold">
+                          {s.avgMarginForA >= 0 ? teamA.initials : teamB.initials} {Math.abs(s.avgMarginForA).toFixed(2)}
+                        </TableCell>
+                      </TableRow>
+                    </TableFooter>
+                  </Table>
+                </>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </div>
   );
 }
