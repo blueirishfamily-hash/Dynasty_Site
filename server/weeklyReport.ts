@@ -3,7 +3,7 @@
  *
  * Week N is the report week (the matchups being previewed). Results are for week N-1.
  *
- * Projections follow the app's existing model (see matchup-detail in routes.ts):
+ * Projections follow the app's existing model (see matchup-detail in server/routes/matchups.ts):
  *   - each player's projection is the mean of his recent weekly points, blended toward a
  *     position baseline when he has fewer than 3 games;
  *   - players who are out, on IR/PUP, or on a bye for the report week project to 0;

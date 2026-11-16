@@ -135,7 +135,7 @@ export function bidTotalValue(yearlySalary: number, years: number): number {
   return yearlySalary * years;
 }
 
-/** Same sort as server/routes.ts bids/all — total desc, then yearly desc, then earliest createdAt. */
+/** Same sort as server/routes/freeAgency.ts bids/all — total desc, then yearly desc, then earliest createdAt. */
 export function compareBids(a: BidInput, b: BidInput): number {
   const totalA = bidTotalValue(a.bidAmount, a.contractYears);
   const totalB = bidTotalValue(b.bidAmount, b.contractYears);

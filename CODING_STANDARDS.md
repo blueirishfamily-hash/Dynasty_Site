@@ -27,7 +27,8 @@ This document outlines the coding structure, patterns, and conventions used in t
 │   ├── hooks/          # Custom React hooks
 │   └── lib/            # Utilities and context providers
 ├── server/              # Backend Express API
-│   ├── routes.ts       # API route definitions
+│   ├── routes/         # API route definitions, one file per area (index.ts registers them)
+│   ├── middleware/     # Shared route checks (commissioner)
 │   ├── storage.ts      # Database access layer
 │   ├── sleeper.ts      # External API integrations
 │   └── db.ts           # Database connection
@@ -1253,7 +1254,7 @@ export const storage = new DatabaseStorage();
 
 ### 5. Usage in Routes
 
-**File**: `server/routes.ts`
+**File**: `server/routes/*.ts`
 
 Routes import and use the storage layer (never import `db` directly). **Follow the award implementation pattern** - handle validation and errors at the route level.
 
@@ -1880,7 +1881,7 @@ export async function getCachedResource(): Promise<Record<string, SleeperResourc
 
 ### 3. Route Integration Pattern
 
-**File**: `server/routes.ts`
+**File**: `server/routes/*.ts`
 
 Sleeper API functions are exposed via Express routes with consistent error handling:
 
@@ -2157,7 +2158,7 @@ export async function getSleeperUser(username: string): Promise<SleeperUser | nu
 }
 ```
 
-**Error Handling in Routes** (`server/routes.ts`):
+**Error Handling in Routes** (`server/routes/*.ts`):
 ```typescript
 app.get("/api/sleeper/league/:leagueId", async (req, res) => {
   try {
@@ -2307,7 +2308,7 @@ League settings toggles allow commissioners to enable/disable features for the e
 
 ### Implementation Steps
 
-#### 1. Backend API Endpoints (`server/routes.ts`)
+#### 1. Backend API Endpoints (`server/routes/settings.ts`)
 
 **GET Endpoint** (fetch current setting):
 ```typescript
@@ -2518,7 +2519,7 @@ export default function YourPage() {
 
 ### Example: Dead Cap Toggle
 
-See `client/src/pages/Contracts.tsx` and `server/routes.ts` for the complete dead cap toggle implementation:
+See `client/src/pages/Contracts.tsx` and `server/routes/settings.ts` for the complete dead cap toggle implementation:
 - **Setting Key**: `dead_cap_enabled`
 - **API Routes**: `/api/league/:leagueId/settings/dead-cap-enabled` (GET, PUT)
 - **Default**: `true` (backward compatibility)
