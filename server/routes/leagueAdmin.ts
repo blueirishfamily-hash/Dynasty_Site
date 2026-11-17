@@ -17,9 +17,11 @@ import {
   dbErrorMessage,
   getEffectiveWeek,
 } from "./shared";
-import { auditActor, requireAdmin, requireCommissionerFor } from "../security/guards";
-import { appendCurrentSeason, writeAudit } from "../security/store";
-import { leagueResolver } from "../leagueRegistry";
+import { auditActor, requireAdmin, requireCommissioner, requireCommissionerFor } from "../security/guards";
+import { leagueResolver, dbLeagueRegistry } from "../leagueRegistry";
+import { normalizeSlug } from "../middleware/league";
+import { runRollover } from "../rollover";
+import { createDbRolloverDeps } from "../rolloverStore";
 
 export function registerLeagueAdminRoutes(app: Express): void {
   // ==================== LEAGUE YEAR ADVANCEMENT ====================
@@ -97,335 +99,65 @@ export function registerLeagueAdminRoutes(app: Express): void {
     }
   });
 
-  app.post("/api/league/advance-year", async (req, res) => {
+  // ── Season rollover ──────────────────────────────────────────────────────────
+  // See server/rollover.ts. The league being rolled over comes from its address (X-League), the new Sleeper
+  // league must link back to the current season, and the switch to the new season is one transaction.
+  // POST /api/league/advance-year/preview checks everything and reports what would move, writing nothing.
+  const PROBLEM_STATUS: Record<string, number> = { step_failed: 500, belongs_to_other_league: 409, already_attached: 409, already_current: 409 };
+
+  async function leagueToRoll(req: any, res: any) {
+    const rawSlug = req.get("x-league");
+    if (rawSlug) {
+      const slug = normalizeSlug(rawSlug);
+      const found = slug ? await dbLeagueRegistry.findBySlug(slug) : null;
+      if (!found) { res.status(404).json({ error: "League not found" }); return null; }
+      return found;
+    }
+    // No address: the site's active league, if it is registered.
+    const active = await storage.getActiveLeague();
+    const resolved = active ? await leagueResolver.resolve(active.leagueId) : null;
+    if (resolved?.status === "ok") return resolved.context;
+    res.status(400).json({ error: "This league isn't registered on the site, so its season can't be rolled over from here." });
+    return null;
+  }
+
+  const rolloverHandler = (dryRun: boolean) => async (req: any, res: any) => {
     try {
-      const { newLeagueId, userId, manualMappings } = req.body as {
-        newLeagueId: string;
-        userId: string;
-        manualMappings?: Array<{ oldRosterId: number; newRosterId: number }>;
-      };
-
-      if (!newLeagueId || !userId) {
-        return res.status(400).json({ error: "newLeagueId and userId are required" });
-      }
-
-      const currentActive = await storage.getActiveLeague();
-      if (!currentActive) {
-        return res.status(400).json({ error: "No active league configured" });
-      }
-
-      const oldLeagueId = currentActive.leagueId;
-      if (oldLeagueId === newLeagueId) {
-        return res.status(400).json({ error: "New league ID must be different from current league ID" });
-      }
-
-      const actor = await requireCommissionerFor(req, res, oldLeagueId);
+      const ctx = await leagueToRoll(req, res);
+      if (!ctx) return;
+      const actor = await requireCommissioner(req, res, ctx);
       if (!actor) return;
-
-      const [oldLeague, newLeague] = await Promise.all([
-        getLeague(oldLeagueId),
-        getLeague(newLeagueId),
-      ]);
-
-      const oldSeason = parseInt(oldLeague.season);
-      const newSeason = parseInt(newLeague.season);
-      if (Number.isNaN(oldSeason) || Number.isNaN(newSeason) || newSeason !== oldSeason + 1) {
-        return res.status(400).json({
-          error: "League season mismatch",
-          details: `Expected new season ${oldSeason + 1}, got ${newLeague.season}`,
-        });
-      }
-
-      const [oldRosters, newRosters] = await Promise.all([
-        getLeagueRosters(oldLeagueId),
-        getLeagueRosters(newLeagueId),
-      ]);
-
-      const ownerToNewRoster = new Map<string, number>();
-      newRosters.forEach(r => {
-        if (r.owner_id) ownerToNewRoster.set(r.owner_id, r.roster_id);
+      const { newLeagueId, manualMappings } = req.body ?? {};
+      const active = await storage.getActiveLeague();
+      const deps = createDbRolloverDeps({
+        baseUrl: process.env.ORIGIN || `${req.protocol}://${req.get("host") || "localhost:5000"}`,
+        actor: auditActor(actor),
       });
-
-      const mappingByOldRoster = new Map<number, { newRosterId: number; mappingType: "auto" | "manual" }>();
-      oldRosters.forEach(r => {
-        const mapped = r.owner_id ? ownerToNewRoster.get(r.owner_id) : undefined;
-        if (mapped) {
-          mappingByOldRoster.set(r.roster_id, { newRosterId: mapped, mappingType: "auto" });
-        }
-      });
-
-      (manualMappings || []).forEach(m => {
-        if (m && typeof m.oldRosterId === "number" && typeof m.newRosterId === "number") {
-          mappingByOldRoster.set(m.oldRosterId, { newRosterId: m.newRosterId, mappingType: "manual" });
-        }
-      });
-
-      const unmatched = oldRosters
-        .filter(r => !mappingByOldRoster.has(r.roster_id))
-        .map(r => ({ oldRosterId: r.roster_id, ownerId: r.owner_id || null }));
-
-      if (unmatched.length > 0) {
-        return res.status(400).json({ error: "Unmatched rosters", unmatched });
+      const result = await runRollover(
+        deps,
+        {
+          league: { id: ctx.league.id, currentSleeperLeagueId: ctx.season.sleeperLeagueId, currentSeason: ctx.season.season },
+          newSleeperLeagueId: String(newLeagueId ?? ""),
+          manualMappings: Array.isArray(manualMappings) ? manualMappings : [],
+          by: actor.role === "commissioner" ? actor.sleeperUserId : "admin",
+          // Only the league the site-wide active-league setting points at moves that setting.
+          switchSiteActive: active?.leagueId === ctx.season.sleeperLeagueId,
+        },
+        { dryRun },
+      );
+      if (!result.ok) {
+        const p = result.problem;
+        return res.status(PROBLEM_STATUS[p.code] ?? 400).json({ error: p.message, code: p.code, unmatched: p.unmatched, step: p.step });
       }
-
-      const migration = await storage.createLeagueMigration({
-        oldLeagueId,
-        newLeagueId,
-        oldSeason: oldLeague.season,
-        newSeason: newLeague.season,
-        migratedBy: userId,
-        status: "in_progress",
-      });
-
-      for (const [oldRosterId, mapping] of Array.from(mappingByOldRoster.entries())) {
-        await storage.createRosterMapping({
-          migrationId: migration.id,
-          oldLeagueId,
-          oldRosterId,
-          newLeagueId,
-          newRosterId: mapping.newRosterId,
-          mappingType: mapping.mappingType,
-          mappedBy: mapping.mappingType === "manual" ? userId : null,
-        });
-      }
-
-      // Snapshot creation (weekly + end-of-season)
-      const [nflState, leagueContext] = await Promise.all([
-        getNFLState(),
-        getLeague(oldLeagueId).catch(() => null),
-      ]);
-      const effectiveWeek = getEffectiveWeek(nflState, leagueContext);
-
-      const users = await getLeagueUsers(oldLeagueId);
-      const userMap = new Map(users.map(u => [u.user_id, u]));
-      const rosterTotals = new Map<number, { wins: number; losses: number; ties: number; pointsFor: number; pointsAgainst: number }>();
-      oldRosters.forEach(r => {
-        rosterTotals.set(r.roster_id, { wins: 0, losses: 0, ties: 0, pointsFor: 0, pointsAgainst: 0 });
-      });
-
-      for (let week = 1; week <= effectiveWeek; week++) {
-        const matchups = await getLeagueMatchups(oldLeagueId, week).catch(() => []);
-        const matchupGroups = new Map<number, SleeperMatchup[]>();
-        matchups.forEach(m => {
-          if (!matchupGroups.has(m.matchup_id)) matchupGroups.set(m.matchup_id, []);
-          matchupGroups.get(m.matchup_id)!.push(m);
-        });
-
-        matchupGroups.forEach(group => {
-          if (group.length !== 2) return;
-          const [t1, t2] = group;
-          const score1 = t1.points || 0;
-          const score2 = t2.points || 0;
-          const r1 = rosterTotals.get(t1.roster_id);
-          const r2 = rosterTotals.get(t2.roster_id);
-          if (!r1 || !r2) return;
-          r1.pointsFor += score1;
-          r1.pointsAgainst += score2;
-          r2.pointsFor += score2;
-          r2.pointsAgainst += score1;
-
-          if (score1 > score2) {
-            r1.wins += 1;
-            r2.losses += 1;
-          } else if (score2 > score1) {
-            r2.wins += 1;
-            r1.losses += 1;
-          } else if (score1 !== 0 || score2 !== 0) {
-            r1.ties += 1;
-            r2.ties += 1;
-          }
-        });
-
-        const standingsData = oldRosters.map(r => {
-          const totals = rosterTotals.get(r.roster_id);
-          const owner = userMap.get(r.owner_id);
-          return {
-            rosterId: r.roster_id,
-            ownerId: r.owner_id,
-            name: owner?.metadata?.team_name || owner?.display_name || `Team ${r.roster_id}`,
-            wins: totals?.wins || 0,
-            losses: totals?.losses || 0,
-            ties: totals?.ties || 0,
-            pointsFor: totals?.pointsFor || 0,
-            pointsAgainst: totals?.pointsAgainst || 0,
-            week,
-          };
-        }).sort((a, b) => (b.wins - a.wins) || (b.pointsFor - a.pointsFor));
-
-        await storage.createStandingsSnapshot({
-          leagueId: oldLeagueId,
-          season: oldLeague.season,
-          week,
-          snapshotType: "weekly",
-          standingsData: JSON.stringify(standingsData),
-        });
-
-        for (const [rosterId, totals] of Array.from(rosterTotals.entries())) {
-          await storage.createTeamStatsSnapshot({
-            leagueId: oldLeagueId,
-            season: oldLeague.season,
-            week,
-            rosterId,
-            statsData: JSON.stringify(totals),
-          });
-        }
-
-        await storage.createMatchupSnapshot({
-          leagueId: oldLeagueId,
-          season: oldLeague.season,
-          week,
-          matchupData: JSON.stringify(matchups),
-        });
-
-        const weekTransactions = await getLeagueTransactions(oldLeagueId, week).catch(() => []);
-        await storage.createTransactionSnapshot({
-          leagueId: oldLeagueId,
-          season: oldLeague.season,
-          week,
-          transactionData: JSON.stringify(weekTransactions),
-        });
-        // Per-week player stats snapshots skipped (too slow; use end-of-season aggregate instead)
-      }
-
-      await storage.createStandingsSnapshot({
-        leagueId: oldLeagueId,
-        season: oldLeague.season,
-        week: null,
-        snapshotType: "end_of_season",
-        standingsData: JSON.stringify(Array.from(rosterTotals.entries()).map(([rosterId, totals]) => ({
-          rosterId,
-          ...totals,
-        }))),
-      });
-
-      for (const [rosterId, totals] of Array.from(rosterTotals.entries())) {
-        await storage.createTeamStatsSnapshot({
-          leagueId: oldLeagueId,
-          season: oldLeague.season,
-          week: null,
-          rosterId,
-          statsData: JSON.stringify(totals),
-        });
-      }
-
-      const drafts = await getLeagueDrafts(oldLeagueId).catch(() => []);
-      for (const draft of drafts.filter(d => d.status === "complete")) {
-        const picks = await getDraftPicks(draft.draft_id).catch(() => []);
-        await storage.createDraftSnapshot({
-          leagueId: oldLeagueId,
-          season: oldLeague.season,
-          draftId: draft.draft_id,
-          draftData: JSON.stringify(draft),
-          picksData: JSON.stringify(picks),
-        });
-      }
-
-      // Snapshot year recap and metrics for historical viewing (fetch from internal endpoints)
-      try {
-        const baseUrl = process.env.ORIGIN || `${req.protocol}://${req.get("host") || "localhost:5000"}`;
-        const [yearRecapRes, teamLuckRes, heatCheckRes, powerRankingsRes] = await Promise.all([
-          fetch(`${baseUrl}/api/league/${oldLeagueId}/year-recap`),
-          fetch(`${baseUrl}/api/sleeper/league/${oldLeagueId}/team-luck`),
-          fetch(`${baseUrl}/api/sleeper/league/${oldLeagueId}/heat-check`),
-          fetch(`${baseUrl}/api/sleeper/league/${oldLeagueId}/power-rankings`),
-        ]);
-        if (yearRecapRes.ok) {
-          const yearRecapData = await yearRecapRes.json();
-          await storage.upsertYearRecapSnapshot(oldLeagueId, oldLeague.season, JSON.stringify(yearRecapData));
-        }
-        if (teamLuckRes.ok && heatCheckRes.ok && powerRankingsRes.ok) {
-          const [teamLuckData, heatCheckData, powerRankingsData] = await Promise.all([
-            teamLuckRes.json(),
-            heatCheckRes.json(),
-            powerRankingsRes.json(),
-          ]);
-          await storage.upsertMetricsSnapshot(
-            oldLeagueId,
-            oldLeague.season,
-            JSON.stringify(teamLuckData),
-            JSON.stringify(heatCheckData),
-            JSON.stringify(powerRankingsData)
-          );
-        }
-      } catch (snapshotErr) {
-        console.error("Error snapshotting year recap/metrics during advance-year (non-fatal):", snapshotErr);
-      }
-
-      // Migrate dead cap, team extensions, and contracts (clean-slate: each clears the new
-      // league's existing rows before copying from the old league, so advance-year is the
-      // single authoritative handoff point).
-      const deadCapResult = await storage.migrateDeadCapEntries(oldLeagueId, newLeagueId, mappingByOldRoster);
-      const extensionsResult = await storage.migrateTeamExtensions(oldLeagueId, newLeagueId, mappingByOldRoster);
-      const contractsResult = await storage.migratePlayerContracts(oldLeagueId, newLeagueId, mappingByOldRoster);
-      console.log(`[Advance Year] Contracts: cleared ${contractsResult.cleared}, copied ${contractsResult.copied}`);
-      console.log(`[Advance Year] Dead cap: cleared ${deadCapResult.cleared}, copied ${deadCapResult.copied}`);
-      console.log(`[Advance Year] Extensions: cleared ${extensionsResult.cleared}, copied ${extensionsResult.copied}`);
-
-      // Reset bidding
-      await storage.deleteAllPlayerBids(oldLeagueId);
-
-      // Contracts Hub: the new league year starts in the rollover phase, ready for free agency.
-      try {
-        const { startNewLeagueYear } = await import("../contractHubRoutes");
-        await startNewLeagueYear(oldLeagueId, newLeagueId);
-      } catch (hubErr) {
-        console.error("[Advance Year] Contracts Hub settings not carried over (non-fatal):", hubErr);
-      }
-
-      // Archive rule suggestions for the old league (they stay in DB but no longer show on Rule Changes tab)
-      await storage.archiveRuleSuggestions(oldLeagueId);
-
-      await storage.deactivateLeague(oldLeagueId);
-      await storage.upsertActiveLeague({
-        leagueId: newLeagueId,
-        season: newLeague.season,
-        isActive: 1,
-      });
-
-      // League registry: the new Sleeper league becomes this league's current season, so league lookups and
-      // commissioner PINs keep working after the rollover. Phase 5 rebuilds rollover around this table.
-      try {
-        const old = await leagueResolver.resolve(oldLeagueId);
-        if (old.status === "ok") {
-          await appendCurrentSeason(old.context.league.id, {
-            season: String(newLeague.season),
-            sleeperLeagueId: newLeagueId,
-            previousSleeperLeagueId: oldLeagueId,
-            rolledOverBy: actor.role === "commissioner" ? actor.sleeperUserId : "admin",
-            migrationId: migration.id,
-          });
-          leagueResolver.invalidate();
-          await writeAudit({
-            leagueId: old.context.league.id,
-            ...auditActor(actor),
-            action: "season_rolled_over",
-            details: {
-              fromSeason: String(oldLeague.season),
-              toSeason: String(newLeague.season),
-              fromSleeperLeagueId: oldLeagueId,
-              toSleeperLeagueId: newLeagueId,
-              previousLinkMatches: String(newLeague.previous_league_id ?? "") === oldLeagueId,
-              migrationId: migration.id,
-            },
-          });
-        }
-      } catch (registryErr) {
-        console.error("[Advance Year] League registry not updated; commissioner actions on the new season will fail until it is:", registryErr);
-      }
-
-      await storage.updateLeagueMigration(migration.id, { status: "completed", errorMessage: null });
-      res.json({
-        success: true,
-        migrationId: migration.id,
-        contracts: contractsResult,
-        deadCap: deadCapResult,
-        extensions: extensionsResult,
-      });
+      if (result.dryRun) return res.json({ dryRun: true, plan: result.plan });
+      res.json({ success: true, migrationId: result.migrationId, resumed: result.resumed, moved: result.moved, rules: result.rules, warnings: result.warnings, plan: result.plan });
     } catch (error: any) {
-      console.error("Error advancing league year:", error);
+      console.error("Error rolling the league over:", error);
       res.status(500).json({ error: "Failed to advance league year", details: error?.message || String(error) });
     }
-  });
+  };
+  app.post("/api/league/advance-year/preview", rolloverHandler(true));
+  app.post("/api/league/advance-year", rolloverHandler(false));
 
   app.get("/api/league/migration/:migrationId/roster-mapping", async (req, res) => {
     try {

@@ -265,10 +265,10 @@ There are seven phases, and ATL Dynasty keeps working after each one. A second l
 
 **Phase 5: season rollover**
 
-- [ ] Rebuild rollover on the season history table, with the previous-ID check
-- [ ] One transaction, or steps that are safe to rerun, plus a dry run
-- [ ] Next season's rules become current at rollover
-- [ ] Rollover tests: ATL's 2024 to 2025 copy, two leagues in the same week, and a failure halfway followed by a resume
+- [x] Rebuild rollover on the season history table, with the previous-ID check
+- [x] One transaction, or steps that are safe to rerun, plus a dry run
+- [x] Next season's rules become current at rollover
+- [ ] Rollover tests: two leagues in the same week and a failure halfway followed by a resume are done (against an in-memory fake); ATL's 2024 to 2025 copy still needs the test database
 
 **Phase 6: pilot**
 

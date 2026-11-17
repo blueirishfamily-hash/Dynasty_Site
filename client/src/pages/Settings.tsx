@@ -36,6 +36,15 @@ export default function Settings() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAdvancing, setIsAdvancing] = useState(false);
   const [advanceLeagueId, setAdvanceLeagueId] = useState("");
+  // What a rollover would do, from the dry run (nothing is changed by it).
+  const [rolloverPreview, setRolloverPreview] = useState<{
+    oldSeason: string;
+    newSeason: string;
+    counts: { contracts: number; deadCap: number; extensions: number; bids: number };
+    rulesNote: string;
+    notes: string[];
+  } | null>(null);
+  const [isChecking, setIsChecking] = useState(false);
   const [reportWeek, setReportWeek] = useState("");
 
   // Dead cap: off until the commissioner turns it on; only drops after that count.
@@ -270,6 +279,40 @@ export default function Settings() {
 
   if (user && league && !isCommissioner) return null;
 
+  const manualMappingList = () =>
+    Object.entries(manualMappings)
+      .filter(([, newRosterId]) => !!newRosterId)
+      .map(([oldRosterId, newRosterId]) => ({ oldRosterId: parseInt(oldRosterId, 10), newRosterId }));
+
+  // Dry run: runs every check and reports what would move, without changing anything.
+  const handleCheckRollover = async () => {
+    if (!advanceLeagueId.trim()) {
+      toast({ title: "Missing information", description: "Please enter the new league ID.", variant: "destructive" });
+      return;
+    }
+    setIsChecking(true);
+    setRolloverPreview(null);
+    try {
+      const res = await fetch("/api/league/advance-year/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ newLeagueId: advanceLeagueId.trim(), manualMappings: manualMappingList() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data?.unmatched) setUnmatchedRosters(data.unmatched);
+        toast({ title: "Not ready to advance", description: data?.error || "The check failed.", variant: "destructive" });
+        return;
+      }
+      setUnmatchedRosters([]);
+      setRolloverPreview(data.plan);
+    } catch (err: any) {
+      toast({ title: "Check failed", description: err?.message || "A network error occurred.", variant: "destructive" });
+    } finally {
+      setIsChecking(false);
+    }
+  };
+
   const handleAdvanceLeagueYear = async () => {
     if (!advanceLeagueId.trim() || !user?.userId) {
       toast({
@@ -446,7 +489,7 @@ export default function Settings() {
                 <Input
                   id="advance-league-id"
                   value={advanceLeagueId}
-                  onChange={(e) => setAdvanceLeagueId(e.target.value)}
+                  onChange={(e) => { setAdvanceLeagueId(e.target.value); setRolloverPreview(null); }}
                   placeholder="Enter new league ID"
                   data-testid="input-advance-league-id"
                 />
@@ -475,10 +518,34 @@ export default function Settings() {
                   ))}
                 </div>
               )}
-              <Button onClick={handleAdvanceLeagueYear} disabled={isAdvancing} data-testid="button-advance-league-year">
-                <RefreshCw className={`w-4 h-4 mr-2 ${isAdvancing ? "animate-spin" : "hidden"}`} />
-                {isAdvancing ? "Advancing..." : "Advance League Year"}
-              </Button>
+              {rolloverPreview && (
+                <div className="space-y-1 rounded-md border p-3 text-sm" data-testid="rollover-preview">
+                  <p className="font-medium">
+                    {rolloverPreview.oldSeason} to {rolloverPreview.newSeason}: all checks passed. Nothing has been changed yet.
+                  </p>
+                  <ul className="list-disc space-y-0.5 pl-5 text-muted-foreground">
+                    <li>
+                      {rolloverPreview.counts.contracts} contracts, {rolloverPreview.counts.deadCap} dead cap entries and{" "}
+                      {rolloverPreview.counts.extensions} extensions are copied to the new teams.
+                    </li>
+                    <li>{rolloverPreview.counts.bids} free agency bids are cleared.</li>
+                    <li>{rolloverPreview.rulesNote}</li>
+                    {rolloverPreview.notes.map((n) => <li key={n}>{n}</li>)}
+                  </ul>
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                The new league must be this league's renewed season in Sleeper. If it stops partway, nothing switches and you can run it again to resume.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={handleCheckRollover} disabled={isChecking || isAdvancing} data-testid="button-check-rollover">
+                  {isChecking ? "Checking..." : "Check first"}
+                </Button>
+                <Button onClick={handleAdvanceLeagueYear} disabled={isAdvancing} data-testid="button-advance-league-year">
+                  <RefreshCw className={`w-4 h-4 mr-2 ${isAdvancing ? "animate-spin" : "hidden"}`} />
+                  {isAdvancing ? "Advancing..." : "Advance League Year"}
+                </Button>
+              </div>
             </CardContent>
           </Card>
         )}

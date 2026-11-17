@@ -222,34 +222,6 @@ export async function updateLeague(
   await db.update(leaguesTable).set(patch).where(eq(leaguesTable.id, id));
 }
 
-/**
- * Records a rollover in the season history: the old current season becomes past and the new Sleeper league
- * becomes current. Minimal version for today's rollover; phase 5 rebuilds rollover around this table.
- */
-export async function appendCurrentSeason(
-  leagueId: string,
-  next: { season: string; sleeperLeagueId: string; previousSleeperLeagueId: string; rolledOverBy: string | null; migrationId: string | null },
-  now = Date.now(),
-) {
-  await db.transaction(async (tx) => {
-    await tx
-      .update(leagueSeasonHistoryTable)
-      .set({ status: "past" })
-      .where(and(eq(leagueSeasonHistoryTable.leagueId, leagueId), eq(leagueSeasonHistoryTable.status, "current")));
-    await tx.insert(leagueSeasonHistoryTable).values({
-      id: randomUUID(),
-      leagueId,
-      season: next.season,
-      sleeperLeagueId: next.sleeperLeagueId,
-      previousSleeperLeagueId: next.previousSleeperLeagueId,
-      status: "current",
-      rolledOverAt: now,
-      rolledOverBy: next.rolledOverBy,
-      migrationId: next.migrationId,
-    });
-  });
-}
-
 // ─── Devices that joined a league ──────────────────────────────────────────────
 
 /** The active league with this invite code (stored upper case) and its current season, or null. */

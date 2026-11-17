@@ -126,3 +126,23 @@ Still open:
 - The mismatch tests that need real data (rule, nomination and contract IDs from another league, and the PIN and rules cases against two test leagues) still need the test database. The gate's own cross-league cases are covered with fakes.
 - A joined device is not bound to the team it picked, as the plan accepts ("anyone who joined can still pick any team"). The server records `roster_id` only through the unused device/team endpoint.
 - The grace period start has no UI at league creation; leagues created by the admin with an invite code start with no grace period, which is right for a new league.
+
+## Phase 5 built (uncommitted, 2026-11-16)
+
+The season rollover (`/api/league/advance-year`) is rebuilt around the registry. The old route body is gone; `server/rollover.ts` holds the checks, the order of steps and the failure handling (database work is behind `RolloverDeps`, implemented in `server/rolloverStore.ts`).
+
+What changed against the problems the plan listed:
+- **Old league:** the league being rolled, from its address (`X-League`), using its own current row in `league_season_history`. Without the header it falls back to the site's active league, if that is registered. Commissioner PIN (or admin) required (`requireCommissioner`).
+- **Previous-ID check:** the new Sleeper league's `previous_league_id` must equal the current Sleeper ID (a missing link is refused), the season must be old + 1, and the new ID must not already be in any league's season history (another league: 409 `belongs_to_other_league`; this league: `already_attached`). Team mappings are validated (known rosters, no two teams mapped to one).
+- **Dry run:** `POST /api/league/advance-year/preview` runs every check and returns the plan (mappings, counts of contracts, dead cap entries, extensions and bids, the rules note) and writes nothing. Settings → League Year Advancement has a "Check first" button.
+- **Atomic switch, rerunnable steps:** everything before the switch writes only the NEW league's keys or replaces the old season's own history snapshots, and each step is safe to run again: migration record (an unfinished one for the same pair is reused and its team mappings rewritten), snapshots (cleared and rewritten), contracts, dead cap and extensions (the existing clean-slate copies), Contracts Hub settings, pinned rules. The switch is ONE database transaction: season history (old to past, new current), `active_leagues` (only when the old Sleeper ID is the site-wide active league, so a second league rolling over never moves it) and the migration record to completed. A failure before it leaves the old season current, marks the migration `failed` with the step, and running it again resumes. The old season's bids and rule suggestions are only touched AFTER a successful switch, as best-effort cleanup with warnings.
+- **Next season's rules:** `freezeRulesForSeason` writes a `league_rules` row for the new season (the saved 2027 rules, or the current rules carried forward), so a season never picks up later edits to an earlier one.
+- Audit: `season_rolled_over` (from, to, Sleeper IDs, migration, resumed, what moved, rules saved or carried, warnings).
+- `appendCurrentSeason` (the phase 2 stopgap) is removed.
+
+Tests: `server/rollover.test.ts` (16, against an in-memory fake world): dry run writes nothing; refused when the link is wrong or missing, the ID belongs to another league, the season is wrong, or teams are unmatched or badly mapped; step order with the switch last; failure while snapshotting, copying or switching, then a resume of the same migration with nothing doubled; two leagues in the same week each moving only their own data, one failing without affecting the other, and a league unable to attach the other's new season. 125 tests pass; "phase dates" still fails as before. tsc unchanged (58 errors, all pre-existing). **Not run against the real server, and the Settings "Check first" UI was only type-checked, not opened in a browser.**
+
+Still open:
+- ATL's 2024 to 2025 rollover on a copy of the data needs the test database.
+- The client still loads ATL's season from `active_leagues` (not the registry). Rollover now moves both in one transaction, so they agree, but the exception can only be dropped once Settings' "switch active league" tool (which writes `active_leagues` to view an old season) is removed or redefined.
+- The year recap and metrics snapshots are fetched over HTTP from the app itself, as before; a failure there is non-fatal.

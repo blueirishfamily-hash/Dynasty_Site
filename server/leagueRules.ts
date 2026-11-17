@@ -54,3 +54,15 @@ export async function deleteRulesRow(leagueId: string, season: string) {
   await db.delete(leagueRulesTable).where(and(eq(leagueRulesTable.leagueId, leagueId), eq(leagueRulesTable.season, season)));
   cache.delete(leagueId);
 }
+
+/**
+ * Pins the rules a season starts with, at rollover: the rules the commissioner saved for it, or the current
+ * rules carried forward. Without a row of its own, a season would pick up later changes to an earlier one.
+ */
+export async function freezeRulesForSeason(leagueId: string, season: string, by: string): Promise<"saved" | "carried"> {
+  cache.delete(leagueId);
+  const rows = await rulesRows(leagueId);
+  if (rows.some((r) => r.season === season)) return "saved";
+  await saveRulesRow(leagueId, season, rulesForSeason(rows, season).rules, by);
+  return "carried";
+}
