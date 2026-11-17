@@ -1,7 +1,7 @@
 // Database access for the registry tables used by phase 2: pin_attempts, site_admin,
 // league_commissioners, audit_log, and adding leagues with their season history.
 import { randomUUID } from "crypto";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { db } from "../db";
 import {
   auditLogTable,
@@ -86,6 +86,19 @@ export async function findCommissioner(leagueId: string, sleeperUserId: string):
 
 export async function setCommissionerPinHash(id: string, pinHash: string | null, at: number | null) {
   await db.update(leagueCommissionersTable).set({ pinHash, pinSetAt: at }).where(eq(leagueCommissionersTable.id, id));
+}
+
+/**
+ * First-use PIN: sets the PIN only if the commissioner still has none (or an unused legacy setup code), so if two
+ * people race to set it, the first one wins. Returns whether this call set it.
+ */
+export async function setCommissionerPinIfUnset(id: string, pinHash: string, at: number): Promise<boolean> {
+  const rows = await db
+    .update(leagueCommissionersTable)
+    .set({ pinHash, pinSetAt: at })
+    .where(and(eq(leagueCommissionersTable.id, id), or(isNull(leagueCommissionersTable.pinHash), like(leagueCommissionersTable.pinHash, "setup:%"))))
+    .returning({ id: leagueCommissionersTable.id });
+  return rows.length > 0;
 }
 
 export async function addCommissioner(row: Omit<LeagueCommissioner, "id">): Promise<LeagueCommissioner> {
@@ -173,7 +186,7 @@ export interface NewLeagueInput {
   createdBy: string;
   /** Oldest first. The last one becomes the current season. */
   seasons: Array<{ season: string; sleeperLeagueId: string; previousSleeperLeagueId: string | null }>;
-  owner: { sleeperUserId: string; setupCodeHash: string };
+  owner: { sleeperUserId: string };
 }
 
 /** Adds a league, its season history and its owner in one transaction. */
@@ -206,8 +219,8 @@ export async function createLeague(input: NewLeagueInput, now = Date.now()) {
       leagueId,
       sleeperUserId: input.owner.sleeperUserId,
       role: "owner",
-      pinHash: input.owner.setupCodeHash,
-      pinSetAt: now,
+      pinHash: null, // the owner sets their own PIN at their first commissioner action
+      pinSetAt: null,
       addedBy: input.createdBy,
       addedAt: now,
     });

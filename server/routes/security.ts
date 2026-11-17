@@ -3,7 +3,7 @@
 // Commissioner:  /api/registry/leagues/:slug/commissioners          who the commissioners are (no hashes)
 //                /api/registry/leagues/:slug/unlock-status          who has unlocked this league in this browser
 //                /api/registry/leagues/:slug/commissioner/unlock    PIN -> unlock
-//                /api/registry/leagues/:slug/commissioner/setup     one-time setup code + new PIN -> unlock
+//                /api/registry/leagues/:slug/commissioner/set-pin   first use: set your own PIN -> unlock
 //                /api/registry/leagues/:slug/commissioner/pin       change own PIN (needs current PIN)
 //                /api/registry/leagues/:slug/commissioner/lock      end this browser's unlock
 // Site admin:    /api/admin/status, /api/admin/unlock, /api/admin/passcode, /api/admin/passcode/recover, /api/admin/lock
@@ -17,10 +17,8 @@ import {
   hashSecret,
   isValidAdminPasscode,
   isValidPin,
-  normalizeSetupCode,
   readPinSlot,
   safeEqual,
-  setupCodeExpired,
   verifySecret,
 } from "../security/secrets";
 import {
@@ -30,6 +28,7 @@ import {
   listCommissioners,
   setAdminPasscodeHash,
   setCommissionerPinHash,
+  setCommissionerPinIfUnset,
   writeAudit,
 } from "../security/store";
 import { ADMIN_COOKIE, clearCookie, commissionerCookie, deviceKey, encodeToken, setSessionCookie } from "../security/unlock";
@@ -105,14 +104,13 @@ export function registerSecurityRoutes(app: Express): void {
   app.get("/api/registry/leagues/:slug/commissioners", handle(async (req, res) => {
     const league = await leagueFromSlug(req, res);
     if (!league) return;
-    const now = Date.now();
     const rows = await listCommissioners(league.league.id);
     res.json(rows.map((c) => {
       const slot = readPinSlot(c.pinHash, c.pinSetAt);
       return {
         sleeperUserId: c.sleeperUserId,
         role: c.role,
-        pinState: slot.state === "setup_pending" && setupCodeExpired(slot, now) ? "setup_expired" : slot.state,
+        pinState: slot.state,
       };
     }));
   }));
@@ -137,30 +135,29 @@ export function registerSecurityRoutes(app: Express): void {
     const row = await findCommissioner(league.league.id, sleeperUserId);
     if (!row) return res.status(403).json({ error: "You are not a commissioner of this league.", code: "not_commissioner" });
     const slot = readPinSlot(row.pinHash, row.pinSetAt);
-    if (slot.state === "none") return res.status(409).json({ error: "You don't have a PIN yet. Ask the site admin for a setup code.", code: "pin_not_set" });
-    if (slot.state === "setup_pending") return res.status(409).json({ error: "Set your PIN with the setup code from the site admin.", code: "setup_required", expired: setupCodeExpired(slot, Date.now()) });
+    if (slot.state === "none") return res.status(409).json({ error: "You don't have a PIN yet. Set one.", code: "pin_not_set" });
     const ok = await checkWithLimits(req, res, "commissioner_pin", row.id, () => verifySecret(pin, slot.hash), "Wrong PIN.");
     if (!ok) return;
     setCommissionerUnlock(req, res, league.league.id, row.id, row.sleeperUserId, row.pinHash!);
     res.json({ unlocked: true, sleeperUserId: row.sleeperUserId, role: row.role });
   }));
 
-  app.post("/api/registry/leagues/:slug/commissioner/setup", handle(async (req, res) => {
+  // First use: a commissioner who hasn't set a PIN sets their own. There is nothing to prove who they are beyond
+  // being listed as a commissioner of the league, so whoever gets here first for a commissioner with no PIN sets
+  // it. Set your PIN right after being added. Every set is written to the audit log.
+  app.post("/api/registry/leagues/:slug/commissioner/set-pin", handle(async (req, res) => {
     const league = await leagueFromSlug(req, res);
     if (!league) return;
-    const { sleeperUserId, setupCode, newPin } = req.body ?? {};
-    if (typeof sleeperUserId !== "string" || typeof setupCode !== "string") return res.status(400).json({ error: "sleeperUserId and setupCode are required" });
+    const { sleeperUserId, newPin } = req.body ?? {};
+    if (typeof sleeperUserId !== "string") return res.status(400).json({ error: "sleeperUserId is required" });
     if (!isValidPin(newPin)) return res.status(400).json({ error: "A PIN is 4 to 8 digits.", code: "invalid_pin" });
     const row = await findCommissioner(league.league.id, sleeperUserId);
     if (!row) return res.status(403).json({ error: "You are not a commissioner of this league.", code: "not_commissioner" });
-    const slot = readPinSlot(row.pinHash, row.pinSetAt);
-    if (slot.state !== "setup_pending") return res.status(409).json({ error: "There is no setup code waiting for you.", code: "no_setup_code" });
-    if (setupCodeExpired(slot, Date.now())) return res.status(410).json({ error: "This setup code has expired. Ask the site admin for a new one.", code: "setup_expired" });
-    const ok = await checkWithLimits(req, res, "commissioner_pin", row.id, () => verifySecret(normalizeSetupCode(setupCode), slot.hash), "Wrong setup code.");
-    if (!ok) return;
+    const alreadySet = () => res.status(409).json({ error: "A PIN is already set. Enter it to unlock.", code: "pin_already_set" });
+    if (readPinSlot(row.pinHash, row.pinSetAt).state !== "none") return alreadySet();
     const now = Date.now();
     const pinHash = await hashSecret(newPin);
-    await setCommissionerPinHash(row.id, pinHash, now);
+    if (!(await setCommissionerPinIfUnset(row.id, pinHash, now))) return alreadySet(); // someone set it a moment ago
     await writeAudit({ leagueId: league.league.id, actorSleeperUserId: row.sleeperUserId, actorRole: "commissioner", action: "commissioner_pin_set", details: { commissionerId: row.id } }, now);
     setCommissionerUnlock(req, res, league.league.id, row.id, row.sleeperUserId, pinHash);
     res.json({ unlocked: true, sleeperUserId: row.sleeperUserId, role: row.role });
@@ -169,13 +166,16 @@ export function registerSecurityRoutes(app: Express): void {
   app.post("/api/registry/leagues/:slug/commissioner/pin", handle(async (req, res) => {
     const league = await leagueFromSlug(req, res);
     if (!league) return;
+    // The current PIN is checked below (with the wrong-try limits), so this doesn't also need an unlocked browser.
     const actor = await commissionerActor(req, league.league.id);
-    if (!actor || actor.role !== "commissioner") return res.status(401).json({ error: "Unlock with your current PIN first.", code: "commissioner_unlock_required" });
-    const { currentPin, newPin } = req.body ?? {};
+    const { currentPin, newPin, sleeperUserId } = req.body ?? {};
+    const who = actor && actor.role === "commissioner" ? actor.sleeperUserId : sleeperUserId;
+    if (typeof who !== "string") return res.status(400).json({ error: "sleeperUserId is required" });
     if (!isValidPin(newPin)) return res.status(400).json({ error: "A PIN is 4 to 8 digits.", code: "invalid_pin" });
-    const row = await findCommissioner(league.league.id, actor.sleeperUserId);
+    const row = await findCommissioner(league.league.id, who);
     const slot = readPinSlot(row?.pinHash, row?.pinSetAt);
-    if (!row || slot.state !== "set") return res.status(409).json({ error: "Your PIN is not set." });
+    if (!row) return res.status(403).json({ error: "You are not a commissioner of this league.", code: "not_commissioner" });
+    if (slot.state !== "set") return res.status(409).json({ error: "Your PIN is not set yet. Set it first.", code: "pin_not_set" });
     const ok = await checkWithLimits(req, res, "commissioner_pin", row.id, () => verifySecret(String(currentPin ?? ""), slot.hash), "Your current PIN is wrong.");
     if (!ok) return;
     const now = Date.now();

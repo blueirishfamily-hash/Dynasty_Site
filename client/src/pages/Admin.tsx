@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import UnlockDialog from "@/components/UnlockDialog";
-import SetupCodeDialog from "@/components/SetupCodeDialog";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { queryClient } from "@/lib/queryClient";
 import { requestUnlock } from "@/lib/unlock";
 import { getLastLeagueSlug, setLeagueSlug, LEGACY_LEAGUE_SLUG } from "@/lib/league-address";
@@ -26,7 +26,7 @@ interface AdminCommissioner {
   id: string;
   sleeperUserId: string;
   role: "owner" | "co";
-  pinState: "none" | "set" | "setup_pending";
+  pinState: "none" | "set";
   pinSetAt: number | null;
   addedAt: number;
 }
@@ -90,8 +90,7 @@ function ErrorLine({ error }: { error: string | null }) {
 
 const PIN_LABEL: Record<AdminCommissioner["pinState"], { text: string; tone: string }> = {
   set: { text: "PIN set", tone: "bg-primary/15 text-primary" },
-  setup_pending: { text: "Setup code issued", tone: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
-  none: { text: "No PIN", tone: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
+  none: { text: "No PIN yet", tone: "bg-amber-500/15 text-amber-600 dark:text-amber-400" },
 };
 
 function Pill({ className, children }: { className?: string; children: ReactNode }) {
@@ -100,7 +99,7 @@ function Pill({ className, children }: { className?: string; children: ReactNode
 
 // ─── Leagues tab ───────────────────────────────────────────────────────────────
 
-function AddLeagueDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: (code: string, who: string) => void }) {
+function AddLeagueDialog({ open, onClose, onCreated }: { open: boolean; onClose: () => void; onCreated: () => void }) {
   const [sleeperId, setSleeperId] = useState("");
   const [preview, setPreview] = useState<Preview | null>(null);
   const [name, setName] = useState("");
@@ -144,7 +143,7 @@ function AddLeagueDialog({ open, onClose, onCreated }: { open: boolean; onClose:
     if (!commissionerId) return setError("Pick the commissioner.");
     setBusy(true);
     try {
-      const result = await api<{ setupCode: string }>("POST", "/api/admin/leagues", {
+      await api("POST", "/api/admin/leagues", {
         sleeperLeagueId: sleeperId.trim(),
         name: name.trim(),
         slug,
@@ -152,10 +151,9 @@ function AddLeagueDialog({ open, onClose, onCreated }: { open: boolean; onClose:
         contractsEnabled,
         commissionerSleeperUserId: commissionerId,
       });
-      const who = preview?.users.find((u) => u.sleeperUserId === commissionerId)?.displayName ?? "the commissioner";
       refreshAdmin();
       close();
-      onCreated(result.setupCode, who);
+      onCreated();
     } catch (err: any) {
       setError(err.message);
       setBusy(false);
@@ -248,6 +246,7 @@ function AddLeagueDialog({ open, onClose, onCreated }: { open: boolean; onClose:
 }
 
 function EditLeagueDialog({ league, onClose }: { league: AdminLeague | null; onClose: () => void }) {
+  const { ask, dialog } = useConfirm();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
   const [inviteCode, setInviteCode] = useState("");
@@ -287,7 +286,7 @@ function EditLeagueDialog({ league, onClose }: { league: AdminLeague | null; onC
   };
 
   const resetLeaguePin = async () => {
-    if (!confirm(`Clear ${league.name}'s league PIN? Devices joining later won't be asked for one until the commissioner sets a new PIN.`)) return;
+    if (!(await ask(`Clear ${league.name}'s league PIN? Every device in the league is signed out and joins again with the invite code. Devices joining later won't be asked for a PIN until the commissioner sets a new one.`, "Clear PIN"))) return;
     try {
       await api("POST", `/api/admin/leagues/${league.id}/reset-league-pin`);
       refreshAdmin();
@@ -342,6 +341,7 @@ function EditLeagueDialog({ league, onClose }: { league: AdminLeague | null; onC
             <Button type="submit" disabled={busy}>Save</Button>
           </DialogFooter>
         </form>
+        {dialog}
       </DialogContent>
     </Dialog>
   );
@@ -392,7 +392,7 @@ function SleeperLoadCard() {
   );
 }
 
-function LeaguesTab({ leagues, onSetupCode }: { leagues: AdminLeague[]; onSetupCode: (code: string, who: string) => void }) {
+function LeaguesTab({ leagues }: { leagues: AdminLeague[] }) {
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<AdminLeague | null>(null);
   return (
@@ -429,7 +429,7 @@ function LeaguesTab({ leagues, onSetupCode }: { leagues: AdminLeague[]; onSetupC
           </CardContent>
         </Card>
       ))}
-      <AddLeagueDialog open={adding} onClose={() => setAdding(false)} onCreated={onSetupCode} />
+      <AddLeagueDialog open={adding} onClose={() => setAdding(false)} onCreated={() => {}} />
       <EditLeagueDialog league={editing} onClose={() => setEditing(null)} />
     </div>
   );
@@ -447,7 +447,8 @@ function useLeagueUsers(league: AdminLeague) {
   });
 }
 
-function LeagueCommissioners({ league, onSetupCode }: { league: AdminLeague; onSetupCode: (code: string, who: string) => void }) {
+function LeagueCommissioners({ league }: { league: AdminLeague }) {
+  const { ask, dialog } = useConfirm();
   const { data: users } = useLeagueUsers(league);
   const [newUser, setNewUser] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -464,19 +465,17 @@ function LeagueCommissioners({ league, onSetupCode }: { league: AdminLeague; onS
   });
 
   const resetPin = (c: AdminCommissioner) => run.mutate(async () => {
-    if (!confirm(`Reset ${shortName(c.sleeperUserId)}'s commissioner PIN? Their current PIN stops working right away, and you'll get a setup code to send them.`)) return;
-    const r = await api<{ setupCode: string }>("POST", `/api/admin/leagues/${league.id}/commissioners/${c.id}/reset-pin`);
-    onSetupCode(r.setupCode, shortName(c.sleeperUserId));
+    if (!(await ask(`Reset ${shortName(c.sleeperUserId)}'s commissioner PIN? Their current PIN stops working right away, and they choose a new one at their next commissioner action.`, "Reset PIN"))) return;
+    await api("POST", `/api/admin/leagues/${league.id}/commissioners/${c.id}/reset-pin`);
   });
   const remove = (c: AdminCommissioner) => run.mutate(async () => {
-    if (!confirm(`Remove ${shortName(c.sleeperUserId)} as a commissioner of ${league.name}?`)) return;
+    if (!(await ask(`Remove ${shortName(c.sleeperUserId)} as a commissioner of ${league.name}?`, "Remove"))) return;
     await api("DELETE", `/api/admin/leagues/${league.id}/commissioners/${c.id}`);
   });
   const add = () => run.mutate(async () => {
     if (!newUser) throw new Error("Pick a member to add.");
-    const r = await api<{ setupCode: string }>("POST", `/api/admin/leagues/${league.id}/commissioners`, { sleeperUserId: newUser, role: "co" });
+    await api("POST", `/api/admin/leagues/${league.id}/commissioners`, { sleeperUserId: newUser, role: "co" });
     setNewUser("");
-    onSetupCode(r.setupCode, shortName(newUser));
   });
 
   const candidates = (users ?? []).filter((u) => !league.commissioners.some((c) => c.sleeperUserId === u.user_id));
@@ -497,7 +496,7 @@ function LeagueCommissioners({ league, onSetupCode }: { league: AdminLeague; onS
             </div>
             <div className="flex gap-1.5">
               <Button variant="outline" size="sm" onClick={() => resetPin(c)} data-testid={`button-reset-pin-${c.sleeperUserId}`}>
-                <KeyRound className="mr-1 h-3.5 w-3.5" />{c.pinState === "set" ? "Reset PIN" : "New setup code"}
+                <KeyRound className="mr-1 h-3.5 w-3.5" />Reset PIN
               </Button>
               <Button variant="ghost" size="icon" aria-label="Remove commissioner" onClick={() => remove(c)} disabled={league.commissioners.length <= 1}>
                 <Trash2 className="h-4 w-4" />
@@ -518,6 +517,7 @@ function LeagueCommissioners({ league, onSetupCode }: { league: AdminLeague; onS
         </div>
         <ErrorLine error={error} />
       </CardContent>
+      {dialog}
     </Card>
   );
 }
@@ -692,7 +692,6 @@ export default function AdminPage() {
   const backTo = `/l/${getLastLeagueSlug() ?? LEGACY_LEAGUE_SLUG}`;
 
   const [recovering, setRecovering] = useState(false);
-  const [setupCode, setSetupCode] = useState<{ code: string; who: string } | null>(null);
 
   const status = useQuery<{ passcodeSet: boolean; recoveryKeyConfigured: boolean; unlocked: boolean }>({
     queryKey: ["/api/admin", "status"],
@@ -752,10 +751,10 @@ export default function AdminPage() {
         </TabsList>
         {leagues.error && <ErrorLine error={(leagues.error as Error).message} />}
         <TabsContent value="leagues">
-          <LeaguesTab leagues={list} onSetupCode={(code, who) => setSetupCode({ code, who })} />
+          <LeaguesTab leagues={list} />
         </TabsContent>
         <TabsContent value="commissioners" className="flex flex-col gap-3">
-          {list.map((l) => <LeagueCommissioners key={l.id} league={l} onSetupCode={(code, who) => setSetupCode({ code, who })} />)}
+          {list.map((l) => <LeagueCommissioners key={l.id} league={l} />)}
         </TabsContent>
         <TabsContent value="audit"><AuditTab leagues={list} /></TabsContent>
         <TabsContent value="passcode"><PasscodeTab /></TabsContent>
@@ -776,7 +775,6 @@ export default function AdminPage() {
       </header>
       <main className="mx-auto max-w-4xl px-4 py-6">{body}</main>
       <UnlockDialog commissioner={null} />
-      <SetupCodeDialog code={setupCode?.code ?? null} who={setupCode?.who ?? ""} onClose={() => setSetupCode(null)} />
     </div>
   );
 }

@@ -124,21 +124,7 @@ function CommissionerForm({ league, commissioner }: { league: UnlockLeague; comm
     );
   }
   if (mine.pinState === "set") return <EnterPin league={league} commissioner={commissioner} subtitle={subtitle} />;
-  if (mine.pinState === "setup_pending") return <SetupPin league={league} commissioner={commissioner} subtitle={subtitle} />;
-  return (
-    <>
-      <Header title="Commissioner PIN" subtitle={subtitle} />
-      <NoticeLine
-        notice={{
-          tone: "info",
-          text: mine.pinState === "setup_expired"
-            ? "Your setup code has expired. Ask the site admin for a new one."
-            : "You don't have a PIN yet. Ask the site admin for a setup code.",
-        }}
-      />
-      <Button variant="outline" className="w-full" onClick={() => finishUnlock(false)}>Close</Button>
-    </>
-  );
+  return <SetPin league={league} commissioner={commissioner} subtitle={subtitle} />;
 }
 
 function Header({ title, subtitle, icon = "lock" }: { title: string; subtitle?: string; icon?: "lock" | "shield" }) {
@@ -188,9 +174,8 @@ function EnterPin({ league, commissioner, subtitle }: { league: UnlockLeague; co
   );
 }
 
-function SetupPin({ league, commissioner, subtitle }: { league: UnlockLeague; commissioner: UnlockCommissioner; subtitle: string }) {
-  const [step, setStep] = useState<"code" | "pin" | "confirm">("code");
-  const [code, setCode] = useState("");
+function SetPin({ league, commissioner, subtitle }: { league: UnlockLeague; commissioner: UnlockCommissioner; subtitle: string }) {
+  const [step, setStep] = useState<"pin" | "confirm">("pin");
   const [pin, setPin] = useState("");
   const [confirm, setConfirm] = useState("");
   const [notice, setNotice] = useState<Notice>(null);
@@ -199,10 +184,6 @@ function SetupPin({ league, commissioner, subtitle }: { league: UnlockLeague; co
   const submit = async (e?: FormEvent) => {
     e?.preventDefault();
     setNotice(null);
-    if (step === "code") {
-      if (code.replace(/[\s-]/g, "").length !== 12) return setNotice({ tone: "danger", text: "Setup codes look like K7MQ-2XRP-9TWD." });
-      return setStep("pin");
-    }
     if (step === "pin") {
       if (pin.length < MIN_PIN) return setNotice({ tone: "danger", text: "Choose a PIN of 4 to 8 digits." });
       return setStep("confirm");
@@ -213,16 +194,14 @@ function SetupPin({ league, commissioner, subtitle }: { league: UnlockLeague; co
     }
     setBusy(true);
     try {
-      const res = await fetch(`/api/registry/leagues/${encodeURIComponent(league.slug)}/commissioner/setup`, {
+      const res = await fetch(`/api/registry/leagues/${encodeURIComponent(league.slug)}/commissioner/set-pin`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sleeperUserId: commissioner.sleeperUserId, setupCode: code, newPin: pin }),
+        body: JSON.stringify({ sleeperUserId: commissioner.sleeperUserId, newPin: pin }),
       });
       if (res.ok) return finishUnlock(true);
-      const n = await errorNotice(res, "Wrong setup code");
-      setNotice(n);
-      // A wrong or expired code means starting over; keep the chosen PIN out of memory.
-      setStep("code");
+      setNotice(await errorNotice(res, "Couldn't set the PIN"));
+      setStep("pin");
       setPin("");
       setConfirm("");
     } catch {
@@ -234,23 +213,8 @@ function SetupPin({ league, commissioner, subtitle }: { league: UnlockLeague; co
 
   return (
     <form onSubmit={submit} className="flex flex-col gap-4">
-      <Header title={step === "code" ? "Set your commissioner PIN" : step === "pin" ? "Choose a PIN" : "Enter it again"} subtitle={subtitle} />
-      {step === "code" ? (
-        <>
-          <p className="text-center text-sm text-muted-foreground">Enter the setup code the site admin gave you.</p>
-          <Input
-            value={code}
-            onChange={(e) => { setCode(e.target.value.toUpperCase()); setNotice(null); }}
-            placeholder="K7MQ-2XRP-9TWD"
-            autoFocus
-            autoComplete="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-            aria-label="Setup code"
-            className="text-center font-mono tracking-widest"
-          />
-        </>
-      ) : step === "pin" ? (
+      <Header title={step === "pin" ? "Set your commissioner PIN" : "Enter it again"} subtitle={subtitle} />
+      {step === "pin" ? (
         <PinBoxes key="pin" value={pin} onChange={setPin} autoFocus label="New PIN" />
       ) : (
         <PinBoxes key="confirm" value={confirm} onChange={setConfirm} autoFocus label="Confirm new PIN" invalid={notice?.tone === "danger"} />
@@ -259,7 +223,7 @@ function SetupPin({ league, commissioner, subtitle }: { league: UnlockLeague; co
       <Button type="submit" className="w-full" disabled={busy}>
         {step === "confirm" ? "Save PIN and continue" : "Next"}
       </Button>
-      {step !== "code" && <p className="text-center text-xs text-muted-foreground">4 to 8 digits. Only you will know it.</p>}
+      <p className="text-center text-xs text-muted-foreground">4 to 8 digits. Only you should know it.</p>
     </form>
   );
 }

@@ -6,7 +6,7 @@ import { walkSeasonChain } from "../leagueChain";
 import { leagueResolver } from "../leagueRegistry";
 import { normalizeSlug } from "../middleware/league";
 import { requireAdmin } from "../security/guards";
-import { SETUP_PREFIX, generateSetupCode, hashSecret, normalizeSetupCode, readPinSlot } from "../security/secrets";
+import { readPinSlot } from "../security/secrets";
 import { DEFAULT_GRACE_DAYS, graceEndFor } from "../security/membership";
 import { writeGraceUntil } from "../security/membershipStore";
 import { sleeperGate } from "../sleeper";
@@ -32,12 +32,6 @@ export function normalizeInviteCode(raw: unknown): string | null | "invalid" {
   if (typeof raw !== "string") return "invalid";
   const code = raw.trim().toUpperCase();
   return /^[A-Z0-9]{6,32}$/.test(code) ? code : "invalid";
-}
-
-/** A new setup code and the value stored for it in league_commissioners.pin_hash. */
-async function newSetupCode() {
-  const code = generateSetupCode();
-  return { code, stored: SETUP_PREFIX + (await hashSecret(normalizeSetupCode(code))) };
 }
 
 function isUniqueViolation(error: any) {
@@ -132,7 +126,6 @@ export function registerAdminLeagueRoutes(app: Express): void {
       return res.status(400).json({ error: "The commissioner must be a member of the league on Sleeper." });
     }
 
-    const setup = await newSetupCode();
     const now = Date.now();
     const created = await createLeague({
       name: name.trim(),
@@ -141,7 +134,7 @@ export function registerAdminLeagueRoutes(app: Express): void {
       contractsEnabled: contractsEnabled === true,
       createdBy: "admin",
       seasons: preview.seasons.map((s) => ({ season: s.season, sleeperLeagueId: s.sleeperLeagueId, previousSleeperLeagueId: s.previousSleeperLeagueId })),
-      owner: { sleeperUserId: commissionerSleeperUserId, setupCodeHash: setup.stored },
+      owner: { sleeperUserId: commissionerSleeperUserId },
     }, now);
     leagueResolver.invalidate();
     await writeAudit({
@@ -151,7 +144,7 @@ export function registerAdminLeagueRoutes(app: Express): void {
       action: "league_added",
       details: { slug, seasons: preview.seasons.map((s) => s.season), commissioner: commissionerSleeperUserId, contractsEnabled: contractsEnabled === true },
     }, now);
-    res.status(201).json({ leagueId: created.leagueId, slug, setupCode: setup.code });
+    res.status(201).json({ leagueId: created.leagueId, slug });
   }));
 
   app.patch("/api/admin/leagues/:id", handle(async (req, res) => {
@@ -213,11 +206,10 @@ export function registerAdminLeagueRoutes(app: Express): void {
     const { sleeperUserId, role } = req.body ?? {};
     if (typeof sleeperUserId !== "string" || !/^\d{1,25}$/.test(sleeperUserId)) return res.status(400).json({ error: "Pick a Sleeper user." });
     if (role !== "owner" && role !== "co") return res.status(400).json({ error: "Role is owner or co." });
-    const setup = await newSetupCode();
     const now = Date.now();
-    const row = await addCommissioner({ leagueId: league.id, sleeperUserId, role, pinHash: setup.stored, pinSetAt: now, addedBy: "admin", addedAt: now });
+    const row = await addCommissioner({ leagueId: league.id, sleeperUserId, role, pinHash: null, pinSetAt: null, addedBy: "admin", addedAt: now });
     await writeAudit({ leagueId: league.id, actorSleeperUserId: null, actorRole: "admin", action: "commissioner_added", details: { commissionerId: row.id, sleeperUserId, role } }, now);
-    res.status(201).json({ commissioner: publicCommissioner(row), setupCode: setup.code });
+    res.status(201).json({ commissioner: publicCommissioner(row) });
   }));
 
   app.delete("/api/admin/leagues/:id/commissioners/:cid", handle(async (req, res) => {
@@ -230,15 +222,14 @@ export function registerAdminLeagueRoutes(app: Express): void {
     res.json({ removed: true });
   }));
 
-  // Clears the PIN and issues a one-time setup code. The old PIN and its unlocks stop working at once.
+  // Clears the PIN. The old PIN and its unlocks stop working at once, and they set a new PIN at their next commissioner action.
   app.post("/api/admin/leagues/:id/commissioners/:cid/reset-pin", handle(async (req, res) => {
     const row = await getCommissioner(req.params.cid);
     if (!row || row.leagueId !== req.params.id) return res.status(404).json({ error: "Commissioner not found" });
-    const setup = await newSetupCode();
     const now = Date.now();
-    await setCommissionerPinHash(row.id, setup.stored, now);
+    await setCommissionerPinHash(row.id, null, null);
     await writeAudit({ leagueId: row.leagueId, actorSleeperUserId: null, actorRole: "admin", action: "commissioner_pin_reset", details: { commissionerId: row.id, sleeperUserId: row.sleeperUserId } }, now);
-    res.json({ setupCode: setup.code });
+    res.json({ reset: true });
   }));
 
   // Sleeper load: calls per minute against the 300 a minute limit, cache hits and queue depth.

@@ -73,7 +73,7 @@ function apiPath(input: RequestInfo | URL): string | null {
 
 // The unlock endpoints answer 401 for a wrong PIN; those go straight back to the prompt.
 const isUnlockEndpoint = (path: string) =>
-  /\/commissioner\/(unlock|setup|pin|lock)$/.test(path) || /^\/api\/admin\/(unlock|passcode|passcode\/recover|lock|status)$/.test(path);
+  /\/commissioner\/(unlock|set-pin|pin|lock)$/.test(path) || /^\/api\/admin\/(unlock|passcode|passcode\/recover|lock|status)$/.test(path);
 
 async function unlockRequestFor(res: Response): Promise<UnlockRequest | null> {
   if (res.status !== 401) return null;

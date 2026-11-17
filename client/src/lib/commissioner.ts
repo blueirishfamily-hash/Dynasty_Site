@@ -5,7 +5,7 @@ import { useSleeper } from "./sleeper-context";
 export interface LeagueCommissionerInfo {
   sleeperUserId: string;
   role: "owner" | "co";
-  pinState: "none" | "set" | "setup_pending" | "setup_expired";
+  pinState: "none" | "set";
 }
 
 export function useLeagueCommissioners() {

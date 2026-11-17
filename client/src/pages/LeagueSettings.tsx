@@ -13,7 +13,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/hooks/use-toast";
-import SetupCodeDialog from "@/components/SetupCodeDialog";
+import { useConfirm } from "@/components/ConfirmDialog";
 import { useSleeper } from "@/lib/sleeper-context";
 import { useIsCommissioner } from "@/lib/commissioner";
 import { leagueRulesKey, useContractsEnabled, useLeagueRulesData } from "@/lib/leagueRules";
@@ -177,6 +177,7 @@ function Section({ title, description, children }: { title: string; description?
 }
 
 function LeagueAccessTab({ slug }: { slug: string }) {
+  const { ask, dialog } = useConfirm();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { league, user } = useSleeper();
@@ -190,11 +191,11 @@ function LeagueAccessTab({ slug }: { slug: string }) {
   const [inviteCode, setInviteCode] = useState("");
   const [leaguePin, setLeaguePin] = useState("");
   const [newCo, setNewCo] = useState("");
-  const [setupCode, setSetupCode] = useState<{ code: string; who: string } | null>(null);
   const [pin, setPin] = useState({ current: "", next: "", again: "" });
 
   useEffect(() => { if (data) setInviteCode(data.inviteCode ?? ""); }, [data?.inviteCode]);
 
+  const myPinMissing = data?.commissioners.some((c) => c.sleeperUserId === user?.userId && c.pinState !== "set") ?? false;
   const nameOf = (id: string) => users?.find((u) => u.user_id === id)?.display_name ?? id;
   const run = async (fn: () => Promise<unknown>, done: string) => {
     try {
@@ -218,8 +219,8 @@ function LeagueAccessTab({ slug }: { slug: string }) {
           <span className="text-sm">{data.contractsEnabled ? "Contracts are on" : "Contracts are off"}</span>
           <Switch
             checked={data.contractsEnabled}
-            onCheckedChange={(v) => {
-              if (!v && !confirm("Turn contracts off? Contract pages and widgets disappear for everyone in this league until you turn them back on. No data is deleted.")) return;
+            onCheckedChange={async (v) => {
+              if (!v && !(await ask("Turn contracts off? Contract pages and widgets disappear for everyone in this league until you turn them back on. No data is deleted.", "Turn off"))) return;
               run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { contractsEnabled: v }), v ? "Contracts turned on" : "Contracts turned off");
             }}
             aria-label="Contracts"
@@ -245,7 +246,7 @@ function LeagueAccessTab({ slug }: { slug: string }) {
               <span className="text-sm" data-testid="text-grace-active">Devices that haven't joined keep working until {new Date(data.joinGraceUntil).toLocaleDateString()}.</span>
               <div className="flex gap-2">
                 <Button variant="outline" size="sm" onClick={() => run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { joinGraceDays: 30 }), "Extended to 30 days from now")}>Restart 30 days</Button>
-                <Button variant="outline" size="sm" onClick={() => { if (confirm("End the grace period now? Devices that haven't entered the invite code can't save anything until they do.")) run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { joinGraceDays: 0 }), "Grace period ended"); }}>End now</Button>
+                <Button variant="outline" size="sm" onClick={async () => { if (await ask("End the grace period now? Devices that haven't entered the invite code can't save anything until they do.", "End now")) run(() => send("PATCH", `/api/registry/leagues/${slug}/settings`, { joinGraceDays: 0 }), "Grace period ended"); }}>End now</Button>
               </div>
             </div>
           ) : (
@@ -266,12 +267,12 @@ function LeagueAccessTab({ slug }: { slug: string }) {
         </div>
       </Section>
 
-      <Section title="Commissioners" description="Each commissioner has their own PIN for this league. New co-commissioners set theirs with a one-time setup code.">
+      <Section title="Commissioners" description="Each commissioner has their own PIN for this league. A new co-commissioner chooses theirs the first time they use a commissioner action, so ask them to do that right away.">
         {data.commissioners.map((c) => (
           <div key={c.sleeperUserId} className="flex items-center justify-between rounded-md border px-3 py-2 text-sm">
             <span>{nameOf(c.sleeperUserId)} <span className="text-muted-foreground">· {c.role === "owner" ? "Owner" : "Co-commissioner"}{c.pinState !== "set" ? " · PIN not set yet" : ""}</span></span>
             {c.role === "co" && (
-              <Button variant="ghost" size="sm" onClick={() => { if (confirm(`Remove ${nameOf(c.sleeperUserId)} as co-commissioner?`)) run(() => send("DELETE", `/api/registry/leagues/${slug}/commissioners/${c.sleeperUserId}`), "Co-commissioner removed"); }}>Remove</Button>
+              <Button variant="ghost" size="sm" onClick={async () => { if (await ask(`Remove ${nameOf(c.sleeperUserId)} as co-commissioner?`, "Remove")) run(() => send("DELETE", `/api/registry/leagues/${slug}/commissioners/${c.sleeperUserId}`), "Co-commissioner removed"); }}>Remove</Button>
             )}
           </div>
         ))}
@@ -286,8 +287,7 @@ function LeagueAccessTab({ slug }: { slug: string }) {
             variant="outline"
             disabled={!newCo}
             onClick={() => run(async () => {
-              const r = await send("POST", `/api/registry/leagues/${slug}/commissioners`, { sleeperUserId: newCo });
-              setSetupCode({ code: r.setupCode, who: nameOf(newCo) });
+              await send("POST", `/api/registry/leagues/${slug}/commissioners`, { sleeperUserId: newCo });
               setNewCo("");
             }, "Co-commissioner added")}
           >
@@ -296,9 +296,9 @@ function LeagueAccessTab({ slug }: { slug: string }) {
         </div>
       </Section>
 
-      <Section title="Your commissioner PIN" description={`Change the PIN you use in ${league?.name ?? "this league"}. Other browsers unlocked with the old PIN are locked out.`}>
+      <Section title="Your commissioner PIN" description={myPinMissing ? `You haven't set a PIN for ${league?.name ?? "this league"} yet. Choose one now.` : `Change the PIN you use in ${league?.name ?? "this league"}. Other browsers unlocked with the old PIN are locked out.`}>
         <div className="flex flex-wrap gap-2">
-          {(["current", "next", "again"] as const).map((k) => (
+          {(["current", "next", "again"] as const).filter((k) => !(myPinMissing && k === "current")).map((k) => (
             <Input
               key={k}
               type="password"
@@ -317,14 +317,16 @@ function LeagueAccessTab({ slug }: { slug: string }) {
             disabled={!user?.userId}
             onClick={() => {
               if (pin.next !== pin.again) return toast({ title: "The new PINs don't match", variant: "destructive" });
-              run(() => send("POST", `/api/registry/leagues/${slug}/commissioner/pin`, { currentPin: pin.current, newPin: pin.next }), "PIN changed").then(() => setPin({ current: "", next: "", again: "" }));
+              run(() => myPinMissing
+                ? send("POST", `/api/registry/leagues/${slug}/commissioner/set-pin`, { sleeperUserId: user?.userId, newPin: pin.next }).then(() => refetch())
+                : send("POST", `/api/registry/leagues/${slug}/commissioner/pin`, { sleeperUserId: user?.userId, currentPin: pin.current, newPin: pin.next }), myPinMissing ? "PIN set" : "PIN changed").then(() => setPin({ current: "", next: "", again: "" }));
             }}
           >
-            Change PIN
+            {myPinMissing ? "Set PIN" : "Change PIN"}
           </Button>
         </div>
       </Section>
-      <SetupCodeDialog code={setupCode?.code ?? null} who={setupCode?.who ?? ""} onClose={() => setSetupCode(null)} />
+      {dialog}
     </div>
   );
 }
@@ -332,6 +334,7 @@ function LeagueAccessTab({ slug }: { slug: string }) {
 // ─── Page ──────────────────────────────────────────────────────────────────────
 
 export default function LeagueSettings() {
+  const { ask, dialog } = useConfirm();
   const { leagueSlug } = useSleeper();
   const isCommissioner = useIsCommissioner();
   const queryClient = useQueryClient();
@@ -375,7 +378,7 @@ export default function LeagueSettings() {
   };
 
   const discardSaved = async () => {
-    if (!confirm(`Discard the rules saved for ${data.nextSeason}? Next season goes back to this season's rules.`)) return;
+    if (!(await ask(`Discard the rules saved for ${data.nextSeason}? Next season goes back to this season's rules.`, "Discard"))) return;
     try {
       await send("DELETE", `/api/registry/leagues/${leagueSlug}/rules/next`);
       await queryClient.invalidateQueries({ queryKey: leagueRulesKey(leagueSlug) });
@@ -483,6 +486,7 @@ export default function LeagueSettings() {
           {!readOnly && <TabsContent value="access"><LeagueAccessTab slug={leagueSlug} /></TabsContent>}
         </div>
       </Tabs>
+      {dialog}
     </div>
   );
 }

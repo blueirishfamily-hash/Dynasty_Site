@@ -1,15 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { randomBytes } from "crypto";
 import {
-  SETUP_CODE_TTL_MS,
   fingerprint,
-  generateSetupCode,
   hashSecret,
   isValidAdminPasscode,
   isValidPin,
-  normalizeSetupCode,
   readPinSlot,
-  setupCodeExpired,
   verifySecret,
 } from "./secrets";
 import { decodeToken, encodeToken, type UnlockToken } from "./unlock";
@@ -35,23 +31,10 @@ describe("secret hashing", () => {
 });
 
 describe("PIN slot", () => {
-  it("tells a set PIN from a pending setup code", () => {
+  it("tells a set PIN from none, and treats an old unused setup code as none", () => {
     expect(readPinSlot(null, null)).toEqual({ state: "none" });
     expect(readPinSlot("scrypt$x", 5)).toEqual({ state: "set", hash: "scrypt$x" });
-    expect(readPinSlot("setup:scrypt$x", 5)).toEqual({ state: "setup_pending", hash: "scrypt$x", issuedAt: 5 });
-  });
-
-  it("expires setup codes after 7 days", () => {
-    const slot = readPinSlot("setup:scrypt$x", 1000);
-    expect(setupCodeExpired(slot, 1000 + SETUP_CODE_TTL_MS)).toBe(false);
-    expect(setupCodeExpired(slot, 1001 + SETUP_CODE_TTL_MS)).toBe(true);
-  });
-
-  it("makes readable setup codes that verify however they are typed", async () => {
-    const code = generateSetupCode();
-    expect(code).toMatch(/^[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}-[A-HJKMNP-Z2-9]{4}$/);
-    const stored = await hashSecret(normalizeSetupCode(code));
-    expect(await verifySecret(normalizeSetupCode(code.toLowerCase().replace(/-/g, " ")), stored)).toBe(true);
+    expect(readPinSlot("setup:scrypt$x", 5)).toEqual({ state: "none" });
   });
 
   it("checks PIN and passcode formats", () => {

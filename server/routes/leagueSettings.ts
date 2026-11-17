@@ -6,7 +6,7 @@
 //   PUT    /api/registry/leagues/:slug/rules/current   emergency change to this season, with a reason (admin passcode)
 //   GET    /api/registry/leagues/:slug/settings        contracts switch, invite code, league PIN, commissioners (commissioner PIN)
 //   PATCH  /api/registry/leagues/:slug/settings        change those (commissioner PIN)
-//   POST   /api/registry/leagues/:slug/commissioners   add a co-commissioner, returns a setup code (commissioner PIN)
+//   POST   /api/registry/leagues/:slug/commissioners   add a co-commissioner, they set their own PIN at first use
 //   DELETE /api/registry/leagues/:slug/commissioners/:sleeperUserId   remove a co-commissioner (commissioner PIN)
 //
 // Rule changes a commissioner saves apply from next season, so signed contracts and cap math don't shift
@@ -19,7 +19,7 @@ import { changedRuleKeys, mergeRules, validateRules, type LeagueRules } from "..
 import { leagueRulesFor, rulesRows, saveRulesRow, deleteRulesRow } from "../leagueRules";
 import { leagueResolver } from "../leagueRegistry";
 import { auditActor, requireAdmin, requireCommissioner } from "../security/guards";
-import { SETUP_PREFIX, generateSetupCode, hashSecret, isValidPin, normalizeSetupCode, readPinSlot } from "../security/secrets";
+import { hashSecret, isValidPin, readPinSlot } from "../security/secrets";
 import { addCommissioner, findCommissioner, listCommissioners, removeCommissioner, revokeAllDevices, updateLeague, writeAudit } from "../security/store";
 import { DEFAULT_GRACE_DAYS, MAX_GRACE_DAYS, graceEndFor } from "../security/membership";
 import { readGraceUntil, writeGraceUntil } from "../security/membershipStore";
@@ -206,19 +206,18 @@ export function registerLeagueSettingsRoutes(app: Express): void {
     const sleeperUserId = req.body?.sleeperUserId;
     if (typeof sleeperUserId !== "string" || !/^\d{1,25}$/.test(sleeperUserId)) return res.status(400).json({ error: "Pick a league member." });
     if (await findCommissioner(league.league.id, sleeperUserId)) return res.status(409).json({ error: "They're already a commissioner." });
-    const code = generateSetupCode();
     const now = Date.now();
     const row = await addCommissioner({
       leagueId: league.league.id,
       sleeperUserId,
       role: "co",
-      pinHash: SETUP_PREFIX + (await hashSecret(normalizeSetupCode(code))),
-      pinSetAt: now,
+      pinHash: null,
+      pinSetAt: null,
       addedBy: actor.role === "commissioner" ? actor.sleeperUserId : "admin",
       addedAt: now,
     });
     await writeAudit({ leagueId: league.league.id, ...auditActor(actor), action: "commissioner_added", details: { commissionerId: row.id, sleeperUserId, role: "co" } }, now);
-    res.status(201).json({ setupCode: code });
+    res.status(201).json({ added: true });
   }));
 
   app.delete("/api/registry/leagues/:slug/commissioners/:sleeperUserId", handle(async (req, res) => {

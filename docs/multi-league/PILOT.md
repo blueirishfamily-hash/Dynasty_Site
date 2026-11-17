@@ -6,7 +6,7 @@ Order matters. Each stage has a check; don't move on until it passes. "You" is t
 
 1. Add `UNLOCK_SECRET` and `ADMIN_RECOVERY_KEY` to the server's `.env` (see `.env.example`), then run the `multi-league` branch the way you run `main`.
 2. Open `/l/atl-dynasty/`. **Check:** ATL looks and behaves as before. Nothing asks for an invite code (ATL has none yet).
-3. Open `/admin`. Set the admin passcode with the recovery key. Go to Commissioners and PINs, click New setup code for yourself in ATL, then do any commissioner action (for example open League Settings and save a harmless change) and choose your commissioner PIN with that code. **Check:** the PIN prompt opens by itself and the action then goes through.
+3. Open `/admin`. Set the admin passcode with the recovery key. Then do any commissioner action in ATL (for example open League Settings and save a harmless change). The prompt asks you to choose a PIN and enter it again. Do this straight away: the first person to reach that prompt sets the PIN, and the audit log records it. **Check:** the PIN prompt opens by itself and the action then goes through.
 
 ## 1. The separate test database and the mismatch tests (done once, rerun before each release)
 
@@ -21,7 +21,7 @@ Order matters. Each stage has a check; don't move on until it passes. "You" is t
 
 Use a league you control in Sleeper, a throwaway is fine.
 
-1. `/admin` -> Leagues -> Add league. Enter its Sleeper league ID, check the seasons found, pick an address (for example `test-league`), an invite code, and yourself as commissioner. Leave Contracts off (new leagues start off). Save the setup code you're shown.
+1. `/admin` -> Leagues -> Add league. Enter its Sleeper league ID, check the seasons found, pick an address (for example `test-league`), an invite code, and yourself as commissioner. Leave Contracts off (new leagues start off). Then set your PIN at your first commissioner action in that league.
 2. Open `/l/test-league/`. **Check:** it shows the join card (it has an invite code). Enter the code. After joining you land in the league and pick your team.
 3. **No ATL data shows.** Visit each page and look for anything from ATL (team names, owners, players on ATL rosters, ATL history):
    - Dashboard, My Team, Matchup, Trade Center, Standings, Draft Board, Trophy Room, League History, Metrics, Year Recap
@@ -42,15 +42,15 @@ Use a league you control in Sleeper, a throwaway is fine.
    await fetch('/api/league/TEST_ID/suggestions', { method: 'POST',
      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ rosterId: 99 }) }).then(r => r.status)
    ```
-5. League Settings in the test league: turn the invite code and league PIN on and off, restart the grace period, add a co-commissioner (use the setup code), then turn Contracts on and off. **Check:** ATL's settings don't change (open ATL's League Settings and confirm).
+5. League Settings in the test league: turn the invite code and league PIN on and off, restart the grace period, add a co-commissioner (they choose their PIN at first use), then turn Contracts on and off. **Check:** ATL's settings don't change (open ATL's League Settings and confirm).
 6. In ATL, confirm nothing changed: standings, contracts, the cap, and the rules on League Settings are the same as before.
 
 ## 3. A friend's league (contracts on)
 
 Only after stage 1's tests pass and stage 2's checks are clean.
 
-1. `/admin` -> Add league with their Sleeper league ID. Contracts off, an invite code, their Sleeper user as commissioner. Send them: the address (`/l/<address>/`), the invite code, and their one-time setup code (valid 7 days).
-2. They open the link, enter the invite code, pick their team. At their first commissioner action (League Settings is a good one) they enter the setup code and choose their PIN.
+1. `/admin` -> Add league with their Sleeper league ID. Contracts off, an invite code, their Sleeper user as commissioner. Send them: the address (`/l/<address>/`), the invite code, and ask them to set their PIN as their first action, before anyone else could.
+2. They open the link, enter the invite code, pick their team. At their first commissioner action (League Settings is a good one) they choose their PIN and enter it again.
 3. In League Settings -> League access they can set a league PIN. Setting it signs everyone out of the league; members join again with the code and the PIN.
 4. When they turn Contracts on, the new tab **Import contracts** appears in League Settings:
    - Download the template, fill it in (one row per contract, one column per season, $M; teams by team name, owner name or roster number; players by name on that team's Sleeper roster)

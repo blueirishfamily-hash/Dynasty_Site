@@ -156,6 +156,23 @@ describe.skipIf(!READY)("league separation and rollover (needs .env.test)", () =
       expect(r3.status).toBe(401);
     });
 
+    it("a commissioner with no PIN sets their own once, and the first set wins", async () => {
+      const co = `9${Date.now()}`.slice(0, 20);
+      await env.db.insert(schema.leagueCommissionersTable).values({
+        id: randomUUID(), leagueId: A.registryId, sleeperUserId: co, role: "co", pinHash: null, pinSetAt: null, addedBy: "itest", addedAt: Date.now(),
+      });
+      const url = `/api/registry/leagues/${A.slug}/commissioner/set-pin`;
+      expect((await env.device().post(`/api/registry/leagues/${A.slug}/commissioner/unlock`, { sleeperUserId: co, pin: "1111" })).body.code).toBe("pin_not_set");
+      expect((await env.device().post(url, { sleeperUserId: co, newPin: "12" })).status).toBe(400);
+      expect((await env.device().post(url, { sleeperUserId: "1", newPin: "1111" })).status).toBe(403); // not a commissioner here
+      expect((await env.device().post(url, { sleeperUserId: A.commissioner, newPin: "1111" })).status).toBe(409); // already has a PIN
+      const first = env.device();
+      expect((await first.post(url, { sleeperUserId: co, newPin: "1111" })).status).toBe(200);
+      expect((await env.device().post(url, { sleeperUserId: co, newPin: "2222" })).body.code).toBe("pin_already_set");
+      expect((await env.device().post(`/api/registry/leagues/${A.slug}/commissioner/unlock`, { sleeperUserId: co, pin: "1111" })).status).toBe(200);
+      expect((await env.device().post(`/api/registry/leagues/${B.slug}/commissioner/set-pin`, { sleeperUserId: co, newPin: "3333" })).status).toBe(403); // not B's commissioner
+    });
+
     it("league A's device token is refused in league B", async () => {
       const token = allA.jar.get(cookieName("ld_", A.registryId))!;
       expect(token).toBeTruthy();
