@@ -2,13 +2,15 @@
 // Moved out of server/routes.ts unchanged.
 import type { Express } from "express";
 import { storage } from "../storage";
-import { getLeague, getLeagueRosters, getNFLState, getAllPlayers, type SleeperRoster } from "../sleeper";
+import { getLeague, getLeagueRosters, getLeagueUsers, getNFLState, getAllPlayers, type SleeperRoster } from "../sleeper";
+import { parseContractsCsv, type ImportContext } from "../contractImport";
+import { writeAudit } from "../security/store";
 import {
   dbErrorMessage,
   fetchAllWeeklyStats,
   computeAdjustedPPGForPlayer,
 } from "./shared";
-import { requireCommissioner } from "../security/guards";
+import { auditActor, requireCommissioner } from "../security/guards";
 import { rulesForSleeperLeague } from "../leagueRules";
 import { extensionMultiplier, lengthLimit } from "../../shared/leagueRules";
 
@@ -140,6 +142,99 @@ export function registerContractsRoutes(app: Express): void {
     } catch (error) {
       console.error("Error saving contracts:", error);
       res.status(500).json({ error: "Failed to save contracts", message: dbErrorMessage(error) });
+    }
+  });
+
+  // Starting contracts from a CSV (one column per season). Commissioner only. By default this only checks the
+  // file and reports what would be imported (dryRun); with dryRun: false it writes, but only when every row is
+  // fine. Rows for players who already have a contract are skipped, or replaced with mode: "replace".
+  app.post("/api/league/:leagueId/contracts/import", async (req, res) => {
+    try {
+      const actor = await requireCommissioner(req, res);
+      if (!actor) return;
+      const { leagueId } = req.params;
+      const { csv, mode, dryRun } = req.body ?? {};
+      if (typeof csv !== "string" || csv.trim().length === 0) return res.status(400).json({ error: "Choose a CSV file." });
+      if (csv.length > 600_000) return res.status(400).json({ error: "That file is too large." });
+      if (mode !== "skip" && mode !== "replace") return res.status(400).json({ error: "Mode is skip or replace." });
+
+      const [league, rosters, users, players, contracts, rules] = await Promise.all([
+        getLeague(leagueId),
+        getLeagueRosters(leagueId),
+        getLeagueUsers(leagueId),
+        getAllPlayers(),
+        storage.getPlayerContracts(leagueId),
+        rulesForSleeperLeague(leagueId),
+      ]);
+      const userById = new Map(users.map((u) => [u.user_id, u]));
+      const playerNames: Record<string, string> = {};
+      const ctx: ImportContext = {
+        teams: rosters.map((r) => {
+          const u = userById.get(r.owner_id);
+          const labels = [u?.metadata?.team_name, u?.display_name, `Team ${r.roster_id}`].filter((l): l is string => !!l);
+          const playerIds = (r.players ?? []).map(String);
+          for (const id of playerIds) {
+            const p = players[id];
+            if (p) playerNames[id] = p.full_name || `${p.first_name ?? ""} ${p.last_name ?? ""}`.trim();
+          }
+          return { rosterId: r.roster_id, labels, playerIds };
+        }),
+        playerNames,
+        salaryCap: rules.salaryCap,
+        maxContractYears: rules.maxContractYears,
+        currentSeason: parseInt(league.season, 10),
+        existing: new Map(
+          contracts.map((c: any) => {
+            let salaries: Record<string, number> = {};
+            try {
+              salaries = typeof c.salaries === "string" ? JSON.parse(c.salaries || "{}") : c.salaries || {};
+            } catch { /* no salaries */ }
+            return [`${c.rosterId}:${c.playerId}`, salaries] as const;
+          }),
+        ),
+      };
+
+      const result = parseContractsCsv(csv, ctx, mode);
+      if (dryRun !== false) return res.json({ dryRun: true, ...result });
+      if (result.problems.length > 0 || result.counts.error > 0) {
+        return res.status(400).json({ error: "Fix the problems in the file first. Nothing was imported.", dryRun: false, ...result });
+      }
+      const toWrite = result.rows.filter((r) => r.status === "ok");
+      if (toWrite.length === 0) return res.status(400).json({ error: "There is nothing to import.", dryRun: false, ...result });
+
+      const byKey = new Map(contracts.map((c: any) => [`${c.rosterId}:${c.playerId}`, c]));
+      // Each write is an upsert, so if this stops partway, running the same import again finishes it.
+      for (const row of toWrite) {
+        const prev: any = byKey.get(`${row.rosterId}:${row.playerId}`);
+        await storage.upsertPlayerContract({
+          leagueId,
+          rosterId: row.rosterId!,
+          playerId: row.playerId!,
+          salaries: JSON.stringify(row.salaries),
+          fifthYearOption: prev?.fifthYearOption ?? null,
+          isOnIr: prev?.isOnIr ?? 0,
+          franchiseTagUsed: prev?.franchiseTagUsed ?? 0,
+          franchiseTagYear: prev?.franchiseTagYear ?? null,
+          originalContractYears: Object.keys(row.salaries!).length,
+          isRookieContract: row.rookie ? 1 : 0,
+          extensionApplied: prev?.extensionApplied ?? 0,
+          extensionYear: prev?.extensionYear ?? null,
+          extensionSalary: prev?.extensionSalary ?? null,
+          hasBeenExtended: prev?.hasBeenExtended ?? 0,
+          hasBeenFranchiseTagged: prev?.hasBeenFranchiseTagged ?? 0,
+        } as any);
+      }
+      const replaced = toWrite.filter((r) => r.replaces).length;
+      await writeAudit({
+        leagueId: req.league?.league.id ?? null,
+        ...auditActor(actor),
+        action: "contracts_imported",
+        details: { sleeperLeagueId: leagueId, imported: toWrite.length, replaced, skipped: result.counts.skipped, mode },
+      });
+      res.json({ dryRun: false, imported: toWrite.length, replaced, skipped: result.counts.skipped, capWarnings: result.capWarnings });
+    } catch (error) {
+      console.error("Error importing contracts:", error);
+      res.status(500).json({ error: "Failed to import contracts" });
     }
   });
 

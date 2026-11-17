@@ -16,7 +16,8 @@ import { useToast } from "@/hooks/use-toast";
 import SetupCodeDialog from "@/components/SetupCodeDialog";
 import { useSleeper } from "@/lib/sleeper-context";
 import { useIsCommissioner } from "@/lib/commissioner";
-import { leagueRulesKey, useLeagueRulesData } from "@/lib/leagueRules";
+import { leagueRulesKey, useContractsEnabled, useLeagueRulesData } from "@/lib/leagueRules";
+import ContractImport from "@/components/ContractImport";
 import { cn } from "@/lib/utils";
 import { changedRuleKeys, type LeagueRules } from "@shared/leagueRules";
 
@@ -336,6 +337,7 @@ export default function LeagueSettings() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
   const { data, isLoading, error } = useLeagueRulesData();
+  const contractsOn = useContractsEnabled();
   const [mode, setMode] = useState<"next" | "current">("next");
   const [draft, setDraft] = useState<LeagueRules | null>(null);
   const [reason, setReason] = useState("");
@@ -449,6 +451,7 @@ export default function LeagueSettings() {
             <TabsTrigger value="extensions">Extensions and tags</TabsTrigger>
             <TabsTrigger value="limits">Dead cap and limits</TabsTrigger>
             <TabsTrigger value="awards">Awards</TabsTrigger>
+            {!readOnly && contractsOn && <TabsTrigger value="import">Import contracts</TabsTrigger>}
             {!readOnly && <TabsTrigger value="access">League access</TabsTrigger>}
           </TabsList>
           {!readOnly && (
@@ -476,6 +479,7 @@ export default function LeagueSettings() {
         )}
         <div className="mt-4">
           {ruleTabs}
+          {!readOnly && contractsOn && <TabsContent value="import"><ContractImport /></TabsContent>}
           {!readOnly && <TabsContent value="access"><LeagueAccessTab slug={leagueSlug} /></TabsContent>}
         </div>
       </Tabs>

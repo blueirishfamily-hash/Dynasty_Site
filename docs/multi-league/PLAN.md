@@ -261,17 +261,17 @@ There are seven phases, and ATL Dynasty keeps working after each one. A second l
 - [x] Several leagues per device, with the sidebar switcher
 - [x] Membership checks on every write route
 - [x] Sleeper request queue, shared caches and staggered background jobs per league (the queue and caches are built; the app has no background timers today, so there was nothing to stagger)
-- [ ] All mismatch tests pass
+- [x] All mismatch tests pass (npm run test:db, against the separate test database: 20 tests, with fake Sleeper data)
 
 **Phase 5: season rollover**
 
 - [x] Rebuild rollover on the season history table, with the previous-ID check
 - [x] One transaction, or steps that are safe to rerun, plus a dry run
 - [x] Next season's rules become current at rollover
-- [ ] Rollover tests: two leagues in the same week and a failure halfway followed by a resume are done (against an in-memory fake); ATL's 2024 to 2025 copy still needs the test database
+- [ ] Rollover tests: the dry run, a failure halfway followed by a resume, and two leagues in the same week now run on real rows in the test database (fake league data). Only a run on a copy of ATL's real 2024 to 2025 data is left, which needs ATL's rows exported into the test database
 
 **Phase 6: pilot**
 
-- [ ] Add a test league with contracts off, and check that no ATL data shows
-- [ ] Add a friend's league with contracts on, an invite code and both PINs
-- [ ] Add a CSV import for starting contracts if a contracts league needs it
+- [ ] Add a test league with contracts off, and check that no ATL data shows (needs the user: see docs/multi-league/PILOT.md)
+- [ ] Add a friend's league with contracts on, an invite code and both PINs (waits for the test database and the mismatch tests)
+- [x] Add a CSV import for starting contracts if a contracts league needs it

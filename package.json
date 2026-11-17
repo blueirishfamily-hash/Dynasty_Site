@@ -9,7 +9,9 @@
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
     "test": "vitest run",
-    "db:push": "node -r dotenv/config node_modules/drizzle-kit/bin.cjs push"
+    "db:push": "node -r dotenv/config node_modules/drizzle-kit/bin.cjs push",
+    "db:push:test": "tsx script/test-db.ts",
+    "test:db": "vitest run --config vitest.integration.config.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
