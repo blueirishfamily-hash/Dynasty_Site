@@ -3,6 +3,7 @@
 //   POST /api/registry/join/check   invite code -> the league's name and whether it asks for a PIN
 //   POST /api/registry/join         invite code (+ league PIN if set) -> this device joins, cookie is set
 //   GET  /api/registry/my-leagues   the leagues this browser has joined
+//   POST /api/registry/leagues/:slug/device/visit  an open league (no invite code) remembers this device as joined
 //   POST /api/registry/leagues/:slug/device/team   remember which team this device picked in the league
 //
 // There is no public list of leagues: a league shows up only after its exact invite code is entered. Wrong
@@ -95,6 +96,18 @@ export function registerJoinRoutes(app: Express): void {
       if (league && league.status === "active") out.push({ slug: league.slug, name: league.name, rosterId: device.rosterId });
     }
     res.json(out);
+  }));
+
+  // Opening a league that has no invite code records this device as a member, as if it had joined with a code. That
+  // way devices that already use an open league stay members if a code is added later. Leagues with a code do nothing here.
+  app.post("/api/registry/leagues/:slug/device/visit", handle(async (req, res) => {
+    const slug = normalizeSlug(req.params.slug);
+    const found = slug ? await dbLeagueRegistry.findBySlug(slug) : null;
+    if (!found || found.league.status !== "active") return res.status(404).json({ error: "League not found" });
+    if (found.league.inviteCode) return res.json({ enrolled: false });
+    if (await deviceFor(req, found.league.id, dbMembershipDeps)) return res.json({ enrolled: false });
+    await enrollDevice(req, res, found.league.id, dbMembershipDeps);
+    res.json({ enrolled: true });
   }));
 
   app.post("/api/registry/leagues/:slug/device/team", handle(async (req, res) => {

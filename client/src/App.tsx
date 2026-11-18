@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { Switch, Route, Redirect, useLocation, useSearch } from "wouter";
 import { queryClient } from "./lib/queryClient";
-import { QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
@@ -316,11 +316,25 @@ function AppContent() {
 
 // Every page lives under its league's address, /l/<slug>/. Inside the nested route, links and
 // setLocation stay relative ("/team" goes to /l/<slug>/team), so pages don't need to know the address.
+// An open league (no invite code) remembers each device that opens it as joined, so it shows under "Your leagues"
+// and stays a member if a code is added later.
+function VisitBeacon({ slug }: { slug: string }) {
+  const queryClient = useQueryClient();
+  useEffect(() => {
+    fetch(`/api/registry/leagues/${encodeURIComponent(slug)}/device/visit`, { method: "POST" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => { if (body?.enrolled) queryClient.invalidateQueries({ queryKey: ["/api/registry/my-leagues"] }); })
+      .catch(() => {});
+  }, [slug, queryClient]);
+  return null;
+}
+
 function LeagueApp({ slug }: { slug: string }) {
   if (!isValidLeagueSlug(slug)) return <NotFound />;
   setLeagueSlug(slug); // before any child fetches, so they carry the X-League header
   return (
     <SleeperProvider key={slug} leagueSlug={slug}>
+      <VisitBeacon slug={slug} />
       <AppContent />
     </SleeperProvider>
   );

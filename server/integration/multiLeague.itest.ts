@@ -173,6 +173,14 @@ describe.skipIf(!READY)("league separation and rollover (needs .env.test)", () =
       expect((await env.device().post(`/api/registry/leagues/${B.slug}/commissioner/set-pin`, { sleeperUserId: co, newPin: "3333" })).status).toBe(403); // not B's commissioner
     });
 
+    it("visiting a league that has an invite code does not join the device", async () => {
+      const d = env.device();
+      const r = await d.post(`/api/registry/leagues/${A.slug}/device/visit`, {});
+      expect([r.status, r.body.enrolled]).toEqual([200, false]);
+      expect([...d.jar.keys()].some((k) => k.startsWith("ld_"))).toBe(false);
+      expect((await d.post(`/api/registry/leagues/no-such-league/device/visit`, {})).status).toBe(404);
+    });
+
     it("league A's device token is refused in league B", async () => {
       const token = allA.jar.get(cookieName("ld_", A.registryId))!;
       expect(token).toBeTruthy();
