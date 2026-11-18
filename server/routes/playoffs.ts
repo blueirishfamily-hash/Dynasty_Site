@@ -24,6 +24,8 @@ import {
   STATS_CACHE_TTL,
 } from "./shared";
 import { requireCommissioner } from "../security/guards";
+import { loadLeagueHistory } from "../loadLeagueHistory";
+import { headToHeadForMatchups } from "../../shared/weeklyReportHistory";
 import { simulateOutlook, type OutlookResult, type OutlookSchedule, type WeeklyRecord } from "../playoffOutlook";
 
 // Outlook results are deterministic for a given set of records, so repeat page loads can reuse them.
@@ -91,7 +93,21 @@ export function registerPlayoffsRoutes(app: Express): void {
         players: playerRecord,
         byeTeams: BYE_WEEKS[week] || [],
       };
-      res.json(buildWeeklyReport(input));
+      const report = buildWeeklyReport(input);
+      // All-time head to head. A failure here must not fail the report; the PDF falls back to this season.
+      try {
+        const history = await loadLeagueHistory(leagueId);
+        if (history) {
+          const rosterToFranchise = new Map<number, string>(rosters.map(r => [r.roster_id, r.owner_id || `roster-${r.roster_id}`]));
+          const series = headToHeadForMatchups(history, report.preview.matchups, rosterToFranchise);
+          report.preview.matchups.forEach((m, i) => {
+            m.history = series[i];
+          });
+        }
+      } catch (error) {
+        console.error("[Weekly Report] Could not load league history for head to head:", error);
+      }
+      res.json(report);
     } catch (error) {
       console.error("[Weekly Report] Failed to build report:", error);
       res.status(500).json({ error: "Failed to build the weekly report" });
@@ -679,8 +695,8 @@ export function registerPlayoffsRoutes(app: Express): void {
         // This ensures even 0/10000 becomes 0.01% and 10000/10000 becomes 99.99%
         const smoothed = (successes + 1) / (trials + 2);
         const pct = smoothed * 100;
-        // Round to 1 decimal place
-        return Math.round(pct * 10) / 10;
+        // Round to 3 decimal places so a near-certain team never displays as exactly 100% (or 0%)
+        return Math.round(pct * 1000) / 1000;
       };
 
       // Only apply smoothing if regular season hasn't ended AND we're not in postseason
@@ -697,10 +713,10 @@ export function registerPlayoffsRoutes(app: Express): void {
           const projectedPointsFor = Math.round((r.avgFinalPoints / SIMULATIONS) * 10) / 10;
           
           // Calculate raw percentages
-          const rawMakePlayoffsPct = Math.round((r.makePlayoffs / SIMULATIONS) * 1000) / 10;
-          const rawOneSeedPct = Math.round((r.oneSeed / SIMULATIONS) * 1000) / 10;
+          const rawMakePlayoffsPct = Math.round((r.makePlayoffs / SIMULATIONS) * 100000) / 1000;
+          const rawOneSeedPct = Math.round((r.oneSeed / SIMULATIONS) * 100000) / 1000;
           const rawDivisionWinnerPct = hasDivisions 
-            ? Math.round((r.divisionWinner / SIMULATIONS) * 1000) / 10 
+            ? Math.round((r.divisionWinner / SIMULATIONS) * 100000) / 1000 
             : undefined;
           
           // Apply smoothing for probabilities when season is ongoing
@@ -733,7 +749,8 @@ export function registerPlayoffsRoutes(app: Express): void {
             division: hasDivisions ? team.division : undefined,
             oneSeedPct,
             divisionWinnerPct,
-            makePlayoffsPct,
+            // A mathematically settled team is exactly 100% or 0%, whatever the simulation smoothing says.
+            makePlayoffsPct: ot?.clinchedPlayoffs ? 100 : ot?.eliminated ? 0 : makePlayoffsPct,
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
             ...(ot
               ? {
@@ -776,6 +793,7 @@ export function registerPlayoffsRoutes(app: Express): void {
               cutoffWinsPrev: outlook.cutoffWinsPrev,
               history: outlook.history,
               user: outlook.user,
+              gameSwings: outlook.gameSwings,
             }
           : null,
       });

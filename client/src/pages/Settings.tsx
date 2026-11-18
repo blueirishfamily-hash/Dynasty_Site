@@ -19,7 +19,7 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { queryClient } from "@/lib/queryClient";
 import { RefreshCw, Check, Bell, User, Database, FileDown, Scissors } from "lucide-react";
-import { buildWeeklyReportPdf, collectAvatarUrls, loadAvatars, reportFileName, type PlayoffData } from "@/lib/weeklyReportPdf";
+import { buildWeeklyReportPdf, collectAvatarUrls, loadAvatars, loadReportFonts, reportFileName, type PlayoffData } from "@/lib/weeklyReportPdf";
 import type { ReportData } from "@shared/weeklyReport";
 import { useIsCommissioner } from "@/lib/commissioner";
 
@@ -101,8 +101,8 @@ export default function Settings() {
       const report: ReportData = await res.json();
       const playoffRes = await fetch(`/api/sleeper/league/${league.leagueId}/playoff-predictions`);
       const playoff: PlayoffData | null = playoffRes.ok ? await playoffRes.json() : null;
-      const avatars = await loadAvatars(collectAvatarUrls(report, playoff));
-      buildWeeklyReportPdf(report, playoff, avatars).save(reportFileName(report));
+      const [avatars, fonts] = await Promise.all([loadAvatars(collectAvatarUrls(report, playoff)), loadReportFonts()]);
+      buildWeeklyReportPdf(report, playoff, avatars, fonts).save(reportFileName(report));
       toast({ title: "Report downloaded", description: `Week ${report.week} report saved as PDF.` });
     } catch (err) {
       toast({

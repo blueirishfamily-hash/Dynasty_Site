@@ -95,6 +95,15 @@ export interface UserOutlook {
   winsNeeded: Array<{ wins: number; pct: number; samples: number }>;
 }
 
+/** Playoff odds for both teams in one game, as they stand now and with each result forced. */
+export interface GameSwing {
+  week: number;
+  teamA: number;
+  teamB: number;
+  a: { now: number; ifWin: number; ifLose: number };
+  b: { now: number; ifWin: number; ifLose: number };
+}
+
 export interface OutlookResult {
   sims: number;
   byes: number;
@@ -105,6 +114,8 @@ export interface OutlookResult {
   /** Odds history. weeks[k] is the week after which the odds were computed. */
   history: { weeks: number[]; series: Record<number, number[]> };
   user: UserOutlook | null;
+  /** Both-team swing for each game of the first remaining week. */
+  gameSwings: GameSwing[];
 }
 
 /** Small fast seeded generator so repeated page loads show the same numbers. */
@@ -419,6 +430,36 @@ export function simulateOutlook(input: OutlookInput): OutlookResult {
     };
   }
 
+  // Swing for both teams in each game of the first remaining week. One forced run per result gives
+  // the odds of every team at once, so both sides of a game come from the same two runs.
+  const gameSwings: GameSwing[] = [];
+  if (firstRemainingWeek <= regularSeasonWeeks) {
+    const nSwing = Math.min(sims, 3000);
+    for (const [ra, rb] of schedule[firstRemainingWeek] || []) {
+      const a = idx.get(ra);
+      const b = idx.get(rb);
+      if (a === undefined || b === undefined) continue;
+      const run = (winner: number) =>
+        runSims(input, {
+          n: nSwing,
+          seed: baseSeed + 15485863,
+          startWeek: firstRemainingWeek,
+          baseWins,
+          basePf,
+          forced: new Map<string, number>([[forcedKey(firstRemainingWeek, ra, rb), winner]]),
+        });
+      const aWins = run(ra);
+      const bWins = run(rb);
+      gameSwings.push({
+        week: firstRemainingWeek,
+        teamA: ra,
+        teamB: rb,
+        a: { now: teamOutlooks[a].makePlayoffsPct, ifWin: pct1(aWins.made[a], aWins.n), ifLose: pct1(bWins.made[a], bWins.n) },
+        b: { now: teamOutlooks[b].makePlayoffsPct, ifWin: pct1(bWins.made[b], bWins.n), ifLose: pct1(aWins.made[b], aWins.n) },
+      });
+    }
+  }
+
   return {
     sims,
     byes,
@@ -427,5 +468,6 @@ export function simulateOutlook(input: OutlookInput): OutlookResult {
     cutoffWinsPrev,
     history,
     user,
+    gameSwings,
   };
 }

@@ -1,5 +1,5 @@
 import { jsPDF } from "jspdf";
-import type { ReportData, WeekGame } from "@shared/weeklyReport";
+import type { PreviewMatchup, ReportData, TeamRef, WeekGame } from "@shared/weeklyReport";
 
 // ─── Playoff data (from the playoff-predictions endpoint) ────────────────────
 
@@ -14,6 +14,20 @@ export interface PlayoffPrediction {
   makePlayoffsPct: number;
   oneSeedPct: number;
   divisionWinnerPct?: number;
+  /** Mathematically settled (wins only, tiebreakers ignored, so it never calls one wrongly). */
+  clinchedPlayoffs?: boolean;
+  eliminated?: boolean;
+  /** Regular-season games still to play (present when the playoff outlook was computed). */
+  gamesLeft?: number;
+}
+
+/** Playoff odds for both teams in one game of the report week (from the playoff outlook). */
+export interface GameSwingData {
+  week: number;
+  teamA: number;
+  teamB: number;
+  a: { now: number; ifWin: number; ifLose: number };
+  b: { now: number; ifWin: number; ifLose: number };
 }
 
 export interface PlayoffData {
@@ -21,32 +35,38 @@ export interface PlayoffData {
   playoffTeams: number;
   hasDivisions: boolean;
   simulationCount: number;
+  byes?: number;
+  outlook?: { gameSwings?: GameSwingData[] } | null;
 }
 
-// ─── Layout and colors (matches the dark report design) ─────────────────────
+// ─── Layout and colors (broadcast style: near-black, neon green, hot orange) ─
 
 type RGB = [number, number, number];
 const hex = (h: string): RGB => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
 
 const COLORS = {
-  bg: hex("#0B0F17"),
-  card: hex("#141B26"),
-  line: hex("#222B3A"),
-  text: hex("#E6EAF2"),
-  muted: hex("#8A94A6"),
-  green: hex("#3DDC97"),
-  amber: hex("#F5B642"),
-  red: hex("#F26B6B"),
-  blue: hex("#5AA9F0"),
-  orange: hex("#FF9F43"),
-  dark: hex("#0B0F17"),
+  bg: hex("#05080F"),
+  heroBg: hex("#0B1A18"),
+  line: hex("#1F2A3A"),
+  rowLine: hex("#141C2A"),
+  text: hex("#F1F5F9"),
+  mid: hex("#94A3B8"),
+  muted: hex("#64748B"),
+  green: hex("#22E5A0"),
+  hot: hex("#FF5A3C"),
+  amber: hex("#FFB020"),
+  cold: hex("#38BDF8"),
+  white: hex("#FFFFFF"),
+  dark: hex("#05080F"),
+  divRow: hex("#2A2110"),
 };
 
 const PAGE_W = 612;
 const PAGE_H = 792;
-const MARGIN = 36;
+const MARGIN = 33;
 const CONTENT_W = PAGE_W - MARGIN * 2;
 const REGULAR_SEASON_WEEKS = 14;
+const TOTAL_PAGES = 4;
 
 /** Helvetica (the built-in PDF font) cannot draw emoji or most non-Latin characters. */
 function clean(s: string): string {
@@ -57,6 +77,32 @@ function clean(s: string): string {
 function fmt(n: number, digits = 1): string {
   return n.toFixed(digits);
 }
+
+/** Percent text, 2 decimals. Never rounds a near-certain team up to 100 or a long shot down to 0. */
+export function pctText(p: number): string {
+  if (p > 99.9 && p < 100) return ">99.9%";
+  if (p > 0 && p < 0.1) return "<0.1%";
+  return `${fmt(p, 2)}%`;
+}
+
+/**
+ * Division odds, with the same rule as the playoff odds: exactly 100% or 0% only when the wins math settles it
+ * (a team wins the division when no division rival can reach its win total, and is out when it cannot reach the
+ * leader's current wins; ties are left open). Otherwise near-certain values read >99.9% or <0.1%.
+ */
+export function divisionOddsText(t: PlayoffPrediction, all: PlayoffPrediction[]): string {
+  const pct = t.divisionWinnerPct;
+  if (pct === undefined) return "-";
+  const rivals = all.filter(o => o.division === t.division && o.rosterId !== t.rosterId);
+  if (rivals.length && all.every(o => o.gamesLeft !== undefined)) {
+    const myMax = t.currentWins + (t.gamesLeft ?? 0);
+    if (rivals.every(o => o.currentWins + (o.gamesLeft ?? 0) < t.currentWins)) return "100.00%";
+    if (rivals.some(o => o.currentWins > myMax)) return "0.00%";
+  }
+  return pctText(pct);
+}
+
+const signed = (n: number, digits = 1) => `${n > 0 ? "+" : ""}${fmt(n, digits)}`;
 
 // ─── Avatars ────────────────────────────────────────────────────────────────
 
@@ -99,23 +145,93 @@ export function collectAvatarUrls(report: ReportData, playoff: PlayoffData | nul
   report.lastWeek.positionLeaders.forEach(r => add(r.team));
   report.lastWeek.highestTeamScores.forEach(t => add(t));
   report.lastWeek.efficiency.forEach(t => add(t));
+  report.lastWeek.powerRankings.forEach(r => add(r.team));
   report.preview.matchups.forEach(m => {
     add(m.a);
     add(m.b);
   });
   report.hotCold?.all.forEach(t => add(t));
+  void playoff;
   return urls;
+}
+
+/** The team more likely to win a previewed game. probA is the chance that team A (the left team) wins. */
+export function favorite(m: PreviewMatchup): { team: TeamRef; pct: number; isA: boolean; even: boolean } {
+  const isA = m.probA >= 0.5;
+  return { team: isA ? m.a : m.b, pct: Math.max(m.probA, 1 - m.probA) * 100, isA, even: m.probA === 0.5 };
+}
+
+/** "Alpha lead 7-4", "Tied 5-5" or "First meeting" (a -1 is added for ties). */
+export function h2hSeries(m: PreviewMatchup): string {
+  const h = m.history;
+  if (!h || h.meetings === 0) return "First meeting";
+  const tie = h.ties ? `-${h.ties}` : "";
+  if (h.aWins === h.bWins) return `Tied ${h.aWins}-${h.bWins}${tie}`;
+  const lead = h.aWins > h.bWins ? m.a : m.b;
+  return `${lead.name} lead ${Math.max(h.aWins, h.bWins)}-${Math.min(h.aWins, h.bWins)}${tie}`;
+}
+
+// ─── Fonts (Oswald for titles and big numbers; falls back to Helvetica bold) ───
+
+export interface ReportFonts {
+  regular: string;
+  bold: string;
+}
+
+let fontCache: ReportFonts | null = null;
+
+async function fetchBase64(url: string): Promise<string> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Font ${url} returned ${res.status}`);
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...Array.from(bytes.subarray(i, i + 0x8000)));
+  return btoa(binary);
+}
+
+/** Fetches the Oswald TTFs (base64) once per page load. Returns null if they cannot be loaded; the report then uses Helvetica. */
+export async function loadReportFonts(): Promise<ReportFonts | null> {
+  if (fontCache) return fontCache;
+  try {
+    const [regular, bold] = await Promise.all([fetchBase64("/fonts/Oswald-Regular.ttf"), fetchBase64("/fonts/Oswald-Bold.ttf")]);
+    fontCache = { regular, bold };
+    return fontCache;
+  } catch (error) {
+    console.warn("Could not load report fonts, using Helvetica:", error);
+    return null;
+  }
 }
 
 // ─── Drawing helpers ────────────────────────────────────────────────────────
 
+type FontKind = "body" | "display";
+type TextOpts = { size?: number; color?: RGB; bold?: boolean; align?: "left" | "center" | "right"; spacing?: number; font?: FontKind };
+
 class Canvas {
   doc: jsPDF;
   avatars: Map<string, string>;
+  /** True when Oswald is registered on this document. */
+  hasDisplay = false;
 
-  constructor(avatars: Map<string, string>) {
+  constructor(avatars: Map<string, string>, fonts?: ReportFonts | null) {
     this.doc = new jsPDF({ unit: "pt", format: "letter", orientation: "portrait" });
     this.avatars = avatars;
+    if (fonts) {
+      try {
+        this.doc.addFileToVFS("Oswald-Bold.ttf", fonts.bold);
+        this.doc.addFont("Oswald-Bold.ttf", "Oswald", "bold");
+        this.doc.addFileToVFS("Oswald-Regular.ttf", fonts.regular);
+        this.doc.addFont("Oswald-Regular.ttf", "Oswald", "normal");
+        this.hasDisplay = true;
+      } catch (error) {
+        console.warn("Could not register report fonts, using Helvetica:", error);
+      }
+    }
+  }
+
+  private setFace(bold: boolean, font: FontKind) {
+    if (font === "display" && this.hasDisplay) this.doc.setFont("Oswald", bold ? "bold" : "normal");
+    else this.doc.setFont("helvetica", bold || font === "display" ? "bold" : "normal");
   }
 
   page(first = false) {
@@ -124,43 +240,73 @@ class Canvas {
     this.doc.rect(0, 0, PAGE_W, PAGE_H, "F");
   }
 
-  text(
-    str: string,
-    x: number,
-    y: number,
-    opts: { size?: number; color?: RGB; bold?: boolean; align?: "left" | "center" | "right" } = {},
-  ) {
-    const { size = 10, color = COLORS.text, bold = false, align = "left" } = opts;
-    this.doc.setFont("helvetica", bold ? "bold" : "normal");
+  text(str: string, x: number, y: number, opts: TextOpts = {}) {
+    const { size = 10, color = COLORS.text, bold = false, align = "left", spacing = 0, font = "body" } = opts;
+    const d = this.doc as unknown as { setCharSpace?: (n: number) => void };
+    this.setFace(bold, font);
     this.doc.setFontSize(size);
     this.doc.setTextColor(...color);
+    if (spacing && d.setCharSpace) d.setCharSpace(spacing);
     this.doc.text(clean(str), x, y, { align });
+    if (spacing && d.setCharSpace) d.setCharSpace(0);
   }
 
-  card(x: number, y: number, w: number, h: number, fill: RGB = COLORS.card) {
-    this.doc.setFillColor(...fill);
-    this.doc.setDrawColor(...COLORS.line);
+  width(str: string, size: number, bold = false, font: FontKind = "body"): number {
+    this.setFace(bold, font);
+    this.doc.setFontSize(size);
+    return this.doc.getTextWidth(clean(str));
+  }
+
+  /** Shorten a string with ".." so it fits in maxW. */
+  fit(str: string, maxW: number, size: number, bold = false, font: FontKind = "body"): string {
+    const s = clean(str);
+    if (this.width(s, size, bold, font) <= maxW) return s;
+    let out = s;
+    while (out.length > 1 && this.width(out + "..", size, bold, font) > maxW) out = out.slice(0, -1);
+    return out.trimEnd() + "..";
+  }
+
+  wrap(str: string, maxW: number, size: number, bold = false, font: FontKind = "body"): string[] {
+    this.setFace(bold, font);
+    this.doc.setFontSize(size);
+    return this.doc.splitTextToSize(clean(str), maxW) as string[];
+  }
+
+  rule(x1: number, x2: number, y: number, color: RGB = COLORS.line, weight = 0.6) {
+    this.doc.setDrawColor(...color);
+    this.doc.setLineWidth(weight);
+    this.doc.line(x1, y, x2, y);
+  }
+
+  box(x: number, y: number, w: number, h: number, border: RGB = COLORS.line, fill?: RGB) {
+    this.doc.setDrawColor(...border);
     this.doc.setLineWidth(0.6);
-    this.doc.roundedRect(x, y, w, h, 8, 8, "FD");
-  }
-
-  bar(x: number, y: number, w: number, h: number, pct: number, color: RGB) {
-    this.doc.setFillColor(...COLORS.line);
-    this.doc.rect(x, y, w, h, "F");
-    const filled = Math.max(0, Math.min(100, pct)) / 100 * w;
-    if (filled > 0) {
-      this.doc.setFillColor(...color);
-      this.doc.rect(x, y, filled, h, "F");
+    if (fill) {
+      this.doc.setFillColor(...fill);
+      this.doc.rect(x, y, w, h, "FD");
+    } else {
+      this.doc.rect(x, y, w, h, "S");
     }
   }
 
-  pill(label: string, x: number, y: number, fill: RGB, textColor: RGB = COLORS.dark, size = 7) {
+  fillRect(x: number, y: number, w: number, h: number, color: RGB) {
+    this.doc.setFillColor(...color);
+    this.doc.rect(x, y, w, h, "F");
+  }
+
+  bar(x: number, y: number, w: number, h: number, pct: number, color: RGB) {
+    this.fillRect(x, y, w, h, COLORS.line);
+    const filled = (Math.max(0, Math.min(100, pct)) / 100) * w;
+    if (filled > 0) this.fillRect(x, y, filled, h, color);
+  }
+
+  pill(label: string, x: number, y: number, fill: RGB, textColor: RGB = COLORS.dark, size = 6) {
     this.doc.setFont("helvetica", "bold");
     this.doc.setFontSize(size);
-    const w = this.doc.getTextWidth(clean(label)) + 12;
+    const w = this.doc.getTextWidth(clean(label)) + 10;
     this.doc.setFillColor(...fill);
-    this.doc.roundedRect(x, y, w, size + 7, (size + 7) / 2, (size + 7) / 2, "F");
-    this.text(label, x + w / 2, y + size + 2, { size, color: textColor, bold: true, align: "center" });
+    this.doc.roundedRect(x, y, w, size + 5, 2, 2, "F");
+    this.text(label, x + w / 2, y + size + 1.5, { size, color: textColor, bold: true, align: "center" });
     return w;
   }
 
@@ -184,106 +330,194 @@ class Canvas {
     });
   }
 
-  header(eyebrow: string, title: string, subtitle?: string) {
-    this.text(eyebrow.toUpperCase(), MARGIN, 44, { size: 8, color: COLORS.green, bold: true });
-    this.text(title, MARGIN, 70, { size: 22, bold: true });
-    if (subtitle) this.text(subtitle, MARGIN, 86, { size: 9, color: COLORS.muted });
+  /** Section label: neon, spaced capitals, then a hairline to the right edge of the column. */
+  section(label: string, x: number, y: number, w: number) {
+    const size = 8;
+    const text = label.toUpperCase();
+    this.text(text, x, y, { size: size + 1, color: COLORS.green, bold: true, spacing: 1.6, font: "display" });
+    const tw = this.width(text, size + 1, true, "display") + text.length * 1.6 + 8;
+    this.rule(x + tw, x + w, y - 3, COLORS.line, 0.6);
+  }
+
+  /** Page header: league name and season, a big title, a spaced subtitle. Returns the y where content can start. */
+  header(report: ReportData, title: string, subtitle: string): number {
+    const top = MARGIN + 9;
+    const name = report.leagueName.toUpperCase();
+    this.text(name, MARGIN, top, { size: 8, color: COLORS.green, bold: true, spacing: 2.5 });
+    const nw = this.width(name, 8, true) + name.length * 2.5 + 10;
+    const right = `SEASON ${report.season}`;
+    const rw = this.width(right, 8, true) + 6;
+    this.rule(MARGIN + nw, PAGE_W - MARGIN - rw - 8, top - 3, COLORS.line, 0.6);
+    this.text(right, PAGE_W - MARGIN, top, { size: 8, color: COLORS.muted, bold: true, align: "right" });
+    this.text(title.toUpperCase(), MARGIN, top + 40, { size: 38, bold: true, font: "display" });
+    this.text(subtitle.toUpperCase(), MARGIN, top + 55, { size: 7.5, color: COLORS.mid, bold: true, spacing: 1.2 });
+    return top + 78;
   }
 
   footer(report: ReportData, pageNo: number) {
-    this.text(
-      `${report.leagueName}  |  ${report.season} Season  |  Week ${report.week} Report`,
-      MARGIN,
-      PAGE_H - 22,
-      { size: 7, color: COLORS.muted },
-    );
-    this.text(`${pageNo} / 5`, PAGE_W - MARGIN, PAGE_H - 22, { size: 7, color: COLORS.muted, align: "right" });
+    this.text(`${report.leagueName}  |  ${report.season} Season  |  Week ${report.week} Report`, MARGIN, PAGE_H - 18, {
+      size: 6.5,
+      color: COLORS.muted,
+    });
+    this.text(`${pageNo} / ${TOTAL_PAGES}`, PAGE_W - MARGIN, PAGE_H - 18, { size: 6.5, color: COLORS.muted, align: "right" });
   }
 }
 
 // ─── Pages ──────────────────────────────────────────────────────────────────
 
+const ROW_LINE_W = 0.5;
+
+function headline(report: ReportData): { title: string; body: string } | null {
+  const lw = report.lastWeek;
+  const topAward = lw.awards.find(a => a.title === "Top score");
+  const top = topAward?.team ?? lw.games[0]?.winner;
+  if (!top) return null;
+  const pts = topAward ? parseFloat(topAward.value) : (lw.games[0]?.winner.points ?? 0);
+  const rec = lw.powerRankings.find(r => r.team.rosterId === top.rosterId)?.record ?? "";
+  const m = rec.match(/^(\d+)-(\d+)(?:-(\d+))?$/);
+  const perfect = !!m && Number(m[1]) > 0 && Number(m[2]) === 0 && Number(m[3] ?? 0) === 0;
+  const game = lw.games.find(g => g.winner.rosterId === top.rosterId && !g.tie);
+  const name = top.name.toUpperCase();
+  const title = perfect
+    ? `${name} SCORE ${fmt(pts, 0)} AND STAY PERFECT AT ${rec}`
+    : game
+      ? `${name} SCORE ${fmt(pts, 0)} AND BEAT ${game.loser.name.toUpperCase()} BY ${fmt(game.margin, 0)}`
+      : `${name} POST THE TOP SCORE OF ${fmt(pts, 0)}`;
+
+  const parts: string[] = [];
+  const star = lw.topIndividual[0];
+  if (star) parts.push(`${star.name} led all starters with ${fmt(star.points)} at ${star.position}.`);
+  const decided = lw.games.filter(g => !g.tie);
+  if (decided.length) {
+    const big = [...decided].sort((a, b) => b.margin - a.margin)[0];
+    const close = [...decided].sort((a, b) => a.margin - b.margin)[0];
+    parts.push(`${big.winner.name} beat ${big.loser.name} by ${fmt(big.margin)}, the biggest margin of the week.`);
+    if (close !== big) parts.push(`${close.winner.name} edged ${close.loser.name} by ${fmt(close.margin)} for the closest finish.`);
+  }
+  return { title, body: parts.join(" ") };
+}
+
 function pageOne(c: Canvas, report: ReportData) {
   const lw = report.lastWeek;
   c.page(true);
+  let y = c.header(report, `Week ${report.resultsWeek} Results`, "Final scores, awards and power rankings");
 
-  // Cover card
-  c.card(MARGIN, MARGIN, CONTENT_W, 118);
-  c.doc.setFillColor(...COLORS.green);
-  c.doc.rect(MARGIN, MARGIN, 4, 118, "F");
-  c.text("WEEKLY LEAGUE REPORT", MARGIN + 20, MARGIN + 24, { size: 8, color: COLORS.green, bold: true });
-  c.text(report.leagueName, MARGIN + 20, MARGIN + 56, { size: 26, bold: true });
-  c.text(`${report.season} Season`, MARGIN + 20, MARGIN + 74, { size: 10, color: COLORS.muted });
-  c.pill(`WEEK ${report.week}`, PAGE_W - MARGIN - 80, MARGIN + 18, COLORS.green, COLORS.dark, 9);
-
-  // Season progress bar
-  const segX = MARGIN + 20;
-  const segW = (CONTENT_W - 40 - (REGULAR_SEASON_WEEKS - 1) * 3) / REGULAR_SEASON_WEEKS;
+  // Season progress
+  const segW = (CONTENT_W - (REGULAR_SEASON_WEEKS - 1) * 3) / REGULAR_SEASON_WEEKS;
   for (let i = 1; i <= REGULAR_SEASON_WEEKS; i++) {
-    const fill = i <= report.resultsWeek ? COLORS.green : i === report.week ? COLORS.amber : COLORS.line;
-    c.doc.setFillColor(...fill);
-    c.doc.rect(segX + (i - 1) * (segW + 3), MARGIN + 92, segW, 6, "F");
+    const fill = i <= report.resultsWeek ? COLORS.green : i === report.week ? COLORS.hot : COLORS.line;
+    c.fillRect(MARGIN + (i - 1) * (segW + 3), y, segW, 4.5, fill);
   }
-  c.text(`REGULAR SEASON PROGRESS  |  WEEK ${report.week} OF ${REGULAR_SEASON_WEEKS}`, segX, MARGIN + 110, {
-    size: 6,
+  c.text(`REGULAR SEASON PROGRESS  |  WEEK ${report.week} OF ${REGULAR_SEASON_WEEKS}`, MARGIN, y + 13, {
+    size: 5.5,
     color: COLORS.muted,
+    bold: true,
+    spacing: 0.8,
   });
+  y += 24;
 
-  // Last week's results
-  let y = MARGIN + 140;
-  c.text(`Week ${report.resultsWeek} Results`, MARGIN, y, { size: 14, bold: true });
-  y += 10;
-  const rowH = 30;
-  c.card(MARGIN, y, CONTENT_W, lw.games.length * rowH + 8);
-  lw.games.forEach((g: WeekGame, i: number) => {
-    const ry = y + 4 + i * rowH;
-    const ty = ry + 19;
-    c.avatar(MARGIN + 8, ry + 5, 20, g.winner);
-    c.text(g.winner.name, MARGIN + 34, ty, { size: 10, bold: true, color: COLORS.text });
-    c.text(fmt(g.winner.points, 2), 330, ty, { size: 10, bold: true, color: COLORS.green, align: "right" });
-    c.pill(`+${fmt(g.margin)}`, 340, ry + 6, COLORS.line, COLORS.text, 7);
-    c.text(fmt(g.loser.points, 2), 396, ty, { size: 10, color: COLORS.muted });
-    c.text(g.loser.name, PAGE_W - MARGIN - 34, ty, { size: 10, color: COLORS.muted, align: "right" });
-    c.avatar(PAGE_W - MARGIN - 28, ry + 5, 20, g.loser);
-  });
-  y += lw.games.length * rowH + 20;
+  // Game ball hero
+  const hl = headline(report);
+  if (hl) {
+    const titleLines = c.wrap(hl.title, CONTENT_W - 34, 17, true, "display").slice(0, 2);
+    const bodyLines = c.wrap(hl.body, CONTENT_W - 34, 8, false).slice(0, 3);
+    const h = 20 + titleLines.length * 19 + bodyLines.length * 10.5 + 14;
+    c.box(MARGIN, y, CONTENT_W, h, COLORS.line, COLORS.heroBg);
+    c.fillRect(MARGIN, y, 4, h, COLORS.green);
+    c.text("GAME BALL", MARGIN + 18, y + 14, { size: 6.5, color: COLORS.green, bold: true, spacing: 2 });
+    titleLines.forEach((l, i) => c.text(l, MARGIN + 18, y + 33 + i * 19, { size: 17, bold: true, font: "display" }));
+    bodyLines.forEach((l, i) => c.text(l, MARGIN + 18, y + 33 + titleLines.length * 19 - 4 + 8 + i * 10.5, { size: 8, color: COLORS.mid }));
+    y += h + 12;
+  }
 
-  // Stat cards
-  const statW = (CONTENT_W - 36) / 4;
+  // Numbers
   const stats = [
-    { label: "League avg score", value: fmt(lw.leagueAvgScore), sub: "per team" },
-    { label: "Total points", value: fmt(lw.totalPoints, 0), sub: `${lw.gameCount} games` },
-    { label: "Avg margin", value: fmt(lw.avgMargin), sub: "points per game" },
-    { label: "Nail-biters", value: String(lw.nailBiters), sub: "decided by under 10" },
+    { label: "League average", value: fmt(lw.leagueAvgScore) },
+    { label: "Total points", value: Math.round(lw.totalPoints).toLocaleString("en-US") },
+    { label: "Average margin", value: fmt(lw.avgMargin) },
+    { label: "Nail-biters (under 10)", value: String(lw.nailBiters) },
   ];
+  const sw = (CONTENT_W - 36) / 4;
   stats.forEach((s, i) => {
-    const sx = MARGIN + i * (statW + 12);
-    c.card(sx, y, statW, 52);
-    c.text(s.label.toUpperCase(), sx + 10, y + 16, { size: 6.5, color: COLORS.muted, bold: true });
-    c.text(s.value, sx + 10, y + 36, { size: 16, bold: true });
-    c.text(s.sub, sx + 10, y + 47, { size: 6.5, color: COLORS.muted });
+    const sx = MARGIN + i * (sw + 12);
+    c.rule(sx, sx + sw, y, COLORS.line, 1.5);
+    c.text(s.value, sx, y + 22, { size: 20, bold: true, font: "display" });
+    c.text(s.label.toUpperCase(), sx, y + 33, { size: 6, color: COLORS.muted, bold: true, spacing: 0.8 });
   });
-  y += 70;
+  y += 50;
 
-  // Awards
-  c.text("WEEK IN NUMBERS", MARGIN, y, { size: 7.5, color: COLORS.muted, bold: true });
-  y += 8;
-  const awardW = (CONTENT_W - 24) / 3;
-  const awardH = 62;
-  const accents: RGB[] = [COLORS.green, COLORS.red, COLORS.amber, COLORS.orange, COLORS.blue, COLORS.green];
+  // Two columns: scoreboard and top performances | awards
+  const colW = (CONTENT_W - 20) / 2;
+  const leftX = MARGIN;
+  const rightX = MARGIN + colW + 20;
+  let ly = y;
+  c.section("Scoreboard", leftX, ly, colW);
+  ly += 8;
+  const rowH = 21;
+  const games = lw.games.slice(0, 8);
+  c.box(leftX, ly, colW, games.length * rowH + 2);
+  games.forEach((g: WeekGame, i: number) => {
+    const ry = ly + 1 + i * rowH;
+    if (i > 0) c.rule(leftX, leftX + colW, ry, COLORS.rowLine, ROW_LINE_W);
+    const base = ry + 14;
+    c.text(c.fit(g.winner.name.toUpperCase(), 94, 7.5, true), leftX + 102, base, { size: 7.5, bold: true, align: "right" });
+    c.text(fmt(g.winner.points, 1), leftX + 136, base, { size: 10, bold: true, color: COLORS.green, align: "right", font: "display" });
+    c.text("F", leftX + 144, base, { size: 5.5, color: COLORS.muted, align: "center" });
+    c.text(fmt(g.loser.points, 1), leftX + 152, base, { size: 10, bold: true, color: COLORS.muted, font: "display" });
+    c.text(c.fit(g.loser.name.toUpperCase(), colW - 188, 7.5), leftX + 186, base, { size: 7.5, color: COLORS.muted });
+  });
+  ly += games.length * rowH + 2 + 16;
+
+  c.section("Top performances", leftX, ly, colW);
+  ly += 5;
+  lw.topIndividual.slice(0, 6).forEach((r, i) => {
+    const ry = ly + i * 17;
+    c.rule(leftX, leftX + colW, ry + 17, COLORS.rowLine, ROW_LINE_W);
+    c.text(r.name, leftX, ry + 12, { size: 8, bold: true });
+    const nw = c.width(r.name, 8, true);
+    c.text(c.fit(`${r.position}, ${r.team.name}`, colW - nw - 50, 6.5), leftX + nw + 5, ry + 12, { size: 6.5, color: COLORS.muted });
+    c.text(fmt(r.points), leftX + colW, ry + 12, { size: 9, bold: true, color: COLORS.green, align: "right" });
+  });
+  const leftEnd = ly + Math.min(6, lw.topIndividual.length) * 17;
+
+  let ry = y;
+  c.section("Awards of the week", rightX, ry, colW);
+  ry += 6;
   lw.awards.slice(0, 6).forEach((a, i) => {
-    const col = i % 3;
-    const row = Math.floor(i / 3);
-    const ax = MARGIN + col * (awardW + 12);
-    const ay = y + row * (awardH + 10);
-    c.card(ax, ay, awardW, awardH);
-    c.doc.setFillColor(...accents[i]);
-    c.doc.rect(ax, ay + 8, 3, awardH - 16, "F");
-    c.text(a.title.toUpperCase(), ax + 12, ay + 14, { size: 6.5, color: accents[i], bold: true });
-    c.avatar(ax + 12, ay + 22, 16, a.team);
-    c.text(a.team.name, ax + 34, ay + 33, { size: 9, bold: true });
-    c.text(a.value, ax + 12, ay + 49, { size: 8.5, bold: true });
-    if (a.detail) c.text(a.detail, ax + awardW - 10, ay + 49, { size: 7, color: COLORS.muted, align: "right" });
+    const ay = ry + i * 33;
+    c.rule(rightX, rightX + colW, ay, COLORS.line, 1.2);
+    c.text(a.title.toUpperCase(), rightX, ay + 11, { size: 6, color: COLORS.hot, bold: true, spacing: 1.2 });
+    c.text(a.team.name, rightX, ay + 23, { size: 8.5, bold: true });
+    const nw = c.width(a.team.name, 8.5, true);
+    const detail = a.detail ? `${a.value}  ${a.detail}` : a.value;
+    c.text(c.fit(detail, colW - nw - 10, 6.5), rightX + nw + 6, ay + 23, { size: 6.5, color: COLORS.mid });
+  });
+  const rightEnd = ry + Math.min(6, lw.awards.length) * 33;
+
+  // Power rankings
+  y = Math.max(leftEnd, rightEnd) + 20;
+  c.section("Power rankings | movement from last week", MARGIN, y, CONTENT_W);
+  y += 5;
+  const rows = lw.powerRankings;
+  const half = Math.ceil(rows.length / 2);
+  const prW = (CONTENT_W - 28) / 2;
+  rows.forEach((r, i) => {
+    const colIdx = i < half ? 0 : 1;
+    const rowIdx = i < half ? i : i - half;
+    const px = MARGIN + colIdx * (prW + 28);
+    const py = y + rowIdx * 19;
+    c.rule(px, px + prW, py + 19, COLORS.rowLine, ROW_LINE_W);
+    c.text(String(r.rank), px, py + 13, { size: 10, bold: true, color: COLORS.green, font: "display" });
+    c.avatar(px + 16, py + 3, 12, r.team);
+    c.text(c.fit(r.team.name, prW - 130, 8, true), px + 33, py + 13, { size: 8, bold: true });
+    c.text(r.record, px + prW - 52, py + 13, { size: 7.5, color: COLORS.muted, align: "right" });
+    const mv = r.move;
+    c.text(mv > 0 ? `+${mv}` : mv < 0 ? `${mv}` : "-", px + prW, py + 13, {
+      size: 7.5,
+      bold: true,
+      color: mv > 0 ? COLORS.green : mv < 0 ? COLORS.hot : COLORS.muted,
+      align: "right",
+    });
   });
 
   c.footer(report, 1);
@@ -292,346 +526,369 @@ function pageOne(c: Canvas, report: ReportData) {
 function pageTwo(c: Canvas, report: ReportData) {
   const lw = report.lastWeek;
   c.page();
-  c.header("High performers", `Week ${report.resultsWeek} standouts`, "Starters and lineups");
-
-  const colW = (CONTENT_W - 16) / 2;
+  let y = c.header(report, `Week ${report.resultsWeek} Standouts`, "Starters and lineups");
+  const colW = (CONTENT_W - 20) / 2;
   const leftX = MARGIN;
-  const rightX = MARGIN + colW + 16;
-  let y = 104;
+  const rightX = MARGIN + colW + 20;
 
-  // Top individual performances
-  c.text("TOP INDIVIDUAL PERFORMANCES", leftX, y, { size: 7, color: COLORS.muted, bold: true });
-  y += 8;
-  const topH = lw.topIndividual.length * 24 + 10;
-  c.card(leftX, y, colW, topH);
-  lw.topIndividual.forEach((r, i) => {
-    const ry = y + 6 + i * 24;
-    c.text(String(i + 1), leftX + 12, ry + 15, { size: 9, color: i < 3 ? COLORS.amber : COLORS.muted, bold: true });
-    c.text(r.name, leftX + 30, ry + 11, { size: 9, bold: true });
-    c.text(`${r.position}  |  ${r.team.name}`, leftX + 30, ry + 21, { size: 6.5, color: COLORS.muted });
-    c.text(fmt(r.points), leftX + colW - 12, ry + 15, { size: 10, bold: true, color: COLORS.green, align: "right" });
+  // Top individual performances (left) and position leaders (right), same overall height
+  const perf = lw.topIndividual.slice(0, 8);
+  const rowH = 21;
+  c.section("Top individual performances", leftX, y, colW);
+  perf.forEach((r, i) => {
+    const ry = y + 5 + i * rowH;
+    c.rule(leftX, leftX + colW, ry + rowH, COLORS.rowLine, ROW_LINE_W);
+    c.text(String(i + 1), leftX, ry + 14, { size: 8, bold: true, color: i < 3 ? COLORS.amber : COLORS.muted });
+    c.text(r.name, leftX + 16, ry + 10, { size: 8.5, bold: true });
+    c.text(`${r.position}  |  ${r.team.name}`, leftX + 16, ry + 19, { size: 6, color: COLORS.muted });
+    c.text(fmt(r.points), leftX + colW, ry + 14, { size: 10, bold: true, color: COLORS.green, align: "right" });
   });
+  const leftEnd = y + 5 + perf.length * rowH;
 
-  // Position leaders
-  let ry = y;
-  c.text("POSITION LEADERS", rightX, ry, { size: 7, color: COLORS.muted, bold: true });
-  ry += 8;
-  const posH = lw.positionLeaders.length * 24 + 10;
-  c.card(rightX, ry, colW, posH);
-  lw.positionLeaders.forEach((p, i) => {
-    const py = ry + 6 + i * 24;
-    c.pill(p.position, rightX + 10, py + 4, COLORS.line, COLORS.text, 6.5);
-    c.text(p.name, rightX + 52, py + 11, { size: 9, bold: true });
-    c.text(p.team.name, rightX + 52, py + 21, { size: 6.5, color: COLORS.muted });
-    c.text(fmt(p.points), rightX + colW - 12, py + 15, { size: 10, bold: true, color: COLORS.green, align: "right" });
+  const pos = lw.positionLeaders;
+  const posRowH = pos.length ? Math.max(rowH, (perf.length * rowH) / pos.length) : rowH;
+  c.section("Position leaders", rightX, y, colW);
+  pos.forEach((p, i) => {
+    const ry = y + 5 + i * posRowH;
+    c.rule(rightX, rightX + colW, ry + posRowH, COLORS.rowLine, ROW_LINE_W);
+    c.text(p.position, rightX, ry + posRowH / 2 + 3, { size: 8, bold: true, color: COLORS.green });
+    c.text(p.name, rightX + 28, ry + posRowH / 2 - 1, { size: 8.5, bold: true });
+    c.text(p.team.name, rightX + 28, ry + posRowH / 2 + 8, { size: 6, color: COLORS.muted });
+    c.text(fmt(p.points), rightX + colW, ry + posRowH / 2 + 3, { size: 10, bold: true, color: COLORS.green, align: "right" });
   });
-  ry += posH + 16;
+  y = Math.max(leftEnd, y + 5 + pos.length * posRowH) + 22;
 
   // Highest team scores
-  c.text("HIGHEST TEAM SCORES", rightX, ry, { size: 7, color: COLORS.muted, bold: true });
-  ry += 8;
-  const hsH = lw.highestTeamScores.length * 24 + 10;
-  c.card(rightX, ry, colW, hsH);
-  lw.highestTeamScores.forEach((t, i) => {
-    const ty = ry + 6 + i * 24;
-    c.text(String(i + 1), rightX + 12, ty + 15, { size: 8, color: COLORS.muted, bold: true });
-    c.avatar(rightX + 26, ty + 3, 16, t);
-    c.text(t.name, rightX + 50, ty + 15, { size: 9, bold: true });
-    c.text(fmt(t.points, 2), rightX + colW - 12, ty + 15, { size: 10, bold: true, color: COLORS.green, align: "right" });
+  c.section("Highest team scores", MARGIN, y, CONTENT_W);
+  y += 5;
+  const top = lw.highestTeamScores;
+  const maxPts = Math.max(1, ...top.map(t => t.points));
+  top.forEach((t, i) => {
+    const ry = y + i * 21;
+    c.rule(MARGIN, MARGIN + CONTENT_W, ry + 21, COLORS.rowLine, ROW_LINE_W);
+    c.avatar(MARGIN, ry + 4, 13, t);
+    c.text(t.name, MARGIN + 20, ry + 14, { size: 8.5, bold: true });
+    c.bar(MARGIN + 190, ry + 8, 250, 5, (t.points / maxPts) * 100, COLORS.green);
+    c.text(fmt(t.points, 2), MARGIN + CONTENT_W, ry + 14, { size: 9, bold: true, align: "right" });
   });
+  y += top.length * 21 + 22;
 
-  // Lineup efficiency (full width, below both columns)
-  y = Math.max(y + topH, ry + hsH) + 22;
-  c.text("LINEUP EFFICIENCY  |  POINTS SCORED VS BEST POSSIBLE LINEUP", MARGIN, y, {
-    size: 7,
-    color: COLORS.muted,
-    bold: true,
-  });
-  y += 8;
-  const effH = lw.efficiency.length * 22 + 14;
-  c.card(MARGIN, y, CONTENT_W, effH);
-  lw.efficiency.forEach((t, i) => {
-    const ey = y + 8 + i * 22;
-    c.avatar(MARGIN + 10, ey + 1, 14, t);
-    c.text(t.name, MARGIN + 30, ey + 11, { size: 8.5 });
-    const barColor = t.pct >= 90 ? COLORS.green : t.pct >= 75 ? COLORS.amber : COLORS.red;
-    c.bar(MARGIN + 190, ey + 4, 260, 7, t.pct, barColor);
-    c.text(`${t.pct}%`, MARGIN + 462, ey + 11, { size: 8.5, bold: true, color: barColor });
-    c.text(`${fmt(t.actual)} / ${fmt(t.optimal)}`, MARGIN + CONTENT_W - 10, ey + 11, {
-      size: 7,
-      color: COLORS.muted,
-      align: "right",
-    });
+  // Lineup efficiency
+  c.section("Lineup efficiency | points scored vs best possible lineup", MARGIN, y, CONTENT_W);
+  y += 5;
+  const eff = lw.efficiency;
+  const effH = Math.min(21, Math.max(15, (PAGE_H - 40 - y) / Math.max(1, eff.length)));
+  eff.forEach((t, i) => {
+    const ry = y + i * effH;
+    c.rule(MARGIN, MARGIN + CONTENT_W, ry + effH, COLORS.rowLine, ROW_LINE_W);
+    c.avatar(MARGIN, ry + (effH - 12) / 2, 12, t);
+    c.text(t.name, MARGIN + 19, ry + effH / 2 + 3, { size: 8 });
+    const color = t.pct >= 90 ? COLORS.green : t.pct >= 75 ? COLORS.amber : COLORS.hot;
+    c.bar(MARGIN + 190, ry + effH / 2 - 2.5, 250, 5, t.pct, color);
+    c.text(`${t.pct}%`, MARGIN + 462, ry + effH / 2 + 3, { size: 8, bold: true, color });
+    c.text(`${fmt(t.actual)} / ${fmt(t.optimal)}`, MARGIN + CONTENT_W, ry + effH / 2 + 3, { size: 6.5, color: COLORS.muted, align: "right" });
   });
 
   c.footer(report, 2);
 }
 
-function pageThree(c: Canvas, report: ReportData) {
+function pageThree(c: Canvas, report: ReportData, playoff: PlayoffData | null) {
   const pv = report.preview;
   c.page();
-  c.header("Look ahead", `Week ${report.week} preview`, "Projections use each team's optimal lineup; win odds assume typical weekly scoring variance.");
+  let y = c.header(report, `Week ${report.week} Preview`, "Projected scores, win odds and what is at stake");
 
-  // Callouts
-  const callouts = [
-    { label: "Toss-up", m: pv.tossUp, color: COLORS.amber },
-    { label: "Biggest mismatch", m: pv.biggestMismatch, color: COLORS.red },
-    { label: "Shootout watch", m: pv.shootout, color: COLORS.green },
-  ];
-  const cw = (CONTENT_W - 24) / 3;
-  callouts.forEach((co, i) => {
-    const x = MARGIN + i * (cw + 12);
-    c.card(x, 104, cw, 56);
-    c.doc.setFillColor(...co.color);
-    c.doc.rect(x, 112, 3, 40, "F");
-    c.text(co.label.toUpperCase(), x + 12, 118, { size: 6.5, color: co.color, bold: true });
-    if (!co.m) {
-      c.text("No matchups this week", x + 12, 136, { size: 8, color: COLORS.muted });
-      return;
-    }
-    c.text(`${co.m.a.name} vs ${co.m.b.name}`, x + 12, 132, { size: 8, bold: true });
-    const detail =
-      co.label === "Shootout watch"
-        ? `Projected combined ${fmt(co.m.a.projected + co.m.b.projected)} pts`
-        : `${fmt(co.m.probA * 100, 0)}% / ${fmt((1 - co.m.probA) * 100, 0)}%`;
-    c.text(detail, x + 12, 146, { size: 7, color: COLORS.muted });
+  // Matchup cards, two across
+  const cw = (CONTENT_W - 12) / 2;
+  const ch = 66;
+  pv.matchups.forEach((m, i) => {
+    const x = MARGIN + (i % 2) * (cw + 12);
+    const cy = y + Math.floor(i / 2) * (ch + 8);
+    c.box(x, cy, cw, ch);
+    c.text(c.fit(m.a.name.toUpperCase(), cw / 2 - 14, 9, true, "display"), x + 8, cy + 14, { size: 9, bold: true, font: "display" });
+    c.text(c.fit(m.b.name.toUpperCase(), cw / 2 - 14, 9, true, "display"), x + cw - 8, cy + 14, { size: 9, bold: true, color: COLORS.muted, align: "right", font: "display" });
+    c.text(m.a.record, x + 8, cy + 23, { size: 6, color: COLORS.muted });
+    c.text(m.b.record, x + cw - 8, cy + 23, { size: 6, color: COLORS.muted, align: "right" });
+    const fav = favorite(m);
+    const even = fav.even;
+    const aCol = even || fav.isA ? COLORS.green : COLORS.muted;
+    const bCol = even || !fav.isA ? COLORS.green : COLORS.muted;
+    c.text(fmt(m.a.projected), x + 8, cy + 44, { size: 17, bold: true, color: aCol, font: "display" });
+    c.text(fmt(m.b.projected), x + cw - 8, cy + 44, { size: 17, bold: true, color: bCol, align: "right", font: "display" });
+    // Center label: the favorite and its chance, sized to the gap between the two scores.
+    const pctText = ` ${fmt(fav.pct, 0)}%`;
+    const gap = cw - 2 * 72;
+    const label = even ? "EVEN" : c.fit(fav.team.name.toUpperCase(), gap - c.width(pctText, 8, true, "display"), 8, true, "display") + pctText;
+    c.text(label, x + cw / 2, cy + 42, { size: 8, bold: true, color: COLORS.green, align: "center", font: "display" });
+    // Bar: split at team A's chance. The favorite's segment is green, the underdog's slate.
+    const bx = x + 8;
+    const bw = cw - 16;
+    const aw = Math.max(0, Math.min(1, m.probA)) * bw;
+    c.fillRect(bx, cy + 50, aw, 2.5, aCol === COLORS.green ? COLORS.green : COLORS.line);
+    c.fillRect(bx + aw, cy + 50, bw - aw, 2.5, bCol === COLORS.green ? COLORS.green : COLORS.line);
+    c.text(`${fmt(m.probA * 100, 0)}%`, bx, cy + 61, { size: 7.5, bold: true, color: aCol, font: "display" });
+    c.text(`${fmt((1 - m.probA) * 100, 0)}%`, bx + bw, cy + 61, { size: 7.5, bold: true, color: bCol, align: "right", font: "display" });
   });
+  y += Math.ceil(pv.matchups.length / 2) * (ch + 8) + 14;
 
-  // Matchup cards
-  let y = 176;
-  const cardH = 68;
+  // Storylines
+  if (pv.storylines.length) {
+    c.section("Storylines to watch", MARGIN, y, CONTENT_W);
+    y += 5;
+    pv.storylines.forEach(s => {
+      const lead = `${s.lead} `;
+      const lw = c.width(lead.trim(), 8, true) + 4;
+      const lines = c.wrap(s.text, CONTENT_W - lw - 2, 8, false);
+      const h = Math.max(1, lines.length) * 10 + 7;
+      c.text(lead.trim(), MARGIN, y + 11, { size: 8, bold: true, color: COLORS.green });
+      lines.forEach((l, i) => c.text(l, MARGIN + lw, y + 11 + i * 10, { size: 8, color: COLORS.mid }));
+      c.rule(MARGIN, MARGIN + CONTENT_W, y + h, COLORS.rowLine, ROW_LINE_W);
+      y += h;
+    });
+    y += 14;
+  }
+
+  // Head to head, all-time (falls back to this season when history could not be loaded)
+  if (pv.matchups.length) {
+    c.section("Head to head | all-time", MARGIN, y, CONTENT_W);
+    y += 5;
+    c.text("Regular season and playoffs, all seasons", MARGIN, y + 7, { size: 6.5, color: COLORS.muted });
+    y += 11;
+    const colSeries = MARGIN + 172;
+    const colStreak = MARGIN + 306;
+    pv.matchups.forEach(m => {
+      c.rule(MARGIN, MARGIN + CONTENT_W, y + 15, COLORS.rowLine, ROW_LINE_W);
+      c.text(c.fit(`${m.a.name} v ${m.b.name}`, 164, 7.5, true), MARGIN, y + 11, { size: 7.5, bold: true });
+      const h = m.history;
+      if (h) {
+        c.text(h2hSeriesFit(c, m, 125), colSeries, y + 11, { size: 7.5 });
+        const streakTeam = h.streak > 0 ? m.a : m.b;
+        const streakText = h.streak === 0 ? "-" : `${streakTeam.initials || streakTeam.name} W${Math.abs(h.streak)}`;
+        c.text(c.fit(streakText, 55, 7.5), colStreak, y + 11, { size: 7.5, color: COLORS.mid });
+        if (h.last) {
+          const aWon = h.last.aScore >= h.last.bScore;
+          const winner = aWon ? m.a.name : m.b.name;
+          const score = ` ${fmt(Math.max(h.last.aScore, h.last.bScore))} to ${fmt(Math.min(h.last.aScore, h.last.bScore))}`;
+          const pre = `${h.last.season} Wk ${h.last.week}: `;
+          const txt = pre + c.fit(winner, 175 - c.width(pre + score, 7.5), 7.5) + score;
+          c.text(txt, MARGIN + CONTENT_W, y + 11, { size: 7.5, color: COLORS.muted, align: "right" });
+        }
+      } else {
+        c.text(c.fit(m.meeting.series, 160, 7.5), colSeries, y + 11, { size: 7.5 });
+        c.text(c.fit(m.meeting.last, 190, 7.5), MARGIN + CONTENT_W, y + 11, { size: 7.5, color: COLORS.muted, align: "right" });
+      }
+      y += 15;
+    });
+    y += 14;
+  }
+
+  // Games that matter most: both teams per game, biggest swings first
+  const nameOf = new Map<number, TeamRef>();
   pv.matchups.forEach(m => {
-    c.card(MARGIN, y, CONTENT_W, cardH);
-    // Team A (left)
-    c.avatar(MARGIN + 12, y + 10, 22, m.a);
-    c.text(m.a.name, MARGIN + 42, y + 23, { size: 10, bold: true });
-    c.text(`${m.a.record}  |  Power #${m.a.power}`, MARGIN + 42, y + 35, { size: 7, color: COLORS.muted });
-    // Team B (right)
-    c.avatar(PAGE_W - MARGIN - 34, y + 10, 22, m.b);
-    c.text(m.b.name, PAGE_W - MARGIN - 42, y + 23, { size: 10, bold: true, align: "right" });
-    c.text(`${m.b.record}  |  Power #${m.b.power}`, PAGE_W - MARGIN - 42, y + 35, {
-      size: 7,
-      color: COLORS.muted,
-      align: "right",
-    });
-    // Projection
-    c.text(`${fmt(m.a.projected)} - ${fmt(m.b.projected)}`, PAGE_W / 2, y + 22, {
-      size: 13,
-      bold: true,
-      align: "center",
-    });
-    c.text("PROJECTED", PAGE_W / 2, y + 33, { size: 6, color: COLORS.muted, align: "center" });
-    // Win odds bar
-    const aPct = m.probA * 100;
-    c.bar(MARGIN + 12, y + 46, CONTENT_W - 24, 6, aPct, COLORS.green);
-    c.doc.setFillColor(...COLORS.muted);
-    c.doc.rect(MARGIN + 12 + ((CONTENT_W - 24) * aPct) / 100, y + 46, (CONTENT_W - 24) * (1 - aPct / 100), 6, "F");
-    c.text(`${fmt(aPct, 0)}%`, MARGIN + 12, y + 62, { size: 8, bold: true, color: COLORS.green });
-    c.text(`${fmt(100 - aPct, 0)}%`, PAGE_W - MARGIN - 12, y + 62, {
-      size: 8,
-      bold: true,
-      color: COLORS.muted,
-      align: "right",
-    });
-    y += cardH + 10;
+    nameOf.set(m.a.rosterId, m.a);
+    nameOf.set(m.b.rosterId, m.b);
   });
+  const swings = (playoff?.outlook?.gameSwings ?? [])
+    .filter(g => nameOf.has(g.teamA) && nameOf.has(g.teamB))
+    .sort((p, q) => Math.max(q.a.ifWin - q.a.ifLose, q.b.ifWin - q.b.ifLose) - Math.max(p.a.ifWin - p.a.ifLose, p.b.ifWin - p.b.ifLose));
+  const rowH = 15;
+  const roomLeft = PAGE_H - 36 - y - 40;
+  const maxGames = Math.max(0, Math.min(4, swings.length, Math.floor(roomLeft / (rowH * 2 + 5))));
+  if (maxGames > 0) {
+    c.section("Games that matter most | playoff odds swing", MARGIN, y, CONTENT_W);
+    y += 6;
+    const note = "Playoff odds for both teams in each game. The white tick is where a team is now, the left end is its odds if it loses, the right end if it wins. A wider bar means a bigger game.";
+    c.wrap(note, CONTENT_W, 6.5).forEach((l, i) => c.text(l, MARGIN, y + 7 + i * 8, { size: 6.5, color: COLORS.muted }));
+    y += 7 + c.wrap(note, CONTENT_W, 6.5).length * 8 + 4;
+    const barX = MARGIN + 205;
+    const barW = 140;
+    swings.slice(0, maxGames).forEach(g => {
+      [
+        { id: g.teamA, s: g.a },
+        { id: g.teamB, s: g.b },
+      ].forEach((side, k) => {
+        const team = nameOf.get(side.id)!;
+        const ry = y + k * rowH;
+        c.avatar(MARGIN, ry + 2, 10, team);
+        c.text(c.fit(team.name, 175, 7.5, true), MARGIN + 15, ry + 9, { size: 7.5, bold: true });
+        const { now, ifWin, ifLose } = side.s;
+        const pred = playoff?.predictions.find(p => p.rosterId === side.id);
+        const swingPct = (v: number) => (pred?.clinchedPlayoffs ? "100%" : pred?.eliminated ? "0%" : v >= 99.5 ? ">99%" : v < 0.5 ? "<1%" : `${fmt(v, 0)}%`);
+        c.fillRect(barX, ry + 3.5, barW, 5, COLORS.line);
+        c.fillRect(barX + (ifLose / 100) * barW, ry + 3.5, Math.max(0.5, ((now - ifLose) / 100) * barW), 5, COLORS.hot);
+        c.fillRect(barX + (now / 100) * barW, ry + 3.5, Math.max(0.5, ((ifWin - now) / 100) * barW), 5, COLORS.green);
+        c.fillRect(barX + (now / 100) * barW - 0.6, ry + 1.5, 1.2, 9, COLORS.white);
+        c.text(swingPct(ifLose), MARGIN + 382, ry + 9, { size: 7.5, bold: true, color: COLORS.hot, align: "right" });
+        c.text(swingPct(now), MARGIN + 413, ry + 9, { size: 7.5, color: COLORS.muted, align: "center" });
+        c.text(swingPct(ifWin), MARGIN + 433, ry + 9, { size: 7.5, bold: true, color: COLORS.green });
+        c.text(`${fmt(ifWin - ifLose, 0)} ${Math.round(ifWin - ifLose) === 1 ? "pt" : "pts"}`, MARGIN + CONTENT_W, ry + 9, { size: 7.5, bold: true, align: "right" });
+      });
+      c.rule(MARGIN, MARGIN + CONTENT_W, y + rowH * 2 + 2, COLORS.rowLine, ROW_LINE_W);
+      y += rowH * 2 + 5;
+    });
+  }
 
   c.footer(report, 3);
 }
 
-function pageFour(c: Canvas, report: ReportData) {
+function pageFour(c: Canvas, report: ReportData, playoff: PlayoffData | null) {
   c.page();
-  c.header("Momentum", "Hot & cold", "Last 4 weeks' scoring average compared with the rest of the season.");
-  let y = 104;
-  const hc = report.hotCold;
-  if (!hc) {
-    c.card(MARGIN, y, CONTENT_W, 60);
-    c.text("Not enough completed weeks yet (needs 5).", MARGIN + 16, y + 34, { size: 9, color: COLORS.muted });
-    c.footer(report, 4);
-    return;
+  let y = c.header(
+    report,
+    "Playoff Picture",
+    playoff
+      ? `Seeds 1-${playoff.playoffTeams} make the playoffs. Odds from ${playoff.simulationCount.toLocaleString()} season simulations`
+      : "Playoff odds unavailable for this report",
+  );
+
+  if (playoff) {
+    // Seed order: with divisions, the division leaders take the top seeds (best record first), then everyone else
+    // by wins and points for. Without divisions it is simply wins, then points for.
+    const byRecord = (a: PlayoffPrediction, b: PlayoffPrediction) => b.currentWins - a.currentWins || b.pointsFor - a.pointsFor;
+    const divLeaders = new Set<number>();
+    if (playoff.hasDivisions) {
+      const best = new Map<number, PlayoffPrediction>();
+      playoff.predictions.forEach(t => {
+        if (t.division === undefined) return;
+        const cur = best.get(t.division);
+        if (!cur || byRecord(t, cur) < 0) best.set(t.division, t);
+      });
+      best.forEach(t => divLeaders.add(t.rosterId));
+    }
+    const seeds = [...playoff.predictions].sort((a, b) => {
+      const la = divLeaders.has(a.rosterId) ? 0 : 1;
+      const lb = divLeaders.has(b.rosterId) ? 0 : 1;
+      return la - lb || byRecord(a, b);
+    });
+    const rowH = 19;
+    const headerH = 16;
+    const tableH = headerH + seeds.length * rowH + 4;
+    c.box(MARGIN, y, CONTENT_W, tableH);
+    const cols = { seed: MARGIN + 10, team: MARGIN + 34, rec: MARGIN + 190, pf: MARGIN + 262, make: MARGIN + 276, div: MARGIN + 432, one: MARGIN + 482, status: MARGIN + 492 };
+    const hdr = { size: 6, color: COLORS.muted, bold: true, spacing: 0.8 };
+    c.text("SEED", cols.seed, y + 11, hdr);
+    c.text("TEAM", cols.team, y + 11, hdr);
+    c.text("REC", cols.rec, y + 11, hdr);
+    c.text("PF", cols.pf, y + 11, { ...hdr, align: "right" });
+    c.text("MAKE PLAYOFFS", cols.make, y + 11, hdr);
+    c.text("DIV", cols.div, y + 11, { ...hdr, align: "right" });
+    c.text("#1 SEED", cols.one, y + 11, { ...hdr, align: "right" });
+    c.rule(MARGIN, MARGIN + CONTENT_W, y + headerH - 1, COLORS.line, 0.6);
+
+    let rowY = y + headerH;
+    seeds.forEach((t, i) => {
+      const seed = i + 1;
+      const isDivWinner = divLeaders.has(t.rosterId);
+      if (isDivWinner) c.fillRect(MARGIN + 0.5, rowY, CONTENT_W - 1, rowH, COLORS.divRow);
+      if (i > 0) c.rule(MARGIN, MARGIN + CONTENT_W, rowY, COLORS.rowLine, ROW_LINE_W);
+      if (seed === playoff.playoffTeams + 1) c.fillRect(MARGIN + 0.5, rowY - 1, CONTENT_W - 1, 1.6, COLORS.amber);
+      const base = rowY + 13;
+      c.text(String(seed), cols.seed, base, { size: 8, bold: true, color: seed <= playoff.playoffTeams ? COLORS.green : COLORS.muted });
+      c.avatar(cols.team, rowY + 3, 13, { avatar: null, initials: t.initials });
+      const label = c.fit(t.name, isDivWinner ? 105 : 132, 8, seed <= playoff.playoffTeams);
+      c.text(label, cols.team + 18, base, { size: 8, bold: seed <= playoff.playoffTeams, color: seed <= playoff.playoffTeams ? COLORS.text : COLORS.mid });
+      if (isDivWinner) c.text("(DIV)", cols.team + 18 + c.width(label, 8, seed <= playoff.playoffTeams) + 3, base, { size: 5.5, bold: true, color: COLORS.amber });
+      c.text(`${t.currentWins}-${t.currentLosses}`, cols.rec, base, { size: 8 });
+      c.text(fmt(t.pointsFor), cols.pf, base, { size: 8, align: "right" });
+      const mp = t.makePlayoffsPct;
+      const mpColor = mp >= 90 ? COLORS.green : mp >= 40 ? COLORS.amber : COLORS.hot;
+      c.bar(cols.make, rowY + 7, 84, 4.5, mp, mpColor);
+      c.text(pctText(mp), cols.make + 89, base, { size: 7.5, bold: true, color: mpColor });
+      c.text(divisionOddsText(t, playoff.predictions), cols.div, base, { size: 7.5, align: "right", color: COLORS.muted });
+      c.text(pctText(t.oneSeedPct), cols.one, base, { size: 7.5, align: "right", color: COLORS.muted });
+      // CLINCHED and ELIMINATED are guaranteed. LOCK and LONG SHOT are only the simulation's near-certain calls.
+      if (t.clinchedPlayoffs) c.pill("CLINCHED", cols.status, rowY + 4, COLORS.green, COLORS.dark, 5.5);
+      else if (t.eliminated) c.pill("ELIMINATED", cols.status, rowY + 4, COLORS.muted, COLORS.dark, 5.5);
+      else if (mp >= 99.5) c.pill("LOCK", cols.status, rowY + 4, COLORS.cold, COLORS.dark, 5.5);
+      else if (mp < 0.5) c.pill("LONG SHOT", cols.status, rowY + 4, COLORS.hot, COLORS.dark, 5.5);
+      rowY += rowH;
+    });
+    c.text("CLINCHED and ELIMINATED are guaranteed (wins math, tiebreakers ignored). LOCK (99.5%+) and LONG SHOT (under 0.5%) are simulation calls only.", MARGIN, y + tableH + 9, { size: 6.5, color: COLORS.muted });
+    y += tableH + 22;
+
+    // Division races
+    if (playoff.hasDivisions) {
+      const divisions = [...new Set(seeds.map(t => t.division).filter((d): d is number => d !== undefined))].sort((a, b) => a - b);
+      if (divisions.length) {
+        c.section("Division races | chance to win each division", MARGIN, y, CONTENT_W);
+        y += 6;
+        const dw = (CONTENT_W - 10 * (divisions.length - 1)) / divisions.length;
+        const maxRows = Math.max(1, ...divisions.map(d => seeds.filter(t => t.division === d).length));
+        const divH = 22 + maxRows * 11;
+        divisions.forEach((d, i) => {
+          const dx = MARGIN + i * (dw + 10);
+          c.box(dx, y, dw, divH);
+          c.text(`DIVISION ${d}`, dx + 8, y + 13, { size: 6.5, color: COLORS.amber, bold: true, spacing: 1.2 });
+          seeds
+            .filter(t => t.division === d)
+            .sort((a, b) => (b.divisionWinnerPct ?? 0) - (a.divisionWinnerPct ?? 0))
+            .forEach((t, j) => {
+              const ry = y + 25 + j * 11;
+              c.text(c.fit(t.name, dw - 90, 7, true), dx + 8, ry, { size: 7, bold: true });
+              c.text(`${t.currentWins}-${t.currentLosses}`, dx + dw - 50, ry, { size: 6.5, color: COLORS.muted, align: "right" });
+              c.text(divisionOddsText(t, playoff.predictions), dx + dw - 8, ry, { size: 7, bold: true, align: "right" });
+            });
+        });
+        y += divH + 16;
+      }
+    }
   }
 
-  const colW = (CONTENT_W - 16) / 2;
-  const boxH = 30 + Math.max(hc.hot.length, hc.cold.length) * 36 + 10;
-  const drawGroup = (x: number, title: string, color: RGB, rows: typeof hc.hot) => {
-    c.card(x, y, colW, boxH);
-    c.text(title, x + 14, y + 22, { size: 12, color, bold: true });
-    rows.forEach((r, i) => {
-      const ry = y + 40 + i * 36;
-      c.avatar(x + 14, ry, 16, r);
-      c.text(r.name, x + 38, ry + 10, { size: 9, bold: true });
-      c.text(`Last 4 avg ${fmt(r.last4)}  vs  ${fmt(r.earlier)} earlier`, x + 38, ry + 21, {
-        size: 6.5,
-        color: COLORS.muted,
-      });
-      c.text(`${r.delta > 0 ? "+" : ""}${fmt(r.delta)}`, x + colW - 14, ry + 12, {
-        size: 11,
-        bold: true,
-        color,
-        align: "right",
-      });
+  // Hot and cold, compact
+  const hc = report.hotCold;
+  if (hc && hc.all.length) {
+    c.section("Hot and cold | last 4 weeks vs the rest of the season", MARGIN, y, CONTENT_W);
+    y += 6;
+    const room = PAGE_H - 36 - y;
+    const rowH = Math.max(9, Math.min(13, (room - 14) / hc.all.length));
+    const leftW = 320;
+    const labelW = 120;
+    const trackX = MARGIN + labelW + 4;
+    const trackW = leftW - labelW - 40;
+    const centerX = trackX + trackW / 2;
+    const maxAbs = Math.max(1, ...hc.all.map(r => Math.abs(r.delta)));
+    c.text("COOLER", trackX, y + 7, { size: 5.5, color: COLORS.cold, bold: true });
+    c.text("HOTTER", trackX + trackW, y + 7, { size: 5.5, color: COLORS.hot, bold: true, align: "right" });
+    hc.all.forEach((r, i) => {
+      const ry = y + 11 + i * rowH;
+      c.avatar(MARGIN, ry + 0.5, rowH - 2, r);
+      c.text(c.fit(r.name, labelW - rowH - 4, 6.5), MARGIN + rowH + 2, ry + rowH - 3, { size: 6.5 });
+      const len = (Math.abs(r.delta) / maxAbs) * (trackW / 2);
+      if (r.delta > 0) c.fillRect(centerX, ry + 2, len, rowH - 5, COLORS.hot);
+      else if (r.delta < 0) c.fillRect(centerX - len, ry + 2, len, rowH - 5, COLORS.cold);
+      c.fillRect(centerX - 0.3, ry, 0.6, rowH - 1, COLORS.muted);
+      c.text(signed(r.delta), MARGIN + leftW, ry + rowH - 3, { size: 6.5, bold: true, color: r.delta >= 0 ? COLORS.hot : COLORS.cold, align: "right" });
     });
-  };
-  drawGroup(MARGIN, "HEATING UP", COLORS.orange, hc.hot);
-  drawGroup(MARGIN + colW + 16, "COOLING OFF", COLORS.blue, hc.cold);
-  y += boxH + 20;
 
-  // Temperature check: every team, diverging from a center line.
-  c.text("TEMPERATURE CHECK  |  EVERY TEAM, RECENT SCORING VS EARLIER SEASON", MARGIN, y, {
-    size: 7,
-    color: COLORS.muted,
-    bold: true,
-  });
-  y += 8;
-  const rows = hc.all.length;
-  const tempH = rows * 24 + 30;
-  c.card(MARGIN, y, CONTENT_W, tempH);
-  const labelW = 170;
-  const trackX = MARGIN + labelW;
-  const trackW = CONTENT_W - labelW - 60;
-  const centerX = trackX + trackW / 2;
-  const maxAbs = Math.max(1, ...hc.all.map(r => Math.abs(r.delta)));
-  c.text("COOLER", trackX, y + 16, { size: 6.5, color: COLORS.blue, bold: true });
-  c.text("HOTTER", trackX + trackW, y + 16, { size: 6.5, color: COLORS.orange, bold: true, align: "right" });
-  hc.all.forEach((r, i) => {
-    const ry = y + 26 + i * 24;
-    c.avatar(MARGIN + 10, ry, 14, r);
-    c.text(r.name, MARGIN + 30, ry + 10, { size: 8 });
-    const half = trackW / 2;
-    const len = (Math.abs(r.delta) / maxAbs) * half;
-    if (r.delta > 0) {
-      c.doc.setFillColor(...COLORS.orange);
-      c.doc.rect(centerX, ry + 3, len, 8, "F");
-    } else if (r.delta < 0) {
-      c.doc.setFillColor(...COLORS.blue);
-      c.doc.rect(centerX - len, ry + 3, len, 8, "F");
-    }
-    c.doc.setDrawColor(...COLORS.muted);
-    c.doc.line(centerX, ry - 2, centerX, ry + 14);
-    c.text(`${r.delta > 0 ? "+" : ""}${fmt(r.delta)}`, PAGE_W - MARGIN - 10, ry + 10, {
-      size: 8,
-      bold: true,
-      color: r.delta >= 0 ? COLORS.orange : COLORS.blue,
-      align: "right",
-    });
-  });
+    // Right: who is heating up and cooling off
+    const rx = MARGIN + leftW + 24;
+    const rw = CONTENT_W - leftW - 24;
+    let ry2 = y + 8;
+    const group = (title: string, color: RGB, rows: typeof hc.hot) => {
+      c.text(title, rx, ry2, { size: 6.5, color, bold: true, spacing: 1.2 });
+      ry2 += 5;
+      rows.forEach(r => {
+        c.rule(rx, rx + rw, ry2 + 22, COLORS.rowLine, ROW_LINE_W);
+        c.text(c.fit(r.name, rw - 44, 8, true), rx, ry2 + 10, { size: 8, bold: true });
+        c.text(`Last 4 avg ${fmt(r.last4)} vs ${fmt(r.earlier)} earlier`, rx, ry2 + 18, { size: 5.5, color: COLORS.muted });
+        c.text(signed(r.delta), rx + rw, ry2 + 14, { size: 11, bold: true, color, align: "right" });
+        ry2 += 24;
+      });
+      ry2 += 8;
+    };
+    group("HEATING UP", COLORS.hot, hc.hot);
+    group("COOLING OFF", COLORS.cold, hc.cold);
+  }
 
   c.footer(report, 4);
 }
 
-function pageFive(c: Canvas, report: ReportData, playoff: PlayoffData | null) {
-  c.page();
-  c.header("Race to the playoffs", "Playoff picture", playoff
-    ? `Seeds 1-${playoff.playoffTeams} make the playoffs. Odds from ${playoff.simulationCount.toLocaleString()} season simulations.`
-    : "Playoff odds unavailable for this report.");
-
-  if (!playoff) {
-    c.footer(report, 5);
-    return;
-  }
-
-  // Seed order: wins, then points for.
-  const seeds = [...playoff.predictions].sort(
-    (a, b) => b.currentWins - a.currentWins || b.pointsFor - a.pointsFor,
-  );
-  const rowH = 22;
-  let y = 104;
-  const headerH = 20;
-  const tableH = headerH + seeds.length * rowH + 12;
-  c.card(MARGIN, y, CONTENT_W, tableH);
-
-  const cols = { seed: MARGIN + 12, team: MARGIN + 44, rec: MARGIN + 200, pf: MARGIN + 262, make: MARGIN + 276, div: MARGIN + 432, one: MARGIN + 482, status: MARGIN + 494 };
-  c.text("SEED", cols.seed, y + 14, { size: 6.5, color: COLORS.muted, bold: true });
-  c.text("TEAM", cols.team, y + 14, { size: 6.5, color: COLORS.muted, bold: true });
-  c.text("REC", cols.rec, y + 14, { size: 6.5, color: COLORS.muted, bold: true });
-  c.text("PF", cols.pf, y + 14, { size: 6.5, color: COLORS.muted, bold: true, align: "right" });
-  c.text("MAKE PLAYOFFS", cols.make, y + 14, { size: 6.5, color: COLORS.muted, bold: true });
-  c.text("DIV", cols.div, y + 14, { size: 6.5, color: COLORS.muted, bold: true, align: "right" });
-  c.text("#1 SEED", cols.one, y + 14, { size: 6.5, color: COLORS.muted, bold: true, align: "right" });
-
-  let rowY = y + headerH;
-  seeds.forEach((t, i) => {
-    const seed = i + 1;
-    const isDivWinner = (t.divisionWinnerPct ?? 0) >= 50;
-    if (isDivWinner) {
-      c.doc.setFillColor(56, 44, 18);
-      c.doc.rect(MARGIN + 1, rowY, CONTENT_W - 2, rowH, "F");
-    }
-    if (seed === playoff.playoffTeams + 1) {
-      c.doc.setFillColor(...COLORS.green);
-      c.doc.rect(MARGIN + 1, rowY - 2, CONTENT_W - 2, 2, "F");
-    }
-    c.text(String(seed), cols.seed, rowY + 15, { size: 8, bold: true, color: seed <= playoff.playoffTeams ? COLORS.green : COLORS.muted });
-    c.avatar(cols.team, rowY + 4, 14, t);
-    c.text(t.name + (isDivWinner ? " (DIV)" : ""), cols.team + 20, rowY + 15, { size: 8, bold: seed <= playoff.playoffTeams });
-    c.text(`${t.currentWins}-${t.currentLosses}`, cols.rec, rowY + 15, { size: 8 });
-    c.text(fmt(t.pointsFor), cols.pf, rowY + 15, { size: 8, align: "right" });
-    const mp = t.makePlayoffsPct;
-    const mpColor = mp >= 90 ? COLORS.green : mp >= 40 ? COLORS.amber : COLORS.red;
-    c.bar(cols.make, rowY + 7, 80, 6, mp, mpColor);
-    c.text(`${fmt(mp, mp < 1 ? 2 : 1)}%`, cols.make + 86, rowY + 15, { size: 8, bold: true, color: mpColor });
-    c.text(t.divisionWinnerPct === undefined ? "-" : `${fmt(t.divisionWinnerPct, t.divisionWinnerPct < 1 ? 2 : 1)}%`, cols.div, rowY + 15, { size: 8, align: "right", color: COLORS.muted });
-    c.text(`${fmt(t.oneSeedPct, t.oneSeedPct < 1 ? 2 : 1)}%`, cols.one, rowY + 15, { size: 8, align: "right", color: COLORS.muted });
-    if (mp >= 99.5) c.pill("LOCK", cols.status, rowY + 5, COLORS.green, COLORS.dark, 6);
-    else if (mp < 0.5) c.pill("LONG SHOT", cols.status, rowY + 5, COLORS.red, COLORS.dark, 6);
-    rowY += rowH;
-  });
-  y += tableH + 16;
-
-  // Bubble watch: teams still in the hunt but not locked or hopeless.
-  const bubble = seeds.filter(t => t.makePlayoffsPct >= 0.5 && t.makePlayoffsPct < 99.5);
-  if (bubble.length) {
-    c.text("BUBBLE WATCH", MARGIN, y, { size: 7, color: COLORS.muted, bold: true });
-    y += 8;
-    // Lay labels out in rows so long names wrap inside the card instead of running off the edge.
-    c.doc.setFont("helvetica", "bold");
-    c.doc.setFontSize(8);
-    const maxX = MARGIN + CONTENT_W - 12;
-    const placed: { label: string; x: number; row: number }[] = [];
-    let row = 0;
-    let bx = MARGIN + 12;
-    bubble.forEach(t => {
-      const label = `${t.name} ${fmt(t.makePlayoffsPct, 1)}%`;
-      const w = c.doc.getTextWidth(clean(label));
-      if (bx + w > maxX && bx > MARGIN + 12) {
-        row += 1;
-        bx = MARGIN + 12;
-      }
-      placed.push({ label, x: bx, row });
-      bx += w + 22;
-    });
-    const bubbleH = 16 + (row + 1) * 16 + 8;
-    c.card(MARGIN, y, CONTENT_W, bubbleH);
-    placed.forEach(p => c.text(p.label, p.x, y + 20 + p.row * 16, { size: 8, bold: true }));
-    y += bubbleH + 16;
-  }
-
-  // Division races
-  if (playoff.hasDivisions) {
-    const divisions = [...new Set(seeds.map(t => t.division).filter((d): d is number => d !== undefined))].sort((a, b) => a - b);
-    const dw = (CONTENT_W - 24) / Math.max(1, divisions.length);
-    c.text("DIVISION RACES", MARGIN, y, { size: 7, color: COLORS.muted, bold: true });
-    y += 8;
-    const maxRows = Math.max(1, ...divisions.map(d => seeds.filter(t => t.division === d).length));
-    const divH = 34 + maxRows * 26;
-    divisions.forEach((d, i) => {
-      const dx = MARGIN + i * (dw + 12);
-      c.card(dx, y, dw, divH);
-      c.text(`DIVISION ${d}`, dx + 12, y + 16, { size: 8, color: COLORS.amber, bold: true });
-      seeds
-        .filter(t => t.division === d)
-        .sort((a, b) => (b.divisionWinnerPct ?? 0) - (a.divisionWinnerPct ?? 0))
-        .forEach((t, j) => {
-          // Name on top, record and odds underneath, so long team names have the full card width.
-          const ry = y + 30 + j * 26;
-          c.text(t.name, dx + 12, ry, { size: 8, bold: true });
-          c.text(`${t.currentWins}-${t.currentLosses}`, dx + 12, ry + 11, { size: 7, color: COLORS.muted });
-          c.text(`${fmt(t.divisionWinnerPct ?? 0, 1)}%`, dx + dw - 12, ry + 11, { size: 8, bold: true, align: "right" });
-        });
-    });
-  }
-
-  c.footer(report, 5);
+/** Series text with the leader's name shortened so it never runs into the next column. */
+function h2hSeriesFit(c: Canvas, m: PreviewMatchup, maxW: number): string {
+  const h = m.history;
+  if (!h || h.meetings === 0 || h.aWins === h.bWins) return c.fit(h2hSeries(m), maxW, 7.5);
+  const lead = h.aWins > h.bWins ? m.a : m.b;
+  const tail = ` lead ${Math.max(h.aWins, h.bWins)}-${Math.min(h.aWins, h.bWins)}${h.ties ? `-${h.ties}` : ""}`;
+  return c.fit(lead.name, maxW - c.width(tail, 7.5), 7.5) + tail;
 }
 
 // ─── Entry point ────────────────────────────────────────────────────────────
@@ -640,13 +897,13 @@ export function buildWeeklyReportPdf(
   report: ReportData,
   playoff: PlayoffData | null,
   avatars: Map<string, string>,
+  fonts?: ReportFonts | null,
 ): jsPDF {
-  const c = new Canvas(avatars);
+  const c = new Canvas(avatars, fonts);
   pageOne(c, report);
   pageTwo(c, report);
-  pageThree(c, report);
-  pageFour(c, report);
-  pageFive(c, report, playoff);
+  pageThree(c, report, playoff);
+  pageFour(c, report, playoff);
   return c.doc;
 }
 
@@ -654,4 +911,3 @@ export function reportFileName(report: ReportData): string {
   const base = clean(report.leagueName).replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "League";
   return `${base}-Week-${report.week}-Report.pdf`;
 }
-

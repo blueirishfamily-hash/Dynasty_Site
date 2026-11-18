@@ -12,7 +12,7 @@
  * taken from the variances of its optimal lineup. Players are treated as independent.
  */
 import type { SleeperMatchup } from "./sleeper";
-import type { ReportData, TeamRef, WeekGame, Award, PreviewMatchup } from "../shared/weeklyReport";
+import type { ReportData, TeamRef, WeekGame, Award, PreviewMatchup, PowerRow, SeasonRecords, Storyline } from "../shared/weeklyReport";
 
 const POSITION_BASELINES: Record<string, { mean: number; stdDev: number }> = {
   QB: { mean: 18, stdDev: 6 },
@@ -228,9 +228,13 @@ export function buildWeeklyReport(input: ReportInput): ReportData {
     scores.set(t.rosterId, new Map());
     record.set(t.rosterId, { w: 0, l: 0, t: 0, pf: 0 });
   }
+  const outcomes = new Map<number, Array<"W" | "L" | "T">>(teams.map(t => [t.rosterId, []]));
+  const meetings: Array<{ week: number; a: number; b: number; pa: number; pb: number }> = [];
   for (let w = 1; w <= resultsWeek; w++) {
     for (const p of pairsForWeek(matchupsByWeek[w] || [])) {
+      meetings.push({ week: w, a: p.a.rosterId, b: p.b.rosterId, pa: p.a.points, pb: p.b.points });
       for (const [me, opp] of [[p.a, p.b], [p.b, p.a]] as const) {
+        outcomes.get(me.rosterId)?.push(me.points > opp.points ? "W" : me.points < opp.points ? "L" : "T");
         scores.get(me.rosterId)?.set(w, me.points);
         const r = record.get(me.rosterId);
         if (!r) continue;
@@ -245,6 +249,62 @@ export function buildWeeklyReport(input: ReportInput): ReportData {
   // Power rank = rank by season points for, as the app's report shows.
   const byPf = [...teams].sort((x, y) => (record.get(y.rosterId)?.pf ?? 0) - (record.get(x.rosterId)?.pf ?? 0));
   const power = new Map(byPf.map((t, i) => [t.rosterId, i + 1]));
+
+  // Power rankings with movement: rank by points for through last week vs through the week before.
+  const pfThrough = (upTo: number) => {
+    const totals = new Map<number, number>(teams.map(t => [t.rosterId, 0]));
+    for (const [rid, byWeek] of scores) {
+      let sum = 0;
+      for (const [w, pts] of byWeek) if (w <= upTo) sum += pts;
+      totals.set(rid, sum);
+    }
+    return totals;
+  };
+  const rankMap = (totals: Map<number, number>) =>
+    new Map([...teams].sort((x, y) => (totals.get(y.rosterId) ?? 0) - (totals.get(x.rosterId) ?? 0)).map((t, i) => [t.rosterId, i + 1] as const));
+  const prevRank = resultsWeek >= 2 ? rankMap(pfThrough(resultsWeek - 1)) : null;
+  const recordText = (rid: number) => {
+    const r = record.get(rid);
+    return r ? `${r.w}-${r.l}${r.t ? `-${r.t}` : ""}` : "";
+  };
+  const powerRankings: PowerRow[] = byPf.map((t, i) => {
+    const r = record.get(t.rosterId);
+    const games = (r?.w ?? 0) + (r?.l ?? 0) + (r?.t ?? 0);
+    return {
+      team: ref(t.rosterId),
+      rank: i + 1,
+      record: recordText(t.rosterId),
+      avgPoints: games ? round1((r?.pf ?? 0) / games) : 0,
+      move: prevRank ? (prevRank.get(t.rosterId) ?? i + 1) - (i + 1) : 0,
+    };
+  });
+
+  // Season records: single-week high and low, longest win and loss streaks.
+  let highScore: SeasonRecords["highScore"] = null;
+  let lowScore: SeasonRecords["lowScore"] = null;
+  for (const [rid, byWeek] of scores) {
+    for (const [w, pts] of byWeek) {
+      if (!highScore || pts > highScore.points) highScore = { team: ref(rid), points: round1(pts), week: w };
+      if (!lowScore || pts < lowScore.points) lowScore = { team: ref(rid), points: round1(pts), week: w };
+    }
+  }
+  const longestStreak = (kind: "W" | "L"): SeasonRecords["longestWinStreak"] => {
+    let best: { team: TeamRef; length: number } | null = null;
+    for (const [rid, list] of outcomes) {
+      let run = 0;
+      for (const o of list) {
+        run = o === kind ? run + 1 : 0;
+        if (run > 0 && (!best || run > best.length)) best = { team: ref(rid), length: run };
+      }
+    }
+    return best;
+  };
+  const seasonRecords: SeasonRecords = {
+    highScore,
+    lowScore,
+    longestWinStreak: longestStreak("W"),
+    longestLossStreak: longestStreak("L"),
+  };
 
   // ─── Last week (results for resultsWeek) ────────────────────────────────────
   const lastPairs = pairsForWeek(matchupsByWeek[resultsWeek] || []);
@@ -406,6 +466,33 @@ export function buildWeeklyReport(input: ReportInput): ReportData {
     const rb = record.get(p.b.rosterId);
     const recText = (r?: { w: number; l: number; t: number }) =>
       r ? `${r.w}-${r.l}${r.t ? `-${r.t}` : ""}` : "";
+    // Earlier meetings this season between these two teams.
+    const met = meetings.filter(m => (m.a === p.a.rosterId && m.b === p.b.rosterId) || (m.a === p.b.rosterId && m.b === p.a.rosterId));
+    let aWinsSeries = 0;
+    let bWinsSeries = 0;
+    for (const m of met) {
+      const aPts = m.a === p.a.rosterId ? m.pa : m.pb;
+      const bPts = m.a === p.a.rosterId ? m.pb : m.pa;
+      if (aPts > bPts) aWinsSeries++;
+      else if (bPts > aPts) bWinsSeries++;
+    }
+    const nameA = ref(p.a.rosterId).name;
+    const nameB = ref(p.b.rosterId).name;
+    const lastMet = met.length ? met[met.length - 1] : null;
+    const meeting = {
+      series: !met.length
+        ? "No meeting yet this season"
+        : aWinsSeries === bWinsSeries
+          ? `Tied ${aWinsSeries}-${bWinsSeries} this season`
+          : `${aWinsSeries > bWinsSeries ? nameA : nameB} lead ${Math.max(aWinsSeries, bWinsSeries)}-${Math.min(aWinsSeries, bWinsSeries)} this season`,
+      last: lastMet
+        ? (() => {
+            const aPts = lastMet.a === p.a.rosterId ? lastMet.pa : lastMet.pb;
+            const bPts = lastMet.a === p.a.rosterId ? lastMet.pb : lastMet.pa;
+            return `Week ${lastMet.week}: ${aPts >= bPts ? nameA : nameB} ${round1(Math.max(aPts, bPts)).toFixed(1)} to ${round1(Math.min(aPts, bPts)).toFixed(1)}`;
+          })()
+        : "First meeting of the season",
+    };
     return {
       a: {
         ...ref(p.a.rosterId),
@@ -420,6 +507,7 @@ export function buildWeeklyReport(input: ReportInput): ReportData {
         projected: round1(pb.total),
       },
       probA: winProbability(pa.total, pa.variance, pb.total, pb.variance),
+      meeting,
     };
   });
 
@@ -456,6 +544,47 @@ export function buildWeeklyReport(input: ReportInput): ReportData {
     };
   }
 
+  // Storylines: simple, factual lines from the data above.
+  const storylines: Storyline[] = [];
+  const pct = (p: number) => `${Math.round(p * 100)}%`;
+  const leaderPick = [...matchups]
+    .flatMap(m => [
+      { t: m.a, opp: m.b.name, p: m.probA },
+      { t: m.b, opp: m.a.name, p: 1 - m.probA },
+    ])
+    .map(x => ({ ...x, r: record.get(x.t.rosterId) }))
+    .filter(x => x.r)
+    .sort((x, y) => y.r!.w - x.r!.w || x.r!.l - y.r!.l || y.r!.pf - x.r!.pf)[0];
+  if (leaderPick && leaderPick.r) {
+    const rec = `${leaderPick.r.w}-${leaderPick.r.l}${leaderPick.r.t ? `-${leaderPick.r.t}` : ""}`;
+    const perfect = leaderPick.r.l === 0 && leaderPick.r.t === 0 && leaderPick.r.w > 0;
+    storylines.push(
+      perfect
+        ? { lead: "Perfect season on the line.", text: `${leaderPick.t.name} are ${rec} and ${pct(leaderPick.p)} to beat ${leaderPick.opp} and move to ${leaderPick.r.w + 1}-0.` }
+        : { lead: `${leaderPick.t.name} lead the way at ${rec}.`, text: `They are ${pct(leaderPick.p)} to beat ${leaderPick.opp} this week.` },
+    );
+  }
+  if (tossUp) {
+    storylines.push({
+      lead: "Toss-up of the week.",
+      text: `${tossUp.a.name} vs ${tossUp.b.name} is ${pct(tossUp.probA)} to ${pct(1 - tossUp.probA)}, the closest game on the slate.`,
+    });
+  }
+  if (hotCold && hotCold.hot[0]) {
+    const h = hotCold.hot[0];
+    storylines.push({
+      lead: `${h.name} are heating up.`,
+      text: `They are averaging ${h.last4.toFixed(1)} over the last 4 weeks, ${h.delta.toFixed(1)} above their earlier pace.`,
+    });
+  } else if (biggestMismatch) {
+    const fav = biggestMismatch.probA >= 0.5 ? biggestMismatch.a : biggestMismatch.b;
+    const dog = biggestMismatch.probA >= 0.5 ? biggestMismatch.b : biggestMismatch.a;
+    storylines.push({
+      lead: "Biggest mismatch.",
+      text: `${fav.name} are ${pct(Math.max(biggestMismatch.probA, 1 - biggestMismatch.probA))} to beat ${dog.name}.`,
+    });
+  }
+
   return {
     week,
     resultsWeek,
@@ -473,8 +602,10 @@ export function buildWeeklyReport(input: ReportInput): ReportData {
       positionLeaders,
       highestTeamScores,
       efficiency,
+      powerRankings,
+      seasonRecords,
     },
-    preview: { matchups, tossUp, biggestMismatch, shootout },
+    preview: { matchups, tossUp, biggestMismatch, shootout, storylines },
     hotCold,
   };
 }

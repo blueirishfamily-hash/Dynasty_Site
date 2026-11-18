@@ -87,6 +87,15 @@ describe("simulateOutlook", () => {
     expect(r.teams[0].magic).toBe(0);
   });
 
+  it("gives both teams in each game a swing, with a win never worse than a loss", () => {
+    const r = simulateOutlook(makeInput());
+    expect(r.gameSwings.length).toBe(6);
+    for (const g of r.gameSwings) {
+      expect(g.a.ifWin).toBeGreaterThanOrEqual(g.a.ifLose - 0.001);
+      expect(g.b.ifWin).toBeGreaterThanOrEqual(g.b.ifLose - 0.001);
+    }
+  });
+
   it("builds leverage for the user from the real schedule", () => {
     const r = simulateOutlook(makeInput({ userRosterId: 5 }));
     expect(r.user).not.toBeNull();
