@@ -24,6 +24,11 @@ import {
   STATS_CACHE_TTL,
 } from "./shared";
 import { requireCommissioner } from "../security/guards";
+import { simulateOutlook, type OutlookResult, type OutlookSchedule, type WeeklyRecord } from "../playoffOutlook";
+
+// Outlook results are deterministic for a given set of records, so repeat page loads can reuse them.
+const outlookCache = new Map<string, { at: number; result: OutlookResult }>();
+const OUTLOOK_TTL = 5 * 60 * 1000;
 
 export function registerPlayoffsRoutes(app: Express): void {
   // Playoff predictor - simulate remaining season
@@ -512,6 +517,106 @@ export function registerPlayoffsRoutes(app: Express): void {
         });
       }
 
+      // Real-schedule simulation. It also supplies seed and bye odds, clinch numbers, odds history and
+      // the games that move the requesting user's odds. Its odds replace the average-opponent odds above.
+      let outlook: OutlookResult | null = null;
+      if (!isPostseason && remainingWeeks > 0) {
+        try {
+          const leagueIdParam = req.params.leagueId;
+          const schedule: OutlookSchedule = {};
+          const futureWeeks: number[] = [];
+          for (let w = currentWeek; w <= regularSeasonWeeks; w++) futureWeeks.push(w);
+          const futureMatchups = await Promise.all(
+            futureWeeks.map(w => getLeagueMatchups(leagueIdParam, w).catch(() => [] as SleeperMatchup[])),
+          );
+          futureWeeks.forEach((w, k) => {
+            const groups = new Map<number, number[]>();
+            futureMatchups[k].forEach(m => {
+              if (m.matchup_id === null || m.matchup_id === undefined) return;
+              if (!groups.has(m.matchup_id)) groups.set(m.matchup_id, []);
+              groups.get(m.matchup_id)!.push(m.roster_id);
+            });
+            const pairs: Array<[number, number]> = [];
+            groups.forEach(ids => {
+              if (ids.length === 2) pairs.push([ids[0], ids[1]]);
+            });
+            if (pairs.length > 0) schedule[w] = pairs;
+          });
+
+          const weekly: WeeklyRecord[] = [];
+          const cumWins: Record<number, number> = {};
+          const cumPf: Record<number, number> = {};
+          teams.forEach(t => {
+            cumWins[t.rosterId] = 0;
+            cumPf[t.rosterId] = 0;
+          });
+          for (let w = 1; w < currentWeek && w <= allMatchups.length; w++) {
+            const groups = new Map<number, any[]>();
+            allMatchups[w - 1].forEach(m => {
+              if (m.matchup_id === null || m.matchup_id === undefined) return;
+              if (!groups.has(m.matchup_id)) groups.set(m.matchup_id, []);
+              groups.get(m.matchup_id)!.push(m);
+            });
+            groups.forEach(pair => {
+              if (pair.length !== 2) return;
+              const [a, b] = pair;
+              const pa = a.points || 0;
+              const pb = b.points || 0;
+              cumPf[a.roster_id] = (cumPf[a.roster_id] || 0) + pa;
+              cumPf[b.roster_id] = (cumPf[b.roster_id] || 0) + pb;
+              if (pa > pb) cumWins[a.roster_id] = (cumWins[a.roster_id] || 0) + 1;
+              else if (pb > pa) cumWins[b.roster_id] = (cumWins[b.roster_id] || 0) + 1;
+            });
+            weekly.push({ week: w, wins: { ...cumWins }, pf: { ...cumPf } });
+          }
+
+          const requestedUser = typeof req.query.userId === "string" ? req.query.userId : undefined;
+          const userRoster = requestedUser ? rosters.find(r => r.owner_id === requestedUser) : undefined;
+          const cacheKey = [
+            leagueIdParam,
+            userRoster?.roster_id ?? "none",
+            currentWeek,
+            teams.map(t => `${t.rosterId}:${t.wins}:${Math.round(t.pointsFor)}`).join(","),
+          ].join("|");
+          const hit = outlookCache.get(cacheKey);
+          if (hit && Date.now() - hit.at < OUTLOOK_TTL) {
+            outlook = hit.result;
+          } else {
+            outlook = simulateOutlook({
+              teams: teams.map(t => ({
+                rosterId: t.rosterId,
+                wins: t.wins,
+                losses: t.losses,
+                pointsFor: t.pointsFor,
+                mean: t.projectedPointsPerWeek,
+                std: t.stdDev,
+              })),
+              playoffTeams,
+              regularSeasonWeeks,
+              firstRemainingWeek: currentWeek,
+              schedule,
+              h2h: getH2HWins,
+              userRosterId: userRoster?.roster_id,
+              weekly,
+              sims: SIMULATIONS,
+            });
+            outlookCache.set(cacheKey, { at: Date.now(), result: outlook });
+          }
+
+          outlook.teams.forEach(o => {
+            const r = results.get(o.rosterId);
+            if (!r) return;
+            r.makePlayoffs = Math.round((o.makePlayoffsPct / 100) * SIMULATIONS);
+            r.oneSeed = Math.round((o.oneSeedPct / 100) * SIMULATIONS);
+            r.avgFinalWins = o.projectedWins * SIMULATIONS;
+            r.avgFinalPoints = o.projectedPointsFor * SIMULATIONS;
+          });
+        } catch (error) {
+          console.error("Playoff outlook simulation failed, using the average-opponent odds:", error);
+          outlook = null;
+        }
+      }
+
       // If in postseason, override simulation results with actual results
       if (isPostseason && actualStandings) {
         // Determine actual playoff teams from standings
@@ -611,6 +716,7 @@ export function registerPlayoffsRoutes(app: Express): void {
             }
           }
           
+          const ot = outlook?.teams.find(o => o.rosterId === team.rosterId);
           return {
             rosterId: team.rosterId,
             ownerId: team.ownerId,
@@ -629,6 +735,19 @@ export function registerPlayoffsRoutes(app: Express): void {
             divisionWinnerPct,
             makePlayoffsPct,
             projectedWins: Math.round((r.avgFinalWins / SIMULATIONS) * 10) / 10,
+            ...(ot
+              ? {
+                  byePct: ot.byePct,
+                  seedPct: ot.seedPct,
+                  gamesLeft: ot.gamesLeft,
+                  sosLeft: ot.sosLeft,
+                  clinchedPlayoffs: ot.clinchedPlayoffs,
+                  clinchedBye: ot.clinchedBye,
+                  eliminated: ot.eliminated,
+                  magic: ot.magic,
+                  elim: ot.elim,
+                }
+              : {}),
           };
         })
         .sort((a, b) => {
@@ -650,6 +769,15 @@ export function registerPlayoffsRoutes(app: Express): void {
         seasonType: nflState.season_type,
         hasDivisions,
         simulationCount: SIMULATIONS,
+        byes: outlook?.byes ?? 0,
+        outlook: outlook
+          ? {
+              cutoffWins: outlook.cutoffWins,
+              cutoffWinsPrev: outlook.cutoffWinsPrev,
+              history: outlook.history,
+              user: outlook.user,
+            }
+          : null,
       });
     } catch (error) {
       console.error("Error calculating playoff predictions:", error);

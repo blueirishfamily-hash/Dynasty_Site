@@ -4,7 +4,6 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Progress } from "@/components/ui/progress";
 import {
   Table,
   TableBody,
@@ -18,7 +17,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Trophy, Target, Medal, TrendingUp, Info, Hash, Zap, AlertCircle, CheckCircle2, XCircle, ArrowUp, ArrowDown } from "lucide-react";
+import { Target, Info, Hash, AlertCircle, CheckCircle2, XCircle, ArrowUp, ArrowDown } from "lucide-react";
 
 interface TeamPrediction {
   rosterId: number;
@@ -38,6 +37,36 @@ interface TeamPrediction {
   makePlayoffsPct: number;
   projectedWins: number;
   projectedPointsFor: number;
+  byePct?: number;
+  seedPct?: number[];
+  gamesLeft?: number;
+}
+
+interface LeverageGame {
+  week: number;
+  teamA: number;
+  teamB: number;
+  rootFor: number;
+  oddsIfRootWins: number;
+  oddsIfRootLoses: number;
+  swing: number;
+}
+
+interface UserOutlook {
+  rosterId: number;
+  baselinePct: number;
+  bestCasePct: number;
+  worstCasePct: number;
+  ownGame: { week: number; opponent: number; oddsIfWin: number; oddsIfLose: number } | null;
+  leverage: LeverageGame[];
+  winsNeeded: Array<{ wins: number; pct: number; samples: number }>;
+}
+
+interface OutlookData {
+  cutoffWins: number;
+  cutoffWinsPrev: number | null;
+  history: { weeks: number[]; series: Record<string, number[]> };
+  user: UserOutlook | null;
 }
 
 interface PlayoffPredictionData {
@@ -47,32 +76,12 @@ interface PlayoffPredictionData {
   currentWeek: number;
   hasDivisions: boolean;
   simulationCount: number;
+  byes?: number;
+  outlook?: OutlookData | null;
 }
 
 interface PlayoffPredictorProps {
   userId?: string;
-}
-
-function ProbabilityBar({ 
-  value, 
-  colorClass = "bg-primary" 
-}: { 
-  value: number; 
-  colorClass?: string;
-}) {
-  return (
-    <div className="flex items-center gap-2 min-w-32">
-      <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
-        <div
-          className={`h-full rounded-full transition-all ${colorClass}`}
-          style={{ width: `${Math.min(value, 100)}%` }}
-        />
-      </div>
-      <span className="text-sm font-medium tabular-nums w-12 text-right">
-        {value.toFixed(1)}%
-      </span>
-    </div>
-  );
 }
 
 function getProbabilityColor(pct: number): string {
@@ -105,13 +114,70 @@ function getStandingsBadgeClass(playoffPct: number): string {
   return "bg-muted text-muted-foreground"; // 0% = grey
 }
 
+function ordinal(n: number): string {
+  const j = n % 10;
+  const k = n % 100;
+  if (j === 1 && k !== 11) return `${n}st`;
+  if (j === 2 && k !== 12) return `${n}nd`;
+  if (j === 3 && k !== 13) return `${n}rd`;
+  return `${n}th`;
+}
+
+const CHART_COLORS = ["hsl(var(--chart-1))", "hsl(var(--chart-2))", "hsl(var(--chart-3))", "hsl(var(--chart-4))"];
+
+/** Playoff odds by week: your team in the primary color, and the most uncertain teams around you. */
+function OddsHistoryChart({
+  weeks,
+  series,
+  nowLabel,
+  lines,
+}: {
+  weeks: number[];
+  series: Record<string, number[]>;
+  nowLabel: number;
+  lines: Array<{ rosterId: number; name: string; color: string; now: number; emphasis: boolean }>;
+}) {
+  const W = 640;
+  const H = 260;
+  const pad = { l: 36, r: 12, t: 12, b: 26 };
+  const labels = [...weeks, nowLabel];
+  const n = labels.length;
+  const x = (i: number) => pad.l + ((W - pad.l - pad.r) * i) / Math.max(1, n - 1);
+  const y = (v: number) => pad.t + (H - pad.t - pad.b) * (1 - v / 100);
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img" aria-label="Playoff odds by week">
+      {[0, 25, 50, 75, 100].map((g) => (
+        <g key={g}>
+          <line x1={pad.l} x2={W - pad.r} y1={y(g)} y2={y(g)} stroke="hsl(var(--border))" />
+          <text x={pad.l - 6} y={y(g) + 3} fontSize="10" textAnchor="end" fill="hsl(var(--muted-foreground))">{g}%</text>
+        </g>
+      ))}
+      {labels.map((w, i) => (
+        <text key={`${w}-${i}`} x={x(i)} y={H - 8} fontSize="10" textAnchor="middle" fill="hsl(var(--muted-foreground))">
+          {i === n - 1 ? "Now" : w}
+        </text>
+      ))}
+      {lines.map((l) => {
+        const vals = [...(series[l.rosterId] || []), l.now];
+        const pts = vals.map((v, i) => `${x(i)},${y(v)}`).join(" ");
+        return (
+          <g key={l.rosterId}>
+            <polyline points={pts} fill="none" stroke={l.color} strokeWidth={l.emphasis ? 3 : 2} strokeLinejoin="round" />
+            <circle cx={x(vals.length - 1)} cy={y(vals[vals.length - 1])} r={l.emphasis ? 4 : 3} fill={l.color} />
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
 export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
   const { league } = useSleeper();
 
   const { data, isLoading, error } = useQuery<PlayoffPredictionData>({
-    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
+    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions", userId],
     queryFn: async () => {
-      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions?userId=${userId ?? ""}`);
       if (!res.ok) throw new Error("Failed to fetch playoff predictions");
       return res.json();
     },
@@ -155,303 +221,313 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
     );
   }
 
-  const { predictions, playoffTeams, remainingWeeks, hasDivisions, simulationCount } = data;
+  const { predictions, playoffTeams, remainingWeeks, simulationCount, outlook } = data;
+  const nameOf = (rosterId: number) => predictions.find((p) => p.rosterId === rosterId)?.name ?? `Team ${rosterId}`;
+  const userTeam = predictions.find((p) => p.ownerId === userId);
+  const me = outlook?.user ?? null;
 
-  const userTeam = predictions.find(p => p.ownerId === userId);
+  // Most likely finish: the seed with the highest chance
+  const seedPct = userTeam?.seedPct;
+  const likelySeed = seedPct && seedPct.length > 0 ? seedPct.indexOf(Math.max(...seedPct)) + 1 : null;
+  const seedMax = seedPct ? Math.max(...seedPct, 1) : 1;
 
-  return (
-    <div className="space-y-6">
-      {userTeam && (
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="font-heading text-lg flex items-center gap-2">
-              <Target className="w-5 h-5 text-primary" />
-              Your Playoff Outlook
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-              <div className="p-4 rounded-lg bg-muted/50 border border-border">
-                <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                  <Trophy className="w-4 h-4" />
-                  <span className="text-sm">1-Seed</span>
+  // Chart lines: you, plus up to four of the most uncertain other teams
+  const chartLines = (() => {
+    if (!outlook || !userTeam) return [] as Array<{ rosterId: number; name: string; color: string; now: number; emphasis: boolean }>;
+    const others = predictions
+      .filter((p) => p.rosterId !== userTeam.rosterId && p.makePlayoffsPct > 0 && p.makePlayoffsPct < 100)
+      .sort((a, b) => Math.abs(a.makePlayoffsPct - 50) - Math.abs(b.makePlayoffsPct - 50))
+      .slice(0, 4);
+    return [
+      { rosterId: userTeam.rosterId, name: userTeam.name, color: "hsl(var(--primary))", now: userTeam.makePlayoffsPct, emphasis: true },
+      ...others.map((p, i) => ({ rosterId: p.rosterId, name: p.name, color: CHART_COLORS[i % CHART_COLORS.length], now: p.makePlayoffsPct, emphasis: false })),
+    ];
+  })();
+
+  // Wins-needed rows: from the first total with a real chance up to the first guaranteed total
+  const winsRows = (() => {
+    const rows = me?.winsNeeded ?? [];
+    const firstReal = rows.findIndex((r) => r.pct >= 0.5);
+    if (firstReal < 0) return [];
+    const firstSure = rows.findIndex((r, i) => i >= firstReal && r.pct >= 99.5);
+    return rows.slice(firstReal, firstSure < 0 ? rows.length : firstSure + 1).slice(-6);
+  })();
+  const projectedRow = userTeam ? winsRows.find((r) => r.wins === Math.round(userTeam.projectedWins)) : undefined;
+
+  const hero = userTeam ? (
+    <Card className="order-1 lg:order-none" data-testid="card-outlook">
+      <CardContent className="pt-6 space-y-5">
+        <div className="flex items-center gap-5 flex-wrap">
+          <div
+            className="relative w-28 h-28 rounded-full shrink-0 flex items-center justify-center"
+            style={{ background: `conic-gradient(hsl(var(--primary)) ${Math.min(100, userTeam.makePlayoffsPct) * 3.6}deg, hsl(var(--muted)) 0)` }}
+            aria-label={`${userTeam.makePlayoffsPct.toFixed(1)} percent chance to make the playoffs`}
+          >
+            <div className="w-[88px] h-[88px] rounded-full bg-card flex flex-col items-center justify-center">
+              <span className={`font-heading text-2xl font-bold ${getTextColor(userTeam.makePlayoffsPct)}`}>
+                {Math.round(userTeam.makePlayoffsPct)}%
+              </span>
+              <span className="text-[11px] text-muted-foreground">make it</span>
+            </div>
+          </div>
+          <div className="space-y-2 min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Your playoff outlook</p>
+            {likelySeed && <p className="font-heading text-xl font-bold">Most likely: {ordinal(likelySeed)} seed</p>}
+            <p className="text-sm text-muted-foreground">
+              Projected {userTeam.projectedWins.toFixed(1)} wins
+              {remainingWeeks > 0 && ` · ${remainingWeeks} game${remainingWeeks === 1 ? "" : "s"} left`}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {userTeam.byePct !== undefined && userTeam.byePct > 0 && (
+                <Badge variant="outline" className="border-chart-4/50 text-chart-4">Bye {userTeam.byePct.toFixed(0)}%</Badge>
+              )}
+              <Badge variant="outline">1 seed {userTeam.oneSeedPct.toFixed(0)}%</Badge>
+              {me && <Badge variant="outline" className="border-primary/50 text-primary">Best {me.bestCasePct.toFixed(0)}%</Badge>}
+              {me && <Badge variant="outline" className="border-destructive/50 text-destructive">Worst {me.worstCasePct.toFixed(0)}%</Badge>}
+            </div>
+          </div>
+        </div>
+
+        {me?.ownGame && (
+          <div className="grid grid-cols-2 gap-3" data-testid="own-game">
+            <div className="rounded-lg bg-primary/10 p-3 text-center">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">If you win wk {me.ownGame.week}</p>
+              <p className="font-heading text-2xl font-bold text-primary">{me.ownGame.oddsIfWin.toFixed(0)}%</p>
+            </div>
+            <div className="rounded-lg bg-destructive/10 p-3 text-center">
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">If you lose</p>
+              <p className="font-heading text-2xl font-bold text-destructive">{me.ownGame.oddsIfLose.toFixed(0)}%</p>
+            </div>
+          </div>
+        )}
+
+        {seedPct && seedPct.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Where you finish, by seed</p>
+            <div className="flex items-end gap-1 h-24" data-testid="seed-bars">
+              {seedPct.map((p, i) => (
+                <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full">
+                  <div
+                    className={`w-full rounded-t ${i < playoffTeams ? "bg-primary" : "bg-muted-foreground/40"}`}
+                    style={{ height: `${Math.max(2, (p / seedMax) * 70)}px` }}
+                    title={`${ordinal(i + 1)} seed: ${p.toFixed(1)}%`}
+                  />
+                  <span className="text-[10px] text-muted-foreground">{i + 1}</span>
                 </div>
-                <span className={`text-2xl font-bold ${getTextColor(userTeam.oneSeedPct)}`}>
-                  {userTeam.oneSeedPct.toFixed(1)}%
-                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  ) : null;
+
+  const leverageCard = me ? (
+    <Card className="order-2 lg:order-none" data-testid="card-leverage">
+      <CardHeader className="pb-3">
+        <CardTitle className="font-heading text-lg">Games that move your odds</CardTitle>
+        <CardDescription>
+          {me.leverage.length > 0 ? `Week ${me.leverage[0].week}, ranked by swing` : "No other games this week"}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-2">
+        {me.leverage.map((g) => {
+          const other = g.rootFor === g.teamA ? g.teamB : g.teamA;
+          const meaningful = g.swing >= 1.5;
+          return (
+            <div key={`${g.teamA}-${g.teamB}`} className="flex items-center gap-3 rounded-lg border bg-muted/20 p-3" data-testid={`leverage-${g.teamA}-${g.teamB}`}>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold truncate">{nameOf(g.teamA)} vs {nameOf(g.teamB)}</p>
+                <p className="text-xs text-muted-foreground">
+                  {meaningful
+                    ? `Your odds: ${g.oddsIfRootWins.toFixed(0)}% if ${nameOf(g.rootFor)} wins, ${g.oddsIfRootLoses.toFixed(0)}% if ${nameOf(other)} wins`
+                    : "Little effect on your odds"}
+                </p>
               </div>
-              {hasDivisions && userTeam.divisionWinnerPct !== undefined && (
-                <div className="p-4 rounded-lg bg-muted/50 border border-border">
-                  <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                    <Medal className="w-4 h-4" />
-                    <span className="text-sm">Win Division</span>
-                  </div>
-                  <span className={`text-2xl font-bold ${getTextColor(userTeam.divisionWinnerPct)}`}>
-                    {userTeam.divisionWinnerPct.toFixed(1)}%
-                  </span>
+              {meaningful && (
+                <div className="text-right shrink-0">
+                  <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Root for</p>
+                  <p className="text-sm font-semibold max-w-[110px] truncate">{nameOf(g.rootFor)}</p>
                 </div>
               )}
-              <div className="p-4 rounded-lg bg-muted/50 border border-border">
-                <div className="flex items-center gap-2 text-muted-foreground mb-1">
-                  <TrendingUp className="w-4 h-4" />
-                  <span className="text-sm">Make Playoffs</span>
-                </div>
-                <span className={`text-2xl font-bold ${getTextColor(userTeam.makePlayoffsPct)}`}>
-                  {userTeam.makePlayoffsPct.toFixed(1)}%
-                </span>
-              </div>
+              <Badge
+                variant="outline"
+                className={`shrink-0 tabular-nums ${meaningful ? "border-primary/50 text-primary" : "text-muted-foreground"}`}
+              >
+                {meaningful ? `+${g.swing.toFixed(0)}%` : "—"}
+              </Badge>
             </div>
-            <div className="mt-4 pt-4 border-t border-border">
-              <p className="text-sm text-muted-foreground">
-                Projected final record: <span className="font-semibold text-foreground">{userTeam.projectedWins.toFixed(1)}-{(14 - userTeam.projectedWins).toFixed(1)}</span>
-                {remainingWeeks > 0 && (
-                  <span className="ml-2">({remainingWeeks} games remaining)</span>
-                )}
-              </p>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+          );
+        })}
+      </CardContent>
+    </Card>
+  ) : null;
 
-      <Card>
+  const chartCard =
+    outlook && chartLines.length > 0 ? (
+      <Card className="order-3 lg:order-none" data-testid="card-odds-history">
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div>
-              <CardTitle className="font-heading text-lg flex items-center gap-2">
-                <Target className="w-5 h-5 text-primary" />
-                Playoff Predictions
-              </CardTitle>
-              <CardDescription className="mt-1">
-                Based on {simulationCount.toLocaleString()} Monte Carlo simulations
-              </CardDescription>
-            </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Badge variant="outline" className="gap-1">
-                  <Info className="w-3 h-3" />
-                  {remainingWeeks} weeks left
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Tiebreakers: 1) Record, 2) Points Scored,</p>
-                <p>3) Head-to-Head Wins</p>
-              </TooltipContent>
-            </Tooltip>
-          </div>
+          <CardTitle className="font-heading text-lg">Playoff odds by week</CardTitle>
+          <CardDescription>Replayed from each week's results. You and the teams closest to the cut line.</CardDescription>
         </CardHeader>
-        <CardContent>
-          <div className="rounded-md border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-12">#</TableHead>
-                  <TableHead>Team</TableHead>
-                  <TableHead className="text-center">Record</TableHead>
-                  <TableHead className="text-center">GB</TableHead>
-                  <TableHead className="text-center">Proj.</TableHead>
-                  <TableHead>
-                    <div className="flex items-center gap-1">
-                      <Trophy className="w-3 h-3" />
-                      1-Seed
-                    </div>
-                  </TableHead>
-                  {hasDivisions && (
-                    <TableHead>
-                      <div className="flex items-center gap-1">
-                        <Medal className="w-3 h-3" />
-                        Division
-                      </div>
-                    </TableHead>
-                  )}
-                  <TableHead>
-                    <div className="flex items-center gap-1">
-                      <TrendingUp className="w-3 h-3" />
-                      Playoffs
-                    </div>
-                  </TableHead>
-                  <TableHead>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div className="flex items-center gap-1 cursor-help">
-                          <Hash className="w-3 h-3" />
-                          PF Rank
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Points For standings rank</p>
-                        <p className="text-xs text-muted-foreground">Used as tiebreaker</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TableHead>
-                  <TableHead>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <div className="flex items-center gap-1 cursor-help">
-                          <Zap className="w-3 h-3" />
-                          Proj PF
-                        </div>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        <p>Projected points for</p>
-                        <p className="text-xs text-muted-foreground">Based on roster projections</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {predictions.map((team, index) => {
-                  const isInPlayoffPosition = index < playoffTeams;
-                  const isUser = team.ownerId === userId;
-
-                  return (
-                    <TableRow 
-                      key={team.rosterId}
-                      className={isUser ? "bg-primary/5" : undefined}
-                      data-testid={`row-prediction-${team.rosterId}`}
-                    >
-                      <TableCell className="font-medium">
-                        <div 
-                          className={`w-6 h-6 flex items-center justify-center rounded-full text-xs font-semibold ${getStandingsBadgeClass(team.makePlayoffsPct)}`}
-                        >
-                          {index + 1}
-                        </div>
-                      </TableCell>
-                      <TableCell>
-                        <div className="flex items-center gap-2">
-                          <Avatar className="w-8 h-8">
-                            <AvatarFallback 
-                              className={`text-xs ${
-                                isUser 
-                                  ? "bg-primary text-primary-foreground" 
-                                  : "bg-muted"
-                              }`}
-                            >
-                              {team.initials}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className={`font-medium ${isUser ? "text-primary" : ""}`}>
-                            {team.name}
-                          </span>
-                        </div>
-                      </TableCell>
-                      <TableCell className="text-center tabular-nums">
-                        {team.currentWins}-{team.currentLosses}
-                      </TableCell>
-                      <TableCell className="text-center tabular-nums text-muted-foreground">
-                        {(() => {
-                          const leaderWins = predictions[0]?.currentWins || 0;
-                          const gb = leaderWins - team.currentWins;
-                          return gb === 0 ? "—" : gb.toString();
-                        })()}
-                      </TableCell>
-                      <TableCell className="text-center tabular-nums font-medium">
-                        {team.projectedWins.toFixed(1)}
-                      </TableCell>
-                      <TableCell>
-                        <ProbabilityBar 
-                          value={team.oneSeedPct} 
-                          colorClass={getProbabilityColor(team.oneSeedPct)}
-                        />
-                      </TableCell>
-                      {hasDivisions && (
-                        <TableCell>
-                          <ProbabilityBar 
-                            value={team.divisionWinnerPct || 0}
-                            colorClass={getProbabilityColor(team.divisionWinnerPct || 0)}
-                          />
-                        </TableCell>
-                      )}
-                      <TableCell>
-                        <ProbabilityBar 
-                          value={team.makePlayoffsPct}
-                          colorClass={getProbabilityColor(team.makePlayoffsPct)}
-                        />
-                      </TableCell>
-                      <TableCell>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="flex items-center gap-1 cursor-help">
-                              <Badge variant="outline" className="tabular-nums">
-                                #{team.pointsRank}
-                              </Badge>
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p className="font-medium">{team.pointsFor.toFixed(1)} PF</p>
-                            {team.pointsBehind !== null && (
-                              <p className="text-xs">
-                                <span className="text-chart-2">{team.pointsBehind.toFixed(1)}</span> pts behind #{team.pointsRank - 1}
-                              </p>
-                            )}
-                            {team.pointsAhead !== null && (
-                              <p className="text-xs">
-                                <span className="text-destructive">{team.pointsAhead.toFixed(1)}</span> pts ahead of #{team.pointsRank + 1}
-                              </p>
-                            )}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TableCell>
-                      <TableCell>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className="cursor-help">
-                              <span className="text-sm tabular-nums font-medium">
-                                {team.projectedPointsFor.toFixed(1)}
-                              </span>
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            <p className="font-medium">Projected End-of-Season PF</p>
-                            <p className="text-xs">
-                              Current: {team.pointsFor.toFixed(1)}
-                            </p>
-                            <p className="text-xs">
-                              +{(team.projectedPointsFor - team.pointsFor).toFixed(1)} projected
-                            </p>
-                            <p className="text-xs text-muted-foreground mt-1">
-                              ~{team.projectedPointsPerWeek.toFixed(1)} pts/week
-                            </p>
-                          </TooltipContent>
-                        </Tooltip>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
-          </div>
-
-          <div className="mt-4 pt-4 border-t border-border">
-            <div className="flex items-center gap-4 text-sm text-muted-foreground flex-wrap">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-primary" />
-                <span>Clinched (100%)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-chart-2" />
-                <span>Good chance (70-99%)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-chart-4" />
-                <span>Coin flip (50-69%)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-chart-3" />
-                <span>Longshot (25-49%)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-destructive" />
-                <span>Unlikely (1-24%)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 rounded-full bg-muted-foreground/50" />
-                <span>Eliminated (0%)</span>
-              </div>
-            </div>
+        <CardContent className="space-y-3">
+          {outlook.history.weeks.length > 0 ? (
+            <OddsHistoryChart
+              weeks={outlook.history.weeks}
+              series={outlook.history.series}
+              nowLabel={data.currentWeek}
+              lines={chartLines}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground py-6 text-center">Odds history appears after the first completed week.</p>
+          )}
+          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+            {chartLines.map((l) => (
+              <span key={l.rosterId} className="inline-flex items-center gap-1.5">
+                <span className="inline-block w-3 h-[3px] rounded" style={{ background: l.color }} />
+                <span className={l.emphasis ? "font-semibold" : "text-muted-foreground"}>{l.name}</span>
+              </span>
+            ))}
           </div>
         </CardContent>
       </Card>
+    ) : null;
+
+  const winsCard =
+    winsRows.length > 0 && userTeam ? (
+      <Card className="order-4 lg:order-none" data-testid="card-wins-needed">
+        <CardHeader className="pb-3">
+          <CardTitle className="font-heading text-lg">Wins needed to make it</CardTitle>
+          <CardDescription>Your chance of making the playoffs at each final win total</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {winsRows.map((r) => (
+            <div key={r.wins} className="grid grid-cols-[56px_1fr_48px] items-center gap-3">
+              <span className="text-sm font-medium">{r.wins} wins</span>
+              <div className="h-2.5 rounded-full bg-muted overflow-hidden">
+                <div className={`h-full rounded-full ${getProbabilityColor(r.pct)}`} style={{ width: `${Math.min(100, r.pct)}%` }} />
+              </div>
+              <span className={`text-sm font-semibold tabular-nums text-right ${getTextColor(r.pct)}`}>{r.pct.toFixed(0)}%</span>
+            </div>
+          ))}
+          <div className="rounded-lg border border-primary/40 bg-primary/10 p-3 text-sm">
+            <span className="font-semibold">You are projected for {userTeam.projectedWins.toFixed(1)} wins.</span>{" "}
+            {projectedRow && (
+              <span className="text-muted-foreground">
+                {projectedRow.wins} wins makes the field {projectedRow.pct.toFixed(0)}% of the time.
+              </span>
+            )}
+          </div>
+          {outlook && (
+            <div className="flex items-baseline justify-between border-t pt-3">
+              <span className="text-sm text-muted-foreground">Last playoff seed projects to</span>
+              <span className="font-heading text-lg font-bold tabular-nums">
+                {outlook.cutoffWins.toFixed(1)} wins
+                {outlook.cutoffWinsPrev !== null && (
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">was {outlook.cutoffWinsPrev.toFixed(1)}</span>
+                )}
+              </span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    ) : null;
+
+  const tableCard = (
+    <Card className="order-5 lg:order-none" data-testid="card-all-teams">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div>
+            <CardTitle className="font-heading text-lg flex items-center gap-2">
+              <Target className="w-5 h-5 text-primary" />
+              All teams
+            </CardTitle>
+            <CardDescription className="mt-1">
+              Based on {simulationCount.toLocaleString()} simulations of the real schedule
+            </CardDescription>
+          </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="gap-1">
+                <Info className="w-3 h-3" />
+                {remainingWeeks} weeks left
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Tiebreakers: 1) Record, 2) Points Scored,</p>
+              <p>3) Head-to-Head Wins</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      </CardHeader>
+      <CardContent className="px-2 sm:px-4">
+        <Table>
+          <TableHeader>
+            <TableRow className="hover:bg-transparent">
+              <TableHead>Team</TableHead>
+              <TableHead className="text-center">Rec</TableHead>
+              <TableHead>Make playoffs</TableHead>
+              <TableHead className="text-right">Bye</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {predictions.map((team, index) => {
+              const isUser = team.ownerId === userId;
+              return (
+                <TableRow
+                  key={team.rosterId}
+                  className={isUser ? "bg-primary/5" : undefined}
+                  data-testid={`row-prediction-${team.rosterId}`}
+                >
+                  <TableCell>
+                    <div className="flex items-center gap-2 min-w-0">
+                      <div className={`w-6 h-6 shrink-0 flex items-center justify-center rounded-full text-xs font-semibold ${getStandingsBadgeClass(team.makePlayoffsPct)}`}>
+                        {index + 1}
+                      </div>
+                      <Avatar className="w-7 h-7 shrink-0">
+                        <AvatarFallback className={`text-xs ${isUser ? "bg-primary text-primary-foreground" : "bg-muted"}`}>
+                          {team.initials}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className={`text-sm font-medium truncate ${isUser ? "text-primary" : ""}`}>{team.name}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-center tabular-nums text-sm">{team.currentWins}-{team.currentLosses}</TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2 min-w-24">
+                      <div className="flex-1 h-2 bg-muted rounded-full overflow-hidden">
+                        <div className={`h-full rounded-full ${getProbabilityColor(team.makePlayoffsPct)}`} style={{ width: `${Math.min(team.makePlayoffsPct, 100)}%` }} />
+                      </div>
+                      <span className={`text-sm font-semibold tabular-nums w-12 text-right ${getTextColor(team.makePlayoffsPct)}`}>
+                        {team.makePlayoffsPct.toFixed(1)}%
+                      </span>
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right tabular-nums text-sm text-muted-foreground">
+                    {team.byePct !== undefined ? `${team.byePct.toFixed(0)}%` : "—"}
+                  </TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </CardContent>
+    </Card>
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-6 lg:grid lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] lg:items-start">
+        <div className="contents lg:flex lg:flex-col lg:gap-6">
+          {hero}
+          {chartCard}
+          {winsCard}
+        </div>
+        <div className="contents lg:flex lg:flex-col lg:gap-6">
+          {leverageCard}
+          {tableCard}
+        </div>
+      </div>
 
       {/* Bubble Watch - Qualification Conditions */}
       {(() => {

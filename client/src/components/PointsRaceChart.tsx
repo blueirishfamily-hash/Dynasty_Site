@@ -179,8 +179,6 @@ export default function PointsRaceChart({ analysis, playoffTeams = 6 }: PointsRa
   const plotW = Math.max(width - L - R, 50);
   const xOf = (i: number) => L + (lastIndex > 0 ? (plotW * i) / lastIndex : plotW / 2);
   const yOf = (rank: number) => T + (n > 1 ? ((rank - 1) / (n - 1)) * plotH : plotH / 2);
-  const showCutoff = n > playoffTeams && playoffTeams > 0;
-  const cutoffY = showCutoff ? (yOf(playoffTeams) + yOf(playoffTeams + 1)) / 2 : 0;
 
   // Standings at the current week
   const atHead = useMemo(
@@ -273,16 +271,6 @@ export default function PointsRaceChart({ analysis, playoffTeams = 6 }: PointsRa
                     {w}
                   </text>
                 ))}
-                {/* playoff region */}
-                {showCutoff && (
-                  <>
-                    <rect x={L} y={T - 12} width={plotW} height={cutoffY - T + 12} fill="hsl(var(--primary))" opacity={0.05} />
-                    <line x1={L} y1={cutoffY} x2={L + plotW} y2={cutoffY} stroke="#D97706" strokeWidth={2} strokeDasharray="7 5" />
-                    <text x={L + 6} y={cutoffY - 6} fontSize={10} fontWeight={700} letterSpacing={0.8} fill="#F59E0B">
-                      PLAYOFF LINE
-                    </text>
-                  </>
-                )}
                 {/* lines */}
                 {[...teams]
                   .sort((a, b) => Number(a.isUser) - Number(b.isUser))
