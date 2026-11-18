@@ -103,7 +103,7 @@ export default function JoinCard({ expectedSlug, expectedName }: { expectedSlug?
           <Input
             value={code}
             onChange={(e) => { setCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 32)); setNotice(null); }}
-            placeholder="ATLDYNASTY"
+            placeholder="JOINCODE"
             autoFocus
             autoComplete="off"
             autoCapitalize="characters"

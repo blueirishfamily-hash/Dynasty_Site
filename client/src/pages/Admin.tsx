@@ -208,7 +208,7 @@ function AddLeagueDialog({ open, onClose, onCreated }: { open: boolean; onClose:
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label htmlFor="add-invite">Invite code (optional)</Label>
-                    <Input id="add-invite" value={inviteCode} onChange={(e) => setInviteCode(e.target.value.toUpperCase())} placeholder="ATLDYNASTY" />
+                    <Input id="add-invite" value={inviteCode} onChange={(e) => setInviteCode(e.target.value.toUpperCase())} placeholder="JOINCODE" />
                   </div>
                   <div className="flex flex-col gap-1.5">
                     <Label>Commissioner</Label>
