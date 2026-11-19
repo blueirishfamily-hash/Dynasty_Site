@@ -46,6 +46,8 @@ import {
   ChevronDown,
   Star,
   FileUp,
+  LayoutList,
+  Table2,
 } from "lucide-react";
 import type { DraftProspect } from "@shared/schema";
 import { ProspectCard } from "@/components/ProspectCard";
@@ -59,9 +61,54 @@ import {
   applyNflTeamLogoFallback,
 } from "@/lib/draftProspectMetrics";
 import { useIsCommissioner } from "@/lib/commissioner";
+import {
+  adpInRangeOfAnyPick,
+  filterProspects,
+  idealProspectForPick,
+  normalizePosition,
+  useMediaQuery,
+} from "@/components/draft-board/prospectList";
+import {
+  IdealPicksCard,
+  ProspectDetailPanel,
+  ProspectList,
+  type IdealRow,
+} from "@/components/draft-board/ProspectPanels";
 
 const DEFAULT_SEASON = "2026";
-const ADP_RANGE_TOLERANCE = 2;
+const VIEW_MODE_KEY = "draftProspectsView";
+
+type RankedPlayer = {
+  rank: number;
+  playerName: string;
+  position: string | null;
+  school: string | null;
+  sourceValue: string | null;
+};
+
+type RankingsImportResult = {
+  ok: boolean;
+  dryRun: boolean;
+  rowCount: number;
+  matched: number;
+  unmatched: RankedPlayer[];
+  changes: { prospectId: string; name: string; oldAdp: number | null; newAdp: number }[];
+};
+
+type RankingsInfo = {
+  status: {
+    source: string;
+    format: string;
+    lastAttemptAt: number;
+    lastSuccessAt: number | null;
+    lastStatus: string;
+    lastError: string | null;
+    rowCount: number | null;
+  } | null;
+  unmatched: RankedPlayer[];
+};
+
+const formatDate = (ms: number | null | undefined) => (ms ? new Date(ms).toLocaleDateString() : "never");
 
 const POSITION_COLORS: Record<string, string> = {
   QB: "bg-red-500/90 text-white",
@@ -85,6 +132,12 @@ export default function DraftProspects() {
   const [combineImportOpen, setCombineImportOpen] = useState(false);
   const [combineImportCsv, setCombineImportCsv] = useState("");
   const [editForm, setEditForm] = useState<Partial<DraftProspect>>({});
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importSource, setImportSource] = useState("Manual import");
+  const [importFormat, setImportFormat] = useState("1qb_ppr");
+  const [importPreview, setImportPreview] = useState<{ text: string; result: RankingsImportResult } | null>(null);
+  const [importErrors, setImportErrors] = useState<string[]>([]);
 
   const isCommissioner = useIsCommissioner();
 
@@ -143,6 +196,19 @@ export default function DraftProspects() {
     enabled: !!league?.leagueId,
   });
 
+  const rankingsKey = ["/api/league", league?.leagueId, "prospect-rankings", season];
+  const { data: rankingsInfo } = useQuery<RankingsInfo>({
+    queryKey: rankingsKey,
+    queryFn: async () => {
+      const res = await fetch(`/api/league/${league!.leagueId}/prospect-rankings?season=${encodeURIComponent(season)}`);
+      if (!res.ok) throw new Error("Failed to fetch rankings status");
+      return res.json();
+    },
+    enabled: !!league?.leagueId,
+  });
+  const rankingStatus = rankingsInfo?.status ?? null;
+  const unmatchedRanked = rankingsInfo?.unmatched ?? [];
+
   const userTeam = standings?.find((s: { isUser?: boolean; rosterId?: number }) => s.isUser);
   const userRosterId = userTeam?.rosterId;
   const totalTeams = standings?.length ?? 0;
@@ -150,7 +216,7 @@ export default function DraftProspects() {
   const { userPickNumbers, needPositions, userPicks } = useMemo(() => {
     const picks: number[] = [];
     const need = new Set<string>();
-    const emptyUserPicks: { round: number; draftSlot: number; pickNum: number }[] = [];
+    const emptyUserPicks: { round: number; draftSlot: number; pickNum: number; grade?: string; via?: string }[] = [];
     if (!userRosterId || totalTeams < 1)
       return { userPickNumbers: picks, needPositions: need, userPicks: emptyUserPicks };
 
@@ -160,11 +226,23 @@ export default function DraftProspects() {
         p.season === season &&
         (p.round ?? 1) <= 3
     );
-    const userPicksList: { round: number; draftSlot: number; pickNum: number }[] = myPicks.map(
-      (p: { round?: number; draftSlot?: number }) => {
+    const userPicksList: { round: number; draftSlot: number; pickNum: number; grade?: string; via?: string }[] = myPicks.map(
+      (p: {
+        round?: number;
+        draftSlot?: number;
+        grade?: string;
+        originalOwnerId?: number;
+        originalOwnerName?: string;
+      }) => {
         const round = p.round ?? 1;
         const draftSlot = p.draftSlot ?? 1;
-        return { round, draftSlot, pickNum: (round - 1) * totalTeams + draftSlot };
+        return {
+          round,
+          draftSlot,
+          pickNum: (round - 1) * totalTeams + draftSlot,
+          grade: p.grade,
+          via: p.originalOwnerId !== userRosterId ? p.originalOwnerName : undefined,
+        };
       }
     );
     userPicksList.sort((a, b) => a.pickNum - b.pickNum);
@@ -187,37 +265,54 @@ export default function DraftProspects() {
   }, [userRosterId, totalTeams, draftPicks, season, allRosters]);
 
   const idealPerPick = useMemo(() => {
-    type Row = { pickLabel: string; pickNum: number; prospect: ProspectEnriched | null };
-    const result: Row[] = [];
-    for (const { round, draftSlot, pickNum } of userPicks) {
-      const pickLabel = `${round}.${String(draftSlot).padStart(2, "0")}`;
-      const inRange = (p: ProspectEnriched) => {
-        if (p.adp == null) return false;
-        const adp = Number(p.adp);
-        return (
-          Math.abs(adp - pickNum) <= ADP_RANGE_TOLERANCE &&
-          pickNum >= adp - ADP_RANGE_TOLERANCE
-        );
-      };
-      const pos = (p: ProspectEnriched) =>
-        (p.position ?? "").trim().toUpperCase().replace(/[0-9]/g, "") || "";
-      const need = (p: ProspectEnriched) => needPositions.has(pos(p));
-      const candidates = prospects.filter(inRange);
-      const sorted = [...candidates].sort((a, b) => {
-        const needA = need(a);
-        const needB = need(b);
-        if (needA !== needB) return needB ? 1 : -1;
-        const adpA = Number(a.adp);
-        const adpB = Number(b.adp);
-        const diffA = Math.abs(adpA - pickNum);
-        const diffB = Math.abs(adpB - pickNum);
-        if (diffA !== diffB) return diffA - diffB;
-        return (a.rank ?? 99) - (b.rank ?? 99);
+    const result: IdealRow[] = [];
+    for (const { round, draftSlot, pickNum, grade, via } of userPicks) {
+      result.push({
+        pickLabel: `${round}.${String(draftSlot).padStart(2, "0")}`,
+        pickNum,
+        grade,
+        via,
+        prospect: idealProspectForPick(prospects, pickNum, needPositions),
       });
-      result.push({ pickLabel, pickNum, prospect: sorted[0] ?? null });
     }
     return result;
   }, [userPicks, prospects, needPositions]);
+
+  // List / detail view state. The detail panel sits beside the list on wide screens; on narrower
+  // screens tapping a row opens the existing dialog instead.
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const [viewMode, setViewMode] = useState<"list" | "table">(() => {
+    try {
+      return localStorage.getItem(VIEW_MODE_KEY) === "table" ? "table" : "list";
+    } catch {
+      return "list";
+    }
+  });
+  const changeViewMode = (mode: "list" | "table") => {
+    setViewMode(mode);
+    try {
+      localStorage.setItem(VIEW_MODE_KEY, mode);
+    } catch {
+      /* storage unavailable; the choice just will not be remembered */
+    }
+  };
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [posFilter, setPosFilter] = useState("all");
+  const visibleProspects = useMemo(
+    () => filterProspects(prospects, { search, position: posFilter }),
+    [prospects, search, posFilter]
+  );
+  const selectedProspect =
+    prospects.find((p) => p.id === selectedId) ?? visibleProspects[0] ?? prospects[0] ?? null;
+  // Same highlight rule the table has always used: in your pick range and a position of need.
+  const isIdealProspect = (p: ProspectEnriched) =>
+    adpInRangeOfAnyPick(p.adp, userPickNumbers) && needPositions.has(normalizePosition(p.position));
+  const inRangeOfPick = (p: ProspectEnriched) => adpInRangeOfAnyPick(p.adp, userPickNumbers);
+  const openProspect = (p: ProspectEnriched) => {
+    if (isDesktop && viewMode === "list") setSelectedId(p.id);
+    else setDetailProspect(p);
+  };
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
@@ -382,6 +477,76 @@ export default function DraftProspects() {
     },
   });
 
+  const rankingsImportMutation = useMutation({
+    mutationFn: async (dryRun: boolean) => {
+      const res = await fetch(`/api/league/${league!.leagueId}/prospect-rankings/import`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId: user?.userId,
+          season,
+          source: importSource,
+          format: importFormat,
+          text: importText,
+          dryRun,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = new Error((data.errors && data.errors[0]) || data.error || "Import failed") as Error & {
+          problems?: string[];
+        };
+        err.problems = data.errors ?? (data.error ? [data.error] : []);
+        throw err;
+      }
+      return data as RankingsImportResult;
+    },
+    onSuccess: (result, dryRun) => {
+      setImportErrors([]);
+      if (dryRun) {
+        setImportPreview({ text: importText, result });
+        return;
+      }
+      queryClient.invalidateQueries({ queryKey });
+      queryClient.invalidateQueries({ queryKey: rankingsKey });
+      setImportOpen(false);
+      setImportText("");
+      setImportPreview(null);
+      toast({
+        title: "Rankings imported",
+        description: `${result.matched} prospects updated, ${result.unmatched.length} not in your list.`,
+      });
+    },
+    onError: (e: Error & { problems?: string[] }, dryRun) => {
+      setImportPreview(null);
+      setImportErrors(e.problems && e.problems.length > 0 ? e.problems : [e.message]);
+      if (!dryRun) queryClient.invalidateQueries({ queryKey: rankingsKey });
+    },
+  });
+
+  const addRankedMutation = useMutation({
+    mutationFn: async (rank: number) => {
+      const res = await fetch(`/api/league/${league!.leagueId}/prospect-rankings/add`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: user?.userId, season, rank }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || "Could not add prospect");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey });
+      queryClient.invalidateQueries({ queryKey: rankingsKey });
+      toast({ title: "Prospect added", description: "Added to the end of your list." });
+    },
+    onError: (e: Error) => {
+      toast({ variant: "destructive", title: "Could not add prospect", description: e.message });
+    },
+  });
+
   const updateMutation = useMutation({
     mutationFn: async ({
       id,
@@ -500,6 +665,19 @@ export default function DraftProspects() {
     reorderMutation.mutate(next.map((p) => p.id));
   }
 
+  function startEdit(p: ProspectEnriched) {
+    setEditProspect(p);
+    setEditForm({
+      displayName: p.displayName,
+      school: p.school ?? undefined,
+      position: p.position ?? undefined,
+      age: p.age ?? undefined,
+      adp: p.adp ?? undefined,
+      overview: p.overview ?? undefined,
+      sleeperPlayerId: p.sleeperPlayerId ?? undefined,
+    });
+  }
+
   function handleSaveEdit() {
     if (!editProspect) return;
     const data: Record<string, unknown> = {};
@@ -535,18 +713,41 @@ export default function DraftProspects() {
     );
   }
 
+  const viewToggle = (
+    <div className="flex gap-1" role="group" aria-label="Prospect view">
+      <Button
+        variant={viewMode === "list" ? "default" : "outline"}
+        size="sm"
+        aria-pressed={viewMode === "list"}
+        onClick={() => changeViewMode("list")}
+      >
+        <LayoutList className="w-4 h-4 mr-1" />
+        List
+      </Button>
+      <Button
+        variant={viewMode === "table" ? "default" : "outline"}
+        size="sm"
+        aria-pressed={viewMode === "table"}
+        onClick={() => changeViewMode("table")}
+      >
+        <Table2 className="w-4 h-4 mr-1" />
+        Table view
+      </Button>
+    </div>
+  );
+
   return (
     <>
       <SetupModal open={showSetup} onComplete={() => setShowSetup(false)} />
-      <div className="p-6 space-y-6">
+      <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Draft Prospects</h1>
+            <h2 className="font-heading text-lg font-semibold">Draft prospects</h2>
             <p className="text-muted-foreground">
               Top 40 incoming {season} rookies (QB, RB, WR, TE) with combine and awards.
             </p>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Label htmlFor="season-dp" className="text-sm text-muted-foreground">
               Season
             </Label>
@@ -607,6 +808,10 @@ export default function DraftProspects() {
                   <FileUp className="w-4 h-4 mr-1" />
                   Import RAS
                 </Button>
+                <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                  <FileUp className="w-4 h-4 mr-1" />
+                  Import rankings
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -634,80 +839,67 @@ export default function DraftProspects() {
           </Card>
         )}
 
+        {rankingStatus && (
+          <div className="space-y-2">
+            <p className="text-xs text-muted-foreground" data-testid="rankings-status">
+              Rankings: {rankingStatus.source}, {rankingStatus.format}
+              {rankingStatus.lastSuccessAt ? `, last synced ${formatDate(rankingStatus.lastSuccessAt)}` : ""}
+              {rankingStatus.rowCount ? ` (${rankingStatus.rowCount} players)` : ""}
+            </p>
+            {rankingStatus.lastStatus === "failed" && (
+              <div role="alert" className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
+                The last rankings import failed: {(rankingStatus.lastError ?? "unknown error").replace(/\.+$/, "")}.{" "}
+                {rankingStatus.lastSuccessAt
+                  ? `Your list still has the rankings from ${formatDate(rankingStatus.lastSuccessAt)}.`
+                  : "Nothing has been imported yet."}
+              </div>
+            )}
+          </div>
+        )}
+
         {isLoading ? (
           <Skeleton className="h-64 w-full rounded-lg" />
         ) : (
-          <>
+          <div
+            className={`grid gap-4 items-start ${
+              userRosterId && userPicks.length > 0 && prospects.length > 0
+                ? "xl:grid-cols-[270px_minmax(0,1fr)]"
+                : ""
+            }`}
+          >
             {userRosterId && userPicks.length > 0 && prospects.length > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle>Your picks & ideal prospects</CardTitle>
-                  <CardDescription>
-                    One recommended prospect per draft pick (in range, position of need when
-                    possible).
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-3">
-                    {idealPerPick.map(({ pickLabel, pickNum, prospect }) => (
-                      <div
-                        key={pickNum}
-                        className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-card-foreground"
-                      >
-                        <span className="font-mono font-medium">{pickLabel}</span>
-                        <span className="text-muted-foreground">→</span>
-                        {prospect ? (
-                          <button
-                            type="button"
-                            className="flex items-center gap-1.5 text-left hover:underline"
-                            onClick={() => setDetailProspect(prospect)}
-                          >
-                            {prospect.position && (
-                              <Badge
-                                className={
-                                  POSITION_COLORS[prospect.position] ||
-                                  "bg-muted text-muted-foreground"
-                                }
-                              >
-                                {prospect.position}
-                              </Badge>
-                            )}
-                            <span className="font-medium">{prospect.displayName}</span>
-                            <span className="text-muted-foreground">
-                              ADP {prospect.adp != null ? Number(prospect.adp).toFixed(1) : "—"}
-                            </span>
-                          </button>
-                        ) : (
-                          <span className="text-muted-foreground text-sm">
-                            No prospect in range
-                          </span>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
+              <div className="min-w-0 xl:sticky xl:top-4">
+                <IdealPicksCard rows={idealPerPick} onSelect={openProspect} />
+              </div>
             )}
 
-            <Card>
-            <CardHeader>
-              <CardTitle>Prospects</CardTitle>
-              <CardDescription>
-                RK, name, POS, ADP, age, school, NFL team, and combine highlight.
-                {userRosterId && (
-                  <span className="block mt-1 text-muted-foreground">
-                    Highlighted = in your pick range, a position of need, and where the pick is not a reach.
-                  </span>
-                )}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
+            <div className="min-w-0">
               {prospects.length === 0 ? (
-                <p className="text-muted-foreground py-8 text-center">
-                  No prospects yet.
-                  {isCommissioner && " Use Bulk add to add up to 40 prospects."}
-                </p>
-              ) : (
+                <Card>
+                  <CardContent className="pt-6">
+                    <p className="text-muted-foreground py-8 text-center">
+                      No prospects yet.
+                      {isCommissioner && " Use Bulk add to add up to 40 prospects."}
+                    </p>
+                  </CardContent>
+                </Card>
+              ) : viewMode === "table" ? (
+                <Card>
+                  <CardHeader>
+                    <div className="flex items-center justify-between gap-2">
+                      <CardTitle>Prospects</CardTitle>
+                      {viewToggle}
+                    </div>
+                    <CardDescription>
+                      RK, name, POS, ADP, age, school, NFL team, and combine highlight.
+                      {userRosterId && (
+                        <span className="block mt-1 text-muted-foreground">
+                          Highlighted = in your pick range, a position of need, and where the pick is not a reach.
+                        </span>
+                      )}
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
                 <div className="overflow-x-auto">
                   <Table>
                     <TableHeader>
@@ -736,15 +928,7 @@ export default function DraftProspects() {
                           .toUpperCase()
                           .replace(/[0-9]/g, "")
                           || null;
-                        const inRange =
-                          p.adp != null &&
-                          userPickNumbers.some((pickNum) => {
-                            const adp = Number(p.adp);
-                            return (
-                              Math.abs(adp - pickNum) <= ADP_RANGE_TOLERANCE &&
-                              pickNum >= adp - ADP_RANGE_TOLERANCE
-                            );
-                          });
+                        const inRange = adpInRangeOfAnyPick(p.adp, userPickNumbers);
                         const positionNeed =
                           prospectPos != null && needPositions.has(prospectPos);
                         const isIdeal = inRange && positionNeed;
@@ -866,10 +1050,90 @@ export default function DraftProspects() {
                     </TableBody>
                   </Table>
                 </div>
+                  </CardContent>
+                </Card>
+              ) : (
+                <div className="grid gap-4 items-start lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
+                  <ProspectList
+                    prospects={visibleProspects}
+                    selectedId={selectedProspect?.id ?? null}
+                    inlineDetail={isDesktop}
+                    search={search}
+                    onSearchChange={setSearch}
+                    position={posFilter}
+                    onPositionChange={setPosFilter}
+                    isIdeal={isIdealProspect}
+                    onSelect={openProspect}
+                    headerAction={viewToggle}
+                    description={
+                      userRosterId
+                        ? "Highlighted = in your pick range, a position of need, and where the pick is not a reach."
+                        : "Top incoming rookies by board rank."
+                    }
+                  />
+                  {isDesktop && (
+                    <ProspectDetailPanel
+                      prospect={selectedProspect}
+                      allProspects={prospects}
+                      inRange={selectedProspect ? inRangeOfPick(selectedProspect) : false}
+                      isCommissioner={isCommissioner}
+                      canMoveUp={
+                        !!selectedProspect && prospects.indexOf(selectedProspect) > 0 && !reorderMutation.isPending
+                      }
+                      canMoveDown={
+                        !!selectedProspect &&
+                        prospects.indexOf(selectedProspect) < prospects.length - 1 &&
+                        !reorderMutation.isPending
+                      }
+                      onMoveUp={() => selectedProspect && handleMoveUp(prospects.indexOf(selectedProspect))}
+                      onMoveDown={() => selectedProspect && handleMoveDown(prospects.indexOf(selectedProspect))}
+                      onEdit={() => selectedProspect && startEdit(selectedProspect)}
+                      onDelete={() => selectedProspect && setDeleteProspectId(selectedProspect.id)}
+                    />
+                  )}
+                </div>
               )}
-            </CardContent>
-          </Card>
-          </>
+              {isCommissioner && unmatchedRanked.length > 0 && (
+                <Card className="mt-4">
+                  <CardHeader className="pb-3">
+                    <CardTitle>Not in your list</CardTitle>
+                    <CardDescription>
+                      Ranked in the last import but missing from your prospects. Adding one puts it at the end of your
+                      list (max 40).
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="max-h-72 space-y-1 overflow-y-auto">
+                      {unmatchedRanked.map((r) => (
+                        <li key={r.rank} className="flex items-center gap-2 rounded-md bg-muted/30 px-2.5 py-1.5">
+                          <span className="w-8 shrink-0 font-mono text-sm text-muted-foreground">{r.rank}</span>
+                          {r.position && (
+                            <Badge className={`shrink-0 text-[10px] px-1.5 ${POSITION_COLORS[r.position] || "bg-muted text-muted-foreground"}`}>
+                              {r.position}
+                            </Badge>
+                          )}
+                          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                            {r.playerName}
+                            {r.school && <span className="ml-1.5 font-normal text-muted-foreground">{r.school}</span>}
+                          </span>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => addRankedMutation.mutate(r.rank)}
+                            disabled={addRankedMutation.isPending}
+                            aria-label={`Add ${r.playerName} to your prospects`}
+                          >
+                            <Plus className="w-4 h-4 mr-1" />
+                            Add
+                          </Button>
+                        </li>
+                      ))}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          </div>
         )}
       </div>
 
@@ -1034,6 +1298,91 @@ export default function DraftProspects() {
             </Button>
             <Button onClick={handleBulkSubmit} disabled={bulkAddMutation.isPending}>
               Add prospects
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Import rankings dialog */}
+      <Dialog
+        open={importOpen}
+        onOpenChange={(open) => {
+          setImportOpen(open);
+          if (!open) {
+            setImportPreview(null);
+            setImportErrors([]);
+          }
+        }}
+      >
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Import rankings</DialogTitle>
+            <DialogDescription>
+              Paste a board or CSV, one prospect per line: rank, name, position, school, value. A header row is optional,
+              and an ADP column is used if you include one. Otherwise each matched prospect&apos;s ADP is set to its rank.
+              Ranks must run 1 to N with no gaps.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <Label htmlFor="rk-source">Source</Label>
+              <Input id="rk-source" value={importSource} onChange={(e) => setImportSource(e.target.value)} maxLength={64} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="rk-format">Format</Label>
+              <Input id="rk-format" value={importFormat} onChange={(e) => setImportFormat(e.target.value)} maxLength={32} />
+              <p className="text-xs text-muted-foreground">Describe the list as it is, for example 1qb_ppr or sf_ppr.</p>
+            </div>
+          </div>
+          <Textarea
+            className="min-h-[200px] font-mono text-sm"
+            aria-label="Rankings to import"
+            placeholder={"rank,name,pos,school,value\n1,Ashton Jeanty,RB,Boise State,1.01\n2,Tetairoa McMillan,WR,Arizona,1.02"}
+            value={importText}
+            onChange={(e) => setImportText(e.target.value)}
+          />
+          {importErrors.length > 0 && (
+            <div role="alert" className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm">
+              <p className="font-medium">Nothing was imported.</p>
+              <ul className="mt-1 list-disc pl-5">
+                {importErrors.slice(0, 8).map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {importPreview && importPreview.text === importText && (
+            <div className="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm space-y-1">
+              <p>
+                <span className="font-medium">{importPreview.result.rowCount}</span> players read.{" "}
+                <span className="font-medium">{importPreview.result.matched}</span> match your list and will get a new ADP.{" "}
+                <span className="font-medium">{importPreview.result.unmatched.length}</span> are not in your list.
+              </p>
+              {importPreview.result.changes.slice(0, 5).map((c) => (
+                <p key={c.prospectId} className="text-xs text-muted-foreground">
+                  {c.name}: ADP {c.oldAdp != null ? Number(c.oldAdp).toFixed(1) : "none"} to {Number(c.newAdp).toFixed(1)}
+                </p>
+              ))}
+            </div>
+          )}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setImportOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => rankingsImportMutation.mutate(true)}
+              disabled={rankingsImportMutation.isPending || !importText.trim()}
+            >
+              Preview
+            </Button>
+            <Button
+              onClick={() => rankingsImportMutation.mutate(false)}
+              disabled={
+                rankingsImportMutation.isPending || !importPreview || importPreview.text !== importText
+              }
+            >
+              Import
             </Button>
           </DialogFooter>
         </DialogContent>

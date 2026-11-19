@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { pgTable, text, integer, bigint, varchar, real, unique, jsonb, index, uniqueIndex, check } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, bigint, varchar, real, unique, jsonb, index, uniqueIndex, check, primaryKey } from "drizzle-orm/pg-core";
 import { sql } from "drizzle-orm";
 import { createInsertSchema } from "drizzle-zod";
 
@@ -108,6 +108,41 @@ export const draftProspectsTable = pgTable("draft_prospects", {
   updatedAt: bigint("updated_at", { mode: "number" }).notNull(),
 }, (t) => ({
   leagueSeasonRankUnique: unique().on(t.leagueId, t.season, t.rank),
+}));
+
+// Imported prospect rankings (pasted text or CSV). The prospects table above keeps its own rows;
+// these only feed ADP updates and the "not in your list" panel.
+export const draftProspectRankingsTable = pgTable("draft_prospect_rankings", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  source: varchar("source", { length: 64 }).notNull(),
+  format: varchar("format", { length: 32 }).notNull(),
+  rank: integer("rank").notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  nameKey: varchar("name_key", { length: 128 }).notNull(),
+  position: varchar("position", { length: 8 }),
+  school: varchar("school", { length: 128 }),
+  sourceValue: text("source_value"),
+  rawPayload: text("raw_payload"), // JSON string, optional
+  fetchedAt: bigint("fetched_at", { mode: "number" }).notNull(),
+}, (t) => ({
+  uniqueRank: unique().on(t.leagueId, t.season, t.source, t.format, t.rank),
+  byName: index("draft_prospect_rankings_by_name").on(t.leagueId, t.season, t.source, t.format, t.nameKey),
+}));
+
+export const rankingSyncStatusTable = pgTable("ranking_sync_status", {
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  season: varchar("season", { length: 8 }).notNull(),
+  source: varchar("source", { length: 64 }).notNull(),
+  format: varchar("format", { length: 32 }).notNull(),
+  lastAttemptAt: bigint("last_attempt_at", { mode: "number" }).notNull(),
+  lastSuccessAt: bigint("last_success_at", { mode: "number" }),
+  lastStatus: varchar("last_status", { length: 16 }).notNull(), // "ok" or "failed"
+  lastError: text("last_error"),
+  rowCount: integer("row_count"),
+}, (t) => ({
+  pk: primaryKey({ columns: [t.leagueId, t.season, t.source, t.format] }),
 }));
 
 export const playerContractsTable = pgTable("player_contracts", {
@@ -618,6 +653,8 @@ export type InsertLeagueSetting = z.infer<typeof insertLeagueSettingDbSchema>;
 // Draft Prospect types
 export type DraftProspect = typeof draftProspectsTable.$inferSelect;
 export type InsertDraftProspect = z.infer<typeof insertDraftProspectDbSchema>;
+export type DraftProspectRanking = typeof draftProspectRankingsTable.$inferSelect;
+export type RankingSyncStatus = typeof rankingSyncStatusTable.$inferSelect;
 
 // Zod Schemas for API validation
 
@@ -659,6 +696,8 @@ export const teamStandingSchema = z.object({
   pointsFor: z.number(),
   pointsAgainst: z.number(),
   maxPointsFor: z.number().optional(),
+  /** Optimal-lineup points for each completed regular season week, oldest first */
+  weeklyMaxPoints: z.array(z.number()).optional(),
   streak: z.string().optional(),
   isUser: z.boolean().optional(),
 });

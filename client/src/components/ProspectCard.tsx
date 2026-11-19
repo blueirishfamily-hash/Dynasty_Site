@@ -75,6 +75,8 @@ function DominatorYearBars({ rows }: { rows: { year: number; dominator: number }
 export type ProspectCardProps = {
   prospect: ProspectEnriched;
   allProspects: ProspectEnriched[];
+  /** Stack the hero above the details (for narrow columns) instead of switching to side by side at lg. */
+  compact?: boolean;
 };
 
 function ordinalSuffix(n: number): string {
@@ -93,7 +95,7 @@ function rankBadgeClass(rank: number, outOf: number): string {
   return "text-muted-foreground";
 }
 
-export function ProspectCard({ prospect: d, allProspects }: ProspectCardProps) {
+export function ProspectCard({ prospect: d, allProspects, compact = false }: ProspectCardProps) {
   const teamAbbr = (d.sleeperTeam ?? "").trim();
   const combineEntries = parseCombineData(d.combineData);
   const forty = combineEntries["40Yd"] ?? "";
@@ -111,9 +113,13 @@ export function ProspectCard({ prospect: d, allProspects }: ProspectCardProps) {
   const approxRound = approxRound12Team(d.adp);
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+    <div className={`flex min-h-0 flex-1 flex-col ${compact ? "" : "lg:flex-row"}`}>
       {/* Left hero */}
-      <div className="relative shrink-0 overflow-hidden border-b border-border/60 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-8 text-center before:pointer-events-none before:absolute before:inset-0 before:bg-primary/5 before:content-[''] lg:w-[280px] lg:border-b-0 lg:border-r">
+      <div
+        className={`relative shrink-0 overflow-hidden border-b border-border/60 bg-gradient-to-b from-zinc-900 to-zinc-950 px-6 py-8 text-center before:pointer-events-none before:absolute before:inset-0 before:bg-primary/5 before:content-[''] ${
+          compact ? "" : "lg:w-[280px] lg:border-b-0 lg:border-r"
+        }`}
+      >
         <div className="relative z-[1] flex flex-col items-center gap-4">
           <Avatar className="h-28 w-28 border-2 border-primary/60 shadow-lg ring-2 ring-primary/20">
             {d.photoUrl ? <AvatarImage src={d.photoUrl} alt={d.displayName} /> : null}

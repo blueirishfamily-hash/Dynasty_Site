@@ -30,6 +30,7 @@ import { registerFreeAgencyRoutes } from "./freeAgency";
 import { registerLeagueAdminRoutes } from "./leagueAdmin";
 import { registerHistoricalRoutes } from "./historical";
 import { registerDraftProspectsRoutes } from "./draftProspects";
+import { registerDraftProspectRankingsRoutes } from "./draftProspectRankings";
 
 // Route files register in this order. Express matches routes in registration order, so when two
 // paths can match the same request, the earlier one wins. The split kept every such pair in its
@@ -73,6 +74,7 @@ export async function registerRoutes(
   registerLeagueAdminRoutes(app);
   registerHistoricalRoutes(app);
   registerDraftProspectsRoutes(app);
+  registerDraftProspectRankingsRoutes(app);
 
   const { registerContractHubRoutes } = await import("../contractHubRoutes");
   registerContractHubRoutes(app);
