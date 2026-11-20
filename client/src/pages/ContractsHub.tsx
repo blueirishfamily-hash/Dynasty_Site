@@ -15,6 +15,7 @@ import { FreeAgencyBiddingTab, usePositionRanks } from "@/components/contracts-h
 import { RoundWinsTab } from "@/components/contracts-hub/RoundWinsTab";
 import { FreeAgencyRecapTab, type DraftCapitalData } from "@/components/contracts-hub/FreeAgencyRecapTab";
 import { RfaMatchTab } from "@/components/contracts-hub/RfaMatchTab";
+import { ContractMoveAlerts } from "@/components/contracts-hub/ContractMoves";
 import { NotOpenYet } from "@/components/contracts-hub/NotOpenYet";
 import {
   isOffseasonPhase,
@@ -2478,7 +2479,7 @@ export default function ContractsHub() {
 
   const positionOf = useCallback((id: string) => (playerMap[id] as any)?.position as string | undefined, [playerMap]);
 
-  // A contract counts for a team when the player is on that team's Sleeper roster, the same as the Contracts page.
+  // A contract counts for a team when the player is on that team's Sleeper roster.
   // During the offseason a contract for a player on no roster also counts: that is a free agent just signed in a bid
   // round, before the commissioner moves him in Sleeper. Anything else filed under a team is "orphaned" and left out.
   const { data: phaseForCap } = useContractPhase(league?.leagueId);
@@ -2737,6 +2738,8 @@ export default function ContractsHub() {
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
         ) : (
+          <>
+          {league?.leagueId && <ContractMoveAlerts leagueId={league.leagueId} isCommissioner={isCommissioner} myRosterId={myRosterId} />}
           <Tabs value={activeTab} onValueChange={setActiveTab}>
             <TabsList className="mb-6 h-auto flex-wrap gap-1 bg-muted/50 p-1">
               <TabsTrigger value="overview" className="text-xs sm:text-sm">
@@ -2893,7 +2896,7 @@ export default function ContractsHub() {
                     </p>
                     <p className="text-xs text-muted-foreground mb-2">
                       These players have a contract filed under a team they are no longer on in Sleeper (traded or dropped).
-                      Move the contract or turn it into dead cap on the Contracts page (Manage League Contracts).
+                      Trades, drops and pickups from now on are handled automatically (League Settings, Dead cap and limits), and earlier ones this season wait there for approval. Anything older can be fixed with the commissioner contract edit.
                     </p>
                     <details>
                     <summary className="text-xs cursor-pointer text-amber-600 select-none">Show the list</summary>
@@ -2976,6 +2979,7 @@ export default function ContractsHub() {
             </TabsContent>
 
          </Tabs>
+          </>
         )}
       </div>
 

@@ -19,7 +19,6 @@ import { registerContractsRoutes } from "./contracts";
 import { registerStandingsRoutes } from "./standings";
 import { registerMatchupsRoutes } from "./matchups";
 import { registerRostersRoutes } from "./rosters";
-import { registerRookieContractsRoutes } from "./rookieContracts";
 import { registerDraftRoutes } from "./draft";
 import { registerPlayoffsRoutes } from "./playoffs";
 import { registerHistoryRoutes } from "./history";
@@ -31,6 +30,7 @@ import { registerLeagueAdminRoutes } from "./leagueAdmin";
 import { registerHistoricalRoutes } from "./historical";
 import { registerDraftProspectsRoutes } from "./draftProspects";
 import { registerDraftProspectRankingsRoutes } from "./draftProspectRankings";
+import { registerContractMovesRoutes } from "./contractMoves";
 
 // Route files register in this order. Express matches routes in registration order, so when two
 // paths can match the same request, the earlier one wins. The split kept every such pair in its
@@ -63,7 +63,6 @@ export async function registerRoutes(
   registerStandingsRoutes(app);
   registerMatchupsRoutes(app);
   registerRostersRoutes(app);
-  registerRookieContractsRoutes(app);
   registerDraftRoutes(app);
   registerPlayoffsRoutes(app);
   registerHistoryRoutes(app);
@@ -75,6 +74,7 @@ export async function registerRoutes(
   registerHistoricalRoutes(app);
   registerDraftProspectsRoutes(app);
   registerDraftProspectRankingsRoutes(app);
+  registerContractMovesRoutes(app);
 
   const { registerContractHubRoutes } = await import("../contractHubRoutes");
   registerContractHubRoutes(app);

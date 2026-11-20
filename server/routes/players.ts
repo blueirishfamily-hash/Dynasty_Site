@@ -14,14 +14,10 @@ import {
   getLeagueDrafts,
   getDraftPicks,
 } from "../sleeper";
-import type { Position } from "../../shared/schema";
 import {
   getEffectiveWeek,
-  calculateQuartiles,
-  getQuartile,
   WeeklyStatsCache,
   fetchAllWeeklyStats,
-  computeAdjustedPPGForPlayer,
 } from "./shared";
 
 export function registerPlayersRoutes(app: Express): void {
@@ -144,133 +140,6 @@ export function registerPlayersRoutes(app: Express): void {
     } catch (error) {
       console.error("Error computing FA production:", error);
       res.status(500).json({ error: "Failed to compute production" });
-    }
-  });
-
-  // Get player rankings with box plot data by position (uses adjusted PPG: 30 games across 2 seasons)
-  app.get("/api/sleeper/league/:leagueId/player-rankings", async (req, res) => {
-    try {
-      const { leagueId } = req.params;
-      const [rosters, players, nflState, league] = await Promise.all([
-        getLeagueRosters(leagueId),
-        getAllPlayers(),
-        getNFLState(),
-        getLeague(leagueId),
-      ]);
-
-      const currentSeason = league.season || nflState.season;
-      const previousSeason = String(parseInt(currentSeason) - 1);
-      
-      console.log(`[Player Rankings] Computing adjusted PPG for seasons ${currentSeason} + ${previousSeason}`);
-
-      // Fetch weekly stats for both seasons upfront (shared across all players)
-      const [currentWeeklyStats, previousWeeklyStats] = await Promise.all([
-        fetchAllWeeklyStats(currentSeason),
-        fetchAllWeeklyStats(previousSeason),
-      ]);
-
-      // Collect all rostered players by position with their adjusted PPG
-      const positionPlayers: Record<string, Array<{
-        playerId: string;
-        name: string;
-        team: string;
-        adjustedPPG: number;
-        gamesUsed: number;
-      }>> = {};
-
-      rosters.forEach(roster => {
-        (roster.players || []).forEach(pid => {
-          const player = players[pid];
-          if (!player) return;
-          
-          const pos = player.position;
-          if (!["QB", "RB", "WR", "TE", "K", "DEF"].includes(pos)) return;
-          
-          const ppgResult = computeAdjustedPPGForPlayer(pid, currentSeason, previousSeason, currentWeeklyStats, previousWeeklyStats);
-          if (!ppgResult) return; // no games played
-
-          if (!positionPlayers[pos]) {
-            positionPlayers[pos] = [];
-          }
-          
-          positionPlayers[pos].push({
-            playerId: pid,
-            name: player.full_name || `${player.first_name} ${player.last_name}`,
-            team: player.team || "",
-            adjustedPPG: Math.round(ppgResult.adjustedPPG * 10) / 10,
-            gamesUsed: ppgResult.gamesUsed,
-          });
-        });
-      });
-      
-      console.log(`[Player Rankings] Position breakdown:`, Object.keys(positionPlayers).map(pos => `${pos}: ${positionPlayers[pos].length}`).join(", "));
-
-      // Calculate quartiles on adjusted PPG values for each position
-      const positions: Record<string, {
-        players: Array<{
-          playerId: string;
-          name: string;
-          team: string;
-          adjustedPPG: number;
-          gamesUsed: number;
-          quartile: 1 | 2 | 3 | 4;
-          value: string;
-        }>;
-        boxPlot: {
-          min: number;
-          q1: number;
-          median: number;
-          q3: number;
-          max: number;
-          outliers: number[];
-        };
-      }> = {};
-
-      Object.entries(positionPlayers).forEach(([position, playerList]) => {
-        const sortedPlayers = [...playerList].sort((a, b) => b.adjustedPPG - a.adjustedPPG);
-        const ppgValues = sortedPlayers.map(p => p.adjustedPPG);
-        
-        const quartiles = calculateQuartiles(ppgValues);
-        
-        const iqr = quartiles.q3 - quartiles.q1;
-        const lowerBound = quartiles.q1 - 1.5 * iqr;
-        const upperBound = quartiles.q3 + 1.5 * iqr;
-        const outliers = ppgValues.filter(p => p < lowerBound || p > upperBound);
-        
-        const playersWithQuartiles = sortedPlayers.map(player => {
-          const quartile = getQuartile(player.adjustedPPG, quartiles.q1, quartiles.median, quartiles.q3);
-          return {
-            ...player,
-            quartile,
-            value: `Q${quartile}`,
-          };
-        });
-        
-        positions[position] = {
-          players: playersWithQuartiles,
-          boxPlot: {
-            min: quartiles.min,
-            q1: quartiles.q1,
-            median: quartiles.median,
-            q3: quartiles.q3,
-            max: quartiles.max,
-            outliers,
-          },
-        };
-      });
-
-      console.log(`[Player Rankings] Returning data for ${Object.keys(positions).length} positions`);
-      
-      res.json({
-        season: currentSeason,
-        positions: positions || {},
-      });
-    } catch (error: any) {
-      console.error("Error fetching player rankings:", error);
-      res.status(500).json({ 
-        error: "Failed to fetch player rankings",
-        message: error?.message || "Unknown error"
-      });
     }
   });
 

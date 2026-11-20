@@ -42,7 +42,7 @@ export function requestRosterIds(req: Pick<Request, "path" | "body" | "query">):
   add((req.query as Record<string, unknown> | undefined)?.rosterId);
   const roster = req.path.match(/\/roster\/(\d+)(?:\/|$)/);
   if (roster) add(roster[1]);
-  const trailing = req.path.match(/\/(?:bids|favorites|contract-drafts)\/(?:[^/]+\/)?(\d+)$/);
+  const trailing = req.path.match(/\/bids\/(?:[^/]+\/)?(\d+)$/);
   if (trailing) add(trailing[1]);
   return Array.from(ids);
 }

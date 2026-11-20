@@ -1,6 +1,6 @@
 import { createSandboxAwareStorage } from "./testSandbox";
 import { randomUUID } from "crypto";
-import { eq, and, or, ne, desc, asc, sql, isNull } from "drizzle-orm";
+import { eq, and, or, ne, desc, asc, sql, isNull, inArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   ruleSuggestionsTable,
@@ -36,6 +36,7 @@ import {
   draftProspectsTable,
   draftProspectRankingsTable,
   rankingSyncStatusTable,
+  contractMoveLogTable,
 } from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -46,6 +47,7 @@ import type {
   LeagueSetting,
   DraftProspect, InsertDraftProspect,
   DraftProspectRanking, RankingSyncStatus,
+  ContractMove, InsertContractMove,
   PlayerContract, InsertPlayerContract,
   PlayerBid, InsertPlayerBid,
   RfaDesignation, InsertRfaDesignation,
@@ -126,6 +128,18 @@ export interface IStorage {
 
   getProspectRankings(leagueId: string, season: string, source: string, format: string): Promise<DraftProspectRanking[]>;
   getRankingSyncStatuses(leagueId: string, season: string): Promise<RankingSyncStatus[]>;
+
+  /** The automatic contract move log (trades, drops and pickups from Sleeper), newest first. */
+  getContractMoves(leagueId: string, statuses?: string[]): Promise<ContractMove[]>;
+  getContractMoveById(leagueId: string, id: string): Promise<ContractMove | undefined>;
+  /** Inserts new rows and returns only the ones that were new (a row for the same transaction, player and kind is left alone). */
+  insertContractMoves(rows: InsertContractMove[]): Promise<ContractMove[]>;
+  updateContractMoveStatus(
+    id: string,
+    patch: Partial<Pick<ContractMove, "status" | "detail" | "flags" | "flagStatus" | "resolvedAt" | "resolvedBy" | "summary">>
+  ): Promise<void>;
+  /** Moves a traded player's pending (not yet confirmed) extensions to the new team. Returns how many moved. */
+  updatePendingExtensionRoster(leagueId: string, playerId: string, fromRosterId: number, toRosterId: number): Promise<number>;
   recordRankingSyncResult(data: { leagueId: string; season: string; source: string; format: string; ok: boolean; error?: string | null; rowCount?: number | null }): Promise<void>;
   /** Replaces the stored rankings for one source and format in a single transaction, so a failure keeps the old rows. */
   replaceProspectRankings(
@@ -1199,6 +1213,62 @@ export class DatabaseStorage implements IStorage {
           eq(draftProspectsTable.season, season)
         ));
     }
+  }
+
+  async getContractMoves(leagueId: string, statuses?: string[]): Promise<ContractMove[]> {
+    const where = statuses && statuses.length > 0
+      ? and(eq(contractMoveLogTable.leagueId, leagueId), inArray(contractMoveLogTable.status, statuses))
+      : eq(contractMoveLogTable.leagueId, leagueId);
+    return db.select().from(contractMoveLogTable).where(where).orderBy(desc(contractMoveLogTable.txAt));
+  }
+
+  async getContractMoveById(leagueId: string, id: string): Promise<ContractMove | undefined> {
+    const [row] = await db
+      .select()
+      .from(contractMoveLogTable)
+      .where(and(eq(contractMoveLogTable.leagueId, leagueId), eq(contractMoveLogTable.id, id)));
+    return row;
+  }
+
+  async insertContractMoves(rows: InsertContractMove[]): Promise<ContractMove[]> {
+    if (rows.length === 0) return [];
+    return db.insert(contractMoveLogTable).values(rows).onConflictDoNothing().returning();
+  }
+
+  async updateContractMoveStatus(
+    id: string,
+    patch: Partial<Pick<ContractMove, "status" | "detail" | "flags" | "flagStatus" | "resolvedAt" | "resolvedBy" | "summary">>
+  ): Promise<void> {
+    await db.update(contractMoveLogTable).set(patch).where(eq(contractMoveLogTable.id, id));
+  }
+
+  async updatePendingExtensionRoster(leagueId: string, playerId: string, fromRosterId: number, toRosterId: number): Promise<number> {
+    const rows = await db
+      .select()
+      .from(teamExtensionsTable)
+      .where(and(
+        eq(teamExtensionsTable.leagueId, leagueId),
+        eq(teamExtensionsTable.rosterId, fromRosterId),
+        eq(teamExtensionsTable.playerId, playerId),
+        eq(teamExtensionsTable.status, "pending")
+      ));
+    let moved = 0;
+    for (const row of rows) {
+      // Do not stack a second extension for the same player and season on the new team.
+      const clash = await db
+        .select({ id: teamExtensionsTable.id })
+        .from(teamExtensionsTable)
+        .where(and(
+          eq(teamExtensionsTable.leagueId, leagueId),
+          eq(teamExtensionsTable.rosterId, toRosterId),
+          eq(teamExtensionsTable.playerId, playerId),
+          eq(teamExtensionsTable.season, row.season)
+        ));
+      if (clash.length > 0) continue;
+      await db.update(teamExtensionsTable).set({ rosterId: toRosterId }).where(eq(teamExtensionsTable.id, row.id));
+      moved++;
+    }
+    return moved;
   }
 
   async getProspectRankings(leagueId: string, season: string, source: string, format: string): Promise<DraftProspectRanking[]> {

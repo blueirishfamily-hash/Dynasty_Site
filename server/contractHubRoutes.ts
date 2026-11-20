@@ -162,7 +162,9 @@ export async function startNewLeagueYear(oldLeagueId: string, newLeagueId: strin
   if (ppgMin) await storage.setLeagueSetting(newLeagueId, PPG_MIN_GAMES_KEY, ppgMin);
   // Dead cap stays on or off, and keeps the date it was turned on.
   const { DEAD_CAP_ENABLED_KEY, DEAD_CAP_ENABLED_AT_KEY } = await import("./deadCap");
-  for (const key of [DEAD_CAP_ENABLED_KEY, DEAD_CAP_ENABLED_AT_KEY]) {
+  // The automatic contract moves switch carries over too, with the date it was turned on.
+  const { CONTRACT_MOVES_LIVE_AT_KEY } = await import("./contractMoves");
+  for (const key of [DEAD_CAP_ENABLED_KEY, DEAD_CAP_ENABLED_AT_KEY, CONTRACT_MOVES_LIVE_AT_KEY]) {
     const value = await storage.getLeagueSetting(oldLeagueId, key);
     if (value) await storage.setLeagueSetting(newLeagueId, key, value);
   }

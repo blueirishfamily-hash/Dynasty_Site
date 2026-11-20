@@ -131,6 +131,33 @@ export const draftProspectRankingsTable = pgTable("draft_prospect_rankings", {
   byName: index("draft_prospect_rankings_by_name").on(t.leagueId, t.season, t.source, t.format, t.nameKey),
 }));
 
+// What the automatic contract moves did (or would do) for each Sleeper transaction: trades and commissioner moves
+// move a contract to the new team, drops end a contract (with dead cap when that setting is on), pickups sign a
+// 1-year contract. One row per (transaction, player, kind), so a transaction is never processed twice.
+export const contractMoveLogTable = pgTable("contract_move_log", {
+  id: varchar("id", { length: 36 }).primaryKey(),
+  leagueId: varchar("league_id", { length: 64 }).notNull(),
+  transactionId: varchar("transaction_id", { length: 64 }).notNull(), // the Sleeper transaction
+  kind: varchar("kind", { length: 24 }).notNull(), // trade_move, commissioner_move, drop, pickup
+  playerId: varchar("player_id", { length: 64 }).notNull(),
+  playerName: varchar("player_name", { length: 128 }).notNull(),
+  playerPosition: varchar("player_position", { length: 16 }),
+  fromRosterId: integer("from_roster_id"),
+  toRosterId: integer("to_roster_id"),
+  status: varchar("status", { length: 16 }).notNull(), // proposed, applied, rejected, skipped, failed
+  summary: text("summary").notNull(), // one plain-language line
+  detail: text("detail"), // JSON: the planned effect and the numbers behind it
+  flags: text("flags"), // JSON list of problems (a team over the cap), for the team and the commissioner
+  flagStatus: varchar("flag_status", { length: 16 }), // open or resolved, null when nothing is flagged
+  txAt: bigint("tx_at", { mode: "number" }).notNull(),
+  createdAt: bigint("created_at", { mode: "number" }).notNull(),
+  resolvedAt: bigint("resolved_at", { mode: "number" }),
+  resolvedBy: varchar("resolved_by", { length: 64 }),
+}, (t) => ({
+  uniqueMove: unique().on(t.leagueId, t.transactionId, t.playerId, t.kind),
+  byStatus: index("contract_move_log_by_status").on(t.leagueId, t.status),
+}));
+
 export const rankingSyncStatusTable = pgTable("ranking_sync_status", {
   leagueId: varchar("league_id", { length: 64 }).notNull(),
   season: varchar("season", { length: 8 }).notNull(),
@@ -655,6 +682,8 @@ export type DraftProspect = typeof draftProspectsTable.$inferSelect;
 export type InsertDraftProspect = z.infer<typeof insertDraftProspectDbSchema>;
 export type DraftProspectRanking = typeof draftProspectRankingsTable.$inferSelect;
 export type RankingSyncStatus = typeof rankingSyncStatusTable.$inferSelect;
+export type ContractMove = typeof contractMoveLogTable.$inferSelect;
+export type InsertContractMove = typeof contractMoveLogTable.$inferInsert;
 
 // Zod Schemas for API validation
 

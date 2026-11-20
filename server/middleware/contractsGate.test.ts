@@ -22,7 +22,7 @@ function allRoutes(): string[] {
 }
 
 // Routes that are part of the contracts feature. Anything else must stay open when contracts are off.
-const CONTRACT_ROUTE = /\/(contracts|rookie-contracts|extensions|rookie-extension-salary|non-rookie-extension-salary|franchise-tag|draft-capital|bids|bidding-status|preferred-free-agents|favorites|dead-cap|process-cut-trade|contract-drafts|assign-contracts-by-quartile|contract-phase|fa-signed|fa-recap|fa-bids|fa-round|rfa|trade-offers|in-season-signing|cap-check|round-wins|round-confirm|commissioner\/(contract|dead-cap|change-log))/;
+const CONTRACT_ROUTE = /\/(contracts|rookie-contracts|extensions|rookie-extension-salary|non-rookie-extension-salary|franchise-tag|draft-capital|bids|dead-cap|contract-phase|fa-signed|fa-recap|fa-bids|fa-round|rfa|trade-offers|in-season-signing|contract-moves|cap-check|round-wins|round-confirm|commissioner\/(contract|dead-cap|change-log))/;
 
 describe("contractRouteLeagueId", () => {
   const routes = allRoutes();

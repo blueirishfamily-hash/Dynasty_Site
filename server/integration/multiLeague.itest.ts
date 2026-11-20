@@ -61,7 +61,8 @@ describe.skipIf(!READY)("league separation and rollover (needs .env.test)", () =
   describe("writes", () => {
     it("every league write route, called with league A's address and league B's Sleeper ID, is refused", async () => {
       const routes = leagueWriteRoutes();
-      expect(routes.length).toBeGreaterThanOrEqual(55);
+      // A floor so a broken route scan cannot pass by finding nothing (the retired Contracts page removed 14 write routes).
+      expect(routes.length).toBeGreaterThanOrEqual(50);
       const bad: string[] = [];
       for (const r of routes) {
         const p = r.path.replace(":leagueId", B.current).replace(/:[A-Za-z]+/g, "x");

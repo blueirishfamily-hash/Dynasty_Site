@@ -34,13 +34,8 @@ Preferred communication style: Simple, everyday language.
     - **Draft Odds Calculator:** Monte Carlo simulation for probabilistic pick assignments, considering playoff status.
 - **Standings:** With win/loss streak calculation.
 - **Trophy Room:** Showcases dynasty history, including season champions, highest scorers, and voted awards (MVP, ROY, Best GM), leveraging `previous_league_id` for full history.
-- **Contracts Page:** Salary cap management ($250M), including:
-    - **Overview:** League-wide salary utilization.
-    - **Expiring Contracts:** Analytics for players in their final year.
-    - **Manage Team Contracts:** Contract planning with franchise tag, extension options, draft saving, and submission for commissioner approval.
-    - **Player Bidding:** Private bids on free agents with contract limits.
-    - **Manage League Contracts (Commissioner-only):** Official contract management with salary inputs, dead cap, fifth-year options, and IR void toggles.
-    - **Approvals (Commissioner-only):** Review and manage pending team contract submissions.
+- **Contracts Hub:** Salary cap management ($250M): team overview, league cap, expiring contracts, roster management (extensions, franchise tags, rookie contract sync), free agency rounds, RFA, and the commissioner's contract edits and dead cap entries. The old Contracts page was retired; `/contracts` redirects to the Hub.
+- **Automatic contract moves:** On by default. Sleeper trades move a contract to the new team, drops end a contract (with dead cap when that setting is on), and regular season pickups get a 1-year contract (the winning bid on a waiver claim, at least $1, or $1 for a free agent). Teams pushed over the cap are flagged. The switch and the list of earlier moves waiting for approval are in League Settings, under Dead cap and limits. See `server/contractMovePlanner.ts` and `server/contractMoves.ts`.
 
 ### Backend Architecture
 

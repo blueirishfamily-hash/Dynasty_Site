@@ -65,7 +65,16 @@ export function syncSleeperContractMoves(leagueId: string, force = false): Promi
   const running = inFlight.get(key);
   if (running) return running;
   if (!force && Date.now() - (lastSync.get(key) ?? 0) < SYNC_EVERY_MS) return Promise.resolve(0);
-  const run = processDrops(leagueId)
+  // Once the commissioner has turned on automatic contract moves (server/contractMoves.ts), the new rules replace the
+  // ones below. Until then this behaves exactly as before.
+  const run = (async () => {
+    const { getContractMovesLiveAt, runContractMoves } = await import("./contractMoves");
+    if (await getContractMovesLiveAt(leagueId)) {
+      const r = await runContractMoves(leagueId, { force: true });
+      return r.applied;
+    }
+    return processDrops(leagueId);
+  })()
     .catch(err => {
       console.warn(`[contracts] Sleeper transaction sync skipped for ${leagueId}:`, (err as Error).message);
       return 0;

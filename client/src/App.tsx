@@ -24,7 +24,6 @@ import Standings from "@/pages/Standings";
 import Metrics from "@/pages/Metrics";
 import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
-import Contracts from "@/pages/Contracts";
 import ContractsHub from "@/pages/ContractsHub";
 import RuleChanges from "@/pages/RuleChanges";
 import Historical from "@/pages/Historical";
@@ -76,7 +75,8 @@ function Router() {
       <Route path="/trophies" component={TrophyRoom} />
       <Route path="/settings" component={Settings} />
       <Route path="/league-settings" component={LeagueSettings} />
-      <Route path="/contracts">{() => <ContractsOnly><Contracts /></ContractsOnly>}</Route>
+      {/* The old Contracts page was retired; the Hub replaces it. Keep old links and bookmarks working. */}
+      <Route path="/contracts">{() => <Redirect to="/contracts-hub" replace />}</Route>
       <Route path="/contracts-hub">{() => <ContractsOnly><ContractsHub /></ContractsOnly>}</Route>
       <Route path="/historical" component={Historical} />
       <Route path="/history/*" component={LeagueHistory} />

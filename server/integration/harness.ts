@@ -34,7 +34,13 @@ export class FakeSleeper {
   rosters = new Map<string, FakeRoster[]>();
   users = new Map<string, any[]>();
   failUsers = new Set<string>();
+  /** Sleeper transactions by "leagueId:week" */
+  transactions = new Map<string, any[]>();
   calls = 0;
+
+  addTransactions(leagueId: string, week: number, txs: any[]) {
+    this.transactions.set(`${leagueId}:${week}`, [...(this.transactions.get(`${leagueId}:${week}`) ?? []), ...txs]);
+  }
 
   addLeague(id: string, o: { season: string; previous: string | null; name: string; owners: Array<{ id: string; name: string; roster: number; players?: string[] }> }) {
     this.leagues.set(id, {
@@ -59,6 +65,7 @@ export class FakeSleeper {
       if (this.failUsers.has(m[1])) return { status: 500, body: {} };
       return this.users.has(m[1]) ? ok(this.users.get(m[1])) : notFound;
     }
+    if ((m = path.match(/^\/league\/(\d+)\/transactions\/(\d+)$/))) return ok(this.transactions.get(`${m[1]}:${m[2]}`) ?? []);
     if (/^\/league\/\d+\/(matchups\/\d+|transactions\/\d+|drafts|traded_picks|winners_bracket|losers_bracket)$/.test(path)) return ok([]);
     return notFound;
   }

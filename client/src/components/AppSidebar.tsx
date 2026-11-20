@@ -24,7 +24,6 @@ import {
   Swords,
   Sparkles,
   Medal,
-  FileText,
   Scale,
   Database,
   CalendarCheck,
@@ -48,8 +47,6 @@ const baseNavItems = [
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
   { title: "Contracts Hub", url: "/contracts-hub", icon: Building2 },
-  // The old Contracts page: only the commissioner sees it while the Hub takes over.
-  { title: "Contracts", url: "/contracts", icon: FileText },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Year Recap", url: "/year-recap", icon: CalendarCheck },
   { title: "Suggestions", url: "/suggestions", icon: MessageSquare },
@@ -58,10 +55,10 @@ const baseNavItems = [
   { title: "Settings", url: "/settings", icon: Settings },
 ];
 
-const CONTRACT_PAGE_URLS = new Set(["/contracts-hub", "/contracts"]);
+const CONTRACT_PAGE_URLS = new Set(["/contracts-hub"]);
 
 // Pages only the commissioner sees in the menu.
-const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League History", "Contracts", "League Settings"]);
+const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League History", "League Settings"]);
 
 interface DraftPick {
   year: number;

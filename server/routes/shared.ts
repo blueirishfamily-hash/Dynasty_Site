@@ -230,73 +230,7 @@ export const playerStatsCache: Map<string, {
 export const STATS_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
 
 
-// Helper function to calculate quartiles
-export function calculateQuartiles(points: number[]): {
-  q1: number;
-  median: number;
-  q3: number;
-  min: number;
-  max: number;
-} {
-  if (points.length === 0) {
-    return { min: 0, q1: 0, median: 0, q3: 0, max: 0 };
-  }
-  
-  // Filter out invalid values (NaN, undefined, null)
-  const validPoints = points.filter(p => typeof p === 'number' && !isNaN(p) && isFinite(p));
-  
-  if (validPoints.length === 0) {
-    return { min: 0, q1: 0, median: 0, q3: 0, max: 0 };
-  }
-  
-  const sorted = [...validPoints].sort((a, b) => a - b);
-  const n = sorted.length;
-  
-  // Handle edge case where all values are the same
-  if (sorted[0] === sorted[n - 1]) {
-    const value = sorted[0];
-    return { min: value, q1: value, median: value, q3: value, max: value };
-  }
-  
-  const q1Index = Math.max(0, Math.floor(n * 0.25));
-  const medianIndex = Math.max(0, Math.floor(n * 0.5));
-  const q3Index = Math.max(0, Math.floor(n * 0.75));
-  
-  return {
-    min: sorted[0],
-    q1: sorted[q1Index] || sorted[0],
-    median: sorted[medianIndex] || sorted[0],
-    q3: sorted[q3Index] || sorted[n - 1],
-    max: sorted[n - 1]
-  };
-}
-
-// Helper function to get quartile for a player
-export function getQuartile(points: number, q1: number, median: number, q3: number): 1 | 2 | 3 | 4 {
-  // Validate inputs
-  if (typeof points !== 'number' || isNaN(points) || !isFinite(points)) {
-    console.warn(`[Assign Contracts] Invalid points value: ${points}, defaulting to quartile 4`);
-    return 4;
-  }
-  if (typeof q1 !== 'number' || isNaN(q1) || typeof median !== 'number' || isNaN(median) || typeof q3 !== 'number' || isNaN(q3)) {
-    console.warn(`[Assign Contracts] Invalid quartile values: q1=${q1}, median=${median}, q3=${q3}, defaulting to quartile 4`);
-    return 4;
-  }
-  
-  // Handle edge case where all quartiles are the same
-  if (q1 === median && median === q3) {
-    // All players have same points, assign to quartile 2 (middle)
-    return 2;
-  }
-  
-  if (points >= q3) return 1; // Top quartile
-  if (points >= median) return 2;
-  if (points >= q1) return 3;
-  return 4; // Bottom quartile
-}
-
-
-// ── Shared PPG helpers (used by player-rankings, assign-contracts, and rookie-extension) ──
+// ── Shared PPG helpers (used by rookie extension pricing) ──
 
 export type WeeklyStatsCache = Record<string, Record<string, number>>[];
 

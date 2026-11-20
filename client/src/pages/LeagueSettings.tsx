@@ -16,6 +16,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useConfirm } from "@/components/ConfirmDialog";
 import { useSleeper } from "@/lib/sleeper-context";
 import { useIsCommissioner } from "@/lib/commissioner";
+import { AutomaticContractMovesSection } from "@/components/contracts-hub/ContractMoves";
 import { leagueRulesKey, useContractsEnabled, useLeagueRulesData } from "@/lib/leagueRules";
 import ContractImport from "@/components/ContractImport";
 import { cn } from "@/lib/utils";
@@ -335,7 +336,7 @@ function LeagueAccessTab({ slug }: { slug: string }) {
 
 export default function LeagueSettings() {
   const { ask, dialog } = useConfirm();
-  const { leagueSlug } = useSleeper();
+  const { leagueSlug, league } = useSleeper();
   const isCommissioner = useIsCommissioner();
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -407,6 +408,9 @@ export default function LeagueSettings() {
           <p className="mb-2 text-xs text-muted-foreground">When a contract ends early, the current season is always 100% dead. Each later season costs this share of its salary, by contract years left from that season.</p>
           <FieldGrid defs={DEAD_CAP_FIELDS} {...shared} />
         </div>
+        {contractsOn && league?.leagueId && (
+          <AutomaticContractMovesSection leagueId={league.leagueId} isCommissioner={isCommissioner} />
+        )}
       </TabsContent>
       <TabsContent value="awards"><FieldGrid defs={AWARD_FIELDS} {...shared} /></TabsContent>
     </>

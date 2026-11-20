@@ -57,8 +57,6 @@ describe("requestRosterIds", () => {
     expect(requestRosterIds(req("/api/league/L1/trade-offers", { teamARosterId: 1, teamBRosterId: "2" }))).toEqual([1, 2]);
     expect(requestRosterIds(req("/api/league/L1/roster/7/round-confirm"))).toEqual([7]);
     expect(requestRosterIds(req("/api/league/L1/bids/b1/4"))).toEqual([4]);
-    expect(requestRosterIds(req("/api/league/L1/favorites/p1/5"))).toEqual([5]);
-    expect(requestRosterIds(req("/api/league/L1/contract-drafts/6"))).toEqual([6]);
     expect(requestRosterIds(req("/api/league/L1/awards/2026/mvp/nominate", { nominatedByRosterId: 9 }))).toEqual([9]);
     expect(requestRosterIds(req("/api/league/L1/bids", { rosterId: "abc" }))).toEqual([]);
   });
