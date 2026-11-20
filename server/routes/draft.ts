@@ -18,6 +18,8 @@ import {
   type SleeperMatchup,
 } from "../sleeper";
 import type { DraftPick } from "../../shared/schema";
+import { projectFinalMaxPf } from "../../shared/maxPfProjection";
+import { completedRegularSeasonWeeksFor, computeWeeklyMaxPf } from "../maxPf";
 import {
   getEffectiveWeek,
   isDraftComplete,
@@ -54,38 +56,34 @@ export function registerDraftRoutes(app: Express): void {
       const currentWeek = getEffectiveWeek(nflState, league);
       const regularSeasonWeeks = Math.max(1, playoffWeekStart - 1);
 
-      // Max PF: regular season weeks only
-      const matchupPromises: Promise<SleeperMatchup[]>[] = [];
-      for (let week = 1; week <= regularSeasonWeeks; week++) {
-        matchupPromises.push(getLeagueMatchups(leagueId, week).catch(() => []));
+      // Max PF is the sum of each week's optimal lineup (same definition as the standings), projected to the end of
+      // the regular season with the same model the Draft Odds page uses. Teams that miss the playoffs pick lowest first.
+      const projectedMaxPf = new Map<number, number>();
+      try {
+        const weekly = await computeWeeklyMaxPf({
+          leagueId,
+          rosters,
+          league,
+          completedRegularSeasonWeeks: completedRegularSeasonWeeksFor({
+            seasonType: nflState?.season_type,
+            currentWeek,
+            playoffWeekStart,
+          }),
+        });
+        projectFinalMaxPf(
+          rosters.map(r => ({ rosterId: r.roster_id, weekly: weekly.get(r.roster_id) ?? [] })),
+          regularSeasonWeeks
+        ).forEach((p, rosterId) => projectedMaxPf.set(rosterId, p.mean));
+      } catch (error) {
+        console.warn("[Draft order] Max PF unavailable, falling back to points for:", error);
       }
-      const allMatchups = await Promise.all(matchupPromises);
-      const maxPfByRoster = new Map<number, number>();
-      rosters.forEach(r => maxPfByRoster.set(r.roster_id, 0));
-      allMatchups.forEach((weekMatchups, weekIndex) => {
-        const matchupGroups = new Map<number, SleeperMatchup[]>();
-        weekMatchups.forEach(m => {
-          if (!matchupGroups.has(m.matchup_id)) matchupGroups.set(m.matchup_id, []);
-          matchupGroups.get(m.matchup_id)!.push(m);
-        });
-        matchupGroups.forEach(group => {
-          if (group.length !== 2) return;
-          const [t1, t2] = group;
-          const p1 = t1.points ?? 0;
-          const p2 = t2.points ?? 0;
-          const cur1 = maxPfByRoster.get(t1.roster_id) ?? 0;
-          const cur2 = maxPfByRoster.get(t2.roster_id) ?? 0;
-          maxPfByRoster.set(t1.roster_id, Math.max(cur1, p1));
-          maxPfByRoster.set(t2.roster_id, Math.max(cur2, p2));
-        });
-      });
 
       // Standings: wins, pointsFor, maxPointsFor, rank
       const standingsList = rosters.map(r => ({
         rosterId: r.roster_id,
         wins: r.settings.wins,
         pointsFor: r.settings.fpts + (r.settings.fpts_decimal ?? 0) / 100,
-        maxPointsFor: maxPfByRoster.get(r.roster_id) ?? r.settings.fpts + (r.settings.fpts_decimal ?? 0) / 100,
+        maxPointsFor: projectedMaxPf.get(r.roster_id) ?? r.settings.fpts + (r.settings.fpts_decimal ?? 0) / 100,
       }));
       standingsList.sort((a, b) => {
         if (b.wins !== a.wins) return b.wins - a.wins;

@@ -16,6 +16,7 @@ import {
   type SleeperMatchup,
 } from "../sleeper";
 import type { TeamStanding } from "../../shared/schema";
+import { computeWeeklyMaxPf } from "../maxPf";
 import {
   getTeamInitials,
   getEffectiveWeek,
@@ -171,268 +172,26 @@ export function registerStandingsRoutes(app: Express): void {
       // Calculate max points for each team (sum of optimal weekly lineups)
       // Wrap in try-catch to ensure standings still return even if Max PF calculation fails
       let calculatedMaxPoints = new Map<number, number>();
-      
+      // Each completed week's optimal-lineup points per roster; lets the Draft Odds project final Max PF.
+      let weeklyMaxByRoster = new Map<number, number[]>();
+
       try {
-        const players = await getAllPlayers();
-
-        // Fetch transactions for each week to build roster history
-        // Use completedRegularSeasonWeeks to match PF/PA calculation
-        const transactionPromises: Array<Promise<{ week: number; transactions: SleeperTransaction[] }>> = [];
-        for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-          transactionPromises.push(
-            getLeagueTransactions(req.params.leagueId, week)
-              .then(transactions => ({ week, transactions }))
-              .catch(error => {
-                console.warn(`[Max PF] Error fetching transactions for week ${week}:`, error);
-                return { week, transactions: [] };
-              })
-          );
-        }
-        const weeklyTransactions = await Promise.all(transactionPromises);
-
-      // Map roster positions (exclude bench/IR/taxi since they don't affect optimal lineup)
-      const rosterPositions = (league?.roster_positions || []).filter(pos => !["BN", "IR", "TAXI"].includes(pos));
-
-      // Build roster composition per week (transactions apply forward from opening day)
-      const buildRosterHistory = () => {
-        const rosterState = new Map<number, Set<string>>();
-        const rosterWeekly = new Map<number, Map<number, string[]>>();
-
-        // Initialize with current rosters (players + taxi + reserve) for Max PF pool
-        rosters.forEach(r => {
-          const allPlayers = [
-            ...(r.players || []),
-            ...(r.taxi || []),
-            ...(r.reserve || []),
-          ];
-          rosterState.set(r.roster_id, new Set(allPlayers));
-          rosterWeekly.set(r.roster_id, new Map());
+        // Max PF is the sum of every completed week's optimal lineup (weeks 1-14); see server/maxPf.ts.
+        weeklyMaxByRoster = await computeWeeklyMaxPf({
+          leagueId: req.params.leagueId,
+          rosters,
+          league,
+          completedRegularSeasonWeeks,
         });
-
-        // Reverse-apply all in-season transactions to get opening day roster
-        const allTx = weeklyTransactions
-          .flatMap(({ week, transactions }) => transactions.map(t => ({ week, t })))
-          .filter(({ t }) => t.status === "complete")
-          .sort((a, b) =>
-            b.week !== a.week
-              ? b.week - a.week
-              : (b.t.status_updated || 0) - (a.t.status_updated || 0)
-          );
-        for (const { t } of allTx) {
-          Object.entries(t.adds || {}).forEach(([playerId, rosterId]) => {
-            rosterState.get(Number(rosterId))?.delete(playerId);
-          });
-          Object.entries(t.drops || {}).forEach(([playerId, rosterId]) => {
-            rosterState.get(Number(rosterId))?.add(playerId);
-          });
-        }
-
-        // Forward pass: apply week 1..N transactions and snapshot per week (now from opening day)
-        for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-          const transactionsForWeek = weeklyTransactions.find(w => w.week === week)?.transactions || [];
-
-          transactionsForWeek
-            .filter(t => t.status === "complete")
-            .forEach(t => {
-              const adds = t.adds || {};
-              const drops = t.drops || {};
-
-              Object.entries(adds).forEach(([playerId, rosterId]) => {
-                const state = rosterState.get(Number(rosterId));
-                if (state) state.add(playerId);
-              });
-
-              Object.entries(drops).forEach(([playerId, rosterId]) => {
-                const state = rosterState.get(Number(rosterId));
-                if (state) state.delete(playerId);
-              });
-            });
-
-          rosterState.forEach((state, rosterId) => {
-            rosterWeekly.get(rosterId)?.set(week, Array.from(state));
-          });
-        }
-
-        return rosterWeekly;
-      };
-
-      const rosterHistory = buildRosterHistory();
-
-      // Fetch matchups for each completed week to get pre-calculated player points
-      const weeklyMatchupsPromises: Array<Promise<{ week: number; matchups: SleeperMatchup[] }>> = [];
-      for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-        weeklyMatchupsPromises.push(
-          getLeagueMatchups(req.params.leagueId, week)
-            .then(matchups => ({ week, matchups }))
-            .catch(error => {
-              console.warn(`[Max PF] Error fetching matchups for week ${week}:`, error);
-              return { week, matchups: [] };
-            })
-        );
-      }
-      const weeklyMatchupsResults = await Promise.all(weeklyMatchupsPromises);
-      const weeklyMatchupsMap = new Map<number, SleeperMatchup[]>();
-      weeklyMatchupsResults.forEach(({ week, matchups }) => {
-        weeklyMatchupsMap.set(week, matchups);
-      });
-
-      // Build a lookup map: week -> roster_id -> matchup
-      const matchupByRosterAndWeek = new Map<number, Map<number, SleeperMatchup>>();
-      weeklyMatchupsMap.forEach((matchups, week) => {
-        const weekMap = new Map<number, SleeperMatchup>();
-        matchups.forEach(matchup => {
-          weekMap.set(matchup.roster_id, matchup);
+        weeklyMaxByRoster.forEach((weekly, rosterId) => {
+          calculatedMaxPoints.set(rosterId, weekly.reduce((sum, pts) => sum + pts, 0));
         });
-        matchupByRosterAndWeek.set(week, weekMap);
-      });
-
-      // Build per-week roster using matchup.players (source of truth) with rosterHistory as fallback
-      const rosterWeeklyRoster = new Map<number, Map<number, string[]>>();
-      rosters.forEach(roster => {
-        rosterWeeklyRoster.set(roster.roster_id, new Map());
-      });
-      for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-        const weekMatchups = matchupByRosterAndWeek.get(week) || new Map();
-        rosters.forEach(roster => {
-          const matchup = weekMatchups.get(roster.roster_id);
-          const weekRoster =
-            (matchup?.players && matchup.players.length > 0)
-              ? matchup.players
-              : (rosterHistory.get(roster.roster_id)?.get(week) || []);
-          rosterWeeklyRoster.get(roster.roster_id)!.set(week, weekRoster);
-        });
-      }
-
-      // Build weekly player points per roster from matchup data
-      const rosterWeeklyPoints = new Map<number, Map<number, Record<string, number>>>();
-      for (let week = 1; week <= completedRegularSeasonWeeks; week++) {
-        const weekMatchups = matchupByRosterAndWeek.get(week) || new Map();
-        rosters.forEach(roster => {
-          const weekRoster = rosterWeeklyRoster.get(roster.roster_id)?.get(week) || [];
-          const matchup = weekMatchups.get(roster.roster_id);
-          const playersPoints = matchup?.players_points || {};
-          if (!rosterWeeklyPoints.has(roster.roster_id)) {
-            rosterWeeklyPoints.set(roster.roster_id, new Map());
-          }
-          const weekPoints: Record<string, number> = {};
-          weekRoster.forEach(playerId => {
-            weekPoints[playerId] = typeof playersPoints[playerId] === 'number' ? playersPoints[playerId] : 0;
-          });
-          rosterWeeklyPoints.get(roster.roster_id)!.set(week, weekPoints);
-        });
-      }
-
-      const isEligibleForSlot = (position: string, slot: string) => {
-        if (slot === "FLEX") return ["RB", "WR", "TE"].includes(position);
-        if (slot === "SUPER_FLEX") return ["QB", "RB", "WR", "TE"].includes(position);
-        if (slot === "WRRB") return ["WR", "RB"].includes(position);
-        if (slot === "WRRBTE") return ["WR", "RB", "TE"].includes(position);
-        return position === slot;
-      };
-
-      const buildSlotOrder = (slots: string[]) => {
-        const priority = ["QB", "RB", "WR", "TE", "K", "DEF"];
-        const flexes = ["SUPER_FLEX", "WRRBTE", "WRRB", "FLEX"];
-        const fixed = slots.filter(s => priority.includes(s));
-        const remaining = slots.filter(s => !priority.includes(s) && flexes.includes(s));
-        return [...fixed, ...remaining];
-      };
-
-      const slotOrder = buildSlotOrder(rosterPositions);
-
-      const calculateOptimalLineup = (
-        playerIds: string[],
-        playerPoints: Record<string, number>,
-        slots: string[]
-      ): number => {
-        const used = new Set<string>();
-        let total = 0;
-
-        for (const slot of slots) {
-          const best = playerIds
-            .filter(pid => !used.has(pid))
-            .map(pid => {
-              const player = players[pid];
-              const position = player?.position || "FLEX";
-              const points = playerPoints[pid] ?? 0;
-              return { pid, position, points };
-            })
-            .filter(p => isEligibleForSlot(p.position, slot))
-            .sort((a, b) => b.points - a.points)[0];
-
-          if (best) {
-            used.add(best.pid);
-            total += best.points || 0;
-          }
-        }
-
-        return total;
-      };
-
-      // Calculate max points for each roster by summing optimal weekly lineups
-      // Max PF is the sum of all completed weeks max PF for weeks 1-14
-      const maxPFWeeks = 14; // Always sum weeks 1-14 (or up to completed weeks if less)
-      const weeksToSum = Math.min(completedRegularSeasonWeeks, maxPFWeeks);
-      console.log(`[Max PF] Regular season weeks: ${regularSeasonWeeks}, Completed regular season weeks: ${completedRegularSeasonWeeks}, Weeks to sum: ${weeksToSum}, Current week: ${currentWeek}`);
-      
-      rosters.forEach(roster => {
-        let total = 0;
-        const weeklyMaxPoints: number[] = []; // Track per-week values for validation
-
-        // Sum optimal weekly lineup points for all completed weeks up to week 14
-        for (let week = 1; week <= weeksToSum; week++) {
-          const weekRoster = rosterWeeklyRoster.get(roster.roster_id)?.get(week) || [];
-          const weekPoints = rosterWeeklyPoints.get(roster.roster_id)?.get(week) || {};
-          
-          // Calculate optimal lineup for this week
-          const weekMax = calculateOptimalLineup(weekRoster, weekPoints, slotOrder);
-          
-          // Validate weekMax is a valid number
-          if (typeof weekMax !== 'number' || isNaN(weekMax)) {
-            console.warn(`[Max PF] Invalid weekMax for roster ${roster.roster_id}, week ${week}: ${weekMax}`);
-            continue; // Skip invalid weeks
-          }
-          
-          weeklyMaxPoints.push(weekMax);
-          total += weekMax;
-        }
-
-        // Validate total is reasonable (should be positive and greater than actual PF)
-        if (total < 0 || isNaN(total)) {
-          console.warn(`[Max PF] Invalid total for roster ${roster.roster_id}: ${total}`);
-          total = 0;
-        }
-
-        calculatedMaxPoints.set(roster.roster_id, total);
-        
-        // Log per-week breakdown for first roster (for debugging)
-        if (roster.roster_id === rosters[0]?.roster_id && weeklyMaxPoints.length > 0) {
-          const user = userMap.get(roster.owner_id);
-          const teamName = user?.metadata?.team_name || user?.display_name || `Team ${roster.roster_id}`;
-          console.log(`[Max PF] ${teamName} (roster ${roster.roster_id}) weekly breakdown:`, 
-            weeklyMaxPoints.map((pts, idx) => `Week ${idx + 1}: ${pts.toFixed(1)}`).join(', '),
-            `Total: ${total.toFixed(1)}`
-          );
-        }
-      });
-      
-      // Debug logging
-      if (calculatedMaxPoints.size > 0) {
-        console.log(`[Max PF] Calculated max points for ${calculatedMaxPoints.size} rosters using matchup points`);
-        // Log a sample team's calculation
-        const sampleRosterId = rosters[0]?.roster_id;
-        if (sampleRosterId && calculatedMaxPoints.has(sampleRosterId)) {
-          const sampleMax = calculatedMaxPoints.get(sampleRosterId)!;
-          const sampleActual = rosters.find(r => r.roster_id === sampleRosterId);
-          const sampleActualPF = sampleActual ? sampleActual.settings.fpts + (sampleActual.settings.fpts_decimal || 0) / 100 : 0;
-          console.log(`[Max PF] Sample team (roster ${sampleRosterId}): Max PF = ${sampleMax.toFixed(1)}, Actual PF = ${sampleActualPF.toFixed(1)}, Ratio = ${sampleMax > 0 ? (sampleActualPF / sampleMax * 100).toFixed(1) : 0}%`);
-        }
-      }
       } catch (maxPfError) {
         // If Max PF calculation fails, log error but continue with standings
         // This ensures standings data still populates even if Max PF calculation has issues
         console.error(`[Max PF] Error calculating max points, continuing without Max PF:`, maxPfError);
         calculatedMaxPoints = new Map<number, number>(); // Empty map, Max PF will be undefined
+        weeklyMaxByRoster = new Map<number, number[]>();
       }
 
       const standings: TeamStanding[] = rosters
@@ -471,6 +230,7 @@ export function registerStandingsRoutes(app: Express): void {
             pointsFor,
             pointsAgainst,
             maxPointsFor: validMaxPointsFor,
+            weeklyMaxPoints: weeklyMaxByRoster.get(roster.roster_id),
             isUser: roster.owner_id === userId,
             streak: calculateStreak(history),
           };

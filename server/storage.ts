@@ -34,6 +34,8 @@ import {
   metricsSnapshotsTable,
   favoriteExpiringPlayersTable,
   draftProspectsTable,
+  draftProspectRankingsTable,
+  rankingSyncStatusTable,
 } from "../shared/schema";
 import type { 
   RuleSuggestion, InsertRuleSuggestion, 
@@ -43,6 +45,7 @@ import type {
   RuleVote, InsertRuleVote,
   LeagueSetting,
   DraftProspect, InsertDraftProspect,
+  DraftProspectRanking, RankingSyncStatus,
   PlayerContract, InsertPlayerContract,
   PlayerBid, InsertPlayerBid,
   RfaDesignation, InsertRfaDesignation,
@@ -120,6 +123,25 @@ export interface IStorage {
   updateDraftProspectsRas(leagueId: string, season: string, updates: Array<{ id: string; ras?: number; rasLink?: string }>): Promise<void>;
   updateDraftProspectsAdvancedStats(leagueId: string, season: string, updates: Array<{ id: string; advancedStats: string | null }>): Promise<void>;
   updateDraftProspectsSchool(leagueId: string, season: string, updates: Array<{ id: string; school: string | null }>): Promise<void>;
+
+  getProspectRankings(leagueId: string, season: string, source: string, format: string): Promise<DraftProspectRanking[]>;
+  getRankingSyncStatuses(leagueId: string, season: string): Promise<RankingSyncStatus[]>;
+  recordRankingSyncResult(data: { leagueId: string; season: string; source: string; format: string; ok: boolean; error?: string | null; rowCount?: number | null }): Promise<void>;
+  /** Replaces the stored rankings for one source and format in a single transaction, so a failure keeps the old rows. */
+  replaceProspectRankings(
+    leagueId: string,
+    season: string,
+    source: string,
+    format: string,
+    rows: Array<{ rank: number; playerName: string; nameKey: string; position: string | null; school: string | null; sourceValue: string | null }>
+  ): Promise<void>;
+  updateDraftProspectsAdp(leagueId: string, season: string, updates: Array<{ id: string; adp: number }>): Promise<void>;
+  /** Adds one prospect after the last rank. Returns undefined when the list is full (40). */
+  addDraftProspectAtEnd(
+    leagueId: string,
+    season: string,
+    data: { displayName: string; position?: string | null; school?: string | null; adp?: number | null }
+  ): Promise<DraftProspect | undefined>;
 
   getPlayerContracts(leagueId: string): Promise<PlayerContract[]>;
   upsertPlayerContract(data: InsertPlayerContract): Promise<PlayerContract>;
@@ -1177,6 +1199,141 @@ export class DatabaseStorage implements IStorage {
           eq(draftProspectsTable.season, season)
         ));
     }
+  }
+
+  async getProspectRankings(leagueId: string, season: string, source: string, format: string): Promise<DraftProspectRanking[]> {
+    return db
+      .select()
+      .from(draftProspectRankingsTable)
+      .where(and(
+        eq(draftProspectRankingsTable.leagueId, leagueId),
+        eq(draftProspectRankingsTable.season, season),
+        eq(draftProspectRankingsTable.source, source),
+        eq(draftProspectRankingsTable.format, format)
+      ))
+      .orderBy(asc(draftProspectRankingsTable.rank));
+  }
+
+  async getRankingSyncStatuses(leagueId: string, season: string): Promise<RankingSyncStatus[]> {
+    return db
+      .select()
+      .from(rankingSyncStatusTable)
+      .where(and(eq(rankingSyncStatusTable.leagueId, leagueId), eq(rankingSyncStatusTable.season, season)));
+  }
+
+  async recordRankingSyncResult(data: {
+    leagueId: string; season: string; source: string; format: string; ok: boolean; error?: string | null; rowCount?: number | null;
+  }): Promise<void> {
+    const now = Date.now();
+    const base = {
+      leagueId: data.leagueId,
+      season: data.season,
+      source: data.source,
+      format: data.format,
+      lastAttemptAt: now,
+      lastStatus: data.ok ? "ok" : "failed",
+      lastError: data.ok ? null : (data.error ?? "Unknown error"),
+    };
+    // A failed run keeps the last good time and row count so the page can say when the data was last good.
+    const successFields = data.ok ? { lastSuccessAt: now, rowCount: data.rowCount ?? null } : {};
+    await db
+      .insert(rankingSyncStatusTable)
+      .values({ ...base, lastSuccessAt: data.ok ? now : null, rowCount: data.ok ? data.rowCount ?? null : null })
+      .onConflictDoUpdate({
+        target: [
+          rankingSyncStatusTable.leagueId,
+          rankingSyncStatusTable.season,
+          rankingSyncStatusTable.source,
+          rankingSyncStatusTable.format,
+        ],
+        set: { ...base, ...successFields },
+      });
+  }
+
+  async replaceProspectRankings(
+    leagueId: string,
+    season: string,
+    source: string,
+    format: string,
+    rows: Array<{ rank: number; playerName: string; nameKey: string; position: string | null; school: string | null; sourceValue: string | null }>
+  ): Promise<void> {
+    const fetchedAt = Date.now();
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(draftProspectRankingsTable)
+        .where(and(
+          eq(draftProspectRankingsTable.leagueId, leagueId),
+          eq(draftProspectRankingsTable.season, season),
+          eq(draftProspectRankingsTable.source, source),
+          eq(draftProspectRankingsTable.format, format)
+        ));
+      if (rows.length > 0) {
+        await tx.insert(draftProspectRankingsTable).values(
+          rows.map((r) => ({
+            id: randomUUID(),
+            leagueId,
+            season,
+            source,
+            format,
+            rank: r.rank,
+            playerName: r.playerName,
+            nameKey: r.nameKey,
+            position: r.position,
+            school: r.school,
+            sourceValue: r.sourceValue,
+            rawPayload: null,
+            fetchedAt,
+          }))
+        );
+      }
+    });
+  }
+
+  async updateDraftProspectsAdp(leagueId: string, season: string, updates: Array<{ id: string; adp: number }>): Promise<void> {
+    const updatedAt = Date.now();
+    for (const u of updates) {
+      await db
+        .update(draftProspectsTable)
+        .set({ adp: u.adp, updatedAt })
+        .where(and(
+          eq(draftProspectsTable.id, u.id),
+          eq(draftProspectsTable.leagueId, leagueId),
+          eq(draftProspectsTable.season, season)
+        ));
+    }
+  }
+
+  async addDraftProspectAtEnd(
+    leagueId: string,
+    season: string,
+    data: { displayName: string; position?: string | null; school?: string | null; adp?: number | null }
+  ): Promise<DraftProspect | undefined> {
+    const existing = await this.getDraftProspects(leagueId, season);
+    if (existing.length >= 40) return undefined;
+    const now = Date.now();
+    const row = {
+      id: randomUUID(),
+      leagueId,
+      season,
+      rank: existing.length > 0 ? Math.max(...existing.map((p) => p.rank)) + 1 : 1,
+      displayName: data.displayName,
+      school: data.school ?? null,
+      position: data.position ?? null,
+      age: null,
+      adp: data.adp ?? null,
+      sleeperPlayerId: null,
+      overview: null,
+      collegeAwards: null,
+      combineData: null,
+      ras: null,
+      rasLink: null,
+      advancedStats: null,
+      nflTeam: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await db.insert(draftProspectsTable).values(row);
+    return row as DraftProspect;
   }
 
   async getPlayerContracts(leagueId: string): Promise<PlayerContract[]> {

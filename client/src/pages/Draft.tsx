@@ -1,25 +1,30 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSleeper } from "@/lib/sleeper-context";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { 
-  Table, 
-  TableBody, 
-  TableCell, 
-  TableHead, 
-  TableHeader, 
-  TableRow 
-} from "@/components/ui/table";
-import { Calendar, Dice1, Trophy, TrendingDown, Lock, GraduationCap } from "lucide-react";
+import { Calendar, Dice1, GraduationCap } from "lucide-react";
 import DraftProspects from "@/pages/DraftProspects";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
+import { DraftHero } from "@/components/draft-board/DraftHero";
+import { PlayerDetailModal } from "@/components/PlayerDetailModal";
+import { DraftCapitalCard } from "@/components/draft-board/DraftCapitalCard";
+import { FutureTileBoard, HistoricalTileBoard } from "@/components/draft-board/PickTileBoard";
+import { DraftOddsHeatmap } from "@/components/draft-board/DraftOddsHeatmap";
+import { drawFinalMaxPf, projectFinalMaxPf, randomNormal } from "@shared/maxPfProjection";
+import { isSupportedBracket, simulateBracketPicks } from "@shared/draftBracketSim";
+import {
+  buildDraftCapital,
+  buildFutureBoard,
+  buildHistoricalBoard,
+  type RawPick,
+} from "@/components/draft-board/draftBoardData";
 
 interface DraftInfo {
   draftId: string;
@@ -68,6 +73,9 @@ interface TeamStanding {
   wins: number;
   losses: number;
   pointsFor: number;
+  maxPointsFor?: number;
+  /** Optimal-lineup points for each completed regular season week */
+  weeklyMaxPoints?: number[];
   isUser?: boolean;
 }
 
@@ -78,6 +86,8 @@ interface PlayoffPrediction {
   makePlayoffsPct: number;
   oneSeedPct: number;
   projectedWins: number;
+  projectedPointsPerWeek?: number;
+  projectedStdPerWeek?: number;
 }
 
 interface DraftOddsTeam {
@@ -91,6 +101,8 @@ interface DraftOddsTeam {
   isPlayoffTeam: boolean;
   projectedFinish?: number;
   maxPoints: number;
+  /** Expected Max PF after the regular season (current Max PF plus the weeks still to play) */
+  projectedMaxPoints?: number;
   pickOdds: number[];
   isUser?: boolean;
   missPlayoffsPct?: number;
@@ -120,10 +132,11 @@ function getTeamInitials(name: string): string {
 }
 
 export default function Draft() {
-  const { user, league, season } = useSleeper();
+  const { user, league, season, currentWeek: nflWeek, isOffseason } = useSleeper();
   const [activeTab, setActiveTab] = useState<"future" | "historical" | "odds" | "prospects">("future");
   const [selectedDraftId, setSelectedDraftId] = useState<string | null>(null);
   const [showRookiesOnly, setShowRookiesOnly] = useState(false);
+  const [openPlayer, setOpenPlayer] = useState<{ id: string; name: string } | null>(null);
   const lockedOddsRef = useRef<Map<number, number[]>>(new Map());
 
   const { data: draftPicks, isLoading: picksLoading } = useQuery({
@@ -161,6 +174,7 @@ export default function Draft() {
   // Fetch historical drafts for 2023 and 2024 leagues directly from Sleeper
   const HISTORICAL_LEAGUE_2023 = "918240874625257472";
   const HISTORICAL_LEAGUE_2024 = "1048746932522405888";
+  const HISTORICAL_LEAGUE_2025 = "1194798912048705536";
 
   const { data: historicalDrafts2023, error: error2023 } = useQuery<DraftInfo[]>({
     queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2023, "drafts"],
@@ -194,6 +208,20 @@ export default function Draft() {
     retry: 1,
   });
 
+  const { data: historicalDrafts2025, isLoading: historicalDraftsLoading2025, error: error2025 } = useQuery<DraftInfo[]>({
+    queryKey: ["/api/sleeper/league", HISTORICAL_LEAGUE_2025, "drafts"],
+    queryFn: async () => {
+      const res = await fetch(`/api/sleeper/league/${HISTORICAL_LEAGUE_2025}/drafts`);
+      if (!res.ok) {
+        const errorText = await res.text();
+        console.error("Failed to fetch 2025 drafts:", res.status, errorText);
+        throw new Error(`Failed to fetch 2025 drafts: ${res.status} ${errorText}`);
+      }
+      return res.json();
+    },
+    retry: 1,
+  });
+
   // Determine if selected draft is from 2023/2024 (fetch from Sleeper) or snapshot
   const selectedDraftInfo = useMemo(() => {
     if (!selectedDraftId) return { isSnapshot: false, leagueId: null, season: null };
@@ -201,12 +229,16 @@ export default function Draft() {
     // Check if it's from 2023 or 2024
     const draft2023 = historicalDrafts2023?.find(d => d.draftId === selectedDraftId);
     const draft2024 = historicalDrafts2024?.find(d => d.draftId === selectedDraftId);
+    const draft2025 = historicalDrafts2025?.find(d => d.draftId === selectedDraftId);
     
     if (draft2023) {
       return { isSnapshot: false, leagueId: HISTORICAL_LEAGUE_2023, season: "2023" };
     }
     if (draft2024) {
       return { isSnapshot: false, leagueId: HISTORICAL_LEAGUE_2024, season: "2024" };
+    }
+    if (draft2025) {
+      return { isSnapshot: false, leagueId: HISTORICAL_LEAGUE_2025, season: "2025" };
     }
     
     // Check if it's from snapshot (has isSnapshot flag)
@@ -218,7 +250,7 @@ export default function Draft() {
     }
     
     return { isSnapshot: false, leagueId: null, season: null };
-  }, [selectedDraftId, historicalDrafts2023, historicalDrafts2024]);
+  }, [selectedDraftId, historicalDrafts2023, historicalDrafts2024, historicalDrafts2025]);
 
   // Fetch rosters and users from historical 2023 league for team display
   const { data: historicalRosters2023 } = useQuery({
@@ -246,15 +278,16 @@ export default function Draft() {
     const current = (drafts || []).filter((d) => d && d.draftId);
     const historical2023 = (historicalDrafts2023 || []).filter((d) => d && d.draftId);
     const historical2024 = (historicalDrafts2024 || []).filter((d) => d && d.draftId);
+    const historical2025 = (historicalDrafts2025 || []).filter((d) => d && d.draftId);
     // Combine and deduplicate by draftId
     const draftMap = new Map<string, DraftInfo>();
-    [...current, ...historical2023, ...historical2024].forEach(d => {
+    [...current, ...historical2023, ...historical2024, ...historical2025].forEach(d => {
       if (!draftMap.has(d.draftId)) {
         draftMap.set(d.draftId, d);
       }
     });
     return Array.from(draftMap.values());
-  }, [drafts, historicalDrafts2023, historicalDrafts2024]);
+  }, [drafts, historicalDrafts2023, historicalDrafts2024, historicalDrafts2025]);
 
   const { data: historicalPicks, isLoading: historicalLoading } = useQuery<DraftPickData[]>({
     queryKey: ["/api/draft", selectedDraftId, "picks", selectedDraftInfo.isSnapshot, selectedDraftInfo.leagueId, selectedDraftInfo.season],
@@ -274,10 +307,17 @@ export default function Draft() {
     enabled: !!selectedDraftId,
   });
 
-  const { data: playoffPredictions } = useQuery<{ predictions: PlayoffPrediction[]; remainingWeeks: number; currentWeek: number; seasonType?: string }>({
-    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions"],
+  // Also returns finishing orders from simulated regular seasons (the seeds the playoff bracket is played from).
+  const { data: playoffPredictions } = useQuery<{
+    predictions: PlayoffPrediction[];
+    remainingWeeks: number;
+    currentWeek: number;
+    seasonType?: string;
+    seedSamples?: number[][] | null;
+  }>({
+    queryKey: ["/api/sleeper/league", league?.leagueId, "playoff-predictions", "seed-samples"],
     queryFn: async () => {
-      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions`);
+      const res = await fetch(`/api/sleeper/league/${league?.leagueId}/playoff-predictions?seedSamples=1`);
       if (!res.ok) throw new Error("Failed to fetch playoff predictions");
       return res.json();
     },
@@ -399,6 +439,18 @@ export default function Draft() {
     });
 
   // Draft order from Draft Odds logic (standings + max PF, bracket when postseason). Used so Future Picks follows Draft Odds until Sleeper assigns picks.
+  // Projected FINAL Max PF for every team. Non-playoff teams draft lowest Max PF first, and while the season
+  // is still going a team's Max PF is only the weeks played so far, so this adds the weeks still to play.
+  const maxPfProjection = useMemo(() => {
+    if (!standings || standings.length === 0) return null;
+    if (!standings.some((t) => (t.weeklyMaxPoints?.length ?? 0) > 0)) return null;
+    const regularSeasonWeeks = Math.max(1, (league?.playoffWeekStart || 15) - 1);
+    return projectFinalMaxPf(
+      standings.map((t) => ({ rosterId: t.rosterId, weekly: t.weeklyMaxPoints ?? [] })),
+      regularSeasonWeeks
+    );
+  }, [standings, league?.playoffWeekStart]);
+
   const draftOrderFromDraftOddsLogic = useMemo((): number[] => {
     if (!standings || standings.length === 0 || !league) return [];
     const NON_PLAYOFF_PICKS = 5;
@@ -413,7 +465,7 @@ export default function Draft() {
 
     const standingsList = standings.map((s: any) => ({
       rosterId: s.rosterId,
-      maxPointsFor: (s as { maxPointsFor?: number }).maxPointsFor ?? s.pointsFor ?? 0,
+      maxPointsFor: maxPfProjection?.get(s.rosterId)?.mean ?? (s as { maxPointsFor?: number }).maxPointsFor ?? s.pointsFor ?? 0,
       rank: s.rank ?? 99,
     }));
 
@@ -460,7 +512,7 @@ export default function Draft() {
       if (order.length === nTeams) return order;
     }
     return standings.map((s: any) => s.rosterId);
-  }, [standings, bracketData, playoffPredictions, league]);
+  }, [standings, bracketData, playoffPredictions, league, maxPfProjection]);
 
   const isDraftCompletedForCurrentYear = (drafts || []).some(
     (d) => d.season === currentYear.toString() && isDraftComplete(d.status)
@@ -670,6 +722,7 @@ export default function Draft() {
         isPlayoffTeam: makePlayoffsPct >= 50,
         projectedFinish: undefined,
         maxPoints,
+        projectedMaxPoints: maxPfProjection?.get(team.rosterId)?.mean,
         pickOdds: storedOdds || new Array(totalTeams).fill(0),
         isUser: team.isUser,
         missPlayoffsPct: 100 - makePlayoffsPct,
@@ -832,12 +885,34 @@ export default function Draft() {
     const lockedPlayoffCount = teamsWithData.filter(t => t.isLocked && t.status !== "eliminated").length;
     const effectivePlayoffTarget = Math.max(0, playoffTeams - lockedPlayoffCount);
     
+    const unlockedById = new Map(unlockedTeams.map((t) => [t.rosterId, t]));
+    const rawSamples = playoffPredictions?.seedSamples;
+    const bracketSamples =
+      rawSamples &&
+      rawSamples.length >= 100 &&
+      lockedTeams.size === 0 &&
+      isSupportedBracket(playoffTeams) &&
+      totalTeams - playoffTeams === NON_PLAYOFF_PICKS &&
+      rawSamples.every((o) => o.length === totalTeams && o.every((id) => unlockedById.has(id)))
+        ? rawSamples
+        : null;
+
     for (let sim = 0; sim < SIMULATIONS; sim++) {
       // For each simulation, determine which teams make playoffs
       const madePlayoffs: DraftOddsTeam[] = [];
       const missedPlayoffs: DraftOddsTeam[] = [];
 
-      unlockedTeams.forEach(team => {
+      // Preferred: take one simulated regular season's finishing order (so who makes the playoffs and who gets
+      // the bye follow the real remaining schedule), then play the bracket from those seeds.
+      const sample = bracketSamples
+        ? bracketSamples[Math.floor(Math.random() * bracketSamples.length)]
+        : null;
+      if (sample) {
+        sample.forEach((rosterId, pos) => {
+          const t = unlockedById.get(rosterId)!;
+          (pos < playoffTeams ? madePlayoffs : missedPlayoffs).push(t);
+        });
+      } else unlockedTeams.forEach(team => {
         const rand = Math.random() * 100;
         if (rand < (team.makePlayoffsPct ?? 0)) {
           madePlayoffs.push(team);
@@ -848,26 +923,32 @@ export default function Draft() {
 
       // Ensure we have exactly effectivePlayoffTarget unlocked teams making playoffs
       // If too many made it, remove the ones with lowest probability
-      while (madePlayoffs.length > effectivePlayoffTarget) {
+      while (!sample && madePlayoffs.length > effectivePlayoffTarget) {
         madePlayoffs.sort((a, b) => (a.makePlayoffsPct ?? 0) - (b.makePlayoffsPct ?? 0));
         const removed = madePlayoffs.shift()!;
         missedPlayoffs.push(removed);
       }
       // If too few made it, add the ones with highest probability
-      while (madePlayoffs.length < effectivePlayoffTarget && missedPlayoffs.length > 0) {
+      while (!sample && madePlayoffs.length < effectivePlayoffTarget && missedPlayoffs.length > 0) {
         missedPlayoffs.sort((a, b) => (b.makePlayoffsPct ?? 0) - (a.makePlayoffsPct ?? 0));
         const added = missedPlayoffs.shift()!;
         madePlayoffs.push(added);
       }
 
-      // Sort missed playoff teams by max points (with random variance for ties)
-      // Lowest max points = Pick 1
+      // Sort missed playoff teams by FINAL Max PF, lowest first (= pick 1). Each simulation draws every team's
+      // final Max PF from its projection (current Max PF plus the weeks still to play). Without weekly data it
+      // falls back to the old current-Max-PF-with-a-small-nudge sort.
+      const drawnMaxPf = new Map<number, number>();
+      missedPlayoffs.forEach((t) => {
+        const proj = maxPfProjection?.get(t.rosterId);
+        drawnMaxPf.set(
+          t.rosterId,
+          proj ? drawFinalMaxPf(proj, randomNormal()) : t.maxPoints + (Math.random() - 0.5) * 50
+        );
+      });
       const sortedMissed = [...missedPlayoffs].sort((a, b) => {
-        // Add small random variance to create uncertainty in close races
-        const varianceA = (Math.random() - 0.5) * 50; // +/- 25 points variance
-        const varianceB = (Math.random() - 0.5) * 50;
-        const pointsA = a.maxPoints + varianceA;
-        const pointsB = b.maxPoints + varianceB;
+        const pointsA = drawnMaxPf.get(a.rosterId)!;
+        const pointsB = drawnMaxPf.get(b.rosterId)!;
         if (Math.abs(pointsA - pointsB) > 0.1) return pointsA - pointsB;
         return a.wins - b.wins;
       });
@@ -882,7 +963,22 @@ export default function Draft() {
 
       // Playoff teams: simulate exit round (champion → 12, runner-up → 11, SF → 9-10, QF → 6-8) with weights by seed
       if (madePlayoffs.length > 0) {
-        const outcome = simulatePlayoffPicks(madePlayoffs);
+        // With seeds from a simulated season, play the actual bracket (byes, placement games); otherwise the
+        // older seed-weighted exit-round draw.
+        const outcome =
+          (sample &&
+            simulateBracketPicks(
+              madePlayoffs.map((t) => {
+                const pred = predictionMap.get(t.rosterId);
+                return {
+                  rosterId: t.rosterId,
+                  mean: pred?.projectedPointsPerWeek ?? 140,
+                  sd: pred?.projectedStdPerWeek ?? 20,
+                };
+              }),
+              NON_PLAYOFF_PICKS
+            )) ||
+          simulatePlayoffPicks(madePlayoffs);
         outcome.forEach((pickIndex, rosterId) => {
           const counts = pickCounts.get(rosterId);
           if (counts && pickIndex >= NON_PLAYOFF_PICKS) counts[pickIndex]++;
@@ -960,7 +1056,11 @@ export default function Draft() {
     return teamsWithData;
   };
 
-  const draftOddsTeams = calculateDraftOdds();
+  const draftOddsTeams = useMemo(
+    () => calculateDraftOdds(),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [standings, playoffPredictions, bracketData, league, maxPfProjection]
+  );
 
   const renderDraftByRound = (picks: DraftPick[], is2023Draft: boolean) => {
     if (!picks || picks.length === 0) {
@@ -1157,176 +1257,36 @@ export default function Draft() {
     );
   };
 
-  const renderDraftGrid = (picks: DraftPick[], showPlayers: boolean, options?: { draftOrderRosterIds?: number[] }) => {
-    if (!picks || picks.length === 0) {
-      return <p className="text-center text-muted-foreground py-8">No picks available</p>;
-    }
-    
-    const teamsCount = league?.totalRosters || 12;
-    const useDraftOrder = options?.draftOrderRosterIds && options.draftOrderRosterIds.length >= teamsCount;
-    
-    // Calculate max rounds from picks (for 2023 draft which may have more than totalRounds)
-    const maxRounds = picks.length > 0 ? Math.max(...picks.map(p => p.round || 1)) : totalRounds;
-    const displayRounds = is2023Draft ? Math.max(maxRounds, 1) : totalRounds;
-    
-    // For historical drafts, create a mapping from rosterId to display order
-    // When useDraftOrder (Future Picks aligned with Draft Odds), row order = draftOrderRosterIds
-    const uniqueRosterIds = useDraftOrder
-      ? options.draftOrderRosterIds!
-      : Array.from(new Set(
-          picks
-            .map(p => {
-              const rosterId = p.rosterId ?? p.pick;
-              return rosterId && !isNaN(Number(rosterId)) ? Number(rosterId) : null;
-            })
-            .filter((id): id is number => id !== null)
-        )).sort((a, b) => a - b);
-    
-    return (
-      <ScrollArea className="w-full">
-        <div className="min-w-[600px]">
-          <div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${displayRounds}, minmax(180px, 1fr))` }}>
-            {Array.from({ length: displayRounds }, (_, i) => (
-              <div key={i} className="text-center font-medium text-sm p-2 bg-muted rounded-md">
-                Round {i + 1}
-              </div>
-            ))}
-          </div>
-
-          <div className="mt-2 space-y-2">
-            {Array.from({ length: Math.max(teamsCount, uniqueRosterIds.length || teamsCount) }, (_, teamIndex) => {
-              let targetRosterId: number;
-              if (useDraftOrder && teamIndex < options!.draftOrderRosterIds!.length) {
-                targetRosterId = options!.draftOrderRosterIds![teamIndex];
-              } else if (is2023Draft && uniqueRosterIds.length > 0) {
-                if (teamIndex >= uniqueRosterIds.length) return null;
-                targetRosterId = uniqueRosterIds[teamIndex];
-              } else {
-                targetRosterId = teamIndex + 1;
-              }
-              
-              return (
-                <div
-                  key={teamIndex}
-                  className="grid gap-2"
-                  style={{ gridTemplateColumns: `repeat(${displayRounds}, minmax(180px, 1fr))` }}
-                >
-                  {Array.from({ length: displayRounds }, (_, roundIndex) => {
-                    const pick = picks.find((p) => {
-                      try {
-                        if (useDraftOrder || (is2023Draft && p.rosterId != null)) {
-                          return p.round === roundIndex + 1 && p.rosterId === targetRosterId;
-                        }
-                        return p.round === roundIndex + 1 && p.pick === targetRosterId;
-                      } catch (error) {
-                        console.error("Error matching pick:", error, p);
-                        return false;
-                      }
-                    });
-                    if (!pick) return <div key={roundIndex} className="h-20" />;
-
-                  const isTraded = pick.originalOwner?.initials !== pick.currentOwner?.initials;
-
-                  return (
-                    <div
-                      key={roundIndex}
-                      className={`p-2 rounded-md border border-border hover-elevate ${
-                        pick.isUserPick ? "bg-primary/10 border-primary/30" : "bg-card"
-                      }`}
-                      data-testid={`pick-${pick.round}-${useDraftOrder ? teamIndex + 1 : pick.pick}`}
-                    >
-                      <div className="flex items-center justify-between mb-1">
-                        <span className="text-xs text-muted-foreground">
-                          {pick.round}.{String((useDraftOrder ? teamIndex + 1 : pick.pick) || "").padStart(2, "0")}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          {showRookiesOnly && pick.rookieDraftPosition && (
-                            <span className="text-xs font-semibold text-yellow-500">
-                              {pick.rookieDraftPosition.round}.{String(pick.rookieDraftPosition.pick).padStart(2, "0")}
-                            </span>
-                          )}
-                          {isTraded && !showPlayers && pick.originalOwner?.initials && (
-                            <Badge variant="outline" className="text-[10px] px-1">
-                              via {pick.originalOwner.initials}
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-
-                      {pick.player ? (
-                        <div className="flex items-center gap-2">
-                          <Avatar className="w-8 h-8">
-                            <AvatarImage 
-                              src={`https://sleepercdn.com/content/nfl/players/${pick.player.id}.jpg`}
-                              alt={pick.player.name || ""}
-                            />
-                            <AvatarFallback className="text-xs">
-                              {(pick.player.name || "").split(" ").map((n) => n[0]).join("")}
-                            </AvatarFallback>
-                          </Avatar>
-                          <div className="min-w-0 flex-1">
-                            <p className="text-sm font-medium truncate">{pick.player.name || "Unknown"}</p>
-                            <div className="flex items-center gap-1 flex-wrap">
-                              {pick.player.position && (
-                                <Badge
-                                  className={`text-[10px] px-1.5 ${
-                                    positionColors[pick.player.position] || "bg-muted"
-                                  }`}
-                                >
-                                  {pick.player.position}
-                                </Badge>
-                              )}
-                              {pick.isNFLRookie && (
-                                <Badge className="text-[10px] px-1 bg-green-500 text-white" title="NFL Rookie">
-                                  R
-                                </Badge>
-                              )}
-                              {pick.player.team && (
-                                <span className="text-xs text-muted-foreground">
-                                  {pick.player.team}
-                                </span>
-                              )}
-                            </div>
-                            {pick.fantasyTeam && (
-                              <p className="text-[10px] text-muted-foreground truncate mt-0.5">
-                                {pick.fantasyTeam}
-                              </p>
-                            )}
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <Avatar className="w-8 h-8">
-                            {pick.currentOwner?.avatar && (
-                              <AvatarImage src={pick.currentOwner.avatar} alt={pick.currentOwner?.name || ""} />
-                            )}
-                            <AvatarFallback
-                              className={`text-xs ${
-                                pick.isUserPick
-                                  ? "bg-primary text-primary-foreground"
-                                  : "bg-muted"
-                              }`}
-                            >
-                              {pick.currentOwner?.initials || "??"}
-                            </AvatarFallback>
-                          </Avatar>
-                          <span className="text-sm text-muted-foreground truncate">
-                            {pick.currentOwner?.name || "Unknown Team"}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              );
-            })}
-          </div>
-        </div>
-        <ScrollBar orientation="horizontal" />
-      </ScrollArea>
+  // Draft capital for the signed-in user (sidebar and hero). Pick values come from the same
+  // grade-based helper the Trade Center uses.
+  const draftCapital = useMemo(() => {
+    if (!userRosterId || !draftPicks || !standings) return null;
+    return buildDraftCapital(
+      (draftPicks as RawPick[]).filter((p) => !!p),
+      {
+        userRosterId,
+        season: currentYear.toString(),
+        order: draftOrderRosterIds,
+        names: new Map(standings.map((t) => [t.rosterId, t.name])),
+      }
     );
-  };
+  }, [draftPicks, standings, userRosterId, currentYear, draftOrderRosterIds]);
+
+  // Draft Odds rows follow the draft order when it is known (same rule as before).
+  const sortedOddsTeams =
+    draftOrderRosterIds.length >= totalTeams
+      ? [...draftOddsTeams].sort((a, b) => {
+          const ia = draftOrderRosterIds.indexOf(a.rosterId);
+          const ib = draftOrderRosterIds.indexOf(b.rosterId);
+          if (ia === -1 && ib === -1) return 0;
+          if (ia === -1) return 1;
+          if (ib === -1) return -1;
+          return ia - ib;
+        })
+      : draftOddsTeams;
+
+  const futureBoard = buildFutureBoard(formattedFuturePicks, draftOrderRosterIds, totalRounds, totalTeams);
+  const historicalBoard = buildHistoricalBoard(formattedHistoricalPicks, totalTeams);
 
   if (!league) {
     return (
@@ -1341,329 +1301,209 @@ export default function Draft() {
     );
   }
 
+  const tabClass =
+    "rounded-none border-b-2 border-transparent bg-transparent px-3 py-2 shrink-0 whitespace-nowrap data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:shadow-none";
+
+  const positionLegend = (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-3 text-xs text-muted-foreground">
+      {(
+        [
+          ["QB", "Quarterback"],
+          ["RB", "Running Back"],
+          ["WR", "Wide Receiver"],
+          ["TE", "Tight End"],
+        ] as const
+      ).map(([pos, label]) => (
+        <div key={pos} className="flex items-center gap-1.5">
+          <Badge className={`text-[10px] px-1.5 ${positionColors[pos]}`}>{pos}</Badge>
+          <span>{label}</span>
+        </div>
+      ))}
+    </div>
+  );
+
+  const skeletonRows = (
+    <div className="space-y-2">
+      {[...Array(3)].map((_, i) => (
+        <Skeleton key={i} className="h-20 w-full" />
+      ))}
+    </div>
+  );
+
   return (
-    <div className="p-6 space-y-6">
-      <div>
-        <h1 className="font-heading text-3xl font-bold">Draft Board</h1>
-        <p className="text-muted-foreground">View draft capital, historical picks, and projected draft order</p>
+    <div className="p-6 space-y-5">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="font-heading text-3xl font-bold">Draft Board</h1>
+          <p className="text-muted-foreground">Draft capital, past drafts, projected order and prospects</p>
+        </div>
+        <Badge variant="outline">{currentYear} draft</Badge>
       </div>
 
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between gap-2 flex-wrap">
-            <div className="flex items-center gap-3">
-              <CardTitle className="font-heading text-lg">Draft Picks</CardTitle>
-              <Badge variant="outline">
-                {activeTab === "future" 
-                  ? currentYear 
-                  : activeTab === "historical" 
-                    ? (selectedDraftId ? completedDrafts.find(d => d.draftId === selectedDraftId)?.season : "")
-                    : activeTab === "prospects"
-                      ? "Prospects"
-                      : `${currentYear} Odds`
-                }
-              </Badge>
-            </div>
-            <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "future" | "historical" | "odds" | "prospects")}>
-              <TabsList>
-                <TabsTrigger value="future" data-testid="tab-future-draft">
-                  Future Picks
-                </TabsTrigger>
-                <TabsTrigger value="historical" data-testid="tab-historical-draft">
-                  Historical
-                </TabsTrigger>
-                <TabsTrigger value="odds" data-testid="tab-draft-odds">
-                  <Dice1 className="w-4 h-4 mr-1" />
-                  Draft Odds
-                </TabsTrigger>
-                <TabsTrigger value="prospects" data-testid="tab-draft-prospects">
-                  <GraduationCap className="w-4 h-4 mr-1" />
-                  Draft Prospects
-                </TabsTrigger>
-              </TabsList>
-            </Tabs>
+      <DraftHero
+        year={currentYear}
+        rounds={totalRounds}
+        teams={totalTeams}
+        picks={draftCapital?.thisYear ?? []}
+      />
+
+      <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as "future" | "historical" | "odds" | "prospects")}>
+        <TabsList className="h-auto w-full justify-start overflow-x-auto flex-nowrap rounded-none border-b border-border bg-transparent p-0">
+          <TabsTrigger value="future" className={tabClass} data-testid="tab-future-draft">
+            Future Picks
+          </TabsTrigger>
+          <TabsTrigger value="historical" className={tabClass} data-testid="tab-historical-draft">
+            Historical
+          </TabsTrigger>
+          <TabsTrigger value="odds" className={tabClass} data-testid="tab-draft-odds">
+            <Dice1 className="w-4 h-4 mr-1" />
+            Draft Odds
+          </TabsTrigger>
+          <TabsTrigger value="prospects" className={tabClass} data-testid="tab-draft-prospects">
+            <GraduationCap className="w-4 h-4 mr-1" />
+            Prospects
+          </TabsTrigger>
+        </TabsList>
+      </Tabs>
+
+      <div
+        className={`grid gap-4 items-start ${
+          activeTab === "prospects" ? "" : "xl:grid-cols-[270px_minmax(0,1fr)]"
+        }`}
+      >
+        {activeTab !== "prospects" && (
+          <div className="min-w-0 xl:sticky xl:top-4">
+            <DraftCapitalCard capital={draftCapital} year={currentYear} loading={picksLoading} />
           </div>
-        </CardHeader>
-        <CardContent>
-          {activeTab === "future" ? (
-            <>
-              <div className="flex items-center gap-4 mb-4 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                  <div className="w-3 h-3 rounded bg-primary/30 border border-primary/50" />
-                  <span>Your Picks</span>
+        )}
+
+        {activeTab === "prospects" ? (
+          // Prospects lay out their own sidebar ("Ideal prospect per pick") and list/detail columns.
+          <div className="min-w-0 min-h-[400px]">
+            <DraftProspects />
+          </div>
+        ) : (
+        <Card className="min-w-0">
+          <CardContent className="pt-6">
+            {activeTab === "future" ? (
+              <>
+                <div className="flex flex-wrap items-center gap-4 mb-4 text-xs text-muted-foreground">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-3 h-3 rounded bg-primary/30 border border-primary/50" />
+                    <span>Your picks</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline" className="text-[10px] px-1">
+                      via XX
+                    </Badge>
+                    <span>Traded pick</span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  <Badge variant="outline" className="text-[10px] px-1">
-                    via XX
-                  </Badge>
-                  <span>Traded Pick</span>
-                </div>
-              </div>
-              {picksLoading ? (
-                <div className="space-y-2">
-                  {[...Array(4)].map((_, i) => (
-                    <Skeleton key={i} className="h-20 w-full" />
-                  ))}
-                </div>
-              ) : formattedFuturePicks.length > 0 ? (
-                renderDraftGrid(formattedFuturePicks, false, { draftOrderRosterIds })
-              ) : (
-                <p className="text-center text-muted-foreground py-8">
-                  No draft pick data available
-                </p>
-              )}
-            </>
-          ) : activeTab === "historical" ? (
-            <div className="space-y-4">
-              {(draftsLoading || historicalDraftsLoading) ? (
-                <div className="flex gap-2">
-                  {[...Array(3)].map((_, i) => (
-                    <Skeleton key={i} className="h-9 w-32" />
-                  ))}
-                </div>
-              ) : completedDrafts.length > 0 ? (
-                <>
-                  <div className="flex gap-2 flex-wrap">
-                    {completedDrafts.map((draft) => (
-                      <Button
-                        key={draft.draftId}
-                        variant={selectedDraftId === draft.draftId ? "default" : "outline"}
-                        size="sm"
-                        onClick={() => setSelectedDraftId(draft.draftId)}
-                        data-testid={`draft-button-${draft.season}`}
-                      >
-                        <Calendar className="w-4 h-4 mr-1.5" />
-                        {draft.season} {draft.type === "startup" ? "Startup" : "Rookie"}
-                      </Button>
+                {picksLoading ? (
+                  skeletonRows
+                ) : formattedFuturePicks.length > 0 ? (
+                  <FutureTileBoard rounds={futureBoard} />
+                ) : (
+                  <p className="text-center text-muted-foreground py-8">No draft pick data available</p>
+                )}
+              </>
+            ) : activeTab === "historical" ? (
+              <div className="space-y-4">
+                {draftsLoading || historicalDraftsLoading || historicalDraftsLoading2025 ? (
+                  <div className="flex gap-2">
+                    {[...Array(3)].map((_, i) => (
+                      <Skeleton key={i} className="h-9 w-32" />
                     ))}
                   </div>
-
-                  {selectedDraftId ? (
-                    historicalLoading ? (
-                      <div className="space-y-2">
-                        {[...Array(4)].map((_, i) => (
-                          <Skeleton key={i} className="h-20 w-full" />
-                        ))}
-                      </div>
-                    ) : formattedHistoricalPicks.length > 0 ? (
-                      <>
-                        {is2023Draft && (
-                          <div className="flex items-center gap-2 mb-4 p-3 bg-muted rounded-md">
-                            <Switch
-                              id="show-rookies-only"
-                              checked={showRookiesOnly}
-                              onCheckedChange={setShowRookiesOnly}
-                            />
-                            <Label htmlFor="show-rookies-only" className="text-sm cursor-pointer">
-                              Show NFL Rookies Only
-                            </Label>
-                          </div>
-                        )}
-                        {is2023Draft ? (
-                          renderDraftByRound(formattedHistoricalPicks, is2023Draft)
-                        ) : (
-                          <>
-                            <div className="flex items-center gap-4 mb-2 text-xs text-muted-foreground">
-                              <div className="flex items-center gap-1.5">
-                                <Badge className={`text-[10px] px-1.5 ${positionColors.QB}`}>QB</Badge>
-                                <span>Quarterback</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <Badge className={`text-[10px] px-1.5 ${positionColors.RB}`}>RB</Badge>
-                                <span>Running Back</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <Badge className={`text-[10px] px-1.5 ${positionColors.WR}`}>WR</Badge>
-                                <span>Wide Receiver</span>
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <Badge className={`text-[10px] px-1.5 ${positionColors.TE}`}>TE</Badge>
-                                <span>Tight End</span>
-                              </div>
-                            </div>
-                            {renderDraftGrid(formattedHistoricalPicks, true)}
-                          </>
-                        )}
-                      </>
-                    ) : (
-                      <p className="text-center text-muted-foreground py-8">
-                        No picks found for this draft
-                      </p>
-                    )
-                  ) : (
-                    <p className="text-center text-muted-foreground py-8">
-                      Select a draft to view results
-                    </p>
-                  )}
-                </>
-              ) : (
-                <div className="text-center text-muted-foreground py-8">
-                  <p>No historical drafts found.</p>
-                  {(error2023 || error2024) && (
-                    <p className="text-xs mt-2 text-destructive">
-                      Error fetching historical drafts: {error2023?.message || error2024?.message}
-                    </p>
-                  )}
-                  {allDrafts && allDrafts.length > 0 && (
-                    <p className="text-xs mt-2">
-                      Found {allDrafts.length} total drafts ({historicalDrafts2023?.length || 0} from 2023, {historicalDrafts2024?.length || 0} from 2024, {drafts?.length || 0} from current league). 
-                      Completed drafts: {completedDrafts.length}
-                    </p>
-                  )}
-                  {(!historicalDrafts2023 && !historicalDrafts2024 && !draftsLoading && !historicalDraftsLoading) && (
-                    <p className="text-xs mt-2">
-                      Historical draft queries completed but returned no data.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          ) : activeTab === "prospects" ? (
-            <div className="min-h-[400px]">
-              <DraftProspects />
-            </div>
-          ) : (
-            <div className="space-y-4">
-              <CardDescription>
-                Probabilities based on 10,000 Monte Carlo simulations. Non-playoff teams compete for picks 1-5 (lowest max points = Pick 1). 
-                Playoff teams get picks 6-12 based on postseason finish (worst = Pick 6, champion = Pick 12). 
-                Bubble teams have odds spread across all picks based on their playoff probability.
-              </CardDescription>
-              
-              <div className="flex flex-wrap items-center gap-4 mb-4 text-xs text-muted-foreground">
-                <div className="flex items-center gap-1.5">
-                  <TrendingDown className="w-4 h-4 text-destructive" />
-                  <span>Eliminated (Picks 1-5)</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <div className="w-4 h-4 rounded-full bg-chart-3" />
-                  <span>Bubble (Any Pick)</span>
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <Trophy className="w-4 h-4 text-primary" />
-                  <span>Clinched (Picks 6-12)</span>
-                </div>
-              </div>
-
-              <ScrollArea className="w-full">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="sticky left-0 bg-background z-10">Team</TableHead>
-                      <TableHead className="text-center">Record</TableHead>
-                      <TableHead className="text-center">Status</TableHead>
-                      <TableHead className="text-right">Max PF</TableHead>
-                      {Array.from({ length: Math.min(totalTeams, 12) }, (_, i) => (
-                        <TableHead key={i} className="text-center w-16">
-                          Pick {i + 1}
-                        </TableHead>
+                ) : completedDrafts.length > 0 ? (
+                  <>
+                    <div className="flex gap-2 flex-wrap">
+                      {completedDrafts.map((draft) => (
+                        <Button
+                          key={draft.draftId}
+                          variant={selectedDraftId === draft.draftId ? "default" : "outline"}
+                          size="sm"
+                          onClick={() => setSelectedDraftId(draft.draftId)}
+                          data-testid={`draft-button-${draft.season}`}
+                        >
+                          <Calendar className="w-4 h-4 mr-1.5" />
+                          {draft.season} {draft.type === "startup" ? "Startup" : "Rookie"}
+                        </Button>
                       ))}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(draftOrderRosterIds.length >= totalTeams
-                      ? [...draftOddsTeams].sort((a, b) => {
-                          const ia = draftOrderRosterIds.indexOf(a.rosterId);
-                          const ib = draftOrderRosterIds.indexOf(b.rosterId);
-                          if (ia === -1 && ib === -1) return 0;
-                          if (ia === -1) return 1;
-                          if (ib === -1) return -1;
-                          return ia - ib;
-                        })
-                      : draftOddsTeams
-                    ).map((team, index) => (
-                      <TableRow 
-                        key={team.rosterId}
-                        className={team.isUser ? "bg-primary/5" : ""}
-                        data-testid={`draft-odds-row-${team.rosterId}`}
-                      >
-                        <TableCell className="sticky left-0 bg-background z-10">
-                          <div className="flex items-center gap-2">
-                            <Avatar className="w-8 h-8">
-                              <AvatarFallback
-                                className={`text-xs ${
-                                  team.isUser
-                                    ? "bg-primary text-primary-foreground"
-                                    : "bg-muted"
-                                }`}
-                              >
-                                {team.initials}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span className={`font-medium ${team.isUser ? "text-primary" : ""}`}>
-                              {team.name}
-                            </span>
-                            {team.isUser && (
-                              <Badge variant="outline" className="text-xs">
-                                You
-                              </Badge>
-                            )}
-                            {team.isLocked && (
-                              <Badge variant="outline" className="text-xs ml-1">
-                                <Lock className="w-3 h-3 mr-1" />
-                                Locked
-                              </Badge>
-                            )}
-                          </div>
-                        </TableCell>
-                        <TableCell className="text-center tabular-nums font-medium">
-                          {team.record}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {team.status === "clinched" ? (
-                            <Badge className="bg-primary text-primary-foreground">
-                              <Trophy className="w-3 h-3 mr-1" />
-                              Clinched
-                            </Badge>
-                          ) : team.status === "eliminated" ? (
-                            <Badge variant="destructive">
-                              <TrendingDown className="w-3 h-3 mr-1" />
-                              Eliminated
-                            </Badge>
-                          ) : (
-                            <Badge className="bg-chart-3 text-white">
-                              {Math.round(team.makePlayoffsPct ?? 0)}%
-                            </Badge>
+                    </div>
+
+                    {selectedDraftId ? (
+                      historicalLoading ? (
+                        skeletonRows
+                      ) : formattedHistoricalPicks.length > 0 ? (
+                        <>
+                          {is2023Draft && (
+                            <div className="flex items-center gap-2 mb-4 p-3 bg-muted rounded-md">
+                              <Switch
+                                id="show-rookies-only"
+                                checked={showRookiesOnly}
+                                onCheckedChange={setShowRookiesOnly}
+                              />
+                              <Label htmlFor="show-rookies-only" className="text-sm cursor-pointer">
+                                Show NFL Rookies Only
+                              </Label>
+                            </div>
                           )}
-                        </TableCell>
-                        <TableCell className="text-right tabular-nums">
-                          {Number(team.maxPoints ?? 0).toFixed(1)}
-                        </TableCell>
-                        {Array.from({ length: Math.min(totalTeams, 12) }, (_, pickIndex) => {
-                          const odds = team.pickOdds[pickIndex] || 0;
-                          const maxOdds = Math.max(...team.pickOdds);
-                          const isHighest = odds === maxOdds && odds > 0;
-                          
-                          let bgClass = "";
-                          if (odds >= 50) {
-                            bgClass = "bg-primary/30 font-bold text-primary";
-                          } else if (odds >= 25) {
-                            bgClass = "bg-primary/15 font-medium";
-                          } else if (odds >= 10) {
-                            bgClass = "bg-muted/80";
-                          } else if (odds > 0) {
-                            bgClass = "bg-muted/40 text-muted-foreground";
-                          }
-                          
-                          return (
-                            <TableCell 
-                              key={pickIndex} 
-                              className={`text-center tabular-nums text-sm ${bgClass} ${isHighest ? "ring-2 ring-primary ring-inset" : ""}`}
-                            >
-                              {odds > 0 ? `${odds.toFixed(3)}%` : "—"}
-                            </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                <ScrollBar orientation="horizontal" />
-              </ScrollArea>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+                          {is2023Draft ? (
+                            // The 2023 startup draft has many rounds and snake order, so it keeps its
+                            // round-by-round grid instead of the tile board.
+                            renderDraftByRound(formattedHistoricalPicks, is2023Draft)
+                          ) : (
+                            <>
+                              {positionLegend}
+                              <HistoricalTileBoard rounds={historicalBoard} onSelectPlayer={setOpenPlayer} />
+                            </>
+                          )}
+                        </>
+                      ) : (
+                        <p className="text-center text-muted-foreground py-8">No picks found for this draft</p>
+                      )
+                    ) : (
+                      <p className="text-center text-muted-foreground py-8">Select a draft to view results</p>
+                    )}
+                  </>
+                ) : (
+                  <div className="text-center text-muted-foreground py-8">
+                    <p>No historical drafts found.</p>
+                    {(error2023 || error2024 || error2025) && (
+                      <p className="text-xs mt-2 text-destructive">
+                        Error fetching historical drafts: {error2023?.message || error2024?.message || error2025?.message}
+                      </p>
+                    )}
+                    {allDrafts && allDrafts.length > 0 && (
+                      <p className="text-xs mt-2">
+                        Found {allDrafts.length} total drafts ({historicalDrafts2023?.length || 0} from 2023, {historicalDrafts2024?.length || 0} from 2024, {historicalDrafts2025?.length || 0} from 2025, {drafts?.length || 0} from current league).
+                        Completed drafts: {completedDrafts.length}
+                      </p>
+                    )}
+                    {!historicalDrafts2023 && !historicalDrafts2024 && !draftsLoading && !historicalDraftsLoading && (
+                      <p className="text-xs mt-2">Historical draft queries completed but returned no data.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+            <DraftOddsHeatmap teams={sortedOddsTeams} pickCount={totalTeams} />
+            )}
+          </CardContent>
+        </Card>
+        )}
+      </div>
+
+      <PlayerDetailModal
+        playerId={openPlayer?.id ?? null}
+        playerName={openPlayer?.name ?? ""}
+        week={nflWeek}
+        leagueId={league?.leagueId}
+        isOffseason={isOffseason}
+        season={season}
+        onClose={() => setOpenPlayer(null)}
+      />
     </div>
   );
 }

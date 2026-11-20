@@ -106,6 +106,8 @@ export interface GameSwing {
 
 export interface OutlookResult {
   sims: number;
+  /** Finishing orders (roster ids, seed 1 first) of the first SEED_SAMPLES simulated seasons */
+  seedSamples: number[][];
   byes: number;
   teams: TeamOutlook[];
   /** Average wins of the last playoff seed now, and as of the previous week's replay */
@@ -149,9 +151,13 @@ interface SimAgg {
   winsMade: number[][];
   cutoffSum: number;
   n: number;
+  /** Finishing order (roster ids, seed 1 first) of the first few simulated seasons */
+  orders: number[][];
 }
 
 interface SimOptions {
+  /** Keep the finishing order of this many simulated seasons */
+  sample?: number;
   /** Forced results: key "week:minId-maxId" -> winning roster id */
   forced?: Map<string, number>;
   n: number;
@@ -190,6 +196,7 @@ function runSims(input: OutlookInput, opt: SimOptions): SimAgg {
     winsMade: teams.map(() => new Array(maxWins + 1).fill(0)),
     cutoffSum: 0,
     n: opt.n,
+    orders: [],
   };
 
   const wins = new Array(T).fill(0);
@@ -238,6 +245,7 @@ function runSims(input: OutlookInput, opt: SimOptions): SimAgg {
       if (Math.abs(pf[y] - pf[x]) > 0.01) return pf[y] - pf[x];
       return input.h2h(teams[y].rosterId, teams[x].rosterId) - input.h2h(teams[x].rosterId, teams[y].rosterId);
     });
+    if (opt.sample && agg.orders.length < opt.sample) agg.orders.push(order.map((i) => teams[i].rosterId));
     for (let pos = 0; pos < T; pos++) {
       const i = order[pos];
       agg.seeds[i][pos] += 1;
@@ -276,6 +284,9 @@ function nthLargest(values: number[], n: number): number {
   return n >= 1 && n <= sorted.length ? sorted[n - 1] : -Infinity;
 }
 
+/** How many simulated seasons' finishing orders are kept (the Draft Odds play the playoff bracket from them). */
+export const SEED_SAMPLES = 1000;
+
 export function simulateOutlook(input: OutlookInput): OutlookResult {
   const { teams, playoffTeams, regularSeasonWeeks, firstRemainingWeek, schedule } = input;
   const sims = input.sims ?? 10000;
@@ -287,7 +298,14 @@ export function simulateOutlook(input: OutlookInput): OutlookResult {
   const baseWins = teams.map((t) => t.wins);
   const basePf = teams.map((t) => t.pointsFor);
 
-  const main = runSims(input, { n: sims, seed: baseSeed, startWeek: firstRemainingWeek, baseWins, basePf });
+  const main = runSims(input, {
+    n: sims,
+    seed: baseSeed,
+    startWeek: firstRemainingWeek,
+    baseWins,
+    basePf,
+    sample: SEED_SAMPLES,
+  });
 
   const gamesLeft = teams.map((t) => gamesLeftFor(schedule, firstRemainingWeek, regularSeasonWeeks, t.rosterId));
   const played = teams.map((t) => {
@@ -462,6 +480,7 @@ export function simulateOutlook(input: OutlookInput): OutlookResult {
 
   return {
     sims,
+    seedSamples: main.orders,
     byes,
     teams: teamOutlooks,
     cutoffWins: Math.round((main.cutoffSum / main.n) * 10) / 10,

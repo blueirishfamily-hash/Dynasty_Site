@@ -110,3 +110,17 @@ describe("simulateOutlook", () => {
     }
   });
 });
+
+describe("seedSamples", () => {
+  it("keeps full finishing orders of simulated seasons for the Draft Odds bracket", () => {
+    const r = simulateOutlook(makeInput({ sims: 1500 }));
+    expect(r.seedSamples.length).toBe(1000);
+    for (const order of r.seedSamples.slice(0, 50)) {
+      expect([...order].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    }
+    // seed 1 in a sample matches how often team 1 takes the one seed
+    const top = r.seedSamples.filter((o) => o[0] === 1).length / r.seedSamples.length;
+    const oneSeed = r.teams.find((t) => t.rosterId === 1)!.oneSeedPct / 100;
+    expect(Math.abs(top - oneSeed)).toBeLessThan(0.08);
+  });
+});

@@ -745,6 +745,7 @@ export function registerPlayoffsRoutes(app: Express): void {
             pointsBehind: gaps.behind !== null ? Math.round(gaps.behind * 10) / 10 : null,
             pointsAhead: gaps.ahead !== null ? Math.round(gaps.ahead * 10) / 10 : null,
             projectedPointsPerWeek: Math.round(team.projectedPointsPerWeek * 10) / 10,
+            projectedStdPerWeek: Math.round(team.stdDev * 10) / 10,
             projectedPointsFor,
             division: hasDivisions ? team.division : undefined,
             oneSeedPct,
@@ -787,6 +788,8 @@ export function registerPlayoffsRoutes(app: Express): void {
         hasDivisions,
         simulationCount: SIMULATIONS,
         byes: outlook?.byes ?? 0,
+        // Simulated seasons' finishing orders, only when asked for (the Draft Odds play the bracket from them)
+        seedSamples: req.query.seedSamples === "1" ? (outlook?.seedSamples ?? null) : undefined,
         outlook: outlook
           ? {
               cutoffWins: outlook.cutoffWins,
