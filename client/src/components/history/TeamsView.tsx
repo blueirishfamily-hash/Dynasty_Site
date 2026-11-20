@@ -24,7 +24,7 @@ import {
 } from "./common";
 
 function TeamGrid() {
-  const { history, myFranchiseId } = useHistoryContext();
+  const { history, myFranchiseId, hrefs } = useHistoryContext();
   const totals = useMemo(() => {
     const map = new Map(computeFranchiseTotals(history).map((t) => [t.franchiseId, t]));
     return history.franchises
@@ -35,7 +35,7 @@ function TeamGrid() {
   return (
     <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" data-testid="team-grid">
       {totals.map(({ franchise, totals: t }) => (
-        <Link key={franchise.id} href={`/history/teams/${encodeURIComponent(franchise.id)}`} data-testid={`card-team-${franchise.id}`}>
+        <Link key={franchise.id} href={hrefs.team(franchise.id)} data-testid={`card-team-${franchise.id}`}>
           <Card className="h-full hover-elevate cursor-pointer">
             <CardContent className="p-4 space-y-3">
               <div className="flex items-center gap-3">
@@ -95,7 +95,7 @@ const RESULT_COLOR: Record<string, string> = {
 };
 
 function TeamDetail({ id }: { id: string }) {
-  const { history, franchiseById, myFranchiseId } = useHistoryContext();
+  const { history, franchiseById, myFranchiseId, hrefs } = useHistoryContext();
   const franchise = franchiseById.get(id);
   const totals = useMemo(() => computeFranchiseTotals(history).find((t) => t.franchiseId === id), [history, id]);
 
@@ -137,7 +137,7 @@ function TeamDetail({ id }: { id: string }) {
   if (!franchise || !totals) {
     return (
       <div className="space-y-3">
-        <Link href="/history/teams" className="text-sm text-primary inline-flex items-center gap-1">
+        <Link href={hrefs.teams()} className="text-sm text-primary inline-flex items-center gap-1">
           <ArrowLeft className="w-4 h-4" /> All teams
         </Link>
         <p className="text-muted-foreground">That team isn't in the league history.</p>
@@ -165,7 +165,7 @@ function TeamDetail({ id }: { id: string }) {
 
   return (
     <div className="space-y-6" data-testid={`team-detail-${id}`}>
-      <Link href="/history/teams" className="text-sm text-primary inline-flex items-center gap-1" data-testid="link-all-teams">
+      <Link href={hrefs.teams()} className="text-sm text-primary inline-flex items-center gap-1" data-testid="link-all-teams">
         <ArrowLeft className="w-4 h-4" /> All teams
       </Link>
       <div className="flex items-center gap-4">
@@ -211,7 +211,7 @@ function TeamDetail({ id }: { id: string }) {
               {[...seasons].reverse().map(({ season, team }) => (
                 <TableRow key={season.season}>
                   <TableCell>
-                    <Link href={`/history/seasons/${season.season}`} className="text-primary hover:underline font-medium">
+                    <Link href={hrefs.season(season.season)} className="text-primary hover:underline font-medium">
                       {season.season}
                     </Link>
                   </TableCell>
@@ -319,7 +319,7 @@ function TeamDetail({ id }: { id: string }) {
                     )}
                   </TableCell>
                   <TableCell className="text-right">
-                    <Link href={`/history/matchups/${encodeURIComponent(id)}/${encodeURIComponent(opp.id)}`} className="text-xs text-primary hover:underline" data-testid={`link-h2h-${opp.id}`}>
+                    <Link href={hrefs.matchup(id, opp.id)} className="text-xs text-primary hover:underline" data-testid={`link-h2h-${opp.id}`}>
                       All games
                     </Link>
                   </TableCell>

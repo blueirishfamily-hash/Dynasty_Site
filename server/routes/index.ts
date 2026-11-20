@@ -22,6 +22,7 @@ import { registerRostersRoutes } from "./rosters";
 import { registerDraftRoutes } from "./draft";
 import { registerPlayoffsRoutes } from "./playoffs";
 import { registerHistoryRoutes } from "./history";
+import { registerLeagueStatsRoutes } from "./leagueStats";
 import { registerAnalyticsRoutes } from "./analytics";
 import { registerGovernanceRoutes } from "./governance";
 import { registerSettingsRoutes } from "./settings";
@@ -66,6 +67,7 @@ export async function registerRoutes(
   registerDraftRoutes(app);
   registerPlayoffsRoutes(app);
   registerHistoryRoutes(app);
+  registerLeagueStatsRoutes(app);
   registerAnalyticsRoutes(app);
   registerGovernanceRoutes(app);
   registerSettingsRoutes(app);

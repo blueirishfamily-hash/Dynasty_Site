@@ -19,16 +19,15 @@ import {
   ArrowLeftRight,
   Trophy,
   BarChart3,
+  ChartLine,
   Settings,
   Zap,
   Swords,
   Sparkles,
   Medal,
   Scale,
-  Database,
   CalendarCheck,
   MessageSquare,
-  History,
   Building2,
   SlidersHorizontal,
   Plus,
@@ -43,14 +42,13 @@ const baseNavItems = [
   { title: "Trade Center", url: "/trades", icon: ArrowLeftRight },
   { title: "Draft Board", url: "/draft", icon: Trophy },
   { title: "Trophy Room", url: "/trophies", icon: Medal },
-  { title: "League History", url: "/history", icon: History },
   { title: "Rule Changes", url: "/rule-changes", icon: Scale },
   { title: "Standings", url: "/standings", icon: BarChart3 },
+  { title: "League Stats", url: "/stats", icon: ChartLine },
   { title: "Contracts Hub", url: "/contracts-hub", icon: Building2 },
   { title: "Metrics", url: "/metrics", icon: Sparkles },
   { title: "Year Recap", url: "/year-recap", icon: CalendarCheck },
   { title: "Suggestions", url: "/suggestions", icon: MessageSquare },
-  { title: "Historical", url: "/historical", icon: Database },
   { title: "League Settings", url: "/league-settings", icon: SlidersHorizontal },
   { title: "Settings", url: "/settings", icon: Settings },
 ];
@@ -58,7 +56,7 @@ const baseNavItems = [
 const CONTRACT_PAGE_URLS = new Set(["/contracts-hub"]);
 
 // Pages only the commissioner sees in the menu.
-const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League History", "League Settings"]);
+const COMMISSIONER_ONLY_TITLES = new Set(["Settings", "League Settings"]);
 
 interface DraftPick {
   year: number;

@@ -210,6 +210,8 @@ export interface SleeperDraft {
   };
   start_time: number;
   created: number;
+  /** Draft slot (as a string) to the roster that originally owned it */
+  slot_to_roster_id?: Record<string, number> | null;
 }
 
 export interface SleeperDraftPick {

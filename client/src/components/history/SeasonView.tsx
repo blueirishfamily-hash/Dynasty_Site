@@ -6,7 +6,7 @@ import { ArrowLeft, Crown, Medal } from "lucide-react";
 import { sortChronological, winnerOf, type HistoryGame } from "@shared/leagueHistory";
 import { ResultBadge, TeamLink, formatPoints, recordText, useHistoryContext } from "./common";
 
-function PlayoffGame({ game }: { game: HistoryGame }) {
+function PlayoffGameCard({ game }: { game: HistoryGame }) {
   const winner = winnerOf(game);
   const row = (id: string, score: number) => (
     <div className={`flex items-center justify-between gap-3 ${winner === id ? "font-semibold" : "text-muted-foreground"}`}>
@@ -23,8 +23,12 @@ function PlayoffGame({ game }: { game: HistoryGame }) {
   );
 }
 
+export function PlayoffGame({ game }: { game: HistoryGame }) {
+  return <PlayoffGameCard game={game} />;
+}
+
 export default function SeasonView({ season: seasonId }: { season: string }) {
-  const { history } = useHistoryContext();
+  const { history, hrefs } = useHistoryContext();
   const season = history.seasons.find((s) => s.season === seasonId);
 
   const playoffGames = useMemo(
@@ -41,7 +45,7 @@ export default function SeasonView({ season: seasonId }: { season: string }) {
   if (!season) {
     return (
       <div className="space-y-3">
-        <Link href="/history" className="text-sm text-primary inline-flex items-center gap-1">
+        <Link href={hrefs.overview()} className="text-sm text-primary inline-flex items-center gap-1">
           <ArrowLeft className="w-4 h-4" /> League history
         </Link>
         <p className="text-muted-foreground">That season isn't in the league history.</p>
@@ -51,7 +55,7 @@ export default function SeasonView({ season: seasonId }: { season: string }) {
 
   return (
     <div className="space-y-6" data-testid={`season-detail-${season.season}`}>
-      <Link href="/history" className="text-sm text-primary inline-flex items-center gap-1" data-testid="link-back-league">
+      <Link href={hrefs.overview()} className="text-sm text-primary inline-flex items-center gap-1" data-testid="link-back-league">
         <ArrowLeft className="w-4 h-4" /> League history
       </Link>
       <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
@@ -121,7 +125,7 @@ export default function SeasonView({ season: seasonId }: { season: string }) {
               <div key={week} className="space-y-2">
                 <div className="text-sm font-semibold">Week {week}</div>
                 {games.map((game, index) => (
-                  <PlayoffGame key={`${game.a}-${game.b}-${index}`} game={game} />
+                  <PlayoffGameCard key={`${game.a}-${game.b}-${index}`} game={game} />
                 ))}
               </div>
             ))}

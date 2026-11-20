@@ -32,7 +32,7 @@ function cellTone(wins: number, losses: number) {
 }
 
 function MatrixGrid({ games }: { games: HistoryGame[] }) {
-  const { history, myFranchiseId } = useHistoryContext();
+  const { history, myFranchiseId, hrefs } = useHistoryContext();
   const [, navigate] = useLocation();
   const ids = useMemo(() => history.franchises.map((f) => f.id), [history]);
   const cells = useMemo(() => computeHeadToHeadMatrix(games, ids), [games, ids]);
@@ -69,7 +69,7 @@ function MatrixGrid({ games }: { games: HistoryGame[] }) {
                   <td key={col.id} className="p-0 text-center">
                     <button
                       className={`w-full h-9 tabular-nums hover:ring-2 hover:ring-primary/60 hover:ring-inset ${cell ? cellTone(cell.wins, cell.losses) : ""}`}
-                      onClick={() => navigate(`/history/matchups/${encodeURIComponent(row.id)}/${encodeURIComponent(col.id)}`)}
+                      onClick={() => navigate(hrefs.matchup(row.id, col.id))}
                       data-testid={`cell-${row.id}-${col.id}`}
                       title={`${row.name} vs ${col.name}`}
                     >
@@ -87,7 +87,7 @@ function MatrixGrid({ games }: { games: HistoryGame[] }) {
 }
 
 function GameList({ title, entries, mode }: { title: string; entries: GameListEntry[]; mode: "margin" | "combined" }) {
-  const { franchiseById } = useHistoryContext();
+  const { franchiseById, hrefs } = useHistoryContext();
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -101,7 +101,7 @@ function GameList({ title, entries, mode }: { title: string; entries: GameListEn
           return (
             <Link
               key={`${game.season}-${game.week}-${game.a}-${index}`}
-              href={`/history/matchups/${encodeURIComponent(w)}/${encodeURIComponent(l)}`}
+              href={hrefs.matchup(w, l)}
               className="block text-sm hover:bg-muted/50 rounded-md -mx-1.5 px-1.5 py-1"
             >
               <div className="flex items-center justify-between gap-2">
@@ -185,7 +185,7 @@ function MatchupOverview() {
 }
 
 function RivalryDetail({ aId, bId }: { aId: string; bId: string }) {
-  const { history, franchiseById } = useHistoryContext();
+  const { history, franchiseById, hrefs } = useHistoryContext();
   const [kind, setKind] = useState<KindFilter>("all");
   const a = franchiseById.get(aId);
   const b = franchiseById.get(bId);
@@ -196,7 +196,7 @@ function RivalryDetail({ aId, bId }: { aId: string; bId: string }) {
   if (!a || !b || aId === bId) {
     return (
       <div className="space-y-3">
-        <Link href="/history/matchups" className="text-sm text-primary inline-flex items-center gap-1">
+        <Link href={hrefs.matchups()} className="text-sm text-primary inline-flex items-center gap-1">
           <ArrowLeft className="w-4 h-4" /> All matchups
         </Link>
         <p className="text-muted-foreground">That matchup isn't in the league history.</p>
@@ -210,7 +210,7 @@ function RivalryDetail({ aId, bId }: { aId: string; bId: string }) {
 
   return (
     <div className="space-y-6" data-testid="rivalry-detail">
-      <Link href="/history/matchups" className="text-sm text-primary inline-flex items-center gap-1" data-testid="link-all-matchups">
+      <Link href={hrefs.matchups()} className="text-sm text-primary inline-flex items-center gap-1" data-testid="link-all-matchups">
         <ArrowLeft className="w-4 h-4" /> All matchups
       </Link>
 

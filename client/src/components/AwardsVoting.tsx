@@ -49,6 +49,11 @@ interface SearchPlayer {
   position: string;
   team: string | null;
   yearsExp?: number;
+  /** Rookie list only: points per game and games while on a roster in this league */
+  ppg?: number;
+  games?: number;
+  /** MVP list only: weeks in the top 12 at his position */
+  topWeeks?: number;
 }
 
 interface TeamOption {
@@ -566,6 +571,7 @@ function AwardPanel({
         open={nominateOpen}
         onOpenChange={setNominateOpen}
         award={award}
+        leagueId={leagueId}
         teams={teams}
         existingIds={new Set(nominations.map((n) => n.playerId))}
         pending={nominateMutation.isPending}
@@ -598,6 +604,7 @@ function NominateDialog({
   open,
   onOpenChange,
   award,
+  leagueId,
   teams,
   existingIds,
   pending,
@@ -606,6 +613,7 @@ function NominateDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   award: (typeof AWARDS)[number];
+  leagueId: string;
   teams: TeamOption[];
   existingIds: Set<string>;
   pending: boolean;
@@ -630,14 +638,15 @@ function NominateDialog({
 
   const isGm = award.type === "gm";
   const { data: players, isLoading } = useQuery<SearchPlayer[]>({
-    queryKey: ["/api/sleeper/players/search", debounced, award.type],
+    queryKey: ["/api/sleeper/players/search", debounced, award.type, leagueId],
     queryFn: async () => {
-      const rookies = award.type === "roy" ? "&rookies=true" : "";
+      const rookies = award.type === "roy" ? `&rookies=true&leagueId=${encodeURIComponent(leagueId)}` : award.type === "mvp" ? `&mvp=true&leagueId=${encodeURIComponent(leagueId)}` : "";
       const res = await fetch(`/api/sleeper/players/search?q=${encodeURIComponent(debounced)}${rookies}`);
       if (!res.ok) throw new Error("Failed to search players");
       return res.json();
     },
-    enabled: open && !isGm && debounced.length >= 2,
+    // Rookie of the Year lists the rookie class straight away; other awards wait for a search
+    enabled: open && !isGm && (award.type === "roy" || award.type === "mvp" || debounced.length >= 2),
   });
 
   const teamRows = teams.filter(
@@ -650,7 +659,13 @@ function NominateDialog({
         <DialogHeader>
           <DialogTitle>Nominate for {award.label}</DialogTitle>
           <DialogDescription>
-            {isGm ? "Pick a team to nominate." : `Search for a ${award.noun} to nominate.`} You can nominate up to {NOMINATION_LIMIT} per award.
+            {isGm
+              ? "Pick a team to nominate."
+              : award.type === "roy"
+                ? "Pick from this year's rookies, or search to narrow the list."
+                : award.type === "mvp"
+                  ? "Pick from players who finished top 12 at their position in at least 3 regular-season weeks, or search to narrow the list."
+                  : `Search for a ${award.noun} to nominate.`} You can nominate up to {NOMINATION_LIMIT} per award.
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-3 py-2">
@@ -704,6 +719,8 @@ function NominateDialog({
                           <p className="text-sm text-muted-foreground">
                             {p.team || "FA"}
                             {p.yearsExp !== undefined && ` · ${p.yearsExp === 0 ? "Rookie" : `${p.yearsExp} yrs`}`}
+                            {p.ppg !== undefined && ` · ${p.ppg.toFixed(1)} PPG (${p.games} GP)`}
+                            {p.topWeeks !== undefined && ` · ${p.topWeeks} top-12 weeks`}
                             {already && " · already nominated"}
                           </p>
                         </div>
@@ -714,7 +731,7 @@ function NominateDialog({
               </div>
             ) : (
               <p className="py-8 text-center text-sm text-muted-foreground">
-                {debounced.length >= 2 ? "No players found" : "Type at least 2 characters to search"}
+                {award.type === "roy" || award.type === "mvp" || debounced.length >= 2 ? "No players found" : "Type at least 2 characters to search"}
               </p>
             )}
           </ScrollArea>

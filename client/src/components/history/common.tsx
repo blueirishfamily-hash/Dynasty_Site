@@ -26,19 +26,47 @@ export function useLeagueHistory(options?: { enabled?: boolean }) {
   });
 }
 
+/** Where the history views link to. The League History page uses /history; League Stats supplies its own. */
+export interface HistoryHrefs {
+  overview: () => string;
+  season: (season: string) => string;
+  teams: () => string;
+  team: (id: string) => string;
+  matchups: () => string;
+  matchup: (a: string, b: string) => string;
+}
+
+export const historyHrefs: HistoryHrefs = {
+  overview: () => "/history",
+  season: (season) => `/history/seasons/${season}`,
+  teams: () => "/history/teams",
+  team: (id) => `/history/teams/${encodeURIComponent(id)}`,
+  matchups: () => "/history/matchups",
+  matchup: (a, b) => `/history/matchups/${encodeURIComponent(a)}/${encodeURIComponent(b)}`,
+};
+
 interface HistoryContextValue {
   history: LeagueHistory;
   franchiseById: Map<string, HistoryFranchise>;
   myFranchiseId: string | null;
+  hrefs: HistoryHrefs;
 }
 
 const HistoryContext = createContext<HistoryContextValue | null>(null);
 
-export function HistoryProvider({ history, children }: { history: LeagueHistory; children: ReactNode }) {
+export function HistoryProvider({
+  history,
+  hrefs = historyHrefs,
+  children,
+}: {
+  history: LeagueHistory;
+  hrefs?: HistoryHrefs;
+  children: ReactNode;
+}) {
   const { user } = useSleeper();
   const franchiseById = new Map(history.franchises.map((f) => [f.id, f]));
   const myFranchiseId = user?.userId && franchiseById.has(user.userId) ? user.userId : null;
-  return <HistoryContext.Provider value={{ history, franchiseById, myFranchiseId }}>{children}</HistoryContext.Provider>;
+  return <HistoryContext.Provider value={{ history, franchiseById, myFranchiseId, hrefs }}>{children}</HistoryContext.Provider>;
 }
 
 export function useHistoryContext(): HistoryContextValue {
@@ -89,7 +117,7 @@ export function TeamLink({
   link?: boolean;
   showAvatar?: boolean;
 }) {
-  const { franchiseById, myFranchiseId } = useHistoryContext();
+  const { franchiseById, myFranchiseId, hrefs } = useHistoryContext();
   const franchise = franchiseById.get(id);
   const content = (
     <span className={`inline-flex items-center gap-2 min-w-0 ${className}`}>
@@ -100,7 +128,7 @@ export function TeamLink({
   );
   if (!link) return content;
   return (
-    <Link href={`/history/teams/${encodeURIComponent(id)}`} className="hover:underline" data-testid={`link-team-${id}`}>
+    <Link href={hrefs.team(id)} className="hover:underline" data-testid={`link-team-${id}`}>
       {content}
     </Link>
   );

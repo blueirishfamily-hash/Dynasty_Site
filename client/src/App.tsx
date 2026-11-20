@@ -26,8 +26,8 @@ import TrophyRoom from "@/pages/TrophyRoom";
 import Settings from "@/pages/Settings";
 import ContractsHub from "@/pages/ContractsHub";
 import RuleChanges from "@/pages/RuleChanges";
-import Historical from "@/pages/Historical";
-import LeagueHistory from "@/pages/LeagueHistory";
+import LeagueStats from "@/pages/LeagueStats";
+import { legacyStatsTarget } from "@/components/league-stats/statsRoute";
 import YearRecap from "@/pages/YearRecap";
 import Suggestions from "@/pages/Suggestions";
 import LeagueSettings from "@/pages/LeagueSettings";
@@ -61,6 +61,11 @@ function ContractsOnly({ children }: { children: React.ReactNode }) {
   );
 }
 
+function LegacyStatsRedirect() {
+  const [pathname] = useLocation();
+  return <Redirect to={legacyStatsTarget(pathname)} replace />;
+}
+
 function Router() {
   return (
     <Switch>
@@ -78,9 +83,12 @@ function Router() {
       {/* The old Contracts page was retired; the Hub replaces it. Keep old links and bookmarks working. */}
       <Route path="/contracts">{() => <Redirect to="/contracts-hub" replace />}</Route>
       <Route path="/contracts-hub">{() => <ContractsOnly><ContractsHub /></ContractsOnly>}</Route>
-      <Route path="/historical" component={Historical} />
-      <Route path="/history/*" component={LeagueHistory} />
-      <Route path="/history" component={LeagueHistory} />
+      {/* Historical and League History were replaced by League Stats. Keep old links and bookmarks working. */}
+      <Route path="/historical">{() => <LegacyStatsRedirect />}</Route>
+      <Route path="/stats/*" component={LeagueStats} />
+      <Route path="/stats" component={LeagueStats} />
+      <Route path="/history/*">{() => <LegacyStatsRedirect />}</Route>
+      <Route path="/history">{() => <LegacyStatsRedirect />}</Route>
       <Route path="/year-recap" component={YearRecap} />
       <Route path="/suggestions" component={Suggestions} />
       <Route component={NotFound} />

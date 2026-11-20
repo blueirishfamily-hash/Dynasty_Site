@@ -12,15 +12,15 @@ import {
 } from "@shared/leagueHistory";
 import { TeamLink, formatPct, formatPoints, recordText, useHistoryContext, weekLabel } from "./common";
 
-function ChampionsTimeline() {
-  const { history, franchiseById } = useHistoryContext();
+export function ChampionsTimeline() {
+  const { history, franchiseById, hrefs } = useHistoryContext();
   const seasons = [...history.seasons].reverse();
   return (
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" data-testid="champions-timeline">
       {seasons.map((season) => {
         const leader = season.teams[0];
         return (
-          <Link key={season.season} href={`/history/seasons/${season.season}`} data-testid={`card-season-${season.season}`}>
+          <Link key={season.season} href={hrefs.season(season.season)} data-testid={`card-season-${season.season}`}>
             <Card className="h-full hover-elevate cursor-pointer">
               <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
@@ -76,7 +76,10 @@ function ChampionsTimeline() {
 
 type SortKey = "titles" | "finals" | "playoffAppearances" | "winPct" | "pointsPerGame" | "wins";
 
-function AllTimeTable() {
+export function AllTimeTable({
+  title = "All-time standings",
+  description = "Regular-season records and playoff results across every tracked season",
+}: { title?: string; description?: string } = {}) {
   const { history } = useHistoryContext();
   const [sortKey, setSortKey] = useState<SortKey>("titles");
   const rows = useMemo(() => {
@@ -100,8 +103,8 @@ function AllTimeTable() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="font-heading text-lg">All-time standings</CardTitle>
-        <CardDescription>Regular-season records and playoff results across every tracked season</CardDescription>
+        <CardTitle className="font-heading text-lg">{title}</CardTitle>
+        <CardDescription>{description}</CardDescription>
       </CardHeader>
       <CardContent className="p-0">
         <Table data-testid="table-all-time">
@@ -154,20 +157,20 @@ function AllTimeTable() {
   );
 }
 
-function recordValue(category: RecordCategory, entry: RecordEntry): string {
+export function recordValue(category: RecordCategory, entry: RecordEntry): string {
   if (category.unit === "record") return `${entry.value}-${entry.other ?? 0}`;
   if (category.unit === "games") return `${entry.value} games`;
   return formatPoints(entry.value);
 }
 
-function recordDetail(category: RecordCategory, entry: RecordEntry): string {
+export function recordDetail(category: RecordCategory, entry: RecordEntry): string {
   if (entry.span) return entry.span;
   if (entry.week == null) return entry.season;
   const when = weekLabel(entry.season, entry.week, entry.label);
   return when;
 }
 
-function RecordCard({ category }: { category: RecordCategory }) {
+export function RecordCard({ category }: { category: RecordCategory }) {
   const { franchiseById } = useHistoryContext();
   return (
     <Card data-testid={`record-${category.id}`}>
@@ -195,7 +198,7 @@ function RecordCard({ category }: { category: RecordCategory }) {
   );
 }
 
-function RecordsBook() {
+export function RecordsBook() {
   const { history } = useHistoryContext();
   const categories = useMemo(() => computeRecordsBook(history), [history]);
   return (

@@ -14,11 +14,56 @@ import {
   getLeagueDrafts,
   getDraftPicks,
 } from "../sleeper";
+import { mvpCandidates, positionTopWeeks, type Candidate } from "../awardCandidates";
 import {
   getEffectiveWeek,
   WeeklyStatsCache,
   fetchAllWeeklyStats,
 } from "./shared";
+
+// The league's played weeks (a week nobody has scored in has not been played), kept for 10 minutes because new
+// weeks keep arriving. Rookie of the Year and MVP nominee lists are both built from it.
+const playedWeeksCache = new Map<string, { at: number; weeks: Array<{ week: number; matchups: any[] }> }>();
+async function playedWeeks(leagueId: string): Promise<Array<{ week: number; matchups: any[] }>> {
+  const hit = playedWeeksCache.get(leagueId);
+  if (hit && Date.now() - hit.at < 10 * 60 * 1000) return hit.weeks;
+  const numbers = Array.from({ length: 18 }, (_, i) => i + 1);
+  const weeks: Array<{ week: number; matchups: any[] }> = [];
+  for (let i = 0; i < numbers.length; i += 6) {
+    const chunk = await Promise.all(numbers.slice(i, i + 6).map(async w => ({ week: w, matchups: (await getLeagueMatchups(leagueId, w).catch(() => [])) as any[] })));
+    weeks.push(...chunk.filter(c => c.matchups.some(m => (m.points ?? 0) > 0)));
+  }
+  playedWeeksCache.set(leagueId, { at: Date.now(), weeks });
+  return weeks;
+}
+
+// Each player's fantasy points and games while on a team's roster in this league's played weeks.
+async function leaguePlayerGames(leagueId: string): Promise<Map<string, { points: number; games: number }>> {
+  const stats = new Map<string, { points: number; games: number }>();
+  for (const { matchups } of await playedWeeks(leagueId)) {
+    for (const m of matchups) {
+      const pts = m.players_points ?? {};
+      for (const id of (m.players ?? []) as string[]) {
+        const cur = stats.get(String(id)) ?? { points: 0, games: 0 };
+        cur.points += Number(pts[id]) || 0;
+        cur.games += 1;
+        stats.set(String(id), cur);
+      }
+    }
+  }
+  return stats;
+}
+
+// MVP nominees: players who ranked in the top 12 at their position (QB, RB, WR, TE) in at least 3 regular-season
+// weeks, among players on a roster that week. Revisit the numbers here if the commissioner wants a different bar.
+export const MVP_TOP_N = 12;
+export const MVP_MIN_TOP_WEEKS = 3;
+async function leagueMvpPool(leagueId: string, positionOf: (id: string) => string | null | undefined): Promise<Map<string, Candidate>> {
+  const league = await getLeague(leagueId).catch(() => null);
+  const playoffStart = Number((league?.settings as any)?.playoff_week_start) || 15;
+  const regular = (await playedWeeks(leagueId)).filter(w => w.week < playoffStart).map(w => w.matchups);
+  return mvpCandidates(positionTopWeeks(regular, positionOf, ["QB", "RB", "WR", "TE"], MVP_TOP_N), MVP_MIN_TOP_WEEKS);
+}
 
 export function registerPlayersRoutes(app: Express): void {
   // Get draft position for a player from historical draft snapshots (2024/2023) or most recent completed rookie draft
@@ -388,24 +433,40 @@ export function registerPlayersRoutes(app: Express): void {
     try {
       const search = (req.query.q as string || "").toLowerCase().trim();
       const rookiesOnly = req.query.rookies === "true";
-      
-      if (!search || search.length < 2) {
+      const mvpOnly = req.query.mvp === "true";
+
+      // Rookie of the Year lists this year's rookies (first-year players) up front, with no search needed.
+      // Searching only narrows that list. Other awards still need at least two characters.
+      if (!rookiesOnly && !mvpOnly && (!search || search.length < 2)) {
         return res.json([]);
       }
 
       const players = await getAllPlayers();
+      // Rookies must have spent at least one week on a roster in this league
+      const leagueIdParam = typeof req.query.leagueId === "string" ? req.query.leagueId : "";
+      const rostered = rookiesOnly && leagueIdParam ? await leaguePlayerGames(leagueIdParam) : null;
+      const positionOrder = ["QB", "RB", "WR", "TE", "K", "DEF"];
+      // MVP lists the qualifying players up front (top weeks at their position); searching narrows the list
+      const mvpPool = mvpOnly && leagueIdParam ? await leagueMvpPool(leagueIdParam, id => (players as any)[id]?.position) : null;
       const playerList = Object.values(players)
         .filter(p => {
-          if (!p.position || !["QB", "RB", "WR", "TE", "K", "DEF"].includes(p.position)) return false;
+          if (!p.position || !positionOrder.includes(p.position)) return false;
           const fullName = (p.full_name || `${p.first_name} ${p.last_name}`).toLowerCase();
-          const matchesSearch = fullName.includes(search);
+          const matchesSearch = !search || fullName.includes(search);
+          if (mvpPool) return matchesSearch && mvpPool.has(String(p.player_id));
           if (rookiesOnly) {
-            const yearsExp = Number(p.years_exp) || 0;
-            return matchesSearch && (yearsExp === 0 || yearsExp === 1);
+            // years_exp 0 is the current rookie class; with a league given, only rookies who were rostered a played week
+            return matchesSearch && Number(p.years_exp) === 0 && (rostered ? rostered.has(String(p.player_id)) : !!p.team);
           }
           return matchesSearch;
         })
-        .slice(0, 20)
+        .sort((a, b) => mvpPool
+          ? (mvpPool.get(String(b.player_id))?.ppg ?? 0) - (mvpPool.get(String(a.player_id))?.ppg ?? 0)
+          : rookiesOnly
+          ? positionOrder.indexOf(a.position!) - positionOrder.indexOf(b.position!) ||
+            (a.full_name || "").localeCompare(b.full_name || "")
+          : 0)
+        .slice(0, rookiesOnly || mvpPool ? 200 : 20)
         .map(p => ({
           id: p.player_id,
           name: p.full_name || `${p.first_name} ${p.last_name}`,
@@ -415,6 +476,14 @@ export function registerPlayersRoutes(app: Express): void {
           yearsExp: Number(p.years_exp) || 0,
           status: p.status,
           injuryStatus: p.injury_status,
+          ...(mvpPool ? (() => {
+            const c = mvpPool.get(String(p.player_id));
+            return c ? { games: c.games, points: c.points, ppg: c.ppg, topWeeks: c.topWeeks } : {};
+          })() : {}),
+          ...(rostered ? (() => {
+            const g = rostered.get(String(p.player_id));
+            return g ? { games: g.games, points: Math.round(g.points * 10) / 10, ppg: Math.round((g.points / g.games) * 10) / 10 } : {};
+          })() : {}),
         }));
       res.json(playerList);
     } catch (error) {
