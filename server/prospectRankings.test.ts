@@ -60,6 +60,15 @@ describe("parseRankingsText", () => {
     const r = parseRankingsText("1\tAshton Jeanty\tRB\tBoise State\t4,193");
     expect(r.rows[0].playerName).toBe("Ashton Jeanty");
   });
+  it("keeps a value that contains a comma when it is the last column", () => {
+    const csv = parseRankingsText("1,Ashton Jeanty,RB,Boise State,1.01 · 4,193");
+    expect(csv.rows[0].sourceValue).toBe("1.01 · 4,193");
+    const tab = parseRankingsText("1\tAshton Jeanty\tRB\tBoise State\t1.01 · 4,193");
+    expect(tab.rows[0].sourceValue).toBe("1.01 · 4,193");
+    // a column after the value is not swallowed
+    const mid = parseRankingsText("rank,name,value,school\n1,Ashton Jeanty,4193,Boise State");
+    expect(mid.rows[0]).toMatchObject({ sourceValue: "4193", school: "Boise State" });
+  });
   it("reads an ADP column when there is one", () => {
     const r = parseRankingsText("rank,name,adp\n1,Ashton Jeanty,1.8");
     expect(r.rows[0].adp).toBe(1.8);

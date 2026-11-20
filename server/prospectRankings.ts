@@ -132,7 +132,11 @@ export function parseRankingsText(text: string): ParseResult {
     const cells = splitLine(lines[i]);
     const get = (col: Column): string => {
       const idx = columns.indexOf(col);
-      return idx >= 0 ? (cells[idx] ?? "").trim() : "";
+      if (idx < 0) return "";
+      // A value like "1.01 · 4,193" has a comma in it. When the value is the last column, keep everything
+      // after it instead of cutting it at the comma.
+      if (col === "value" && idx === columns.length - 1) return cells.slice(idx).join(",").trim();
+      return (cells[idx] ?? "").trim();
     };
     const rankText = get("rank").replace(/[^\d]/g, "");
     const name = get("name");
