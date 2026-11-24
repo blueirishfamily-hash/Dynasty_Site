@@ -62,6 +62,8 @@ export interface TeamOutlook {
   sosLeft: number | null;
   clinchedPlayoffs: boolean;
   clinchedBye: boolean;
+  /** False when even winning out cannot reach the top spot (wins only, ties counted as reachable). */
+  canBeOneSeed: boolean;
   eliminated: boolean;
   /** Wins (own wins plus rival losses) still needed to clinch a spot. 0 once clinched. */
   magic: number;
@@ -263,7 +265,12 @@ function runSims(input: OutlookInput, opt: SimOptions): SimAgg {
   return agg;
 }
 
-const pct1 = (count: number, n: number) => Math.round((count / n) * 1000) / 10;
+// Rounded to 0.1, but never rounds up to 100 or down to 0 unless it really is every / no simulation.
+const pct1 = (count: number, n: number) => {
+  if (count <= 0) return 0;
+  if (count >= n) return 100;
+  return Math.min(99.99, Math.max(0.01, Math.round((count / n) * 1000) / 10));
+};
 
 function gamesLeftFor(schedule: OutlookSchedule, firstRemainingWeek: number, last: number, rosterId: number): number {
   let n = 0;
@@ -342,7 +349,18 @@ export function simulateOutlook(input: OutlookInput): OutlookResult {
     return {
       rosterId: t.rosterId,
       makePlayoffsPct: pct1(main.made[i], main.n),
-      byePct: pct1(main.bye[i], main.n),
+      // 100 / 0 only when the math settles it; otherwise a sampled 100% or 0% is just "very likely" / "very unlikely".
+      byePct: clinchedBye
+        ? 100
+        : byes === 0
+          ? 0
+          : main.bye[i] >= main.n
+            ? 99.99
+            : main.bye[i] <= 0
+              ? maxFinal[i] >= nthLargest(othersNow, byes)
+                ? 0.01
+                : 0
+              : pct1(main.bye[i], main.n),
       oneSeedPct: pct1(main.seeds[i][0], main.n),
       seedPct: main.seeds[i].map((c) => pct1(c, main.n)),
       projectedWins: Math.round((main.winsSum[i] / main.n) * 10) / 10,
@@ -351,6 +369,7 @@ export function simulateOutlook(input: OutlookInput): OutlookResult {
       sosLeft: sos[i],
       clinchedPlayoffs,
       clinchedBye,
+      canBeOneSeed: maxFinal[i] >= Math.max(...othersNow, -Infinity),
       eliminated,
       magic,
       elim,

@@ -84,6 +84,15 @@ interface PlayoffPredictorProps {
   userId?: string;
 }
 
+/** Format a simulated percentage without claiming certainty: ">99%" / "<1%" unless it is exactly 100 / 0. */
+function fmtPct(pct: number, decimals = 0): string {
+  if (pct <= 0) return "0%";
+  if (pct >= 100) return "100%";
+  if (pct < 1) return "<1%";
+  if (pct > 99) return ">99%";
+  return `${pct.toFixed(decimals)}%`;
+}
+
 function getProbabilityColor(pct: number): string {
   const clampedPct = Math.min(pct, 100);
   if (clampedPct >= 100) return "bg-primary";
@@ -261,11 +270,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
           <div
             className="relative w-28 h-28 rounded-full shrink-0 flex items-center justify-center"
             style={{ background: `conic-gradient(hsl(var(--primary)) ${Math.min(100, userTeam.makePlayoffsPct) * 3.6}deg, hsl(var(--muted)) 0)` }}
-            aria-label={`${userTeam.makePlayoffsPct.toFixed(1)} percent chance to make the playoffs`}
+            aria-label={`${fmtPct(userTeam.makePlayoffsPct, 1)} chance to make the playoffs`}
           >
             <div className="w-[88px] h-[88px] rounded-full bg-card flex flex-col items-center justify-center">
               <span className={`font-heading text-2xl font-bold ${getTextColor(userTeam.makePlayoffsPct)}`}>
-                {Math.round(userTeam.makePlayoffsPct)}%
+                {fmtPct(userTeam.makePlayoffsPct)}
               </span>
               <span className="text-[11px] text-muted-foreground">make it</span>
             </div>
@@ -279,11 +288,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
             </p>
             <div className="flex flex-wrap gap-2">
               {userTeam.byePct !== undefined && userTeam.byePct > 0 && (
-                <Badge variant="outline" className="border-chart-4/50 text-chart-4">Bye {userTeam.byePct.toFixed(0)}%</Badge>
+                <Badge variant="outline" className="border-chart-4/50 text-chart-4">Bye {fmtPct(userTeam.byePct)}</Badge>
               )}
-              <Badge variant="outline">1 seed {userTeam.oneSeedPct.toFixed(0)}%</Badge>
-              {me && <Badge variant="outline" className="border-primary/50 text-primary">Best {me.bestCasePct.toFixed(0)}%</Badge>}
-              {me && <Badge variant="outline" className="border-destructive/50 text-destructive">Worst {me.worstCasePct.toFixed(0)}%</Badge>}
+              <Badge variant="outline">1 seed {fmtPct(userTeam.oneSeedPct)}</Badge>
+              {me && <Badge variant="outline" className="border-primary/50 text-primary">Best {fmtPct(me.bestCasePct)}</Badge>}
+              {me && <Badge variant="outline" className="border-destructive/50 text-destructive">Worst {fmtPct(me.worstCasePct)}</Badge>}
             </div>
           </div>
         </div>
@@ -292,11 +301,11 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
           <div className="grid grid-cols-2 gap-3" data-testid="own-game">
             <div className="rounded-lg bg-primary/10 p-3 text-center">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">If you win wk {me.ownGame.week}</p>
-              <p className="font-heading text-2xl font-bold text-primary">{me.ownGame.oddsIfWin.toFixed(0)}%</p>
+              <p className="font-heading text-2xl font-bold text-primary">{fmtPct(me.ownGame.oddsIfWin)}</p>
             </div>
             <div className="rounded-lg bg-destructive/10 p-3 text-center">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">If you lose</p>
-              <p className="font-heading text-2xl font-bold text-destructive">{me.ownGame.oddsIfLose.toFixed(0)}%</p>
+              <p className="font-heading text-2xl font-bold text-destructive">{fmtPct(me.ownGame.oddsIfLose)}</p>
             </div>
           </div>
         )}
@@ -309,8 +318,8 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 <div key={i} className="flex-1 flex flex-col items-center justify-end gap-1 h-full">
                   <div
                     className={`w-full rounded-t ${i < playoffTeams ? "bg-primary" : "bg-muted-foreground/40"}`}
-                    style={{ height: `${Math.max(2, (p / seedMax) * 70)}px` }}
-                    title={`${ordinal(i + 1)} seed: ${p.toFixed(1)}%`}
+                    style={{ height: `${p <= 0 ? 0 : Math.max(2, (p / seedMax) * 70)}px` }}
+                    title={`${ordinal(i + 1)} seed: ${fmtPct(p, 1)}`}
                   />
                   <span className="text-[10px] text-muted-foreground">{i + 1}</span>
                 </div>
@@ -340,7 +349,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                 <p className="text-sm font-semibold truncate">{nameOf(g.teamA)} vs {nameOf(g.teamB)}</p>
                 <p className="text-xs text-muted-foreground">
                   {meaningful
-                    ? `Your odds: ${g.oddsIfRootWins.toFixed(0)}% if ${nameOf(g.rootFor)} wins, ${g.oddsIfRootLoses.toFixed(0)}% if ${nameOf(other)} wins`
+                    ? `Your odds: ${fmtPct(g.oddsIfRootWins)} if ${nameOf(g.rootFor)} wins, ${fmtPct(g.oddsIfRootLoses)} if ${nameOf(other)} wins`
                     : "Little effect on your odds"}
                 </p>
               </div>
@@ -407,14 +416,14 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
               <div className="h-2.5 rounded-full bg-muted overflow-hidden">
                 <div className={`h-full rounded-full ${getProbabilityColor(r.pct)}`} style={{ width: `${Math.min(100, r.pct)}%` }} />
               </div>
-              <span className={`text-sm font-semibold tabular-nums text-right ${getTextColor(r.pct)}`}>{r.pct.toFixed(0)}%</span>
+              <span className={`text-sm font-semibold tabular-nums text-right ${getTextColor(r.pct)}`}>{fmtPct(r.pct)}</span>
             </div>
           ))}
           <div className="rounded-lg border border-primary/40 bg-primary/10 p-3 text-sm">
             <span className="font-semibold">You are projected for {userTeam.projectedWins.toFixed(1)} wins.</span>{" "}
             {projectedRow && (
               <span className="text-muted-foreground">
-                {projectedRow.wins} wins makes the field {projectedRow.pct.toFixed(0)}% of the time.
+                {projectedRow.wins} wins makes the field {fmtPct(projectedRow.pct)} of the time.
               </span>
             )}
           </div>
@@ -499,12 +508,12 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                         <div className={`h-full rounded-full ${getProbabilityColor(team.makePlayoffsPct)}`} style={{ width: `${Math.min(team.makePlayoffsPct, 100)}%` }} />
                       </div>
                       <span className={`text-sm font-semibold tabular-nums w-12 text-right ${getTextColor(team.makePlayoffsPct)}`}>
-                        {team.makePlayoffsPct.toFixed(1)}%
+                        {fmtPct(team.makePlayoffsPct, 1)}
                       </span>
                     </div>
                   </TableCell>
                   <TableCell className="text-right tabular-nums text-sm text-muted-foreground">
-                    {team.byePct !== undefined ? `${team.byePct.toFixed(0)}%` : "—"}
+                    {team.byePct !== undefined ? fmtPct(team.byePct) : "—"}
                   </TableCell>
                 </TableRow>
               );
@@ -671,7 +680,7 @@ export default function PlayoffPredictor({ userId }: PlayoffPredictorProps) {
                       </div>
                       <div className="text-right">
                         <Badge className={getStandingsBadgeClass(team.makePlayoffsPct)}>
-                          {team.makePlayoffsPct.toFixed(1)}%
+                          {fmtPct(team.makePlayoffsPct, 1)}
                         </Badge>
                         <p className="text-xs text-muted-foreground mt-1">
                           {isInPlayoffPosition ? "In playoff position" : "Outside looking in"}

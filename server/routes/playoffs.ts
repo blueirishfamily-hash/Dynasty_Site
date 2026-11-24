@@ -748,7 +748,8 @@ export function registerPlayoffsRoutes(app: Express): void {
             projectedStdPerWeek: Math.round(team.stdDev * 10) / 10,
             projectedPointsFor,
             division: hasDivisions ? team.division : undefined,
-            oneSeedPct,
+            // Smoothing adds a floor, so an impossible 1 seed (even winning out can't catch the leader) is pinned to 0
+            oneSeedPct: ot && !ot.canBeOneSeed ? 0 : oneSeedPct,
             divisionWinnerPct,
             // A mathematically settled team is exactly 100% or 0%, whatever the simulation smoothing says.
             makePlayoffsPct: ot?.clinchedPlayoffs ? 100 : ot?.eliminated ? 0 : makePlayoffsPct,
